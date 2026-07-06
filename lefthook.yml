@@ -22,3 +22,14 @@ pre-push:
       run: golangci-lint run
     test:
       run: go test -race ./...
+
+# Refresh the code side of the knowledge graph after commits that touch Go files.
+# AST-only (no LLM, free); doc/markdown changes still need a manual `/graphify` rebuild.
+# Skips entirely when graphify isn't set up (no graph.json) — safe for fresh clones.
+post-commit:
+  commands:
+    graphify-update:
+      run: |
+        [ -f graphify-out/graph.json ] || exit 0
+        git diff-tree --no-commit-id --name-only -r HEAD | grep -q '\.go$' || exit 0
+        graphify update . >/dev/null 2>&1 || true
