@@ -1,0 +1,60 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - depguard
+    - dupl
+    - errcheck
+    - errorlint
+    - gocritic
+    - gocyclo
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - staticcheck
+    - unused
+    - wrapcheck
+  settings:
+    errcheck:
+      # Writing to stdout/stderr rarely warrants error handling in a CLI.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gocyclo:
+      min-complexity: 15
+    depguard:
+      rules:
+        main:
+          list-mode: lax
+          deny:
+            - pkg: crypto/md5
+              desc: weak hash; prefer crypto/sha256
+            - pkg: crypto/sha1
+              desc: weak hash; prefer crypto/sha256
+  exclusions:
+    generated: lax
+    rules:
+      # Tests get more slack: table dupes, unwrapped assertion errors, etc.
+      - path: _test\.go
+        linters:
+          - dupl
+          - errcheck
+          - gocyclo
+          - wrapcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/javadh75/SSHepherd

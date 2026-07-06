@@ -1,0 +1,7 @@
+.git/
+.github/
+bin/
+*.out
+*.html
+*.test
+CLAUDE.md

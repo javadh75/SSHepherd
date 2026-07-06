@@ -1,0 +1,4 @@
+# DS-0026: HEALTHCHECK instruction.
+# Not applicable — sshepherd is a CLI that runs a command and exits, not a
+# long-running service, so a container healthcheck is meaningless here.
+DS-0026

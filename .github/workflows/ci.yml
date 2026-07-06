@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Install pinned tools
+        run: |
+          make tools
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Quality gate
+        run: make check
+
+      - name: Coverage report
+        run: make coverage
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.out
+            coverage.html
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Build image
+        run: docker build -t sshepherd:ci .
+
+      - name: Scan image for CVEs (Trivy)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: sshepherd:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: Lint image (dockle)
+        # CIS-DI-0006 (HEALTHCHECK) waived: sshepherd is a CLI, not a service.
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:v0.4.15 --exit-code 1 -i CIS-DI-0006 sshepherd:ci
+
+      - name: Smoke test
+        run: docker run --rm sshepherd:ci --version
