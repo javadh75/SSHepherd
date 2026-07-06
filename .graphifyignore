@@ -1,0 +1,24 @@
+# Build & coverage artifacts
+/bin/
+coverage.out
+coverage.html
+*.test
+
+# Graphify's own output
+graphify-out/
+
+# VCS
+.git/
+
+# Defensive — never ingest key material or secrets (this is an SSH-key tool)
+*.pem
+*.key
+*.pub
+id_*
+*_ed25519
+*_rsa
+authorized_keys
+known_hosts
+.env
+.env.*
+secrets/
