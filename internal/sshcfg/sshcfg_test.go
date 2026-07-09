@@ -17,7 +17,7 @@ func parseString(t *testing.T, content string) ([]Host, []string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	hosts, warnings, err := load(path, dir)
+	hosts, warnings, err := load(path, dir, dir)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -141,7 +141,8 @@ func TestLoadResolution(t *testing.T) {
 }
 
 func TestLoadMissingTopLevelFile(t *testing.T) {
-	_, _, err := load(filepath.Join(t.TempDir(), "nope"), t.TempDir())
+	dir := t.TempDir()
+	_, _, err := load(filepath.Join(dir, "nope"), dir, dir)
 	if err == nil {
 		t.Fatal("load of missing file: err = nil, want error")
 	}
@@ -172,11 +173,32 @@ func writeFiles(t *testing.T, files map[string]string) string {
 
 func loadDir(t *testing.T, dir string) ([]Host, []string) {
 	t.Helper()
-	hosts, warnings, err := load(filepath.Join(dir, "config"), dir)
+	hosts, warnings, err := load(filepath.Join(dir, "config"), dir, dir)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	return hosts, warnings
+}
+
+func TestIncludeTildeExpandsHome(t *testing.T) {
+	// OpenSSH expands a leading ~/ in Include against the home directory,
+	// not against ~/.ssh. Point includeDir somewhere else so only tilde
+	// expansion can find the included file.
+	home := writeFiles(t, map[string]string{
+		"config": "Include ~/inc\n",
+		"inc":    "Host a\n  User u\n",
+	})
+	hosts, warnings, err := load(filepath.Join(home, "config"), filepath.Join(home, "ssh"), home)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	want := []Host{{Alias: "a", HostName: "a", User: "u"}}
+	if !reflect.DeepEqual(hosts, want) {
+		t.Errorf("hosts = %+v, want %+v", hosts, want)
+	}
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
 }
 
 func TestIncludeRelative(t *testing.T) {

@@ -20,7 +20,7 @@ func FuzzParse(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, in string) {
-		p := newParser("/nonexistent")
+		p := newParser("/nonexistent", "/nonexistent")
 		p.glob = func(string) ([]string, error) { return nil, nil }
 		p.parseBytes([]byte(in), "fuzz", 0)
 		for _, h := range p.resolveAll() {

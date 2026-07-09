@@ -30,15 +30,17 @@ type block struct {
 
 type parser struct {
 	includeDir string
+	home       string                         // for expanding a leading ~/ in Include
 	glob       func(string) ([]string, error) // filepath.Glob; stubbed hermetic in fuzz
 	blocks     []block
 	warnings   []string
 	skipping   bool // inside a Match block: drop lines until the next Host
 }
 
-func newParser(includeDir string) *parser {
+func newParser(includeDir, home string) *parser {
 	return &parser{
 		includeDir: includeDir,
+		home:       home,
 		glob:       filepath.Glob,
 		blocks:     []block{{patterns: []string{"*"}}},
 	}
@@ -58,11 +60,11 @@ func Load(path string) ([]Host, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve home for Include: %w", err)
 	}
-	return load(path, filepath.Join(home, ".ssh"))
+	return load(path, filepath.Join(home, ".ssh"), home)
 }
 
-func load(path, includeDir string) ([]Host, []string, error) {
-	p := newParser(includeDir)
+func load(path, includeDir, home string) ([]Host, []string, error) {
+	p := newParser(includeDir, home)
 	if err := p.parseFile(path); err != nil {
 		return nil, nil, err
 	}
@@ -193,16 +195,20 @@ func (p *parser) resolveHost(alias string) Host {
 // maxIncludeDepth mirrors OpenSSH's cap on nested Include directives.
 const maxIncludeDepth = 16
 
-// include expands one Include pattern. Relative patterns resolve against
-// includeDir (~/.ssh in production). Included content is inlined at the
-// Include position, so settings can join the enclosing Host block. Reading
-// errors only warn; nesting is capped like OpenSSH.
+// include expands one Include pattern. A leading ~/ resolves against the home
+// directory and other relative patterns against includeDir (~/.ssh in
+// production), as in OpenSSH. Included content is inlined at the Include
+// position, so settings can join the enclosing Host block. Reading errors
+// only warn; nesting is capped like OpenSSH.
 func (p *parser) include(pattern, fromPath string, line, depth int) {
 	if depth+1 > maxIncludeDepth {
 		p.warnf("%s:%d: Include depth exceeds %d, skipping %q", fromPath, line, maxIncludeDepth, pattern)
 		return
 	}
-	if !filepath.IsAbs(pattern) {
+	switch {
+	case strings.HasPrefix(pattern, "~/"):
+		pattern = filepath.Join(p.home, pattern[2:])
+	case !filepath.IsAbs(pattern):
 		pattern = filepath.Join(p.includeDir, pattern)
 	}
 	matches, err := p.glob(pattern)
@@ -217,7 +223,7 @@ func (p *parser) include(pattern, fromPath string, line, depth int) {
 	for _, m := range matches {
 		data, err := os.ReadFile(m) // #nosec G304 -- path comes from the user's own config/Include
 		if err != nil {
-			p.warnf("%s:%d: include %s: unreadable: %v", fromPath, line, m, err)
+			p.warnf("%s:%d: Include %s: unreadable: %v", fromPath, line, m, err)
 			continue
 		}
 		p.parseBytes(data, m, depth+1)
