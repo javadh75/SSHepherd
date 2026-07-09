@@ -5,6 +5,8 @@ package audit
 
 import (
 	"context"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
@@ -68,4 +70,36 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res.ParseErrs = parseErrs
 	res.Diff = authkeys.Diff(desired, actual)
 	return res
+}
+
+// Options tunes the fleet fan-out.
+type Options struct {
+	Parallel         int           // max concurrent server audits (>= 1)
+	PerServerTimeout time.Duration // overall deadline per server; 0 = none
+}
+
+// Run audits every server concurrently through a bounded worker pool and
+// returns results sorted by server name, so output is deterministic no matter
+// the completion order.
+func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options) []ServerResult {
+	if opts.Parallel < 1 {
+		opts.Parallel = 1
+	}
+	results := make([]ServerResult, len(cfg.Servers))
+	sem := make(chan struct{}, opts.Parallel)
+	var wg sync.WaitGroup
+	for i, srv := range cfg.Servers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			results[i] = auditOne(ctx, cfg, reader, srv, opts.PerServerTimeout)
+		}()
+	}
+	wg.Wait()
+	sort.Slice(results, func(a, b int) bool {
+		return results[a].Server.Name < results[b].Server.Name
+	})
+	return results
 }

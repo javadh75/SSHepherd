@@ -3,7 +3,11 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -123,5 +127,93 @@ func TestAuditOneNoUsersGranted(t *testing.T) {
 	}
 	if len(res.Diff.Unauthorized) != 1 {
 		t.Errorf("Unauthorized = %d, want 1", len(res.Diff.Unauthorized))
+	}
+}
+
+// gateReader tracks concurrency and can block until released or ctx expiry.
+type gateReader struct {
+	inflight, maxSeen atomic.Int32
+	block             map[string]bool // server names that hang until ctx is done
+	delay             time.Duration
+}
+
+func (g *gateReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (ReadResult, error) {
+	cur := g.inflight.Add(1)
+	defer g.inflight.Add(-1)
+	for {
+		prev := g.maxSeen.Load()
+		if cur <= prev || g.maxSeen.CompareAndSwap(prev, cur) {
+			break
+		}
+	}
+	if g.block[srv.Name] {
+		<-ctx.Done()
+		return ReadResult{}, fmt.Errorf("read %s: %w", srv.Name, ctx.Err())
+	}
+	if g.delay > 0 {
+		time.Sleep(g.delay)
+	}
+	return ReadResult{}, nil
+}
+
+// fleetConfig builds a config with n servers named srv-00 .. srv-N, no users.
+func fleetConfig(t *testing.T, n int) *config.Config {
+	t.Helper()
+	var sb strings.Builder
+	sb.WriteString("servers:\n")
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&sb, "  - {name: srv-%02d, host: 10.0.0.%d, user: deploy}\n", i, i+1)
+	}
+	cfg, err := config.Parse([]byte(sb.String()))
+	if err != nil {
+		t.Fatalf("fleetConfig: %v", err)
+	}
+	return cfg
+}
+
+func TestRunPoolCap(t *testing.T) {
+	cfg := fleetConfig(t, 20)
+	g := &gateReader{delay: 20 * time.Millisecond}
+	Run(context.Background(), cfg, g, Options{Parallel: 3})
+	if max := g.maxSeen.Load(); max > 3 {
+		t.Errorf("max concurrent reads = %d, want <= 3", max)
+	}
+}
+
+func TestRunDeterministicOrder(t *testing.T) {
+	cfg := fleetConfig(t, 10)
+	g := &gateReader{delay: time.Millisecond}
+	results := Run(context.Background(), cfg, g, Options{Parallel: 8})
+	if len(results) != 10 {
+		t.Fatalf("results = %d, want 10", len(results))
+	}
+	for i, r := range results {
+		want := fmt.Sprintf("srv-%02d", i)
+		if r.Server.Name != want {
+			t.Fatalf("results[%d] = %s, want %s (sorted by name)", i, r.Server.Name, want)
+		}
+	}
+}
+
+func TestRunHangingServerDoesNotPoisonOthers(t *testing.T) {
+	cfg := fleetConfig(t, 5)
+	g := &gateReader{block: map[string]bool{"srv-02": true}}
+	results := Run(context.Background(), cfg, g, Options{
+		Parallel:         5,
+		PerServerTimeout: 50 * time.Millisecond,
+	})
+	var hung, fine int
+	for _, r := range results {
+		if r.Server.Name == "srv-02" {
+			if r.Err == nil {
+				t.Error("hanging server should have timed out with an error")
+			}
+			hung++
+		} else if r.Err == nil {
+			fine++
+		}
+	}
+	if hung != 1 || fine != 4 {
+		t.Errorf("hung=%d fine=%d, want 1/4", hung, fine)
 	}
 }
