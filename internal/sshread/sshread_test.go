@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -189,4 +191,152 @@ func TestClientBadKnownHostsPath(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "known_hosts") {
 		t.Errorf("err = %v, want known_hosts load error", err)
 	}
+}
+
+func TestCappedBuffer(t *testing.T) {
+	b := &cappedBuffer{limit: 8}
+
+	n, err := b.Write([]byte("12345"))
+	if n != 5 || err != nil {
+		t.Fatalf("Write under cap = (%d, %v), want (5, nil)", n, err)
+	}
+	if b.truncated {
+		t.Error("truncated = true before cap was hit")
+	}
+
+	n, err = b.Write([]byte("6789A")) // only 3 bytes of room left
+	if n != 5 || err != nil {
+		t.Fatalf("Write over cap = (%d, %v), want (5, nil) — must report full length, never fail", n, err)
+	}
+	if !b.truncated {
+		t.Error("truncated = false after overflowing the cap")
+	}
+	if got := b.String(); got != "12345678" {
+		t.Errorf("String() = %q, want first 8 bytes only", got)
+	}
+
+	n, err = b.Write([]byte("x")) // already full
+	if n != 1 || err != nil {
+		t.Errorf("Write past full = (%d, %v), want (1, nil)", n, err)
+	}
+	if got := len(b.Bytes()); got != 8 {
+		t.Errorf("len = %d after writes past cap, want 8", got)
+	}
+
+	// Filling exactly to the cap is not truncation, and empty writes at the
+	// cap must not flag it either.
+	exact := &cappedBuffer{limit: 2}
+	_, _ = exact.Write([]byte("ab"))
+	_, _ = exact.Write(nil)
+	if exact.truncated {
+		t.Error("exact-fit buffer flagged as truncated")
+	}
+}
+
+func TestSanitizeRemote(t *testing.T) {
+	in := "a\x1b[31mred\x07\rb\nc\td\x00"
+	want := "a[31mredb\nc\td"
+	if got := sanitizeRemote(in); got != want {
+		t.Errorf("sanitizeRemote(%q) = %q, want %q", in, got, want)
+	}
+	if got := sanitizeRemote("clean text"); got != "clean text" {
+		t.Errorf("clean input altered: %q", got)
+	}
+}
+
+// startFakeAgent serves a unix socket that accepts and holds connections —
+// enough for the client's agent dial to succeed without a real agent.
+func startFakeAgent(t *testing.T) string {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "agent.sock")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
+	if err != nil {
+		t.Fatalf("listen agent: %v", err)
+	}
+	holder := newConnHolder(l)
+	t.Cleanup(holder.close)
+	return sock
+}
+
+// connHolder accepts connections and keeps them open (a silent peer) until
+// closed, so client-side deadlines — not peer EOFs — end the exchange.
+type connHolder struct {
+	l     net.Listener
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func newConnHolder(l net.Listener) *connHolder {
+	h := &connHolder{l: l}
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			h.mu.Lock()
+			h.conns = append(h.conns, c)
+			h.mu.Unlock()
+		}
+	}()
+	return h
+}
+
+func (h *connHolder) close() {
+	_ = h.l.Close()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, c := range h.conns {
+		_ = c.Close()
+	}
+}
+
+// TestClientDeadline pins the hard time bound on the whole SSH exchange: a
+// server that accepts TCP but never speaks SSH must not hang a worker beyond
+// the ctx deadline — or, absent one, the derived 3×DialTimeout floor.
+func TestClientDeadline(t *testing.T) {
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	holder := newConnHolder(l)
+	t.Cleanup(holder.close)
+
+	kh := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(kh, nil, 0o600); err != nil {
+		t.Fatalf("write known_hosts: %v", err)
+	}
+	agentSock := startFakeAgent(t)
+	srv := config.Server{
+		Name: "silent", Host: "127.0.0.1",
+		Port: l.Addr().(*net.TCPAddr).Port, User: "u",
+	}
+
+	t.Run("ctx deadline bounds the handshake", func(t *testing.T) {
+		c := &Client{AgentSock: agentSock, KnownHostsPath: kh, DialTimeout: 5 * time.Second}
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		_, err := c.ReadAuthorizedKeys(ctx, srv)
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("silent server produced no error")
+		}
+		if elapsed > time.Second {
+			t.Errorf("returned after %v, want well under 1s (200ms deadline)", elapsed)
+		}
+	})
+
+	t.Run("deadline floor kicks in without a ctx deadline", func(t *testing.T) {
+		c := &Client{AgentSock: agentSock, KnownHostsPath: kh, DialTimeout: 100 * time.Millisecond}
+		start := time.Now()
+		_, err := c.ReadAuthorizedKeys(context.Background(), srv) // no deadline: floor = 300ms
+		elapsed := time.Since(start)
+		if err == nil {
+			t.Fatal("silent server produced no error")
+		}
+		if elapsed > time.Second {
+			t.Errorf("returned after %v, want well under 1s (300ms derived floor)", elapsed)
+		}
+	})
 }
