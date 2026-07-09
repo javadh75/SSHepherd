@@ -145,3 +145,107 @@ func TestWarningsCarryFileAndLine(t *testing.T) {
 		t.Errorf("warnings = %v, want one prefixed with \"config:3:\"", warnings)
 	}
 }
+
+// writeFiles lays out a config tree in a temp dir and returns the dir.
+func writeFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+func loadDir(t *testing.T, dir string) ([]Host, []string) {
+	t.Helper()
+	hosts, warnings, err := load(filepath.Join(dir, "config"), dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	return hosts, warnings
+}
+
+func TestIncludeRelative(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"config": "Include sub\n",
+		"sub":    "Host a\n  User u\n",
+	})
+	hosts, warnings := loadDir(t, dir)
+	want := []Host{{Alias: "a", HostName: "a", User: "u"}}
+	if !reflect.DeepEqual(hosts, want) {
+		t.Errorf("hosts = %+v, want %+v", hosts, want)
+	}
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestIncludeGlobSorted(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"config":      "Include conf.d/*\n",
+		"conf.d/10-a": "Host a\n  User u\n",
+		"conf.d/20-b": "Host b\n  User v\n",
+	})
+	hosts, _ := loadDir(t, dir)
+	if len(hosts) != 2 || hosts[0].Alias != "a" || hosts[1].Alias != "b" {
+		t.Errorf("hosts = %+v, want [a b] in glob order", hosts)
+	}
+}
+
+func TestIncludeInsideHostBlock(t *testing.T) {
+	// Included lines inline at position: bare settings join the enclosing
+	// block; a Host line in the included file starts a new block.
+	dir := writeFiles(t, map[string]string{
+		"config": "Host a\n  Include extra\nHost c\n  User w\n",
+		"extra":  "  User u\nHost b\n  User v\n",
+	})
+	hosts, _ := loadDir(t, dir)
+	want := []Host{
+		{Alias: "a", HostName: "a", User: "u"},
+		{Alias: "b", HostName: "b", User: "v"},
+		{Alias: "c", HostName: "c", User: "w"},
+	}
+	if !reflect.DeepEqual(hosts, want) {
+		t.Errorf("hosts = %+v, want %+v", hosts, want)
+	}
+}
+
+func TestIncludeNoMatchWarns(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"config": "Include missing-*\nHost a\n  User u\n"})
+	hosts, warnings := loadDir(t, dir)
+	if len(hosts) != 1 {
+		t.Errorf("hosts = %+v, want just a", hosts)
+	}
+	if !hasWarning(warnings, "matched no files") {
+		t.Errorf("warnings = %v, want 'matched no files'", warnings)
+	}
+}
+
+func TestIncludeDirectoryWarns(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"config": "Include conf.d\nHost a\n  User u\n"})
+	if err := os.MkdirAll(filepath.Join(dir, "conf.d"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_, warnings := loadDir(t, dir)
+	if !hasWarning(warnings, "unreadable") {
+		t.Errorf("warnings = %v, want 'unreadable' for directory include", warnings)
+	}
+}
+
+func TestIncludeDepthCapTerminates(t *testing.T) {
+	// A self-including file must terminate at the depth cap, not hang.
+	dir := writeFiles(t, map[string]string{"config": "Include config\nHost a\n  User u\n"})
+	hosts, warnings := loadDir(t, dir)
+	if len(hosts) != 1 || hosts[0].Alias != "a" {
+		t.Errorf("hosts = %+v, want exactly one 'a'", hosts)
+	}
+	if !hasWarning(warnings, "depth") {
+		t.Errorf("warnings = %v, want a depth-cap warning", warnings)
+	}
+}

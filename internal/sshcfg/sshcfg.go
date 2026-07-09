@@ -106,7 +106,13 @@ func (p *parser) parseBytes(data []byte, path string, depth int) {
 			if p.skipping {
 				continue
 			}
-			p.warnf("%s:%d: Include not yet supported", path, line) // Task 4 replaces this
+			if len(args) == 0 {
+				p.warnf("%s:%d: Include with no path", path, line)
+				continue
+			}
+			for _, pat := range args {
+				p.include(pat, path, line, depth)
+			}
 		case "hostname", "user", "port":
 			if p.skipping {
 				continue
@@ -182,4 +188,29 @@ func (p *parser) resolveHost(alias string) Host {
 		h.HostName = alias
 	}
 	return h
+}
+
+// maxIncludeDepth mirrors OpenSSH's cap on nested Include directives.
+const maxIncludeDepth = 16
+
+// include expands one Include pattern. Relative patterns resolve against
+// includeDir (~/.ssh in production). Included content is inlined at the
+// Include position, so settings can join the enclosing Host block. Reading
+// errors only warn; nesting is capped like OpenSSH.
+func (p *parser) include(pattern, fromPath string, line, depth int) {
+	if depth+1 > maxIncludeDepth {
+		p.warnf("%s:%d: Include depth exceeds %d, skipping %q", fromPath, line, maxIncludeDepth, pattern)
+		return
+	}
+	if !filepath.IsAbs(pattern) {
+		pattern = filepath.Join(p.includeDir, pattern)
+	}
+	matches, err := p.glob(pattern)
+	if err != nil || len(matches) == 0 {
+		p.warnf("%s:%d: Include %q matched no files", fromPath, line, pattern)
+		return
+	}
+	for _, m := range matches {
+		_ = p.parseFile(m, depth+1) // depth > 0 never returns an error
+	}
 }
