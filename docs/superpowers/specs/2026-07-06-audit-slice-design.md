@@ -1,6 +1,6 @@
 # Design: `sshepherd audit` — drift/compliance slice
 
-- **Date:** 2026-07-06 (updated 2026-07-09: auth/host-key/concurrency decisions)
+- **Date:** 2026-07-06 (updated 2026-07-09: auth/host-key/concurrency decisions; full review fixes — remote-read semantics, example corrections)
 - **Status:** Approved (design), pending spec review
 - **Scope:** First real vertical slice of SSHepherd — a read-only drift audit.
 
@@ -73,6 +73,9 @@ servers:
     host: 10.0.0.1
     port: 22           # optional, default 22
     user: deploy       # remote account we connect as, and whose authorized_keys we audit
+  - name: web-2
+    host: 10.0.0.2
+    user: deploy
 
 access:
   - user: alice
@@ -106,15 +109,18 @@ access:
   entry resolves to a defined server.
 - Every key in `users[].keys` parses as a valid OpenSSH public key.
 - Duplicate public keys across users are a validation error (a fingerprint must
-  map to exactly one user, so report labeling is unambiguous).
+  map to exactly one user, so report labeling is unambiguous). The same key
+  listed twice under one user is likewise a validation error.
+- Multiple `access` entries for the same user are allowed; their server lists
+  are unioned.
 
 ## Packages
 
 | Package | Responsibility | Testability |
 |---|---|---|
 | `internal/config` (new) | Load + validate YAML into typed structs. | Pure unit, table-driven + golden invalid cases. |
-| `internal/authkeys` (extend) | Add `ParseFile([]byte) ([]Key, []error)` and `Diff(desired, actual []Key) Result`. Identity = SHA256 fingerprint (already on `Key`). | Pure unit + existing fuzz, extended to `ParseFile`. |
-| `internal/sshread` (new) | Native `x/crypto/ssh` client: connect (agent auth via `SSH_AUTH_SOCK`, host-key verify via `knownhosts`), read remote `~/.ssh/authorized_keys` via a one-shot session `cat`. | Real impl covered by a `//go:build integration` test vs a dockerized `sshd`. |
+| `internal/authkeys` (extend) | Add `ParseFile([]byte) ([]Key, []ParseError)` and `Diff(desired, actual []Key) Result`. `ParseError` carries the 1-based line number and cause so reports can cite `line N`. Identity = SHA256 fingerprint (already on `Key`). | Pure unit + existing fuzz, extended to `ParseFile`. |
+| `internal/sshread` (new) | Native `x/crypto/ssh` client: connect (agent auth via `SSH_AUTH_SOCK`, host-key verify via `knownhosts`), read remote `~/.ssh/authorized_keys` via a one-shot session `cat`. Kept deliberately **thin** (connection glue only); anything decision-like — e.g. interpreting the remote exit status to distinguish "file absent" from "read failed" — lives in a unit-testable helper (see *Remote read semantics*). | Real impl covered by a `//go:build integration` test vs a dockerized `sshd`; the exit-status helper is pure unit. |
 | `internal/audit` (new) | Orchestrate: bounded worker pool fans out per server → compute desired, fetch actual, `Diff`; collect, sort by server name, format report. Each per-server audit is a self-contained call with no shared mutable state. | Pure unit against a fake `KeyReader`, including concurrency (slow/blocking fakes, pool-cap assertions); exercised under `-race`. |
 | `cmd/sshepherd` | Cobra root + `audit` subcommand; keep `--version`; preserve testable `run(args, stdout, stderr) int` via `cmd.SetArgs/SetOut/SetErr`. | `run(...)` test. |
 
@@ -143,6 +149,32 @@ fake with no network. `internal/sshread` provides the real implementation,
 exercised only by the build-tagged integration test. This keeps the unit path
 hermetic (per CLAUDE.md) and lets coverage stay ≥80% without live SSH.
 
+## Remote read semantics
+
+v1 audits the **default** key source: `~/.ssh/authorized_keys` of the connect
+user, read via a one-shot session `cat`. This assumes a POSIX-ish remote (shell
++ `cat`), the default `AuthorizedKeysFile`, and `~` resolving to the connect
+user's real HOME. A per-server path override is a natural later field.
+
+Outcomes of the remote read, and what each means:
+
+- **Connection/auth/host-key failure** → the server is *unauditable*: recorded
+  as an error result, run continues, exit 1.
+- **File read successfully** → parse and diff as normal.
+- **File absent (or present but empty)** → reported as "0 keys installed", so
+  every desired key shows as missing (drift, exit 1) — **plus a loud
+  diagnostic**. Rationale: public-key auth means our own login key had to match
+  *some* source sshd consulted; if the file we audit is absent/empty yet login
+  succeeded, sshd is consulting a **different source** — a custom
+  `AuthorizedKeysFile` path, an `AuthorizedKeysCommand` (LDAP/SSSD/cloud), or
+  CA certificates (`TrustedUserCAKeys`). The report says exactly that: this
+  server may not be auditable via this file. Distinguishing "absent" from "read
+  failed" uses the remote command's exit status via a pure, unit-tested helper.
+- **File parses partially** (`ParseError`s) → parsed keys are still diffed;
+  each bad line is reported as `⚠ line N: unparseable entry` and the server
+  counts **non-compliant** (exit 1) — we cannot certify a file we cannot fully
+  read.
+
 ## Command surface
 
 ```
@@ -151,23 +183,34 @@ sshepherd audit [--config sshepherd.yaml] [--known-hosts ~/.ssh/known_hosts] [--
 
 - `--config` — path to the manifest (default `sshepherd.yaml`).
 - `--known-hosts` — path to the `known_hosts` file (default `~/.ssh/known_hosts`).
-- `--parallel` — max concurrent server audits (default 10, must be ≥1). A bounded
-  pool, not unbounded fan-out, so large fleets don't open hundreds of sockets.
-- Auth: the local SSH agent (`SSH_AUTH_SOCK`) only, in v1. Host-key policy is
-  **strict**: a server whose host key is absent from (or conflicts with)
-  `known_hosts` fails its audit with a remediation hint (e.g. `ssh-keyscan`);
-  there is no trust-on-first-use and no insecure escape hatch.
-- Per-server dial timeout: **10s**, so a black-hole host costs its worker slot
-  10 seconds, not forever.
+- `--parallel` — max concurrent server audits (default 10; <1 is a usage error,
+  exit 2). A bounded pool, not unbounded fan-out, so large fleets don't open
+  hundreds of sockets.
+- Auth: the local SSH agent (`SSH_AUTH_SOCK`) only, in v1. Agent availability is
+  checked **once at startup**; if the env var is unset or the socket is dead,
+  exit 2 with a clear message *before* dialing any server (otherwise every
+  server would fail identically).
+- Host-key policy is **strict**: a server whose host key is absent from (or
+  conflicts with) `known_hosts` fails its audit; no trust-on-first-use, no
+  insecure escape hatch. Gotcha the error message must address: `known_hosts`
+  entries are recorded under the host form you `ssh` to — if you normally use a
+  hostname but the manifest says `host: 10.0.0.1`, the IP form won't match. The
+  remediation hint therefore names the **exact configured host:port**, e.g.
+  `ssh-keyscan -p 22 10.0.0.1 >> ~/.ssh/known_hosts`.
+- Timeouts: a per-server **overall deadline of 30s** (context-based, covering
+  dial + handshake + remote read) with a **10s dial timeout** inside it — so a
+  host that accepts TCP and then hangs still frees its worker slot.
 
 ### Exit codes
 
-- **0** — every server was reachable and compliant (no drift).
+- **0** — every server was reachable and compliant (no drift). An empty
+  `servers` list is trivially compliant → exit 0 (with a "0 servers" note).
 - **1** — audit could not confirm a clean fleet: drift detected on at least one
-  server (missing/unauthorized keys) **and/or** at least one server could not be
-  audited (connection/read failure).
+  server (missing/unauthorized keys), **and/or** a server could not be audited
+  (connection/read failure), **and/or** a server's key file could not be fully
+  parsed.
 - **2** — config/usage error (bad manifest, unresolved references, unreadable
-  config).
+  config, invalid flags, no usable SSH agent).
 
 Per-server connection/read failures do **not** abort the run; they are recorded,
 reported, and yield exit **1** (never masked as success).
@@ -186,12 +229,25 @@ web-1 (deploy@10.0.0.1:22)
 
 web-2 (deploy@10.0.0.2:22)  ERROR: dial tcp 10.0.0.2:22: connection refused
 
-Summary: 1/2 servers compliant · 1 with drift · 1 unreachable  → exit 1
+Summary: 0/2 servers compliant · 1 with drift · 1 unreachable  → exit 1
 ```
 
-Matched keys are labeled with the owning user's `name` (and `comment` if set);
-unauthorized keys have no owner. Comment/description mismatches are **not** drift
-in v1.
+Additional report rules:
+
+- The report itself goes to **stdout**; diagnostics/progress go to **stderr** —
+  so `sshepherd audit > report.txt` captures exactly the report.
+- Matched keys are labeled with the owning user's `name` (and `comment` if
+  set); unauthorized keys have no owner.
+- Unparseable lines render as `⚠ line N: unparseable entry` under their server
+  (see *Remote read semantics*).
+- A server with an **empty desired set** (defined in `servers` but granted to
+  no user in `access`) is still audited: every installed key flags
+  unauthorized, prefixed by an informational `note: no users granted access in
+  the manifest`.
+- **Not drift in v1** (fingerprint-only identity): comment mismatches,
+  `description` anything, and authorized_keys **options** (e.g.
+  `no-port-forwarding`) — options on desired keys are likewise ignored by the
+  diff.
 
 ## Data flow
 
@@ -199,9 +255,11 @@ in v1.
 2. Fan out over servers with a bounded worker pool (`--parallel`, default 10).
    Each worker runs one self-contained, shared-state-free call:
    a. Compute the desired key set from `access` + `users`.
-   b. `sshread.ReadAuthorizedKeys` → raw bytes (record error in the server's
-      own result on fail).
-   c. `authkeys.ParseFile` → actual `[]Key`.
+   b. `sshread.ReadAuthorizedKeys` → raw bytes; distinguishes connection
+      failure (error result) from file-absent (empty bytes + diagnostic flag)
+      per *Remote read semantics*.
+   c. `authkeys.ParseFile` → actual `[]Key` + any `ParseError`s (recorded in
+      the server's result).
    d. `authkeys.Diff(desired, actual)` → `Result`.
 3. Collect all per-server results, **sort by server name**, render the report;
    derive the exit code from the aggregate. Sorting after collection keeps the
@@ -234,10 +292,17 @@ in v1.
   suite); `run()` CLI dispatch.
 - **Golden** — the rendered audit report and the diff output.
 - **Fuzz** — extend the existing `authkeys` fuzz target to `ParseFile`.
+- **Benchmarks** — `go test -bench -benchmem` on the fan-out orchestration with
+  fake readers (N servers × pool sizes) and on `ParseFile`/`Diff`. This is the
+  baseline CLAUDE.md asks for on the named hot path, and later informs
+  `--parallel`/timeout tuning.
 - **Integration** (`//go:build integration`) — `sshread` against a dockerized
-  `sshd`: seed a known `authorized_keys`, assert the bytes read back.
-- **Coverage** — stays ≥80% (the CLAUDE.md gate); the live SSH lines are covered
-  under the integration tag.
+  `sshd`: seed a known `authorized_keys`, assert the bytes read back; also the
+  file-absent case (expect empty + diagnostic, not error).
+- **Coverage** — stays ≥80% (the CLAUDE.md gate) on the unit path. Risk
+  control: `sshread`'s network lines only execute under the integration tag, so
+  the package is kept thin and its decision logic (exit-status interpretation)
+  is factored into unit-tested helpers.
 
 ## Open questions / to settle in later slices
 
@@ -247,5 +312,8 @@ in v1.
 - Whether a guarded trust-on-first-use escape hatch (or a `sshepherd trust`
   command that shows fingerprints for confirmation) is ever warranted; v1 is
   strict-only by decision.
-- Tuning the `--parallel` default and dial timeout once fleet-scale benchmarks
+- Tuning the `--parallel` default and timeouts once fleet-scale benchmarks
   exist (`go test -bench` on the fan-out path).
+- Per-server `authorized_keys` path override (for custom `AuthorizedKeysFile`
+  setups) — the natural fix when the file-absent diagnostic fires; and whether
+  `AuthorizedKeysCommand`/CA-cert fleets are ever in scope at all.
