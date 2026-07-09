@@ -112,6 +112,8 @@ test that fails before the fix and passes after.
 - **Benchmarks** — `go test -bench=. -benchmem` for hot paths (fan-out to many servers); watch
   for regressions.
 - **Race** — run the suite with `-race`.
+- **Goroutine leaks** — `go.uber.org/goleak` via a `TestMain` in every test package;
+  a package's tests fail if any goroutine outlives the run.
 - **Golden** — snapshot the generated `authorized_keys` output so format changes are explicit.
 
 ### Coverage report (always produced)
