@@ -2,6 +2,7 @@ package authkeys
 
 import (
 	"crypto/ed25519"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -214,4 +215,35 @@ func TestDiffPreservesOrder(t *testing.T) {
 	// Multi-key Missing ordering: desired order must be preserved exactly.
 	r2 := Diff([]Key{d, b, a}, nil)
 	assertFingerprintOrder(t, "Missing(all)", r2.Missing, []Key{d, b, a})
+}
+
+func BenchmarkParseFile(b *testing.B) {
+	line, err := deterministicKeyLine()
+	if err != nil {
+		b.Fatal(err)
+	}
+	data := []byte(strings.Repeat(line+" user@host\n# comment\n", 100))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ParseFile(data)
+	}
+}
+
+func BenchmarkDiff(b *testing.B) {
+	line, err := deterministicKeyLine()
+	if err != nil {
+		b.Fatal(err)
+	}
+	k, _ := ParseLine(line)
+	desired := make([]Key, 0, 50)
+	for i := 0; i < 50; i++ {
+		kk := *k
+		kk.Fingerprint = fmt.Sprintf("SHA256:fake%04d", i)
+		desired = append(desired, kk)
+	}
+	actual := append([]Key{}, desired[:25]...)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Diff(desired, actual)
+	}
 }

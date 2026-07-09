@@ -157,7 +157,7 @@ func (g *gateReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) 
 }
 
 // fleetConfig builds a config with n servers named srv-00 .. srv-N, no users.
-func fleetConfig(t *testing.T, n int) *config.Config {
+func fleetConfig(t testing.TB, n int) *config.Config {
 	t.Helper()
 	var sb strings.Builder
 	sb.WriteString("servers:\n")
