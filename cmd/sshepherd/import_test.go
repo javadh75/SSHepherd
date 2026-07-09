@@ -142,8 +142,19 @@ func TestImportOutputFile(t *testing.T) {
 		t.Errorf("stderr = %q, want --force hint", errBuf.String())
 	}
 
-	// ...and --force allows it.
+	// ...and --force allows it, tightening loose permissions back to 0600
+	// (O_TRUNC alone would keep whatever mode the file already had).
+	if err := os.Chmod(dst, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
 	if code := run([]string{"import", src, "-o", dst, "--force"}, &out, &errBuf); code != 0 {
 		t.Fatalf("overwrite with --force: exit = %d, want 0", code)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("mode after --force overwrite = %o, want 600", perm)
 	}
 }

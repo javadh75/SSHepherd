@@ -27,10 +27,12 @@ func TestParseLine(t *testing.T) {
 		{"Host web-1\r", "host", []string{"web-1"}, true}, // CRLF input
 	}
 	for _, tt := range tests {
-		key, args, ok := parseLine(tt.in)
-		if key != tt.key || ok != tt.ok || !reflect.DeepEqual(args, tt.args) {
-			t.Errorf("parseLine(%q) = (%q, %v, %v), want (%q, %v, %v)",
-				tt.in, key, args, ok, tt.key, tt.args, tt.ok)
-		}
+		t.Run(tt.in, func(t *testing.T) {
+			key, args, ok := parseLine(tt.in)
+			if key != tt.key || ok != tt.ok || !reflect.DeepEqual(args, tt.args) {
+				t.Errorf("parseLine(%q) = (%q, %v, %v), want (%q, %v, %v)",
+					tt.in, key, args, ok, tt.key, tt.args, tt.ok)
+			}
+		})
 	}
 }

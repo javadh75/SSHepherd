@@ -1,6 +1,9 @@
 package sshcfg
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMatchGlob(t *testing.T) {
 	tests := []struct {
@@ -25,9 +28,11 @@ func TestMatchGlob(t *testing.T) {
 		{"*a*", "bab", true},
 	}
 	for _, tt := range tests {
-		if got := matchGlob(tt.pattern, tt.s); got != tt.want {
-			t.Errorf("matchGlob(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
-		}
+		t.Run(tt.pattern+"/"+tt.s, func(t *testing.T) {
+			if got := matchGlob(tt.pattern, tt.s); got != tt.want {
+				t.Errorf("matchGlob(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -46,8 +51,10 @@ func TestMatchPatterns(t *testing.T) {
 		{[]string{"*"}, "whatever", true},
 	}
 	for _, tt := range tests {
-		if got := matchPatterns(tt.patterns, tt.alias); got != tt.want {
-			t.Errorf("matchPatterns(%v, %q) = %v, want %v", tt.patterns, tt.alias, got, tt.want)
-		}
+		t.Run(strings.Join(tt.patterns, ",")+"/"+tt.alias, func(t *testing.T) {
+			if got := matchPatterns(tt.patterns, tt.alias); got != tt.want {
+				t.Errorf("matchPatterns(%v, %q) = %v, want %v", tt.patterns, tt.alias, got, tt.want)
+			}
+		})
 	}
 }

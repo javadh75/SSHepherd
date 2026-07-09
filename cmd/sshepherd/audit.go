@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -76,19 +74,4 @@ func newAuditCmd(stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
 	cmd.Flags().IntVar(&parallel, "parallel", defaultParallel, "max concurrent server audits")
 	return cmd
-}
-
-// expandHome resolves "~" or a leading "~/" against the current user's home.
-func expandHome(path string) (string, error) {
-	if path != "~" && !strings.HasPrefix(path, "~/") {
-		return path, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", path, err)
-	}
-	if path == "~" {
-		return home, nil
-	}
-	return filepath.Join(home, path[2:]), nil
 }

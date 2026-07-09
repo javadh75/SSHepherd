@@ -133,6 +133,12 @@ func writeFileNoClobber(path string, data []byte, force bool) error {
 		}
 		return fmt.Errorf("write %s: %w", path, err)
 	}
+	// The mode above only applies at creation; a --force overwrite via
+	// O_TRUNC would keep the existing file's permissions, so pin them.
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("write %s: %w", path, err)
