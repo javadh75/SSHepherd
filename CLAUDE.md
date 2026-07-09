@@ -27,7 +27,10 @@ SSHepherd centralizes and automates this.
 
 - Single-binary CLI, agentless where possible (manage the SSH keys that already exist;
   don't require installing a daemon on every box).
-- **Language:** Go is the natural fit for a single-binary infra CLI (not yet decided/committed).
+- **Language:** Go (decided — `go.mod` targets Go 1.26).
+- **SSH transport:** native `golang.org/x/crypto/ssh` (decided 2026-07) — no dependency on a
+  host `ssh` binary; host-key verification via `x/crypto/ssh/knownhosts`, strict (no TOFU).
+- **Config format / CLI:** YAML source of truth (`gopkg.in/yaml.v3`); Cobra for subcommands.
 
 ## Code quality & checks (Go)
 
@@ -131,9 +134,10 @@ bare `scratch` box. Multi-stage build, non-root, static binary.
   minimal base and copies only the binary + certs.
 - **Base**: latest stable Alpine, pinned to its minor series (currently `alpine:3.24`; move to a
   digest pin for full reproducibility) — tiny (~7 MB) but ships a shell + `apk`, so the
-  essential tools below are present. (If the tool ever drops its need for the `ssh` client binary
-  and relies solely on `golang.org/x/crypto/ssh`, switch the runtime to
-  `gcr.io/distroless/static` for an even smaller, shell-less image.)
+  essential tools below are present. (The transport decision — native `golang.org/x/crypto/ssh`,
+  no `ssh` binary needed — makes the `gcr.io/distroless/static` switch viable for an even
+  smaller, shell-less image; do it once `ssh-keygen`/`ssh-keyscan` are also no longer needed
+  as in-image conveniences.)
 - **Essential tools in the image** — keep this list short, add nothing else:
   `ca-certificates` (TLS to the fleet/registries), `openssh-client` (`ssh`, `ssh-keygen`,
   `ssh-keyscan` for key ops + `known_hosts`), and `tini` as PID 1 for correct signal handling.
@@ -160,4 +164,7 @@ including corporate use, while protecting contributors and users).
 
 ## Status
 
-Greenfield — repo currently contains only the LICENSE. Nothing built yet.
+Early development. In place: full quality/security/container scaffold (Makefile, golangci,
+CI, lefthook, Dockerfile), a CLI skeleton (`--version` only), and `internal/authkeys`
+(single-line `authorized_keys` parser). First feature slice — read-only drift **audit** — is
+specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`; implementation next.
