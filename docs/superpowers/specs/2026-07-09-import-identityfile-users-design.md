@@ -1,7 +1,7 @@
 # Design: `sshepherd import` — derive `users:`/`access:` from `IdentityFile`
 
 - **Date:** 2026-07-09
-- **Status:** Approved, not yet implemented
+- **Status:** Implemented (2026-07-09) — see docs/superpowers/plans/2026-07-09-import-identityfile-users.md
 - **Scope:** Extends the import slice
   (docs/superpowers/specs/2026-07-09-import-ssh-config-design.md), which
   deliberately deferred this. Import stops emitting `users: []` / `access: []`

@@ -39,7 +39,8 @@ should have access, so no users or grants are synthesized.
 
 ## Deliberately deferred (NOT in this slice)
 
-- Synthesizing `users:`/`access:` (e.g. from `IdentityFile` `.pub` files).
+- Synthesizing `users:`/`access:` (e.g. from `IdentityFile` `.pub` files) —
+  implemented later; see 2026-07-09-import-identityfile-users-design.md.
 - Evaluating `Match` blocks (cannot be done statically; skipped with warning).
 - Any other config keys (`ProxyJump`, `IdentityFile`, …) — no manifest
   equivalent; silently ignored.

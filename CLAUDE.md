@@ -169,4 +169,6 @@ CI, lefthook, Dockerfile), a CLI skeleton, and `internal/authkeys` (single-line
 `authorized_keys` parser). Two vertical slices are implemented: read-only drift
 **`audit`** (specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`) and
 **`import`** — an OpenSSH client config → manifest converter built on `internal/sshcfg`
-(specced in `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`).
+(specced in `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`), which also
+derives `users:`/`access:` from `IdentityFile` `.pub` files via `internal/identity`
+(specced in `docs/superpowers/specs/2026-07-09-import-identityfile-users-design.md`).
