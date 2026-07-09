@@ -91,3 +91,42 @@ func TestParseLineGarbage(t *testing.T) {
 		t.Error("ParseLine(garbage) error = nil, want error")
 	}
 }
+
+func TestParseFileMixed(t *testing.T) {
+	line := testKeyLine(t)
+	data := []byte("# header comment\n\n" + line + " alice@laptop\ngarbage line here\n" + line + "\n")
+	keys, errs := ParseFile(data)
+	if len(keys) != 2 {
+		t.Fatalf("keys = %d, want 2", len(keys))
+	}
+	if keys[0].Comment != "alice@laptop" {
+		t.Errorf("keys[0].Comment = %q, want alice@laptop", keys[0].Comment)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly 1", errs)
+	}
+	if errs[0].Line != 4 {
+		t.Errorf("errs[0].Line = %d, want 4 (1-based)", errs[0].Line)
+	}
+	if !strings.Contains(errs[0].Error(), "line 4") {
+		t.Errorf("Error() = %q, want it to mention line 4", errs[0].Error())
+	}
+}
+
+func TestParseFileEmpty(t *testing.T) {
+	keys, errs := ParseFile(nil)
+	if len(keys) != 0 || len(errs) != 0 {
+		t.Errorf("ParseFile(nil) = %d keys, %d errs; want 0, 0", len(keys), len(errs))
+	}
+}
+
+func TestParseFileCRLF(t *testing.T) {
+	data := []byte(testKeyLine(t) + "\r\n")
+	keys, errs := ParseFile(data)
+	if len(errs) != 0 {
+		t.Fatalf("CRLF input produced errors: %v", errs)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("keys = %d, want 1", len(keys))
+	}
+}

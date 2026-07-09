@@ -39,3 +39,33 @@ func ParseLine(line string) (*Key, error) {
 		Fingerprint: ssh.FingerprintSHA256(pub),
 	}, nil
 }
+
+// ParseError describes a single unparseable line in an authorized_keys file.
+type ParseError struct {
+	Line int // 1-based line number
+	Err  error
+}
+
+func (e ParseError) Error() string {
+	return fmt.Sprintf("line %d: %v", e.Line, e.Err)
+}
+
+// ParseFile parses a whole authorized_keys file. Blank and comment lines are
+// skipped. Every line that is neither is either a parsed Key or a ParseError
+// carrying its 1-based line number, so a file can be partially usable while
+// still reporting exactly what could not be read.
+func ParseFile(data []byte) ([]Key, []ParseError) {
+	var keys []Key
+	var errs []ParseError
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		k, err := ParseLine(line)
+		switch {
+		case err != nil:
+			errs = append(errs, ParseError{Line: i + 1, Err: err})
+		case k != nil:
+			keys = append(keys, *k)
+		}
+	}
+	return keys, errs
+}
