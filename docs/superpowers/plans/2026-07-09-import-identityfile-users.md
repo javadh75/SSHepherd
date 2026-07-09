@@ -274,6 +274,33 @@ git commit -m "feat(identity): new package with IdentityFile token expansion"
 
 Core resolution: read each explicit identity's `.pub`, dedupe by fingerprint, name users `<LocalUser>-<basename>` (numeric suffix on collision), group granted aliases. Callers pass only hosts that became server entries. All failures are warnings.
 
+**Review follow-ups folded into this task** (from Task 2's code review): `expand` must reject `~user/path` syntax (OpenSSH expands other users' homes; we can't statically — silent passthrough would surface as a confusing "no such file" later) and must not mangle multi-byte runes in the unsupported-token error. In `expand`, after the `~/` join, add:
+
+```go
+	if strings.HasPrefix(raw, "~") { // "~" and "~/" handled above; ~user is not supported
+		return "", fmt.Errorf("unsupported ~user syntax")
+	}
+```
+
+and change the `default:` case to decode a full rune (add `"unicode/utf8"` to imports):
+
+```go
+		default:
+			r, _ := utf8.DecodeRuneInString(raw[i:])
+			return "", fmt.Errorf("unsupported token %%%c", r)
+```
+
+Add to the `TestExpand` table:
+
+```go
+		{in: "~x/key", wantErr: "unsupported ~user"},
+		{in: "~/%u/key", want: "/home/j/javad/key"},
+		{in: "/a/~/b", want: "/a/~/b"},
+		{in: "/kéys/%u", want: "/kéys/javad"},
+		{in: "/key/%é", wantErr: "unsupported token %é"},
+		{in: "", want: ""},
+```
+
 **Files:**
 - Modify: `internal/identity/identity.go`
 - Test: `internal/identity/identity_test.go`
@@ -692,7 +719,31 @@ func (res *resolution) candidates(h sshcfg.Host) []candidate {
 Run: `go test ./internal/identity/ -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Add a fuzz target for `expand`** (house policy: fuzz all parsers; the package's parsing surface is complete as of this task)
+
+Append to `internal/identity/identity_test.go`:
+
+```go
+// FuzzExpand asserts expand never panics and never returns both a value and
+// an error, for arbitrary input.
+func FuzzExpand(f *testing.F) {
+	for _, s := range []string{"~", "~/.ssh/k", "%d/%u", "%%", "%h", "~x", "a%"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		r := Resolver{Home: "/h", LocalUser: "u"}
+		got, err := r.expand(in)
+		if err != nil && got != "" {
+			t.Errorf("expand(%q) returned both %q and error %v", in, got, err)
+		}
+	})
+}
+```
+
+Run: `go test ./internal/identity/ -run FuzzExpand -v` (seeds only), then optionally `go test ./internal/identity/ -fuzz FuzzExpand -fuzztime 10s`.
+Expected: PASS, no crashes.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/identity/
