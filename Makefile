@@ -63,9 +63,10 @@ coverage: test
 	  printf 'FAIL: coverage %s%% is below the %s%% minimum\n' "$$total" "$(COVERAGE_MIN)"; exit 1; \
 	fi
 
-## fuzz: short fuzz run of the authorized_keys parser
+## fuzz: short fuzz run of the authorized_keys parsers
 fuzz:
-	$(GO) test -run='^$$' -fuzz=FuzzParseLine -fuzztime=30s ./internal/authkeys
+	$(GO) test -run='^$$' -fuzz=FuzzParseLine -fuzztime=15s ./internal/authkeys
+	$(GO) test -run='^$$' -fuzz=FuzzParseFile -fuzztime=15s ./internal/authkeys
 
 ## bench: run benchmarks
 bench:
