@@ -1318,12 +1318,30 @@ git commit -m "feat(cmd): import derives users/access from identities; --servers
 
 ---
 
-### Task 7: docs, status updates, full quality gate
+### Task 7: deferred review nits, docs, status updates, full quality gate
 
 **Files:**
+- Modify: `cmd/sshepherd/import.go`, `cmd/sshepherd/import_test.go` (review nits)
 - Modify: `CLAUDE.md`
 - Modify: `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`
 - Modify: `docs/superpowers/specs/2026-07-09-import-identityfile-users-design.md`
+
+- [ ] **Step 0: Apply deferred review nits from Task 6** (commit separately as `chore(cmd): deferred review nits — shared serverWorthy predicate, hermetic TestImportMissingSource, flag wording`)
+
+1. Extract the duplicated server-worthiness predicate in `cmd/sshepherd/import.go` and use it both in RunE's filter and `generateManifest`'s skip check:
+
+```go
+// serverWorthy reports whether a resolved host can become a server entry
+// (the manifest requires user). RunE's identity filter and generateManifest's
+// skip logic must agree on this predicate.
+func serverWorthy(h sshcfg.Host) bool { return h.User != "" }
+```
+
+(RunE: `if serverWorthy(h)`; generateManifest: `if !serverWorthy(h)`.)
+
+2. Add `hermeticHome(t)` as the first line of `TestImportMissingSource` (today it is safe only by RunE ordering; pin it).
+
+3. Reword the flag help for precision: `"leave the users and access sections empty (skip identity resolution)"`.
 
 - [ ] **Step 1: Update the docs**
 
