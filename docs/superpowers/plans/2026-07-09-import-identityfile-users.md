@@ -1043,6 +1043,46 @@ The command derives users by default. Existing command tests must pin `$HOME` to
 
 Note on the spec's "never emit a grantless user" rule: RunE passes only server-worthy hosts (`h.User != ""`) to `Resolve`, so a grantless user can never be *created* — the skipped host already produced its own "no User resolved, skipped" warning. No separate drop step is needed.
 
+**Review follow-ups folded into this task** (from Task 5's code review):
+
+1. In `generateManifest`'s users loop, add a comment making the relied-upon invariant visible at the point of use: `// Resolve guarantees every user has ≥1 server (RunE passes only server-worthy hosts).`
+
+2. Pin YAML quoting of special characters at the serialization boundary (regression insurance if the yaml dependency is ever bumped) — add to `cmd/sshepherd/import_test.go`:
+
+```go
+func TestGenerateManifestQuotesSpecialChars(t *testing.T) {
+	users := []identity.User{{
+		Name:    "javad-odd",
+		Source:  "~/.ssh/a: b #x",
+		Comment: "note: primary #key",
+		Key:     testkeys.Line(t, 8) + " note: primary #key",
+		Servers: []string{"web-1"},
+	}}
+	hosts := []sshcfg.Host{{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"}}
+	got, _, err := generateManifest(hosts, users, "~/.ssh/config")
+	if err != nil {
+		t.Fatalf("generateManifest: %v", err)
+	}
+	c, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("special-char manifest rejected by config.Parse: %v", err)
+	}
+	if len(c.Users) != 1 || c.Users[0].Comment != "note: primary #key" {
+		t.Errorf("round-tripped users = %+v, want the comment preserved exactly", c.Users)
+	}
+}
+```
+
+3. Defense in depth in `internal/config` (the apply slice will write `comment:` into `authorized_keys`; a line break there would be a line-injection vector for hand-edited manifests). In `validateUsers` (`internal/config/config.go`), after the duplicate-name check:
+
+```go
+		if strings.ContainsAny(u.Comment, "\r\n") {
+			errs = append(errs, fmt.Errorf("user %q: comment contains a line break", u.Name))
+		}
+```
+
+Add a row to the invalid-manifest test in `internal/config/config_test.go` (match its existing style): a user with `comment: "a\nb"` must fail Parse with an error containing "comment contains a line break".
+
 **Files:**
 - Modify: `cmd/sshepherd/import.go`
 - Test: `cmd/sshepherd/import_test.go`
