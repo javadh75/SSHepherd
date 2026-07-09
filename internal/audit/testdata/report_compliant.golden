@@ -1,0 +1,10 @@
+web-1 (deploy@10.0.0.1:22)
+  ✓  alice (alice@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  bob                      SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  alice (alice@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 2/2 servers compliant · 0 with drift · 0 unreachable  → exit 0

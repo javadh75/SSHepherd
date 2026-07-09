@@ -1,0 +1,10 @@
+web-1 (deploy@10.0.0.1:22)
+  ✓  alice (alice@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✗  bob                      SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  authorized but MISSING
+  ⚠  (unknown)                SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  installed but UNAUTHORIZED
+  ⚠ line 3: unparseable entry
+  → 2 authorized · 1 present · 1 missing · 1 unauthorized
+
+web-2 (deploy@10.0.0.2:22)  ERROR: dial tcp 10.0.0.2:22: connection refused
+
+Summary: 0/2 servers compliant · 1 with drift · 1 unreachable  → exit 1
