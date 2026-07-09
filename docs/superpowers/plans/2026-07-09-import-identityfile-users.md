@@ -670,6 +670,78 @@ func TestResolveExplicitSuppressesDefaults(t *testing.T) {
 }
 ```
 
+**Review follow-ups folded into this task** (test gaps from Task 3's code review) — also add:
+
+```go
+func TestResolveServersDedupWithinHost(t *testing.T) {
+	home := t.TempDir()
+	writePub(t, home, ".ssh/a", 1, "")
+	writePub(t, home, ".ssh/b", 1, "") // same key, second path
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, _ := r.Resolve([]sshcfg.Host{
+		{Alias: "h1", User: "u", Identities: []string{"~/.ssh/a", "~/.ssh/b"}},
+	})
+	if len(users) != 1 || !reflect.DeepEqual(users[0].Servers, []string{"h1"}) {
+		t.Errorf("users = %+v, want one user granted [h1] exactly once", users)
+	}
+}
+
+func TestResolveFailedPathWarnsOnce(t *testing.T) {
+	r := Resolver{Home: t.TempDir(), LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "h1", User: "u", Identities: []string{"~/.ssh/nope"}},
+		{Alias: "h2", User: "u", Identities: []string{"~/.ssh/nope"}},
+	})
+	if len(users) != 0 {
+		t.Errorf("users = %+v, want none", users)
+	}
+	skips := 0
+	for _, w := range warnings {
+		if strings.Contains(w, "only .pub files are read") {
+			skips++
+		}
+	}
+	if skips != 1 {
+		t.Errorf("warnings = %v, want exactly one skip note for the shared path", warnings)
+	}
+	if !hasWarning(warnings, `no access derived for host "h1"`) || !hasWarning(warnings, `no access derived for host "h2"`) {
+		t.Errorf("warnings = %v, want no-access notes for both hosts", warnings)
+	}
+}
+
+func TestResolveEmptyPub(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "empty.pub"), []byte("\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", User: "u", Identities: []string{"~/.ssh/empty"}},
+	})
+	if len(users) != 0 || !hasWarning(warnings, "not a valid public key") {
+		t.Errorf("users = %+v, warnings = %v; want none + invalid-key note", users, warnings)
+	}
+}
+
+func TestResolveMixedHost(t *testing.T) {
+	home := t.TempDir()
+	writePub(t, home, ".ssh/good", 1, "")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", User: "u", Identities: []string{"~/.ssh/missing", "~/.ssh/good"}},
+	})
+	if len(users) != 1 || !reflect.DeepEqual(users[0].Servers, []string{"a"}) {
+		t.Errorf("users = %+v, want one user granted [a]", users)
+	}
+	if !hasWarning(warnings, "skipped") || hasWarning(warnings, "no access derived") {
+		t.Errorf("warnings = %v, want a skip note but NO no-access note", warnings)
+	}
+}
+```
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/identity/ -run TestResolveDefault -v`
