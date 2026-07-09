@@ -43,7 +43,7 @@ func FuzzMatchGlob(f *testing.F) {
 	f.Add("web-*", "web-1")
 	f.Add("*?*?*", "aaaa")
 	f.Add("", "")
-	f.Fuzz(func(t *testing.T, pattern, s string) {
+	f.Fuzz(func(_ *testing.T, pattern, s string) {
 		_ = matchGlob(pattern, s)
 	})
 }

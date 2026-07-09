@@ -37,7 +37,7 @@ func matchGlob(pattern, s string) bool {
 func matchPatterns(patterns []string, alias string) bool {
 	matched := false
 	for _, p := range patterns {
-		if neg := strings.TrimPrefix(p, "!"); neg != p {
+		if neg, ok := strings.CutPrefix(p, "!"); ok {
 			if matchGlob(neg, alias) {
 				return false
 			}

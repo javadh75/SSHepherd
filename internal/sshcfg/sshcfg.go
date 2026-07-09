@@ -63,24 +63,20 @@ func Load(path string) ([]Host, []string, error) {
 
 func load(path, includeDir string) ([]Host, []string, error) {
 	p := newParser(includeDir)
-	if err := p.parseFile(path, 0); err != nil {
+	if err := p.parseFile(path); err != nil {
 		return nil, nil, err
 	}
 	return p.resolveAll(), p.warnings, nil
 }
 
-// parseFile parses one file. The top-level file (depth 0) must be readable;
-// an unreadable included file only warns, matching OpenSSH's tolerance.
-func (p *parser) parseFile(path string, depth int) error {
+// parseFile parses the top-level file, which must be readable — the one hard
+// error. Included files are read by include(), where a failure only warns.
+func (p *parser) parseFile(path string) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- path comes from the user's own config/Include
 	if err != nil {
-		if depth == 0 {
-			return fmt.Errorf("read ssh config: %w", err)
-		}
-		p.warnf("include %s: unreadable: %v", path, err)
-		return nil
+		return fmt.Errorf("read ssh config: %w", err)
 	}
-	p.parseBytes(data, path, depth)
+	p.parseBytes(data, path, 0)
 	return nil
 }
 
@@ -96,6 +92,10 @@ func (p *parser) parseBytes(data []byte, path string, depth int) {
 			p.skipping = false
 			if len(args) == 0 {
 				p.warnf("%s:%d: Host with no patterns", path, line)
+				// Drop the block's orphaned settings too: letting them join
+				// the previous (worst case: global) block would silently
+				// apply them to every host.
+				p.skipping = true
 				continue
 			}
 			p.blocks = append(p.blocks, block{file: path, line: line, patterns: args})
@@ -206,11 +206,20 @@ func (p *parser) include(pattern, fromPath string, line, depth int) {
 		pattern = filepath.Join(p.includeDir, pattern)
 	}
 	matches, err := p.glob(pattern)
-	if err != nil || len(matches) == 0 {
+	if err != nil {
+		p.warnf("%s:%d: Include %q: %v", fromPath, line, pattern, err)
+		return
+	}
+	if len(matches) == 0 {
 		p.warnf("%s:%d: Include %q matched no files", fromPath, line, pattern)
 		return
 	}
 	for _, m := range matches {
-		_ = p.parseFile(m, depth+1) // depth > 0 never returns an error
+		data, err := os.ReadFile(m) // #nosec G304 -- path comes from the user's own config/Include
+		if err != nil {
+			p.warnf("%s:%d: include %s: unreadable: %v", fromPath, line, m, err)
+			continue
+		}
+		p.parseBytes(data, m, depth+1)
 	}
 }

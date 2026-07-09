@@ -104,6 +104,14 @@ func TestLoadResolution(t *testing.T) {
 			warning: "Host with no patterns",
 		},
 		{
+			name: "orphaned settings under bare Host are dropped",
+			// The stray User must not leak into the preceding (worst case:
+			// global) block and apply to every host.
+			config:  "Host\n  User stray\nHost a\n  HostName h\n",
+			want:    []Host{{Alias: "a", HostName: "h"}},
+			warning: "Host with no patterns",
+		},
+		{
 			name:    "invalid port warns and is ignored",
 			config:  "Host a\n  User u\n  Port notanum\n  Port 99999\n",
 			want:    []Host{{Alias: "a", HostName: "a", User: "u"}},
