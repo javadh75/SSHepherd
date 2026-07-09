@@ -183,3 +183,19 @@ func (c *Config) validateAccess() []error {
 	}
 	return errs
 }
+
+// DesiredFor returns the desired key set for a server: the union of the keys
+// of every user granted access to it, in manifest/access order (deterministic).
+func (c *Config) DesiredFor(serverName string) []authkeys.Key {
+	var keys []authkeys.Key
+	for _, userName := range c.grants[serverName] {
+		keys = append(keys, c.keysByUser[userName]...)
+	}
+	return keys
+}
+
+// OwnerOf resolves a key fingerprint to the user that owns it in the manifest.
+func (c *Config) OwnerOf(fingerprint string) (User, bool) {
+	u, ok := c.owners[fingerprint]
+	return u, ok
+}

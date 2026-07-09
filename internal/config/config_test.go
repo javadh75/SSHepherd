@@ -137,3 +137,50 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Error("Load(missing) = nil error, want error")
 	}
 }
+
+func TestAccessUnion(t *testing.T) {
+	y := `
+users:
+  - {name: alice, keys: ["` + "KEYA" + `"]}
+servers:
+  - {name: s1, host: h1, user: u}
+  - {name: s2, host: h2, user: u}
+access:
+  - {user: alice, servers: [s1]}
+  - {user: alice, servers: [s2, s1]}
+`
+	cfg, err := Parse([]byte(strings.ReplaceAll(y, "KEYA", testkeys.Line(t, 1))))
+	if err != nil {
+		t.Fatalf("Parse: %v (multiple access entries for one user must union, not error)", err)
+	}
+	if got := len(cfg.DesiredFor("s2")); got != 1 {
+		t.Errorf("DesiredFor(s2) = %d keys, want 1", got)
+	}
+}
+
+func TestDesiredForAndOwnerOf(t *testing.T) {
+	cfg, err := Parse([]byte(manifest(testkeys.Line(t, 1), testkeys.Line(t, 2))))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	web1 := cfg.DesiredFor("web-1") // alice + bob
+	if len(web1) != 2 {
+		t.Fatalf("DesiredFor(web-1) = %d keys, want 2", len(web1))
+	}
+	web2 := cfg.DesiredFor("web-2") // alice only
+	if len(web2) != 1 {
+		t.Fatalf("DesiredFor(web-2) = %d keys, want 1", len(web2))
+	}
+	if len(cfg.DesiredFor("nonexistent")) != 0 {
+		t.Error("DesiredFor(nonexistent) should be empty")
+	}
+
+	owner, ok := cfg.OwnerOf(web2[0].Fingerprint)
+	if !ok || owner.Name != "alice" {
+		t.Errorf("OwnerOf = %q, %v; want alice, true", owner.Name, ok)
+	}
+	if _, ok := cfg.OwnerOf("SHA256:nope"); ok {
+		t.Error("OwnerOf(unknown) = true, want false")
+	}
+}
