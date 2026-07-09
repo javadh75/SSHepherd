@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -61,6 +62,7 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 		}
 		m.Servers = append(m.Servers, s)
 	}
+	// Resolve guarantees every user has ≥1 server (RunE passes only server-worthy hosts).
 	for _, u := range users {
 		desc := "imported from " + u.Source
 		if u.Default {
@@ -89,19 +91,33 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 
 const defaultSSHConfig = "~/.ssh/config"
 
+// localUsername names generated users. Best-effort: os/user, then $USER.
+func localUsername() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	if s := os.Getenv("USER"); s != "" {
+		return s
+	}
+	return "user"
+}
+
 func newImportCmd(stdout io.Writer) *cobra.Command {
 	var (
-		outPath string
-		force   bool
+		outPath     string
+		force       bool
+		serversOnly bool
 	)
 	cmd := &cobra.Command{
 		Use:   "import [ssh-config-path]",
-		Short: "Convert an OpenSSH client config into a starter manifest (servers only)",
+		Short: "Convert an OpenSSH client config into a starter manifest",
 		Long: "Reads an OpenSSH client config (default ~/.ssh/config), resolves each\n" +
 			"concrete Host to the HostName/Port/User that ssh would use, and emits a\n" +
-			"valid SSHepherd manifest with the servers section filled in. Users and\n" +
-			"access are left empty: an SSH config says how to connect, not who may\n" +
-			"log in where. Warnings about skipped entries go to stderr.",
+			"valid SSHepherd manifest. users: and access: are derived from each host's\n" +
+			"IdentityFile (or ssh's default identities when none is set) by reading the\n" +
+			"matching .pub files on this machine — run import where you actually ssh\n" +
+			"from, and review the result before use. Private keys are never read.\n" +
+			"Warnings about skipped entries go to stderr.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			src := defaultSSHConfig
@@ -120,7 +136,26 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 			for _, w := range warnings {
 				fmt.Fprintln(stderr, "warning:", w)
 			}
-			manifest, skipped, err := generateManifest(hosts, nil, src)
+			var users []identity.User
+			if !serversOnly {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("resolve home for identities: %w", err)
+				}
+				var withUser []sshcfg.Host
+				for _, h := range hosts {
+					if h.User != "" { // hosts skipped as servers must not derive grants
+						withUser = append(withUser, h)
+					}
+				}
+				r := identity.Resolver{Home: home, LocalUser: localUsername()}
+				var idWarnings []string
+				users, idWarnings = r.Resolve(withUser)
+				for _, w := range idWarnings {
+					fmt.Fprintln(stderr, "warning:", w)
+				}
+			}
+			manifest, skipped, err := generateManifest(hosts, users, src)
 			if err != nil {
 				return err
 			}
@@ -142,6 +177,7 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
+	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "emit only the servers section (skip deriving users/access)")
 	return cmd
 }
 

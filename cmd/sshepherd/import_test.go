@@ -108,7 +108,24 @@ func TestImportMissingSource(t *testing.T) {
 	}
 }
 
+// hermeticHome points HOME at a temp dir so import's default-identity scan
+// never sees the developer's real ~/.ssh.
+func hermeticHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return home
+}
+
 func TestImportBasic(t *testing.T) {
+	home := hermeticHome(t)
+	key := testkeys.Line(t, 9)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519.pub"), []byte(key+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
 	path := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
@@ -120,12 +137,16 @@ func TestImportBasic(t *testing.T) {
 	if !strings.Contains(out.String(), "name: web-1") {
 		t.Errorf("stdout = %q, want server web-1", out.String())
 	}
+	if !strings.Contains(out.String(), "(default identity)") {
+		t.Errorf("stdout = %q, want a default-identity user", out.String())
+	}
 	if errBuf.Len() != 0 {
 		t.Errorf("stderr = %q, want empty for a clean import", errBuf.String())
 	}
 }
 
 func TestImportWarningsGoToStderrOnly(t *testing.T) {
+	hermeticHome(t)
 	path := writeSSHConfig(t, "Host nouser\n  HostName 10.0.0.9\n")
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
@@ -143,6 +164,7 @@ func TestImportWarningsGoToStderrOnly(t *testing.T) {
 }
 
 func TestImportOutputFile(t *testing.T) {
+	hermeticHome(t)
 	src := writeSSHConfig(t, "Host a\n  User u\n")
 	dst := filepath.Join(t.TempDir(), "sshepherd.yaml")
 
@@ -184,5 +206,87 @@ func TestImportOutputFile(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("mode after --force overwrite = %o, want 600", perm)
+	}
+}
+
+func TestImportDerivesUsersAndAccess(t *testing.T) {
+	home := hermeticHome(t)
+	key := testkeys.Line(t, 7)
+	keyPath := filepath.Join(home, "work")
+	if err := os.WriteFile(keyPath+".pub", []byte(key+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n  IdentityFile "+keyPath+"\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	c, err := config.Parse(out.Bytes())
+	if err != nil {
+		t.Fatalf("stdout is not a valid manifest: %v", err)
+	}
+	if n := len(c.DesiredFor("web-1")); n != 1 {
+		t.Errorf("DesiredFor(web-1) = %d keys, want 1", n)
+	}
+	if wantName := "name: " + localUsername() + "-work"; !strings.Contains(out.String(), wantName) {
+		t.Errorf("stdout = %q, want %q", out.String(), wantName)
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("stderr = %q, want empty", errBuf.String())
+	}
+}
+
+func TestImportServersOnly(t *testing.T) {
+	hermeticHome(t)
+	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--servers-only"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "users: []") || !strings.Contains(out.String(), "access: []") {
+		t.Errorf("stdout = %q, want empty users and access", out.String())
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("stderr = %q, want empty (no identity scan with --servers-only)", errBuf.String())
+	}
+}
+
+func TestImportNoIdentitiesWarns(t *testing.T) {
+	hermeticHome(t) // empty home: no default keys to find
+	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "no access derived") {
+		t.Errorf("stderr = %q, want a no-access warning", errBuf.String())
+	}
+	if !strings.Contains(out.String(), "users: []") {
+		t.Errorf("stdout = %q, want empty users", out.String())
+	}
+	if _, err := config.Parse(out.Bytes()); err != nil {
+		t.Errorf("stdout is not a valid manifest: %v", err)
+	}
+}
+
+func TestGenerateManifestQuotesSpecialChars(t *testing.T) {
+	users := []identity.User{{
+		Name:    "javad-odd",
+		Source:  "~/.ssh/a: b #x",
+		Comment: "note: primary #key",
+		Key:     testkeys.Line(t, 8) + " note: primary #key",
+		Servers: []string{"web-1"},
+	}}
+	hosts := []sshcfg.Host{{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"}}
+	got, _, err := generateManifest(hosts, users, "~/.ssh/config")
+	if err != nil {
+		t.Fatalf("generateManifest: %v", err)
+	}
+	c, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("special-char manifest rejected by config.Parse: %v", err)
+	}
+	if len(c.Users) != 1 || c.Users[0].Comment != "note: primary #key" {
+		t.Errorf("round-tripped users = %+v, want the comment preserved exactly", c.Users)
 	}
 }

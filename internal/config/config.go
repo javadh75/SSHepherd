@@ -98,6 +98,9 @@ func (c *Config) validateUsers() []error {
 			continue
 		}
 		seen[u.Name] = true
+		if strings.ContainsAny(u.Comment, "\r\n") {
+			errs = append(errs, fmt.Errorf("user %q: comment contains a line break", u.Name))
+		}
 		for i, line := range u.Keys {
 			if strings.ContainsAny(line, "\r\n") {
 				errs = append(errs, fmt.Errorf("user %q key %d: contains a line break", u.Name, i+1))

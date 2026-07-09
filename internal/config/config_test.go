@@ -93,6 +93,10 @@ users:
 users:
   - {name: alice, keys: ["KEYA\nKEYB"]}
 `, "line break"},
+		{"comment with line break", `
+users:
+  - {name: alice, comment: "a\nb", keys: ["KEYA"]}
+`, "comment contains a line break"},
 		{"dup key same user", `
 users:
   - name: alice
