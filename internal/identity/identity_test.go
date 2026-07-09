@@ -201,15 +201,34 @@ func TestResolveNameCollision(t *testing.T) {
 }
 
 func TestResolveUnsupportedToken(t *testing.T) {
-	r := Resolver{Home: t.TempDir(), LocalUser: "javad"}
+	home := t.TempDir()
+	writePub(t, home, ".ssh/id_ed25519", 6, "") // must NOT be scanned: an explicit identity, even a failing one, suppresses defaults
+	r := Resolver{Home: home, LocalUser: "javad"}
 	users, warnings := r.Resolve([]sshcfg.Host{
 		{Alias: "a", User: "u", Identities: []string{"%h/key"}},
 	})
 	if len(users) != 0 {
-		t.Errorf("users = %+v, want none", users)
+		t.Errorf("users = %+v, want none (failing explicit identity must not fall back to defaults)", users)
 	}
 	if !hasWarning(warnings, "unsupported token") || !hasWarning(warnings, "no access derived") {
 		t.Errorf("warnings = %v, want token + no-access notes", warnings)
+	}
+}
+
+func TestResolveExplicitAndDefaultSameKeyFirstSeenWins(t *testing.T) {
+	home := t.TempDir()
+	writePub(t, home, ".ssh/id_ed25519", 1, "")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, _ := r.Resolve([]sshcfg.Host{
+		{Alias: "h1", User: "u", Identities: []string{"~/.ssh/id_ed25519"}}, // explicit first
+		{Alias: "h2", User: "u"}, // default-scans the same key
+	})
+	if len(users) != 1 {
+		t.Fatalf("users = %+v, want one merged user", users)
+	}
+	if users[0].Default || users[0].Source != "~/.ssh/id_ed25519" ||
+		!reflect.DeepEqual(users[0].Servers, []string{"h1", "h2"}) {
+		t.Errorf("user = %+v, want first-seen (explicit) Source/Default and servers [h1 h2]", users[0])
 	}
 }
 

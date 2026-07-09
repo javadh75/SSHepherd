@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/identity"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -38,7 +40,7 @@ func TestGenerateManifestGolden(t *testing.T) {
 		{Alias: "bastion", HostName: "bastion", User: "ops"},             // port 0 omitted
 		{Alias: "nouser", HostName: "10.0.0.9"},                          // skipped
 	}
-	got, skipped, err := generateManifest(hosts, "~/.ssh/config")
+	got, skipped, err := generateManifest(hosts, nil, "~/.ssh/config")
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
@@ -51,8 +53,34 @@ func TestGenerateManifestGolden(t *testing.T) {
 	checkGolden(t, "import_manifest.golden", got)
 }
 
+func TestGenerateManifestUsersGolden(t *testing.T) {
+	hosts := []sshcfg.Host{
+		{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"},
+		{Alias: "ci", HostName: "ci.internal", Port: 2222, User: "git"},
+	}
+	users := []identity.User{
+		{Name: "javad-id_ed25519", Source: "~/.ssh/id_ed25519", Default: true,
+			Comment: "javad@laptop", Key: testkeys.Line(t, 1) + " javad@laptop",
+			Servers: []string{"web-1"}},
+		{Name: "javad-work", Source: "~/.ssh/work",
+			Key: testkeys.Line(t, 2), Servers: []string{"web-1", "ci"}},
+	}
+	got, skipped, err := generateManifest(hosts, users, "~/.ssh/config")
+	if err != nil || len(skipped) != 0 {
+		t.Fatalf("generateManifest: skipped %v, err %v", skipped, err)
+	}
+	c, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("generated manifest rejected by config.Parse: %v", err)
+	}
+	if n := len(c.DesiredFor("web-1")); n != 2 {
+		t.Errorf("DesiredFor(web-1) = %d keys, want 2", n)
+	}
+	checkGolden(t, "import_manifest_users.golden", got)
+}
+
 func TestGenerateManifestEmpty(t *testing.T) {
-	got, skipped, err := generateManifest(nil, "x")
+	got, skipped, err := generateManifest(nil, nil, "x")
 	if err != nil || len(skipped) != 0 {
 		t.Fatalf("generateManifest(nil) = skipped %v, err %v", skipped, err)
 	}
