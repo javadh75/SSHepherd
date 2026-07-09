@@ -64,6 +64,12 @@ func (r Resolver) expand(raw string) (string, error) {
 	return b.String(), nil
 }
 
+// defaultIdentityNames is OpenSSH's default identity list in its try order
+// (ssh_config(5), IdentityFile), used when a host sets no IdentityFile.
+var defaultIdentityNames = []string{
+	"id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk", "id_xmss", "id_dsa",
+}
+
 // User is one generated manifest user: a single public key and the host
 // aliases that use it, in first-appearance order.
 type User struct {
@@ -125,6 +131,16 @@ func (res *resolution) warnf(format string, args ...any) {
 // candidates returns the host's explicit identities, expanded. Unsupported
 // tokens warn and skip that path.
 func (res *resolution) candidates(h sshcfg.Host) []candidate {
+	if len(h.Identities) == 0 {
+		var out []candidate
+		for _, name := range defaultIdentityNames {
+			p := filepath.Join(res.r.Home, ".ssh", name)
+			if _, err := os.Stat(p + ".pub"); err == nil {
+				out = append(out, candidate{path: p, source: "~/.ssh/" + name, isDflt: true})
+			}
+		}
+		return out
+	}
 	var out []candidate
 	for _, raw := range h.Identities {
 		p, err := res.r.expand(raw)
@@ -151,10 +167,10 @@ func (res *resolution) grant(c candidate, alias string) bool {
 		res.warnf("identity %s: %v, skipped (only .pub files are read)", c.source, err)
 		return false
 	}
-	line, extra, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
-	if extra != "" {
+	line := strings.TrimSpace(string(data))
+	if strings.ContainsAny(line, "\r\n") {
 		res.failed[c.path] = true
-		res.warnf("identity %s: %s has more than one line, skipped", c.source, pubPath)
+		res.warnf("identity %s: %s contains a line break, skipped", c.source, pubPath)
 		return false
 	}
 	k, err := authkeys.ParseLine(line)

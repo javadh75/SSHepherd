@@ -145,8 +145,23 @@ func TestResolveMultiLinePub(t *testing.T) {
 	if len(users) != 0 {
 		t.Errorf("users = %+v, want none (User.Key must never contain a newline)", users)
 	}
-	if !hasWarning(warnings, "more than one line") {
-		t.Errorf("warnings = %v, want a more-than-one-line note", warnings)
+	if !hasWarning(warnings, "contains a line break") {
+		t.Errorf("warnings = %v, want a contains-a-line-break note", warnings)
+	}
+
+	crPath := filepath.Join(home, ".ssh", "cr.pub")
+	crContent := testkeys.Line(t, 3) + " foo\rbar"
+	if err := os.WriteFile(crPath, []byte(crContent+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	users, warnings = r.Resolve([]sshcfg.Host{
+		{Alias: "b", User: "u", Identities: []string{"~/.ssh/cr"}},
+	})
+	if len(users) != 0 {
+		t.Errorf("users = %+v, want none (a bare CR is also a line break)", users)
+	}
+	if !hasWarning(warnings, "contains a line break") {
+		t.Errorf("warnings = %v, want a contains-a-line-break note", warnings)
 	}
 }
 
@@ -196,4 +211,134 @@ func TestResolveUnsupportedToken(t *testing.T) {
 	if !hasWarning(warnings, "unsupported token") || !hasWarning(warnings, "no access derived") {
 		t.Errorf("warnings = %v, want token + no-access notes", warnings)
 	}
+}
+
+func TestResolveDefaultScan(t *testing.T) {
+	home := t.TempDir()
+	rsa := writePub(t, home, ".ssh/id_rsa", 3, "")
+	ed := writePub(t, home, ".ssh/id_ed25519", 4, "javad@laptop")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{{Alias: "plain", User: "u"}})
+	want := []User{
+		{Name: "javad-id_rsa", Source: "~/.ssh/id_rsa", Default: true,
+			Key: rsa, Servers: []string{"plain"}},
+		{Name: "javad-id_ed25519", Source: "~/.ssh/id_ed25519", Default: true,
+			Comment: "javad@laptop", Key: ed, Servers: []string{"plain"}},
+	}
+	if !reflect.DeepEqual(users, want) {
+		t.Errorf("users = %+v, want %+v (ssh try order: id_rsa first)", users, want)
+	}
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestResolveDefaultScanNothingFound(t *testing.T) {
+	r := Resolver{Home: t.TempDir(), LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{{Alias: "plain", User: "u"}})
+	if len(users) != 0 {
+		t.Errorf("users = %+v, want none", users)
+	}
+	if !hasWarning(warnings, `no access derived for host "plain"`) {
+		t.Errorf("warnings = %v, want a no-access note", warnings)
+	}
+}
+
+func TestResolveExplicitSuppressesDefaults(t *testing.T) {
+	home := t.TempDir()
+	writePub(t, home, ".ssh/id_ed25519", 4, "")
+	writePub(t, home, ".ssh/work", 5, "")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", User: "u", Identities: []string{"~/.ssh/work"}},
+	})
+	if len(users) != 1 || users[0].Name != "javad-work" {
+		t.Errorf("users = %+v, want only javad-work (defaults suppressed)", users)
+	}
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestResolveServersDedupWithinHost(t *testing.T) {
+	home := t.TempDir()
+	writePub(t, home, ".ssh/a", 1, "")
+	writePub(t, home, ".ssh/b", 1, "") // same key, second path
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, _ := r.Resolve([]sshcfg.Host{
+		{Alias: "h1", User: "u", Identities: []string{"~/.ssh/a", "~/.ssh/b"}},
+	})
+	if len(users) != 1 || !reflect.DeepEqual(users[0].Servers, []string{"h1"}) {
+		t.Errorf("users = %+v, want one user granted [h1] exactly once", users)
+	}
+}
+
+func TestResolveFailedPathWarnsOnce(t *testing.T) {
+	r := Resolver{Home: t.TempDir(), LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "h1", User: "u", Identities: []string{"~/.ssh/nope"}},
+		{Alias: "h2", User: "u", Identities: []string{"~/.ssh/nope"}},
+	})
+	if len(users) != 0 {
+		t.Errorf("users = %+v, want none", users)
+	}
+	skips := 0
+	for _, w := range warnings {
+		if strings.Contains(w, "only .pub files are read") {
+			skips++
+		}
+	}
+	if skips != 1 {
+		t.Errorf("warnings = %v, want exactly one skip note for the shared path", warnings)
+	}
+	if !hasWarning(warnings, `no access derived for host "h1"`) || !hasWarning(warnings, `no access derived for host "h2"`) {
+		t.Errorf("warnings = %v, want no-access notes for both hosts", warnings)
+	}
+}
+
+func TestResolveEmptyPub(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "empty.pub"), []byte("\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", User: "u", Identities: []string{"~/.ssh/empty"}},
+	})
+	if len(users) != 0 || !hasWarning(warnings, "not a valid public key") {
+		t.Errorf("users = %+v, warnings = %v; want none + invalid-key note", users, warnings)
+	}
+}
+
+func TestResolveMixedHost(t *testing.T) {
+	home := t.TempDir()
+	writePub(t, home, ".ssh/good", 1, "")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", User: "u", Identities: []string{"~/.ssh/missing", "~/.ssh/good"}},
+	})
+	if len(users) != 1 || !reflect.DeepEqual(users[0].Servers, []string{"a"}) {
+		t.Errorf("users = %+v, want one user granted [a]", users)
+	}
+	if !hasWarning(warnings, "skipped") || hasWarning(warnings, "no access derived") {
+		t.Errorf("warnings = %v, want a skip note but NO no-access note", warnings)
+	}
+}
+
+// FuzzExpand asserts expand never panics and never returns both a value and
+// an error, for arbitrary input.
+func FuzzExpand(f *testing.F) {
+	for _, s := range []string{"~", "~/.ssh/k", "%d/%u", "%%", "%h", "~x", "a%"} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		r := Resolver{Home: "/h", LocalUser: "u"}
+		got, err := r.expand(in)
+		if err != nil && got != "" {
+			t.Errorf("expand(%q) returned both %q and error %v", in, got, err)
+		}
+	})
 }
