@@ -2,6 +2,7 @@ package sshread
 
 import (
 	"context"
+	"errors"
 	"net"
 	"path/filepath"
 	"strings"
@@ -55,7 +56,7 @@ func TestCheckAgent(t *testing.T) {
 	})
 	t.Run("live socket", func(t *testing.T) {
 		sock := filepath.Join(t.TempDir(), "agent.sock")
-		l, err := net.Listen("unix", sock)
+		l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
@@ -92,7 +93,7 @@ func TestHostKeyHint(t *testing.T) {
 	})
 	t.Run("unrelated error passes through", func(t *testing.T) {
 		orig := net.ErrClosed
-		if got := hostKeyHint(orig, srv, "/kh"); got != orig {
+		if got := hostKeyHint(orig, srv, "/kh"); !errors.Is(got, orig) {
 			t.Errorf("unrelated error was wrapped: %v", got)
 		}
 	})
@@ -113,7 +114,7 @@ func TestClientBadAgentSock(t *testing.T) {
 
 func TestClientBadKnownHostsPath(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "agent.sock")
-	l, err := net.Listen("unix", sock)
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

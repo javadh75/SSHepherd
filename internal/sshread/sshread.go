@@ -49,7 +49,8 @@ func CheckAgent(sock string) error {
 	if sock == "" {
 		return errors.New("no SSH agent: SSH_AUTH_SOCK is not set (start ssh-agent and ssh-add a key)")
 	}
-	conn, err := net.DialTimeout("unix", sock, 3*time.Second)
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := dialer.DialContext(context.Background(), "unix", sock)
 	if err != nil {
 		return fmt.Errorf("SSH agent unreachable at %s: %w", sock, err)
 	}
@@ -89,7 +90,8 @@ var _ audit.KeyReader = (*Client)(nil)
 func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
 	var zero audit.ReadResult
 
-	agentConn, err := net.Dial("unix", c.AgentSock)
+	agentDialer := net.Dialer{}
+	agentConn, err := agentDialer.DialContext(ctx, "unix", c.AgentSock)
 	if err != nil {
 		return zero, fmt.Errorf("connect ssh-agent: %w", err)
 	}
