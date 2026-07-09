@@ -1381,3 +1381,12 @@ Expected: total ≥ 80% (`internal/identity` is fully table-tested; the gate mus
 git add CLAUDE.md docs/
 git commit -m "docs: mark IdentityFile users/access import slice implemented"
 ```
+
+---
+
+## Deferred follow-ups (from the final holistic review — none blocking)
+
+1. `internal/identity/identity.go` `expand`: tilde is joined before the `%`-token scan, so a home path containing a literal `%` would corrupt `~/`-prefixed identities (OpenSSH percent-expands first). Scan `raw` for tokens before joining with `Home`.
+2. `cmd/sshepherd/import.go`: stderr warnings are stage-grouped (parse → identity → skip notes), not config-ordered — cosmetic; emit skip notes before identity resolution if it ever bothers.
+3. `internal/config`: line-break rejection covers key lines and `comment` but not `name`/`description`/server fields. Extend when the distribute slice lands (any field that reaches `authorized_keys` must share the check).
+4. Tests: no golden traverses the full pipeline (sshcfg.Load → filter → Resolve → generateManifest with real files); command tests cover the seam behaviorally. Add a full-pipeline golden with hermetic HOME + testkeys if output shape ever regresses.
