@@ -87,9 +87,9 @@ func (c *Config) validateUsers() []error {
 	c.keysByUser = make(map[string][]authkeys.Key)
 	c.owners = make(map[string]User)
 	seen := make(map[string]bool)
-	for _, u := range c.Users {
+	for ui, u := range c.Users {
 		if u.Name == "" {
-			errs = append(errs, errors.New("user with empty name"))
+			errs = append(errs, fmt.Errorf("users[%d]: empty name", ui))
 			continue
 		}
 		if seen[u.Name] {
@@ -125,7 +125,7 @@ func (c *Config) validateServers() []error {
 	for i := range c.Servers {
 		s := &c.Servers[i]
 		if s.Name == "" {
-			errs = append(errs, errors.New("server with empty name"))
+			errs = append(errs, fmt.Errorf("servers[%d]: empty name", i))
 			continue
 		}
 		if seen[s.Name] {

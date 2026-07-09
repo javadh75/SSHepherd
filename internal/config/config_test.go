@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -182,5 +183,53 @@ func TestDesiredForAndOwnerOf(t *testing.T) {
 	}
 	if _, ok := cfg.OwnerOf("SHA256:nope"); ok {
 		t.Error("OwnerOf(unknown) = true, want false")
+	}
+}
+
+// mustFingerprint parses a key line and returns its SHA256 fingerprint.
+func mustFingerprint(t *testing.T, line string) string {
+	t.Helper()
+	k, err := authkeys.ParseLine(line)
+	if err != nil || k == nil {
+		t.Fatalf("mustFingerprint(%q): %v", line, err)
+	}
+	return k.Fingerprint
+}
+
+func TestDesiredForOrdering(t *testing.T) {
+	// bob is granted access before alice; each user has two keys.
+	// DesiredFor must emit keys in access-grant order, and within each user
+	// in manifest key order — a refactor to map iteration must fail here.
+	k1, k2 := testkeys.Line(t, 1), testkeys.Line(t, 2) // alice's keys
+	k3, k4 := testkeys.Line(t, 3), testkeys.Line(t, 4) // bob's keys
+	y := `
+users:
+  - {name: alice, keys: ["` + k1 + `", "` + k2 + `"]}
+  - {name: bob, keys: ["` + k3 + `", "` + k4 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: bob, servers: [s1]}
+  - {user: alice, servers: [s1]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	want := []string{ // bob first (access order), each user's keys in manifest order
+		mustFingerprint(t, k3),
+		mustFingerprint(t, k4),
+		mustFingerprint(t, k1),
+		mustFingerprint(t, k2),
+	}
+	got := cfg.DesiredFor("s1")
+	if len(got) != len(want) {
+		t.Fatalf("DesiredFor(s1) = %d keys, want %d", len(got), len(want))
+	}
+	for i, k := range got {
+		if k.Fingerprint != want[i] {
+			t.Errorf("DesiredFor(s1)[%d] = %s, want %s", i, k.Fingerprint, want[i])
+		}
 	}
 }

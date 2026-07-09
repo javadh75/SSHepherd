@@ -50,6 +50,8 @@ func (e ParseError) Error() string {
 	return fmt.Sprintf("line %d: %v", e.Line, e.Err)
 }
 
+func (e ParseError) Unwrap() error { return e.Err }
+
 // ParseFile parses a whole authorized_keys file. Blank and comment lines are
 // skipped. Every line that is neither is either a parsed Key or a ParseError
 // carrying its 1-based line number, so a file can be partially usable while
@@ -80,6 +82,8 @@ type Result struct {
 // Diff compares key sets by SHA256 fingerprint. Order is deterministic without
 // sorting: OK and Missing follow desired order, Unauthorized follows actual
 // order. Duplicate fingerprints in actual are collapsed (first occurrence wins).
+// desired is assumed unique by fingerprint — config validation guarantees this
+// (duplicate keys are rejected at manifest load); Diff does not dedup it.
 func Diff(desired, actual []Key) Result {
 	actualByFP := make(map[string]Key, len(actual))
 	var actualOrder []string

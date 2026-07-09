@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 // deterministicKeyLine builds a valid ssh-ed25519 authorized_keys entry from a
@@ -131,20 +133,6 @@ func TestParseFileCRLF(t *testing.T) {
 	}
 }
 
-// secondKeyLine builds a second, distinct deterministic key.
-func secondKeyLine(t *testing.T) string {
-	t.Helper()
-	seed := make([]byte, ed25519.SeedSize)
-	for i := range seed {
-		seed[i] = byte(255 - i)
-	}
-	pub, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(seed).Public())
-	if err != nil {
-		t.Fatalf("secondKeyLine: %v", err)
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
-}
-
 func mustKey(t *testing.T, line string) Key {
 	t.Helper()
 	k, err := ParseLine(line)
@@ -155,8 +143,8 @@ func mustKey(t *testing.T, line string) Key {
 }
 
 func TestDiff(t *testing.T) {
-	a := mustKey(t, testKeyLine(t))   // in both
-	b := mustKey(t, secondKeyLine(t)) // desired only / actual only per case
+	a := mustKey(t, testKeyLine(t))      // in both
+	b := mustKey(t, testkeys.Line(t, 2)) // desired only / actual only per case
 
 	tests := []struct {
 		name                       string
@@ -182,11 +170,48 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+// fingerprints projects keys to their fingerprint sequence for order checks.
+func fingerprints(keys []Key) []string {
+	fps := make([]string, len(keys))
+	for i, k := range keys {
+		fps[i] = k.Fingerprint
+	}
+	return fps
+}
+
+func assertFingerprintOrder(t *testing.T, label string, got []Key, want []Key) {
+	t.Helper()
+	gotFPs, wantFPs := fingerprints(got), fingerprints(want)
+	if len(gotFPs) != len(wantFPs) {
+		t.Fatalf("%s = %d keys %v, want %d %v", label, len(gotFPs), gotFPs, len(wantFPs), wantFPs)
+	}
+	for i := range wantFPs {
+		if gotFPs[i] != wantFPs[i] {
+			t.Errorf("%s[%d] = %s, want %s (full got %v, want %v)",
+				label, i, gotFPs[i], wantFPs[i], gotFPs, wantFPs)
+		}
+	}
+}
+
 func TestDiffPreservesOrder(t *testing.T) {
 	a := mustKey(t, testKeyLine(t))
-	b := mustKey(t, secondKeyLine(t))
-	r := Diff([]Key{b, a}, nil)
-	if r.Missing[0].Fingerprint != b.Fingerprint {
-		t.Error("Missing does not preserve desired order")
-	}
+	b := mustKey(t, testkeys.Line(t, 2))
+	c := mustKey(t, testkeys.Line(t, 3))
+	d := mustKey(t, testkeys.Line(t, 4))
+	e := mustKey(t, testkeys.Line(t, 5))
+
+	// desired: c, a, b (c missing; a, b installed)
+	// actual:  e, b, d, a (e, d unauthorized; b before a)
+	r := Diff([]Key{c, a, b}, []Key{e, b, d, a})
+
+	// OK follows desired order (a before b), not actual order (b before a) —
+	// a refactor to map iteration or actual-order emission must fail here.
+	assertFingerprintOrder(t, "OK", r.OK, []Key{a, b})
+	assertFingerprintOrder(t, "Missing", r.Missing, []Key{c})
+	// Unauthorized follows actual order (e before d).
+	assertFingerprintOrder(t, "Unauthorized", r.Unauthorized, []Key{e, d})
+
+	// Multi-key Missing ordering: desired order must be preserved exactly.
+	r2 := Diff([]Key{d, b, a}, nil)
+	assertFingerprintOrder(t, "Missing(all)", r2.Missing, []Key{d, b, a})
 }
