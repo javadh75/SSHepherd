@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"os"
 
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
@@ -55,4 +59,86 @@ func generateManifest(hosts []sshcfg.Host, src string) ([]byte, []string, error)
 		return nil, nil, fmt.Errorf("encode manifest: %w", err)
 	}
 	return buf.Bytes(), skipped, nil
+}
+
+const defaultSSHConfig = "~/.ssh/config"
+
+func newImportCmd(stdout io.Writer) *cobra.Command {
+	var (
+		outPath string
+		force   bool
+	)
+	cmd := &cobra.Command{
+		Use:   "import [ssh-config-path]",
+		Short: "Convert an OpenSSH client config into a starter manifest (servers only)",
+		Long: "Reads an OpenSSH client config (default ~/.ssh/config), resolves each\n" +
+			"concrete Host to the HostName/Port/User that ssh would use, and emits a\n" +
+			"valid SSHepherd manifest with the servers section filled in. Users and\n" +
+			"access are left empty: an SSH config says how to connect, not who may\n" +
+			"log in where. Warnings about skipped entries go to stderr.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			src := defaultSSHConfig
+			if len(args) == 1 {
+				src = args[0]
+			}
+			srcPath, err := expandHome(src)
+			if err != nil {
+				return err
+			}
+			hosts, warnings, err := sshcfg.Load(srcPath)
+			if err != nil {
+				return fmt.Errorf("load ssh config: %w", err) // wrapcheck: wrap at package boundary
+			}
+			stderr := cmd.ErrOrStderr()
+			for _, w := range warnings {
+				fmt.Fprintln(stderr, "warning:", w)
+			}
+			manifest, skipped, err := generateManifest(hosts, src)
+			if err != nil {
+				return err
+			}
+			for _, s := range skipped {
+				fmt.Fprintln(stderr, "warning:", s)
+			}
+			// Self-check: never emit a manifest our own loader would reject.
+			if _, err := config.Parse(manifest); err != nil {
+				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
+			}
+			if outPath == "" {
+				if _, err := stdout.Write(manifest); err != nil {
+					return fmt.Errorf("write stdout: %w", err)
+				}
+				return nil
+			}
+			return writeFileNoClobber(outPath, manifest, force)
+		},
+	}
+	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
+	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
+	return cmd
+}
+
+// writeFileNoClobber writes data to path with owner-only permissions,
+// refusing to replace an existing file unless force is set.
+func writeFileNoClobber(path string, data []byte, force bool) error {
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if !force {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	}
+	f, err := os.OpenFile(path, flags, 0o600) // #nosec G304 -- path is the user's own -o flag
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+		}
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
 }

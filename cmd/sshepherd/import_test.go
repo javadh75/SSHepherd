@@ -63,3 +63,87 @@ func TestGenerateManifestEmpty(t *testing.T) {
 		t.Errorf("output %q missing explicit empty servers list", got)
 	}
 }
+
+func writeSSHConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ssh_config")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write ssh config: %v", err)
+	}
+	return path
+}
+
+func TestImportMissingSource(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", "/no/such/ssh_config"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errBuf.String())
+	}
+}
+
+func TestImportBasic(t *testing.T) {
+	path := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if _, err := config.Parse(out.Bytes()); err != nil {
+		t.Errorf("stdout is not a valid manifest: %v", err)
+	}
+	if !strings.Contains(out.String(), "name: web-1") {
+		t.Errorf("stdout = %q, want server web-1", out.String())
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("stderr = %q, want empty for a clean import", errBuf.String())
+	}
+}
+
+func TestImportWarningsGoToStderrOnly(t *testing.T) {
+	path := writeSSHConfig(t, "Host nouser\n  HostName 10.0.0.9\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (zero importable servers is still success)", code)
+	}
+	if !strings.Contains(out.String(), "servers: []") {
+		t.Errorf("stdout = %q, want empty servers list", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "nouser") {
+		t.Errorf("stderr = %q, want a skip warning naming nouser", errBuf.String())
+	}
+	if strings.Contains(out.String(), "warning") {
+		t.Errorf("stdout = %q, must not carry warnings", out.String())
+	}
+}
+
+func TestImportOutputFile(t *testing.T) {
+	src := writeSSHConfig(t, "Host a\n  User u\n")
+	dst := filepath.Join(t.TempDir(), "sshepherd.yaml")
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", src, "-o", dst}, &out, &errBuf); code != 0 {
+		t.Fatalf("first write: exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want empty when -o is used", out.String())
+	}
+	data, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if _, err := config.Parse(data); err != nil {
+		t.Errorf("written manifest invalid: %v", err)
+	}
+
+	// Second run must refuse to clobber...
+	errBuf.Reset()
+	if code := run([]string{"import", src, "-o", dst}, &out, &errBuf); code != 2 {
+		t.Fatalf("overwrite without --force: exit = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "--force") {
+		t.Errorf("stderr = %q, want --force hint", errBuf.String())
+	}
+
+	// ...and --force allows it.
+	if code := run([]string{"import", src, "-o", dst, "--force"}, &out, &errBuf); code != 0 {
+		t.Fatalf("overwrite with --force: exit = %d, want 0", code)
+	}
+}
