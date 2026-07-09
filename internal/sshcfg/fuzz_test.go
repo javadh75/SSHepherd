@@ -15,6 +15,7 @@ func FuzzParse(f *testing.F) {
 		"Include conf.d/*\nMatch host web-1\n  Port 9\nHost a\n  User u\n",
 		"HostName=x\nPort = 22\nUser \"a b\"\n",
 		"Host a a a\nPort 99999\nPort notanum\nHost\n\r\n# c\n",
+		"Host a\n  User u\n  IdentityFile ~/.ssh/k\nHost *\n  IdentityFile %d/k2\nIdentityFile\n",
 	}
 	for _, s := range seeds {
 		f.Add(s)

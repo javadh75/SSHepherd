@@ -123,6 +123,33 @@ func TestLoadResolution(t *testing.T) {
 			want:    []Host{{Alias: "a", HostName: "a", User: "u"}},
 			warning: "no value",
 		},
+		{
+			name: "IdentityFile accumulates across matching blocks",
+			config: "Host a\n  User u\n  IdentityFile ~/.ssh/first\n" +
+				"Host *\n  IdentityFile %d/.ssh/second\n",
+			want: []Host{{Alias: "a", HostName: "a", User: "u",
+				Identities: []string{"~/.ssh/first", "%d/.ssh/second"}}},
+		},
+		{
+			name:   "IdentityFile repeats dedupe",
+			config: "Host a\n  User u\n  IdentityFile k\n  IdentityFile k\n",
+			want:   []Host{{Alias: "a", HostName: "a", User: "u", Identities: []string{"k"}}},
+		},
+		{
+			name:   "IdentityFile key=value form",
+			config: "Host a\n  User u\n  IdentityFile=~/.ssh/k\n",
+			want:   []Host{{Alias: "a", HostName: "a", User: "u", Identities: []string{"~/.ssh/k"}}},
+		},
+		{
+			name: "IdentityFile inside Match block is skipped",
+			config: "Host a\n  User u\nMatch host a\n  IdentityFile ~/.ssh/hidden\n" +
+				"Host b\n  User v\n  IdentityFile ~/.ssh/k\n",
+			want: []Host{
+				{Alias: "a", HostName: "a", User: "u"},
+				{Alias: "b", HostName: "b", User: "v", Identities: []string{"~/.ssh/k"}},
+			},
+			warning: "Match block skipped",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

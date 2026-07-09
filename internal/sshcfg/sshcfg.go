@@ -4,16 +4,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 // Host is one concrete host resolved from the config.
 type Host struct {
-	Alias    string
-	HostName string // resolved HostName; falls back to Alias
-	Port     int    // 0 when the config never set one (i.e. ssh's default 22)
-	User     string // "" when the config never set one
+	Alias      string
+	HostName   string   // resolved HostName; falls back to Alias
+	Port       int      // 0 when the config never set one (i.e. ssh's default 22)
+	User       string   // "" when the config never set one
+	Identities []string // raw IdentityFile values in file order; unlike the fields above, ssh accumulates these
 }
 
 type setting struct{ key, value string }
@@ -115,7 +117,7 @@ func (p *parser) parseBytes(data []byte, path string, depth int) {
 			for _, pat := range args {
 				p.include(pat, path, line, depth)
 			}
-		case "hostname", "user", "port":
+		case "hostname", "user", "port", "identityfile":
 			if p.skipping {
 				continue
 			}
@@ -182,6 +184,10 @@ func (p *parser) resolveHost(alias string) Host {
 			case "user":
 				if h.User == "" {
 					h.User = s.value
+				}
+			case "identityfile":
+				if !slices.Contains(h.Identities, s.value) {
+					h.Identities = append(h.Identities, s.value)
 				}
 			}
 		}

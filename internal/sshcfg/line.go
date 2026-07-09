@@ -1,9 +1,10 @@
 // Package sshcfg reads the subset of OpenSSH client configuration needed to
 // import a fleet: Host blocks (with pattern matching and Include expansion)
 // resolved to per-alias HostName/Port/User values using OpenSSH's
-// first-obtained-wins rule. It is a converter's reader, not a full ssh_config
-// implementation: Match blocks are skipped with a warning and every other
-// keyword is ignored.
+// first-obtained-wins rule, plus IdentityFile values, which ssh accumulates
+// across matching blocks instead. It is a converter's reader, not a full
+// ssh_config implementation: Match blocks are skipped with a warning and
+// every other keyword is ignored.
 package sshcfg
 
 import (
