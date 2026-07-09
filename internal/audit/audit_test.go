@@ -175,8 +175,12 @@ func TestRunPoolCap(t *testing.T) {
 	cfg := fleetConfig(t, 20)
 	g := &gateReader{delay: 20 * time.Millisecond}
 	Run(context.Background(), cfg, g, Options{Parallel: 3})
-	if gotMax := g.maxSeen.Load(); gotMax > 3 {
+	gotMax := g.maxSeen.Load()
+	if gotMax > 3 {
 		t.Errorf("max concurrent reads = %d, want <= 3", gotMax)
+	}
+	if gotMax < 2 {
+		t.Errorf("max concurrent reads = %d, want >= 2 (pool should actually run in parallel)", gotMax)
 	}
 }
 

@@ -38,7 +38,9 @@ type ServerResult struct {
 }
 
 // Compliant reports whether this server fully matches the source of truth.
-// An unauditable or partially-unreadable server is never compliant.
+// An unreadable (Err != nil) or partially-parsed (ParseErrs) server is never
+// compliant. A file-absent server with no desired keys is treated as
+// compliant: nothing should be there and nothing is.
 func (r ServerResult) Compliant() bool {
 	return r.Err == nil &&
 		len(r.ParseErrs) == 0 &&

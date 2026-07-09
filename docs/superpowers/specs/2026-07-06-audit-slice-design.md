@@ -165,11 +165,13 @@ Outcomes of the remote read, and what each means:
   every desired key shows as missing (drift, exit 1) — **plus a loud
   diagnostic**. Rationale: public-key auth means our own login key had to match
   *some* source sshd consulted; if the file we audit is absent/empty yet login
-  succeeded, sshd is consulting a **different source** — a custom
+  succeeded, **either** sshd consults another key source — a custom
   `AuthorizedKeysFile` path, an `AuthorizedKeysCommand` (LDAP/SSSD/cloud), or
-  CA certificates (`TrustedUserCAKeys`). The report says exactly that: this
-  server may not be auditable via this file. Distinguishing "absent" from "read
-  failed" uses the remote command's exit status via a pure, unit-tested helper.
+  CA certificates (`TrustedUserCAKeys`) — **or** all keys have been removed
+  from this file (the login key need not live in the audited file). The report
+  presents both interpretations and tells the operator to verify before
+  dismissing. Distinguishing "absent" from "read failed" uses the remote
+  command's exit status via a pure, unit-tested helper.
 - **File parses partially** (`ParseError`s) → parsed keys are still diffed;
   each bad line is reported as `⚠ line N: unparseable entry` and the server
   counts **non-compliant** (exit 1) — we cannot certify a file we cannot fully
@@ -237,7 +239,8 @@ Additional report rules:
 - The report itself goes to **stdout**; diagnostics/progress go to **stderr** —
   so `sshepherd audit > report.txt` captures exactly the report.
 - Matched keys are labeled with the owning user's `name` (and `comment` if
-  set); unauthorized keys have no owner.
+  set); unauthorized keys are labeled with the owning manifest user when the
+  fingerprint is known, else `(unknown)`.
 - Unparseable lines render as `⚠ line N: unparseable entry` under their server
   (see *Remote read semantics*).
 - A server with an **empty desired set** (defined in `servers` but granted to

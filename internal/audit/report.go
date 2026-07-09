@@ -51,7 +51,7 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult) {
 		fmt.Fprintf(tw, "  ✗\t%s\t%s\t%s\tauthorized but MISSING\n", label(cfg, k), k.Fingerprint, k.Type)
 	}
 	for _, k := range r.Diff.Unauthorized {
-		fmt.Fprintf(tw, "  ⚠\t(unknown)\t%s\t%s\tinstalled but UNAUTHORIZED\n", k.Fingerprint, k.Type)
+		fmt.Fprintf(tw, "  ⚠\t%s\t%s\t%s\tinstalled but UNAUTHORIZED\n", label(cfg, k), k.Fingerprint, k.Type)
 	}
 	_ = tw.Flush()
 
@@ -59,13 +59,14 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult) {
 		fmt.Fprintf(w, "  ⚠ line %d: unparseable entry\n", pe.Line)
 	}
 	if r.FileAbsent {
-		fmt.Fprintln(w, "  note: login succeeded but the audited authorized_keys file is absent —")
-		fmt.Fprintln(w, "        sshd likely consults another key source (custom AuthorizedKeysFile,")
-		fmt.Fprintln(w, "        AuthorizedKeysCommand, or CA certificates); this server may not be")
-		fmt.Fprintln(w, "        auditable via this file")
+		fmt.Fprintln(w, "  note: authorized_keys is absent yet login succeeded — either sshd consults")
+		fmt.Fprintln(w, "        another key source (custom AuthorizedKeysFile, AuthorizedKeysCommand,")
+		fmt.Fprintln(w, "        or CA certificates) or all keys have been removed from this file;")
+		fmt.Fprintln(w, "        verify before dismissing")
 	} else if emptyFile(r) {
-		fmt.Fprintln(w, "  note: login succeeded but the audited authorized_keys file is empty —")
-		fmt.Fprintln(w, "        sshd likely consults another key source; see file-absent guidance")
+		fmt.Fprintln(w, "  note: authorized_keys is empty yet login succeeded — either sshd consults")
+		fmt.Fprintln(w, "        another key source or all keys have been removed from this file;")
+		fmt.Fprintln(w, "        verify before dismissing")
 	}
 	if r.NoUsersGranted {
 		fmt.Fprintln(w, "  note: no users granted access in the manifest")

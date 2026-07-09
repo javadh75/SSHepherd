@@ -118,3 +118,35 @@ func TestRenderFileAbsentDiagnostic(t *testing.T) {
 		t.Errorf("file-absent diagnostic missing from:\n%s", out)
 	}
 }
+
+func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
+	cfg := reportConfig(t)
+	// web-2: alice ok; bob's key is installed although bob is NOT granted
+	// web-2 — the unauthorized row must name bob, not "(unknown)".
+	reader := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")},
+		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")},
+	}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results)
+
+	var unauthorized []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "installed but UNAUTHORIZED") {
+			unauthorized = append(unauthorized, line)
+		}
+	}
+	if len(unauthorized) != 1 {
+		t.Fatalf("unauthorized rows = %d, want 1:\n%s", len(unauthorized), buf.String())
+	}
+	if !strings.Contains(unauthorized[0], "bob") {
+		t.Errorf("unauthorized row = %q, want it to name bob", unauthorized[0])
+	}
+	if strings.Contains(unauthorized[0], "(unknown)") {
+		t.Errorf("unauthorized row = %q, must not label a known manifest key (unknown)", unauthorized[0])
+	}
+	if ExitCode(results) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(results))
+	}
+}
