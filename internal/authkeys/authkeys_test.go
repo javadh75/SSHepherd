@@ -130,3 +130,63 @@ func TestParseFileCRLF(t *testing.T) {
 		t.Fatalf("keys = %d, want 1", len(keys))
 	}
 }
+
+// secondKeyLine builds a second, distinct deterministic key.
+func secondKeyLine(t *testing.T) string {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(255 - i)
+	}
+	pub, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(seed).Public())
+	if err != nil {
+		t.Fatalf("secondKeyLine: %v", err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+}
+
+func mustKey(t *testing.T, line string) Key {
+	t.Helper()
+	k, err := ParseLine(line)
+	if err != nil || k == nil {
+		t.Fatalf("mustKey(%q): %v", line, err)
+	}
+	return *k
+}
+
+func TestDiff(t *testing.T) {
+	a := mustKey(t, testKeyLine(t))   // in both
+	b := mustKey(t, secondKeyLine(t)) // desired only / actual only per case
+
+	tests := []struct {
+		name                       string
+		desired, actual            []Key
+		wantOK, wantMiss, wantUnau int
+	}{
+		{"all compliant", []Key{a}, []Key{a}, 1, 0, 0},
+		{"missing", []Key{a, b}, []Key{a}, 1, 1, 0},
+		{"unauthorized", []Key{a}, []Key{a, b}, 1, 0, 1},
+		{"empty desired", nil, []Key{a}, 0, 0, 1},
+		{"empty actual", []Key{a}, nil, 0, 1, 0},
+		{"duplicate actual deduped", []Key{a}, []Key{a, a}, 1, 0, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := Diff(tt.desired, tt.actual)
+			if len(r.OK) != tt.wantOK || len(r.Missing) != tt.wantMiss || len(r.Unauthorized) != tt.wantUnau {
+				t.Errorf("Diff = OK:%d Missing:%d Unauthorized:%d, want %d/%d/%d",
+					len(r.OK), len(r.Missing), len(r.Unauthorized),
+					tt.wantOK, tt.wantMiss, tt.wantUnau)
+			}
+		})
+	}
+}
+
+func TestDiffPreservesOrder(t *testing.T) {
+	a := mustKey(t, testKeyLine(t))
+	b := mustKey(t, secondKeyLine(t))
+	r := Diff([]Key{b, a}, nil)
+	if r.Missing[0].Fingerprint != b.Fingerprint {
+		t.Error("Missing does not preserve desired order")
+	}
+}

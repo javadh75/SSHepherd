@@ -69,3 +69,40 @@ func ParseFile(data []byte) ([]Key, []ParseError) {
 	}
 	return keys, errs
 }
+
+// Result is the outcome of diffing a desired key set against an actual one.
+type Result struct {
+	OK           []Key // fingerprint present in both
+	Missing      []Key // desired but not installed
+	Unauthorized []Key // installed but not desired
+}
+
+// Diff compares key sets by SHA256 fingerprint. Order is deterministic without
+// sorting: OK and Missing follow desired order, Unauthorized follows actual
+// order. Duplicate fingerprints in actual are collapsed (first occurrence wins).
+func Diff(desired, actual []Key) Result {
+	actualByFP := make(map[string]Key, len(actual))
+	var actualOrder []string
+	for _, k := range actual {
+		if _, dup := actualByFP[k.Fingerprint]; !dup {
+			actualByFP[k.Fingerprint] = k
+			actualOrder = append(actualOrder, k.Fingerprint)
+		}
+	}
+	desiredFP := make(map[string]bool, len(desired))
+	var r Result
+	for _, k := range desired {
+		desiredFP[k.Fingerprint] = true
+		if _, ok := actualByFP[k.Fingerprint]; ok {
+			r.OK = append(r.OK, k)
+		} else {
+			r.Missing = append(r.Missing, k)
+		}
+	}
+	for _, fp := range actualOrder {
+		if !desiredFP[fp] {
+			r.Unauthorized = append(r.Unauthorized, actualByFP[fp])
+		}
+	}
+	return r
+}
