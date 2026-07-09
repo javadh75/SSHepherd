@@ -670,7 +670,20 @@ func TestResolveExplicitSuppressesDefaults(t *testing.T) {
 }
 ```
 
-**Review follow-ups folded into this task** (test gaps from Task 3's code review) — also add:
+**Review follow-up (code) folded into this task**: an interior bare `\r` (no `\n`) in a `.pub` still reaches `User.Key` — `strings.Cut(..., "\n")` only splits on LF, while `internal/config` rejects both. Unify by replacing the whole Cut block in `grant` with:
+
+```go
+	line := strings.TrimSpace(string(data))
+	if strings.ContainsAny(line, "\r\n") {
+		res.failed[c.path] = true
+		res.warnf("identity %s: %s contains a line break, skipped", c.source, pubPath)
+		return false
+	}
+```
+
+(Single-line CRLF files stay accepted — TrimSpace already removed the trailing `\r\n`.) Update `TestResolveMultiLinePub`'s expected warning substring from "more than one line" to "contains a line break", and add a bare-CR case to it (a `.pub` whose comment contains `"foo\rbar"` must also warn and skip).
+
+**Review follow-ups (tests) folded into this task** (test gaps from Task 3's code review) — also add:
 
 ```go
 func TestResolveServersDedupWithinHost(t *testing.T) {
