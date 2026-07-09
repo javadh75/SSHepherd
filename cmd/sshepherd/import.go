@@ -42,6 +42,11 @@ type manifestOut struct {
 	Access  []accessOut `yaml:"access"`
 }
 
+// serverWorthy reports whether a resolved host can become a server entry
+// (the manifest requires user). RunE's identity filter and generateManifest's
+// skip logic must agree on this predicate.
+func serverWorthy(h sshcfg.Host) bool { return h.User != "" }
+
 // generateManifest renders hosts and derived identity users as a manifest.
 // src is the config path as the user typed it (kept in the header comment;
 // the expanded form would leak the local home directory into a committed
@@ -51,7 +56,7 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 	m := manifestOut{Users: []userOut{}, Servers: []serverOut{}, Access: []accessOut{}}
 	var skipped []string
 	for _, h := range hosts {
-		if h.User == "" {
+		if !serverWorthy(h) {
 			skipped = append(skipped, fmt.Sprintf(
 				"host %q: no User resolved, skipped (the manifest requires user)", h.Alias))
 			continue
@@ -144,7 +149,7 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 				}
 				var withUser []sshcfg.Host
 				for _, h := range hosts {
-					if h.User != "" { // hosts skipped as servers must not derive grants
+					if serverWorthy(h) { // hosts skipped as servers must not derive grants
 						withUser = append(withUser, h)
 					}
 				}
@@ -177,7 +182,7 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
-	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "emit only the servers section (skip deriving users/access)")
+	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "leave the users and access sections empty (skip identity resolution)")
 	return cmd
 }
 

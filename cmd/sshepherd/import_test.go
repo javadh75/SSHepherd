@@ -102,6 +102,7 @@ func writeSSHConfig(t *testing.T, content string) string {
 }
 
 func TestImportMissingSource(t *testing.T) {
+	hermeticHome(t)
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"import", "/no/such/ssh_config"}, &out, &errBuf); code != 2 {
 		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errBuf.String())
