@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -98,6 +99,10 @@ func (c *Config) validateUsers() []error {
 		}
 		seen[u.Name] = true
 		for i, line := range u.Keys {
+			if strings.ContainsAny(line, "\r\n") {
+				errs = append(errs, fmt.Errorf("user %q key %d: contains a line break", u.Name, i+1))
+				continue
+			}
 			k, err := authkeys.ParseLine(line)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("user %q key %d (%q): %w", u.Name, i+1, line, err))

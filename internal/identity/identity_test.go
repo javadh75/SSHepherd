@@ -128,6 +128,28 @@ func TestResolveInvalidPub(t *testing.T) {
 	}
 }
 
+func TestResolveMultiLinePub(t *testing.T) {
+	home := t.TempDir()
+	content := testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2)
+	path := filepath.Join(home, ".ssh", "multi.pub")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", User: "u", Identities: []string{"~/.ssh/multi"}},
+	})
+	if len(users) != 0 {
+		t.Errorf("users = %+v, want none (User.Key must never contain a newline)", users)
+	}
+	if !hasWarning(warnings, "more than one line") {
+		t.Errorf("warnings = %v, want a more-than-one-line note", warnings)
+	}
+}
+
 func TestResolveFingerprintDedup(t *testing.T) {
 	home := t.TempDir()
 	writePub(t, home, ".ssh/a", 1, "")

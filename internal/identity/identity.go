@@ -3,6 +3,9 @@
 // hosts that set none. It reads only .pub files — never private keys — and
 // groups hosts by key so `sshepherd import` can emit users: and access:
 // entries mirroring exactly which key the config uses where.
+//
+// Relative IdentityFile paths (no ~, %, or leading /) resolve against the
+// working directory, as in OpenSSH.
 package identity
 
 import (
@@ -54,8 +57,8 @@ func (r Resolver) expand(raw string) (string, error) {
 		case '%':
 			b.WriteByte('%')
 		default:
-			r, _ := utf8.DecodeRuneInString(raw[i:])
-			return "", fmt.Errorf("unsupported token %%%c", r)
+			tok, _ := utf8.DecodeRuneInString(raw[i:])
+			return "", fmt.Errorf("unsupported token %%%c", tok)
 		}
 	}
 	return b.String(), nil
@@ -148,11 +151,20 @@ func (res *resolution) grant(c candidate, alias string) bool {
 		res.warnf("identity %s: %v, skipped (only .pub files are read)", c.source, err)
 		return false
 	}
-	line := strings.TrimSpace(string(data))
+	line, extra, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	if extra != "" {
+		res.failed[c.path] = true
+		res.warnf("identity %s: %s has more than one line, skipped", c.source, pubPath)
+		return false
+	}
 	k, err := authkeys.ParseLine(line)
 	if err != nil || k == nil {
 		res.failed[c.path] = true
-		res.warnf("identity %s: %s is not a valid public key, skipped", c.source, pubPath)
+		if err != nil {
+			res.warnf("identity %s: %s is not a valid public key, skipped: %v", c.source, pubPath, err)
+		} else {
+			res.warnf("identity %s: %s is not a valid public key, skipped", c.source, pubPath)
+		}
 		return false
 	}
 	i, ok := res.byFingerprint[k.Fingerprint]

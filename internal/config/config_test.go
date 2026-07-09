@@ -89,6 +89,10 @@ servers:
 users:
   - {name: alice, keys: ["not a key"]}
 `, "not a key"},
+		{"key with line break", `
+users:
+  - {name: alice, keys: ["KEYA\nKEYB"]}
+`, "line break"},
 		{"dup key same user", `
 users:
   - name: alice
