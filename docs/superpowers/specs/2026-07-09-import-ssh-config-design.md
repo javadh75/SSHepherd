@@ -1,7 +1,7 @@
 # Design: `sshepherd import` — convert an OpenSSH client config to a manifest
 
 - **Date:** 2026-07-09
-- **Status:** Approved, awaiting implementation plan.
+- **Status:** Implemented (2026-07-09) — see docs/superpowers/plans/2026-07-09-import-ssh-config.md
 - **Scope:** Second vertical slice — a converter that bootstraps a manifest's
   `servers:` section from an existing `~/.ssh/config`.
 

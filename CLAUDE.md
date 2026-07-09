@@ -165,6 +165,8 @@ including corporate use, while protecting contributors and users).
 ## Status
 
 Early development. In place: full quality/security/container scaffold (Makefile, golangci,
-CI, lefthook, Dockerfile), a CLI skeleton (`--version` only), and `internal/authkeys`
-(single-line `authorized_keys` parser). First feature slice — read-only drift **audit** — is
-specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`; implementation next.
+CI, lefthook, Dockerfile), a CLI skeleton, and `internal/authkeys` (single-line
+`authorized_keys` parser). Two vertical slices are implemented: read-only drift
+**`audit`** (specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`) and
+**`import`** — an OpenSSH client config → manifest converter built on `internal/sshcfg`
+(specced in `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`).
