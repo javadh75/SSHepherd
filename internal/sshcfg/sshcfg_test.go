@@ -150,6 +150,18 @@ func TestLoadResolution(t *testing.T) {
 			},
 			warning: "Match block skipped",
 		},
+		{
+			name:   "IdentityFile before first Host orders first",
+			config: "IdentityFile ~/.ssh/top\nHost a\n  User u\n  IdentityFile ~/.ssh/mine\n",
+			want: []Host{{Alias: "a", HostName: "a", User: "u",
+				Identities: []string{"~/.ssh/top", "~/.ssh/mine"}}},
+		},
+		{
+			name:    "IdentityFile with no value warns",
+			config:  "Host a\n  User u\n  IdentityFile\n",
+			want:    []Host{{Alias: "a", HostName: "a", User: "u"}},
+			warning: "no value",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
