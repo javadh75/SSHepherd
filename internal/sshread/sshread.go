@@ -87,6 +87,16 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 func (b *cappedBuffer) String() string { return b.buf.String() }
 func (b *cappedBuffer) Bytes() []byte  { return b.buf.Bytes() }
 
+// PreflightKnownHosts verifies the known_hosts file loads before any server
+// is dialed, so a bad path fails once with a clear message instead of once
+// per server. It keeps the knownhosts dependency inside this package.
+func PreflightKnownHosts(path string) error {
+	if _, err := knownhosts.New(path); err != nil {
+		return fmt.Errorf("load known_hosts %s: %w", path, err)
+	}
+	return nil
+}
+
 // CheckAgent verifies a usable SSH agent before any server is dialed, so a
 // missing agent fails once with a clear message instead of once per server.
 func CheckAgent(sock string) error {

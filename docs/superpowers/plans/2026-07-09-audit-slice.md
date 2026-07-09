@@ -1,6 +1,6 @@
 # `sshepherd audit` (Drift/Compliance Slice) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **STATUS: EXECUTED 2026-07-09.** All 16 tasks implemented via subagent-driven development (4 batches, per-batch spec + quality reviews, final whole-slice review: SHIP). Kept for historical reference — the code on master is the source of truth, including review-driven evolutions not reflected in the snippets below (owner-labeled unauthorized keys, hardened sshread deadlines/output caps/host-key classification, integration-script fixes).
 
 **Goal:** Implement `sshepherd audit` — a read-only, concurrent drift audit that diffs the YAML source of truth against each server's actual `authorized_keys`, per the spec in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`.
 
@@ -72,7 +72,7 @@ One tiny shared helper avoids three copies of the same ed25519-from-seed trick
 **Files:**
 - Create: `internal/testkeys/testkeys.go`
 
-- [ ] **Step 1: Write the helper** (no TDD cycle — it *is* test infrastructure; its consumers' tests exercise it)
+- [x] **Step 1: Write the helper** (no TDD cycle — it *is* test infrastructure; its consumers' tests exercise it)
 
 ```go
 // Package testkeys generates deterministic SSH public keys for tests.
@@ -103,12 +103,12 @@ func Line(tb testing.TB, seed byte) string {
 }
 ```
 
-- [ ] **Step 2: Verify it compiles and existing suite stays green**
+- [x] **Step 2: Verify it compiles and existing suite stays green**
 
 Run: `go build ./... && go test ./...`
 Expected: PASS (nothing imports it yet; `unused` linter does not flag exported identifiers).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/testkeys/testkeys.go
@@ -123,7 +123,7 @@ git commit -m "test: add internal/testkeys deterministic key helper"
 - Modify: `internal/authkeys/authkeys.go` (append after `ParseLine`)
 - Modify: `internal/authkeys/authkeys_test.go` (append)
 
-- [ ] **Step 1: Write the failing tests** (append to `authkeys_test.go`)
+- [x] **Step 1: Write the failing tests** (append to `authkeys_test.go`)
 
 ```go
 func TestParseFileMixed(t *testing.T) {
@@ -166,12 +166,12 @@ func TestParseFileCRLF(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/authkeys/ -run TestParseFile -v`
 Expected: FAIL — `undefined: ParseFile`
 
-- [ ] **Step 3: Implement** (append to `authkeys.go`)
+- [x] **Step 3: Implement** (append to `authkeys.go`)
 
 ```go
 // ParseError describes a single unparseable line in an authorized_keys file.
@@ -205,12 +205,12 @@ func ParseFile(data []byte) ([]Key, []ParseError) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/authkeys/ -v`
 Expected: PASS (all, including pre-existing tests)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/authkeys/authkeys.go internal/authkeys/authkeys_test.go
@@ -225,7 +225,7 @@ git commit -m "feat(authkeys): whole-file parsing with line-numbered errors"
 - Modify: `internal/authkeys/authkeys.go` (append)
 - Modify: `internal/authkeys/authkeys_test.go` (append)
 
-- [ ] **Step 1: Write the failing test.** Note: `testKeyLine` produces one fixed key; for a second distinct key add a tiny local variant helper (kept local — the shared `testkeys` package needs `testing.TB` import and this package predates it).
+- [x] **Step 1: Write the failing test.** Note: `testKeyLine` produces one fixed key; for a second distinct key add a tiny local variant helper (kept local — the shared `testkeys` package needs `testing.TB` import and this package predates it).
 
 ```go
 // secondKeyLine builds a second, distinct deterministic key.
@@ -289,12 +289,12 @@ func TestDiffPreservesOrder(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/authkeys/ -run TestDiff -v`
 Expected: FAIL — `undefined: Diff`
 
-- [ ] **Step 3: Implement** (append to `authkeys.go`)
+- [x] **Step 3: Implement** (append to `authkeys.go`)
 
 ```go
 // Result is the outcome of diffing a desired key set against an actual one.
@@ -335,12 +335,12 @@ func Diff(desired, actual []Key) Result {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/authkeys/ -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/authkeys/authkeys.go internal/authkeys/authkeys_test.go
@@ -355,7 +355,7 @@ git commit -m "feat(authkeys): fingerprint-based desired/actual diff"
 - Modify: `internal/authkeys/fuzz_test.go` (append)
 - Modify: `Makefile` (fuzz target, lines 66-68)
 
-- [ ] **Step 1: Add the fuzz target** (append to `fuzz_test.go`)
+- [x] **Step 1: Add the fuzz target** (append to `fuzz_test.go`)
 
 ```go
 // FuzzParseFile asserts whole-file parsing never panics on arbitrary input and
@@ -395,12 +395,12 @@ func FuzzParseFile(f *testing.F) {
 }
 ```
 
-- [ ] **Step 2: Run the new fuzzer briefly to prove it executes**
+- [x] **Step 2: Run the new fuzzer briefly to prove it executes**
 
 Run: `go test -run='^$' -fuzz=FuzzParseFile -fuzztime=10s ./internal/authkeys`
 Expected: `elapsed: 10s ... PASS` (no crashers)
 
-- [ ] **Step 3: Update the Makefile fuzz target.** Replace:
+- [x] **Step 3: Update the Makefile fuzz target.** Replace:
 
 ```makefile
 ## fuzz: short fuzz run of the authorized_keys parser
@@ -417,12 +417,12 @@ fuzz:
 	$(GO) test -run='^$$' -fuzz=FuzzParseFile -fuzztime=15s ./internal/authkeys
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `make fuzz`
 Expected: both fuzzers run 15s each, PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/authkeys/fuzz_test.go Makefile
@@ -438,12 +438,12 @@ git commit -m "test(authkeys): fuzz whole-file parser; run both fuzzers in make 
 - Create: `internal/config/config_test.go`
 - Modify: `go.mod` / `go.sum` (via `go get`)
 
-- [ ] **Step 1: Add the yaml dependency**
+- [x] **Step 1: Add the yaml dependency**
 
 Run: `go get gopkg.in/yaml.v3 && go mod tidy`
 Expected: `gopkg.in/yaml.v3` appears in go.mod.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```go
 package config
@@ -609,12 +609,12 @@ func TestLoadMissingFile(t *testing.T) {
 
 (`TestAccessUnion` references `DesiredFor` — implemented in Task 6; until then it fails to compile. To keep this task self-contained, implement `DesiredFor`'s storage in this task and the method itself in Task 6 — **or simpler: keep both tasks' order and only run the full file at Task 6**. Concretely: write all tests above EXCEPT `TestAccessUnion` now; `TestAccessUnion` is added in Task 6.)
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./internal/config/ -v`
 Expected: FAIL — `undefined: Parse`, `undefined: Load`
 
-- [ ] **Step 4: Implement `internal/config/config.go`**
+- [x] **Step 4: Implement `internal/config/config.go`**
 
 ```go
 // Package config loads and validates the SSHepherd source-of-truth manifest:
@@ -804,12 +804,12 @@ func (c *Config) validateAccess() []error {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./internal/config/ -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add go.mod go.sum internal/config/
@@ -824,7 +824,7 @@ git commit -m "feat(config): YAML manifest parsing with strict validation"
 - Modify: `internal/config/config.go` (append)
 - Modify: `internal/config/config_test.go` (append `TestAccessUnion` from Task 5, plus below)
 
-- [ ] **Step 1: Write the failing tests** (append; also add `TestAccessUnion` from Task 5 now)
+- [x] **Step 1: Write the failing tests** (append; also add `TestAccessUnion` from Task 5 now)
 
 ```go
 func TestDesiredForAndOwnerOf(t *testing.T) {
@@ -855,12 +855,12 @@ func TestDesiredForAndOwnerOf(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/config/ -v`
 Expected: FAIL — `undefined: cfg.DesiredFor` / `cfg.OwnerOf`
 
-- [ ] **Step 3: Implement** (append to `config.go`)
+- [x] **Step 3: Implement** (append to `config.go`)
 
 ```go
 // DesiredFor returns the desired key set for a server: the union of the keys
@@ -880,12 +880,12 @@ func (c *Config) OwnerOf(fingerprint string) (User, bool) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/config/ -v`
 Expected: PASS (including `TestAccessUnion`)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/config/
@@ -900,7 +900,7 @@ git commit -m "feat(config): desired-key computation and fingerprint ownership l
 - Create: `internal/audit/audit.go`
 - Create: `internal/audit/audit_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package audit
@@ -1032,12 +1032,12 @@ func TestAuditOneNoUsersGranted(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/audit/ -v`
 Expected: FAIL — undefined types.
 
-- [ ] **Step 3: Implement `internal/audit/audit.go`**
+- [x] **Step 3: Implement `internal/audit/audit.go`**
 
 ```go
 // Package audit orchestrates the drift audit: it fans out over the fleet,
@@ -1113,12 +1113,12 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race ./internal/audit/ -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/audit/
@@ -1133,7 +1133,7 @@ git commit -m "feat(audit): KeyReader seam and single-server drift audit"
 - Modify: `internal/audit/audit.go` (append)
 - Modify: `internal/audit/audit_test.go` (append)
 
-- [ ] **Step 1: Write the failing tests** (append; add imports `"strings"`, `"sync/atomic"`, `"time"`, `"fmt"`)
+- [x] **Step 1: Write the failing tests** (append; add imports `"strings"`, `"sync/atomic"`, `"time"`, `"fmt"`)
 
 ```go
 // gateReader tracks concurrency and can block until released or ctx expiry.
@@ -1225,12 +1225,12 @@ func TestRunHangingServerDoesNotPoisonOthers(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test -race ./internal/audit/ -run TestRun -v`
 Expected: FAIL — `undefined: Run`, `undefined: Options`
 
-- [ ] **Step 3: Implement** (append to `audit.go`; add imports `"sort"`, `"sync"`)
+- [x] **Step 3: Implement** (append to `audit.go`; add imports `"sort"`, `"sync"`)
 
 ```go
 // Options tunes the fleet fan-out.
@@ -1266,12 +1266,12 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass (race detector mandatory here)**
+- [x] **Step 4: Run tests to verify they pass (race detector mandatory here)**
 
 Run: `go test -race ./internal/audit/ -v`
 Expected: PASS, no race reports.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/audit/
@@ -1294,7 +1294,7 @@ Report format decisions (locks the spec's illustrative example into concrete rul
 - Line order per server: OK (desired order) → Missing (desired order) → Unauthorized (actual order) → parse errors → notes → counts.
 - Report → stdout; the caller decides what goes to stderr.
 
-- [ ] **Step 1: Write the failing golden tests**
+- [x] **Step 1: Write the failing golden tests**
 
 ```go
 package audit
@@ -1419,12 +1419,12 @@ func TestRenderFileAbsentDiagnostic(t *testing.T) {
 
 (Add `"context"` and `"strings"` to the test file's imports.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/audit/ -run TestRender -v`
 Expected: FAIL — `undefined: Render`, `undefined: ExitCode`
 
-- [ ] **Step 3: Implement `internal/audit/report.go`**
+- [x] **Step 3: Implement `internal/audit/report.go`**
 
 ```go
 package audit
@@ -1540,7 +1540,7 @@ func renderSummary(w io.Writer, results []ServerResult) {
 }
 ```
 
-- [ ] **Step 4: Generate goldens, inspect them, then verify tests pass**
+- [x] **Step 4: Generate goldens, inspect them, then verify tests pass**
 
 ```bash
 mkdir -p internal/audit/testdata
@@ -1550,7 +1550,7 @@ go test -race ./internal/audit/ -v
 ```
 Expected: final run PASS. The drift golden must show web-1 with ✓ alice / ✗ bob / ⚠ unknown / ⚠ line 3, web-2 ERROR line, and `Summary: 0/2 servers compliant · 1 with drift · 1 unreachable  → exit 1`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/audit/
@@ -1565,7 +1565,7 @@ git commit -m "feat(audit): report rendering with golden tests and exit-code map
 - Create: `internal/audit/bench_test.go`
 - Modify: `internal/authkeys/authkeys_test.go` (append benchmarks)
 
-- [ ] **Step 1: Write the benchmarks**
+- [x] **Step 1: Write the benchmarks**
 
 `internal/audit/bench_test.go`:
 
@@ -1633,12 +1633,12 @@ func BenchmarkDiff(b *testing.B) {
 
 (Add `"fmt"` to that file's imports.)
 
-- [ ] **Step 2: Run them**
+- [x] **Step 2: Run them**
 
 Run: `make bench`
 Expected: all benchmarks execute with ns/op + B/op output, no failures.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/audit/bench_test.go internal/audit/audit_test.go internal/authkeys/authkeys_test.go
@@ -1653,7 +1653,7 @@ git commit -m "test: benchmarks for fleet fan-out, ParseFile, and Diff"
 - Create: `internal/sshread/sshread.go` (helpers only in this task)
 - Create: `internal/sshread/sshread_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package sshread
@@ -1755,12 +1755,12 @@ func TestHostKeyHint(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/sshread/ -v`
 Expected: FAIL — undefined identifiers.
 
-- [ ] **Step 3: Implement the helpers** (`internal/sshread/sshread.go`)
+- [x] **Step 3: Implement the helpers** (`internal/sshread/sshread.go`)
 
 ```go
 // Package sshread is the real KeyReader: it connects to a server over SSH
@@ -1834,12 +1834,12 @@ func hostKeyHint(err error, srv config.Server, knownHostsPath string) error {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race ./internal/sshread/ -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/sshread/
@@ -1854,7 +1854,7 @@ git commit -m "feat(sshread): exit-status semantics, agent preflight, host-key h
 - Modify: `internal/sshread/sshread.go` (append)
 - Modify: `internal/sshread/sshread_test.go` (append cheap error-path tests)
 
-- [ ] **Step 1: Write the failing tests** (unit-testable error paths only; happy path is Task 15's integration test)
+- [x] **Step 1: Write the failing tests** (unit-testable error paths only; happy path is Task 15's integration test)
 
 ```go
 func TestClientBadAgentSock(t *testing.T) {
@@ -1901,12 +1901,12 @@ func TestClientBadKnownHostsPath(t *testing.T) {
 
 (Add `"context"` and `"time"` to the test file's imports.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/sshread/ -run TestClient -v`
 Expected: FAIL — `undefined: Client`
 
-- [ ] **Step 3: Implement** (append to `sshread.go`; add imports `"bytes"`, `"context"`, `"strconv"`, `"golang.org/x/crypto/ssh"`, `"golang.org/x/crypto/ssh/agent"`, and `"github.com/javadh75/SSHepherd/internal/audit"`)
+- [x] **Step 3: Implement** (append to `sshread.go`; add imports `"bytes"`, `"context"`, `"strconv"`, `"golang.org/x/crypto/ssh"`, `"golang.org/x/crypto/ssh/agent"`, and `"github.com/javadh75/SSHepherd/internal/audit"`)
 
 ```go
 // Client reads remote authorized_keys over SSH. It implements audit.KeyReader.
@@ -1988,12 +1988,12 @@ func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 }
 ```
 
-- [ ] **Step 4: Run tests + full unit suite**
+- [x] **Step 4: Run tests + full unit suite**
 
 Run: `go test -race ./... && go vet ./...`
 Expected: PASS everywhere.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/sshread/
@@ -2013,11 +2013,11 @@ flag → 2. Keep them green through the migration; do not modify them.
 - Modify: `go.mod` / `go.sum` (via `go get`)
 - Unchanged: `cmd/sshepherd/main.go`, `cmd/sshepherd/run_test.go`
 
-- [ ] **Step 1: Add the cobra dependency**
+- [x] **Step 1: Add the cobra dependency**
 
 Run: `go get github.com/spf13/cobra && go mod tidy`
 
-- [ ] **Step 2: Rewrite `cmd/sshepherd/run.go`**
+- [x] **Step 2: Rewrite `cmd/sshepherd/run.go`**
 
 ```go
 package main
@@ -2073,19 +2073,19 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 }
 ```
 
-- [ ] **Step 3: Run the existing tests unchanged**
+- [x] **Step 3: Run the existing tests unchanged**
 
 Run: `go test ./cmd/... -v`
 Expected: PASS — all three pre-existing tests, no edits to the test file.
 
-- [ ] **Step 4: Sanity-run the binary**
+- [x] **Step 4: Sanity-run the binary**
 
 ```bash
 go run ./cmd/sshepherd --version   # -> "sshepherd dev", exit 0
 go run ./cmd/sshepherd; echo $?    # -> "no command" on stderr, prints 2
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add go.mod go.sum cmd/sshepherd/run.go
@@ -2101,7 +2101,7 @@ git commit -m "refactor(cmd): migrate CLI to cobra, preserving exit-code contrac
 - Create: `cmd/sshepherd/audit_test.go`
 - Modify: `cmd/sshepherd/run.go` (one line: register the subcommand)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package main
@@ -2187,12 +2187,12 @@ func TestAuditInvalidParallel(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./cmd/... -run TestAudit -v`
 Expected: FAIL — `unknown command "audit"` surfaces as exit 2 in some cases, so specifically `TestAuditEmptyFleet` fails (wants 0). Confirm at least one test fails before implementing.
 
-- [ ] **Step 3: Implement `cmd/sshepherd/audit.go`**
+- [x] **Step 3: Implement `cmd/sshepherd/audit.go`**
 
 ```go
 package main
@@ -2289,12 +2289,12 @@ And register it in `newRootCmd` in `run.go`, after `root.SetVersionTemplate(...)
 	root.AddCommand(newAuditCmd(stdout))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test -race ./cmd/... -v`
 Expected: PASS (new audit tests + the three original tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/sshepherd/
@@ -2316,7 +2316,7 @@ owns container + agent lifecycle.
 - Modify: `Makefile` (add `integration` target + `.PHONY`)
 - Modify: `.github/workflows/ci.yml` (add job)
 
-- [ ] **Step 1: Write the tagged Go test** (`internal/sshread/integration_test.go`)
+- [x] **Step 1: Write the tagged Go test** (`internal/sshread/integration_test.go`)
 
 ```go
 //go:build integration
@@ -2410,7 +2410,7 @@ func TestIntegrationUnknownHostKey(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Write `scripts/integration.sh`**
+- [x] **Step 2: Write `scripts/integration.sh`**
 
 ```bash
 #!/usr/bin/env bash
@@ -2481,7 +2481,7 @@ SSHEPHERD_IT_KNOWN_HOSTS="$WORKDIR/known_hosts" \
 
 Run: `chmod +x scripts/integration.sh`
 
-- [ ] **Step 3: Add the Makefile target.** In the `.PHONY` line add `integration` (after `test`), and after the `test:` target add:
+- [x] **Step 3: Add the Makefile target.** In the `.PHONY` line add `integration` (after `test`), and after the `test:` target add:
 
 ```makefile
 ## integration: run integration tests against a throwaway sshd container
@@ -2489,12 +2489,12 @@ integration:
 	./scripts/integration.sh
 ```
 
-- [ ] **Step 4: Run it locally**
+- [x] **Step 4: Run it locally**
 
 Run: `make integration`
 Expected: container starts, all three `TestIntegration*` PASS, container removed. (First run pulls `alpine:3.24` and apk-installs openssh — allow ~a minute.)
 
-- [ ] **Step 5: Add the CI job.** Append to `.github/workflows/ci.yml` (same indent level as the `docker:` job):
+- [x] **Step 5: Add the CI job.** Append to `.github/workflows/ci.yml` (same indent level as the `docker:` job):
 
 ```yaml
   integration:
@@ -2512,7 +2512,7 @@ Expected: container starts, all three `TestIntegration*` PASS, container removed
         run: make integration
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/integration.sh internal/sshread/integration_test.go Makefile .github/workflows/ci.yml
@@ -2526,19 +2526,19 @@ git commit -m "test: dockerized-sshd integration suite for sshread"
 **Files:**
 - None expected; fix whatever the gate finds.
 
-- [ ] **Step 1: Run the complete local gate**
+- [x] **Step 1: Run the complete local gate**
 
 Run: `make check && make coverage`
 Expected: tidy/fmt/vet/lint/gosec/govulncheck/gitleaks/test all pass; coverage ≥ 80%.
 
-- [ ] **Step 2: If coverage is below 80%,** the shortfall is almost certainly `sshread.Client`'s network lines (integration-only). Options in order of preference: (a) add unit tests for any still-uncovered pure logic; (b) verify `interpretExit`/`CheckAgent`/`hostKeyHint` branches are all exercised; (c) only if genuinely stuck, note the number and ask the user before touching `COVERAGE_MIN`.
+- [x] **Step 2: If coverage is below 80%,** the shortfall is almost certainly `sshread.Client`'s network lines (integration-only). Options in order of preference: (a) add unit tests for any still-uncovered pure logic; (b) verify `interpretExit`/`CheckAgent`/`hostKeyHint` branches are all exercised; (c) only if genuinely stuck, note the number and ask the user before touching `COVERAGE_MIN`.
 
-- [ ] **Step 3: Run lint explicitly and fix findings**
+- [x] **Step 3: Run lint explicitly and fix findings**
 
 Run: `golangci-lint run`
 Expected: clean. Likely candidates: missing `%w` wraps (`wrapcheck`), `gocritic` style nits. Fix, don't suppress.
 
-- [ ] **Step 4: Smoke the real binary end-to-end against an empty fleet**
+- [x] **Step 4: Smoke the real binary end-to-end against an empty fleet**
 
 ```bash
 go build -o bin/sshepherd ./cmd/sshepherd
@@ -2548,7 +2548,7 @@ printf 'users:\n  - {name: me, keys: ["%s"]}\n' "$(cat ~/.ssh/id_ed25519.pub 2>/
 ```
 Expected: "Summary: 0 servers configured — nothing to audit", exit 0; version prints.
 
-- [ ] **Step 5: Commit any gate fixes**
+- [x] **Step 5: Commit any gate fixes**
 
 ```bash
 git add -A

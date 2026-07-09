@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -54,7 +53,7 @@ func newAuditCmd(stdout io.Writer) *cobra.Command {
 			}
 			// Preflight known_hosts once: a bad path fails with a single
 			// clear error instead of N identical per-server errors.
-			if _, err := knownhosts.New(khPath); err != nil {
+			if err := sshread.PreflightKnownHosts(khPath); err != nil {
 				return fmt.Errorf("known_hosts preflight: %w", err)
 			}
 			reader := &sshread.Client{

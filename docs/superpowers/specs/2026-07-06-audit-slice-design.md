@@ -1,7 +1,7 @@
 # Design: `sshepherd audit` — drift/compliance slice
 
 - **Date:** 2026-07-06 (updated 2026-07-09: auth/host-key/concurrency decisions; full review fixes — remote-read semantics, example corrections)
-- **Status:** Approved (design), pending spec review
+- **Status:** Implemented (2026-07-09) — see `docs/superpowers/plans/2026-07-09-audit-slice.md` (all tasks executed; per-batch spec+quality reviews and a final whole-slice review passed)
 - **Scope:** First real vertical slice of SSHepherd — a read-only drift audit.
 
 ## Context & goal

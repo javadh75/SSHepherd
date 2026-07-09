@@ -9,7 +9,8 @@ WORKDIR="$(mktemp -d)"
 
 cleanup() {
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-  [ -n "${SSH_AGENT_PID:-}" ] && kill "$SSH_AGENT_PID" >/dev/null 2>&1 || true
+  # Kill only the agent WE started — never an agent inherited from the shell.
+  [ -n "${OUR_AGENT_PID:-}" ] && kill "$OUR_AGENT_PID" >/dev/null 2>&1 || true
   rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -39,7 +40,12 @@ docker run -d --name "$CONTAINER" \
     done
     # Alpine ships an active "AuthorizedKeysFile .ssh/authorized_keys" line;
     # OpenSSH keeps the first occurrence of a directive, so appending a second
-    # one is silently ignored. Replace it in place instead.
+    # one is silently ignored. Replace it in place instead — and fail loudly if
+    # a future base image stops shipping the directive active.
+    grep -q "^AuthorizedKeysFile" /etc/ssh/sshd_config || {
+      echo "sshd_config has no active AuthorizedKeysFile line; fix the sed below" >&2
+      exit 1
+    }
     sed -i "s|^AuthorizedKeysFile.*|AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2|" /etc/ssh/sshd_config
     exec /usr/sbin/sshd -D -e
   '
@@ -59,7 +65,8 @@ if [ ! -s "$WORKDIR/known_hosts" ]; then
 fi
 
 eval "$(ssh-agent -s)" >/dev/null
-ssh-add "$WORKDIR/id_ed25519" 2>/dev/null
+OUR_AGENT_PID="$SSH_AGENT_PID"
+ssh-add "$WORKDIR/id_ed25519"
 
 SSHEPHERD_IT_HOST=127.0.0.1 \
 SSHEPHERD_IT_PORT="$PORT" \
