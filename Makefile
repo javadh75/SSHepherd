@@ -12,7 +12,7 @@ GOVULN_VERSION   := latest
 GITLEAKS_VERSION := latest
 
 .PHONY: all check build fmt vet lint security gosec vuln secrets test coverage \
-        fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
+        integration fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
 
 ## all: default target — run the full gate
 all: check
@@ -51,6 +51,10 @@ secrets:
 ## test: race detector + atomic coverage profile
 test:
 	$(GO) test -race -covermode=atomic -coverprofile=$(COVERPROFILE) $(PKG)
+
+## integration: run integration tests against a throwaway sshd container
+integration:
+	./scripts/integration.sh
 
 ## coverage: report coverage and fail below COVERAGE_MIN%
 coverage: test
