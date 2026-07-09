@@ -47,5 +47,6 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetVersionTemplate("sshepherd {{.Version}}\n")
+	root.AddCommand(newAuditCmd(stdout))
 	return root
 }
