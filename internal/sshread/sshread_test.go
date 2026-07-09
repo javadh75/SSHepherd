@@ -1,10 +1,12 @@
 package sshread
 
 import (
+	"context"
 	"net"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh/knownhosts"
 
@@ -94,4 +96,45 @@ func TestHostKeyHint(t *testing.T) {
 			t.Errorf("unrelated error was wrapped: %v", got)
 		}
 	})
+}
+
+func TestClientBadAgentSock(t *testing.T) {
+	c := &Client{
+		AgentSock:      filepath.Join(t.TempDir(), "nope.sock"),
+		KnownHostsPath: filepath.Join(t.TempDir(), "kh"),
+		DialTimeout:    time.Second,
+	}
+	srv := config.Server{Name: "s", Host: "127.0.0.1", Port: 1, User: "u"}
+	_, err := c.ReadAuthorizedKeys(context.Background(), srv)
+	if err == nil || !strings.Contains(err.Error(), "agent") {
+		t.Errorf("err = %v, want agent connection error", err)
+	}
+}
+
+func TestClientBadKnownHostsPath(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "agent.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	c := &Client{
+		AgentSock:      sock,
+		KnownHostsPath: filepath.Join(t.TempDir(), "does-not-exist"),
+		DialTimeout:    time.Second,
+	}
+	srv := config.Server{Name: "s", Host: "127.0.0.1", Port: 1, User: "u"}
+	_, err = c.ReadAuthorizedKeys(context.Background(), srv)
+	if err == nil || !strings.Contains(err.Error(), "known_hosts") {
+		t.Errorf("err = %v, want known_hosts load error", err)
+	}
 }

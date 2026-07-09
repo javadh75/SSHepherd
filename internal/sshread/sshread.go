@@ -6,14 +6,20 @@
 package sshread
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
 )
 
@@ -66,4 +72,82 @@ func hostKeyHint(err error, srv config.Server, knownHostsPath string) error {
 	}
 	return fmt.Errorf("%w\n  hint: HOST KEY CHANGED for %s:%d — investigate before trusting this host",
 		err, srv.Host, srv.Port)
+}
+
+// Client reads remote authorized_keys over SSH. It implements audit.KeyReader.
+type Client struct {
+	KnownHostsPath string
+	AgentSock      string
+	DialTimeout    time.Duration
+}
+
+var _ audit.KeyReader = (*Client)(nil)
+
+// ReadAuthorizedKeys connects to srv (agent auth, strict known_hosts) and
+// reads ~/.ssh/authorized_keys via a one-shot session. The ctx deadline (set
+// by the audit orchestrator) bounds the whole exchange, not just the dial.
+func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
+	var zero audit.ReadResult
+
+	agentConn, err := net.Dial("unix", c.AgentSock)
+	if err != nil {
+		return zero, fmt.Errorf("connect ssh-agent: %w", err)
+	}
+	defer func() { _ = agentConn.Close() }() // errcheck: close error is uninteresting on a read path
+	ag := agent.NewClient(agentConn)
+
+	hostKeys, err := knownhosts.New(c.KnownHostsPath)
+	if err != nil {
+		return zero, fmt.Errorf("load known_hosts %s: %w", c.KnownHostsPath, err)
+	}
+
+	addr := net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port))
+	dialer := net.Dialer{Timeout: c.DialTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return zero, fmt.Errorf("dial %s: %w", addr, err)
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(dl) // bounds handshake + session I/O, not just dial
+	}
+
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
+		User:            srv.User,
+		Auth:            []ssh.AuthMethod{ssh.PublicKeysCallback(ag.Signers)},
+		HostKeyCallback: hostKeys,
+		Timeout:         c.DialTimeout,
+	})
+	if err != nil {
+		_ = conn.Close()
+		return zero, fmt.Errorf("ssh %s@%s: %w", srv.User, addr, hostKeyHint(err, srv, c.KnownHostsPath))
+	}
+	client := ssh.NewClient(sshConn, chans, reqs)
+	defer func() { _ = client.Close() }()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return zero, fmt.Errorf("open session on %s: %w", addr, err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	var stdout, stderr bytes.Buffer
+	sess.Stdout = &stdout
+	sess.Stderr = &stderr
+
+	code := 0
+	if runErr := sess.Run(authorizedKeysCmd); runErr != nil {
+		var exitErr *ssh.ExitError
+		if !errors.As(runErr, &exitErr) {
+			return zero, fmt.Errorf("remote read on %s: %w", addr, runErr)
+		}
+		code = exitErr.ExitStatus()
+	}
+	absent, err := interpretExit(code, stderr.String())
+	if err != nil {
+		return zero, fmt.Errorf("remote read on %s: %w", addr, err)
+	}
+	if absent {
+		return audit.ReadResult{FileAbsent: true}, nil
+	}
+	return audit.ReadResult{Content: stdout.Bytes()}, nil
 }
