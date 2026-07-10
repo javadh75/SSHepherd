@@ -97,6 +97,10 @@ users:
 users:
   - {name: alice, comment: "a\nb", keys: ["KEYA"]}
 `, "comment contains a line break"},
+		{"keyless operator", `
+users:
+  - {name: op, operator: true}
+`, "operator requires at least one valid key"},
 		{"dup key same user", `
 users:
   - name: alice
@@ -239,5 +243,91 @@ access:
 		if k.Fingerprint != want[i] {
 			t.Errorf("DesiredFor(s1)[%d] = %s, want %s", i, k.Fingerprint, want[i])
 		}
+	}
+}
+
+func TestOperatorImplicitGrant(t *testing.T) {
+	k1, k2 := testkeys.Line(t, 1), testkeys.Line(t, 2)
+	y := `
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+  - {name: alice, keys: ["` + k2 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+  - {name: s2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: [s1]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Users[0].Operator {
+		t.Error("op.Operator = false, want true")
+	}
+	// s2 has no access entries at all — the operator is still desired there.
+	s2 := cfg.DesiredFor("s2")
+	if len(s2) != 1 || s2[0].Fingerprint != mustFingerprint(t, k1) {
+		t.Fatalf("DesiredFor(s2) = %d keys, want exactly the operator key", len(s2))
+	}
+	// s1: operator first, then alice via her grant.
+	want := []string{mustFingerprint(t, k1), mustFingerprint(t, k2)}
+	got := cfg.DesiredFor("s1")
+	if len(got) != len(want) {
+		t.Fatalf("DesiredFor(s1) = %d keys, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Fingerprint != want[i] {
+			t.Errorf("DesiredFor(s1)[%d] = %s, want %s", i, got[i].Fingerprint, want[i])
+		}
+	}
+}
+
+func TestOperatorOrderingUsersOrderFirst(t *testing.T) {
+	// alice appears first in users AND access, yet both operators must come
+	// first (in users order) — a refactor to grant-order-only must fail here.
+	k1, k2, k3 := testkeys.Line(t, 1), testkeys.Line(t, 2), testkeys.Line(t, 3)
+	y := `
+users:
+  - {name: alice, keys: ["` + k1 + `"]}
+  - {name: op-a, operator: true, keys: ["` + k2 + `"]}
+  - {name: op-b, operator: true, keys: ["` + k3 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: alice, servers: [s1]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{mustFingerprint(t, k2), mustFingerprint(t, k3), mustFingerprint(t, k1)}
+	got := cfg.DesiredFor("s1")
+	if len(got) != len(want) {
+		t.Fatalf("DesiredFor(s1) = %d keys, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Fingerprint != want[i] {
+			t.Errorf("DesiredFor(s1)[%d] = %s, want %s", i, got[i].Fingerprint, want[i])
+		}
+	}
+}
+
+func TestOperatorRedundantGrantNotDuplicated(t *testing.T) {
+	k1 := testkeys.Line(t, 1)
+	y := `
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: op, servers: [s1]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v (a redundant grant for an operator must union silently)", err)
+	}
+	if got := len(cfg.DesiredFor("s1")); got != 1 {
+		t.Errorf("DesiredFor(s1) = %d keys, want 1 (no duplicate emission)", got)
 	}
 }

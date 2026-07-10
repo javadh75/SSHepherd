@@ -21,6 +21,7 @@ type User struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"` // docs only, never sent to a server
 	Comment     string   `yaml:"comment"`     // written as the key comment by the apply slice
+	Operator    bool     `yaml:"operator"`    // fleet-wide grant; protected from removal by apply/revoke
 	Keys        []string `yaml:"keys"`
 }
 
@@ -49,6 +50,7 @@ type Config struct {
 	keysByUser map[string][]authkeys.Key // user name -> parsed keys, manifest order
 	owners     map[string]User           // fingerprint -> owning user
 	grants     map[string][]string       // server name -> user names, access order
+	operators  []string                  // operator user names, users order
 }
 
 // Load reads and parses the manifest at path.
@@ -87,6 +89,7 @@ func (c *Config) validateUsers() []error {
 	var errs []error
 	c.keysByUser = make(map[string][]authkeys.Key)
 	c.owners = make(map[string]User)
+	c.operators = nil
 	seen := make(map[string]bool)
 	for ui, u := range c.Users {
 		if u.Name == "" {
@@ -122,6 +125,13 @@ func (c *Config) validateUsers() []error {
 			}
 			c.owners[k.Fingerprint] = u
 			c.keysByUser[u.Name] = append(c.keysByUser[u.Name], *k)
+		}
+		if u.Operator {
+			if len(c.keysByUser[u.Name]) == 0 {
+				errs = append(errs, fmt.Errorf("user %q: operator requires at least one valid key", u.Name))
+				continue
+			}
+			c.operators = append(c.operators, u.Name)
 		}
 	}
 	return errs
@@ -192,11 +202,21 @@ func (c *Config) validateAccess() []error {
 	return errs
 }
 
-// DesiredFor returns the desired key set for a server: the union of the keys
-// of every user granted access to it, in manifest/access order (deterministic).
+// DesiredFor returns the desired key set for a server: operator users' keys
+// first (users order — operators are implicitly granted every server), then
+// the keys of every user granted access to it (access order). Deterministic;
+// a user is never emitted twice.
 func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 	var keys []authkeys.Key
+	asOperator := make(map[string]bool, len(c.operators))
+	for _, name := range c.operators {
+		asOperator[name] = true
+		keys = append(keys, c.keysByUser[name]...)
+	}
 	for _, userName := range c.grants[serverName] {
+		if asOperator[userName] { // redundant grant for an operator: already emitted
+			continue
+		}
 		keys = append(keys, c.keysByUser[userName]...)
 	}
 	return keys
