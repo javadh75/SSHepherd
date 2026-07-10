@@ -60,6 +60,9 @@ run the exact same commands. Target **Go 1.22+**. Listed cheapest-to-run first.
   at package boundaries), `contextcheck` + `noctx` (don't drop `context.Context`).
 - Complexity & imports: `gocyclo`/`cyclop` (cap function complexity), `dupl` (copy-paste),
   `depguard` — pin crypto/SSH deps (e.g. force `golang.org/x/crypto/ssh`, ban risky packages).
+- Dead code: `deadcode ./cmd/sshepherd` (`golang.org/x/tools/cmd/deadcode`) — whole-program
+  reachability from `main`; fails `make check` on unreachable functions. Complements the
+  per-package `unused` linter, which can't see cross-package dead exported identifiers.
 - Optional but recommended: `gofumpt` (stricter gofmt) and `nilaway` (Uber's nil-panic
   static analysis — experimental, run as a separate step).
 - Pin the `golangci-lint` version and commit `.golangci.yml` so results are reproducible.

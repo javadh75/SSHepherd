@@ -10,15 +10,16 @@ GOLANGCI_VERSION := v2.12.2
 GOSEC_VERSION    := latest
 GOVULN_VERSION   := latest
 GITLEAKS_VERSION := latest
+DEADCODE_VERSION := latest
 
-.PHONY: all check build fmt vet lint security gosec vuln secrets test coverage \
+.PHONY: all check build fmt vet lint deadcode security gosec vuln secrets test coverage \
         integration fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
 
 ## all: default target — run the full gate
 all: check
 
 ## check: full quality gate (the same command CI runs)
-check: tidy fmt vet lint security test
+check: tidy fmt vet lint deadcode security test
 
 ## build: reproducible static binary into ./bin
 build:
@@ -35,6 +36,12 @@ vet:
 ## lint: golangci-lint (v2)
 lint:
 	golangci-lint run
+
+## deadcode: whole-program reachability — fail on functions unreachable from main
+deadcode:
+	@out=$$(deadcode ./cmd/$(BINARY)); if [ -n "$$out" ]; then \
+	  echo "$$out"; echo "FAIL: dead code found"; exit 1; \
+	fi
 
 ## security: SAST + vulnerabilities + secret scan
 security: gosec vuln secrets
@@ -106,6 +113,7 @@ tools:
 	$(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULN_VERSION)
 	$(GO) install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
+	$(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
 
 ## hooks: install git pre-commit/pre-push hooks (lefthook)
 hooks:
