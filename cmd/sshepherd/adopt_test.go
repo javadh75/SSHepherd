@@ -341,20 +341,30 @@ func closedPort(t *testing.T) int {
 	return port
 }
 
-// The strict gate: an unreachable server aborts with exit 1 and no output;
-// --partial proceeds and marks the gap in the manifest itself.
-func TestAdoptUnreachableStrictGateAndPartial(t *testing.T) {
+// unreachableFleet builds the shared unreachable-server fixture: a manifest
+// whose single server (web-1) points at a just-closed local port, a fake
+// agent so the preflight passes, and an empty known_hosts file. Returns the
+// manifest and known_hosts paths.
+func unreachableFleet(t *testing.T) (cfgPath, khPath string) {
+	t.Helper()
 	fakeAgent(t)
-	kh := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(kh, nil, 0o600); err != nil {
+	khPath = filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(khPath, nil, 0o600); err != nil {
 		t.Fatalf("write known_hosts: %v", err)
 	}
-	path := writeConfig(t, `
+	cfgPath = writeConfig(t, `
 users:
   - {name: alice, keys: ["`+testkeys.Line(t, 1)+`"]}
 servers:
   - {name: web-1, host: 127.0.0.1, port: `+strconv.Itoa(closedPort(t))+`, user: deploy}
 `)
+	return cfgPath, khPath
+}
+
+// The strict gate: an unreachable server aborts with exit 1 and no output;
+// --partial proceeds and marks the gap in the manifest itself.
+func TestAdoptUnreachableStrictGateAndPartial(t *testing.T) {
+	path, kh := unreachableFleet(t)
 	var out, errBuf bytes.Buffer
 	code := run([]string{"adopt", "--config", path, "--known-hosts", kh}, &out, &errBuf)
 	if code != 1 {

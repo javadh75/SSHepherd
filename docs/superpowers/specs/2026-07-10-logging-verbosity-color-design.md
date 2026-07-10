@@ -71,7 +71,8 @@ everything. Escape codes are applied at render time by the handler — degraded
 output is genuinely plain text, never stripped text.
 
 **Fatal-error line.** `run()`'s final `sshepherd: <err>` prints in all modes,
-quiet included, with a red `error:` prefix when stderr color is on.
+quiet included, with a red `error:` prefix when stderr color is on, rendered
+per the active mode's format (the timestamped ERROR level word under `-v`).
 
 ## Architecture & wiring
 
@@ -148,6 +149,10 @@ and alignment holds. Golden tests pin this.
   bidi becomes a concern.
 - The handler sanitizer joins the `make fuzz` set.
 - Handler is race-safe (mutex); the audit fan-out exercises it under `-race`.
+- The stdout report has its own boundary: unreachable-server heads render the
+  error one-line (whitespace collapsed) so hostile error text cannot forge
+  report rows or a Summary line; terminal escapes in those errors are
+  stripped upstream by sshread's sanitizedError wrapper.
 
 ## Testing
 

@@ -104,6 +104,10 @@ func reportUnreadable(log *slog.Logger, plan adopt.Plan, unreadable []string, pa
 	if len(unreadable) == 0 {
 		return nil
 	}
+	// Deliberate double-report: the live warn (audit fan-out) shows failures
+	// as they happen; these gate lines are the verdict that explains the
+	// abort/partial decision — and the only lines that survive -q in strict
+	// mode.
 	for _, is := range plan.Issues {
 		msg := fmt.Sprintf("server %s: %s", is.Server, is.Detail)
 		if partial {

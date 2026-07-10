@@ -137,6 +137,38 @@ func TestAuditQuietSilencesPhases(t *testing.T) {
 	}
 }
 
+// TestAuditColorFlagReachesReport pins the spec promises "--color=never
+// yields plain bytes" and that --color=always paints the stdout report —
+// the a.reportColor → Render wire has no other cmd-level coverage.
+func TestAuditColorFlagReachesReport(t *testing.T) {
+	path, kh := unreachableFleet(t)
+
+	var out, errBuf bytes.Buffer
+	code := run([]string{"audit", "--color=always", "--config", path, "--known-hosts", kh}, &out, &errBuf)
+	if code != 1 {
+		t.Fatalf("--color=always exit = %d, want 1 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "\x1b[0;31m") {
+		t.Errorf("stdout = %q, want the painted ERROR head under --color=always", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "\x1b[") {
+		t.Errorf("stderr = %q, want colored logs under --color=always", errBuf.String())
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{"audit", "--color=never", "--config", path, "--known-hosts", kh}, &out, &errBuf)
+	if code != 1 {
+		t.Fatalf("--color=never exit = %d, want 1 (stderr: %s)", code, errBuf.String())
+	}
+	if strings.Contains(out.String(), "\x1b") {
+		t.Errorf("stdout = %q, want no escape bytes under --color=never", out.String())
+	}
+	if strings.Contains(errBuf.String(), "\x1b") {
+		t.Errorf("stderr = %q, want no escape bytes under --color=never", errBuf.String())
+	}
+}
+
 // TestAuditVerboseFormat: -v switches stderr to the timestamped format.
 func TestAuditVerboseFormat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.yaml")
