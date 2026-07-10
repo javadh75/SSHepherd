@@ -262,6 +262,7 @@ func TestSanitize(t *testing.T) {
 		{name: "C1 CSI stripped", in: "evil\u009b31mred", want: "evil31mred"},
 		{name: "DEL stripped", in: "a\x7fb", want: "ab"},
 		{name: "NUL stripped", in: "a\x00b", want: "ab"},
+		{name: "raw C1 byte becomes replacement rune", in: "a\x9bb", want: "a\ufffdb"},
 		{name: "unicode preserved", in: "clé ✓ 键", want: "clé ✓ 键"},
 		{name: "multi-line hint collapses", in: "bad key\n  hint: run ssh-keyscan", want: "bad key   hint: run ssh-keyscan"},
 	}
@@ -281,6 +282,7 @@ package clog
 import (
 	"testing"
 	"unicode"
+	"unicode/utf8"
 )
 
 // FuzzSanitize pins the security property: no control rune ever survives
@@ -292,12 +294,16 @@ func FuzzSanitize(f *testing.F) {
 	f.Add("line1\nline2\tend")
 	f.Add("\u009b31m csi")
 	f.Add("a\x00\x7f\rb")
+	f.Add("evil\x9b31mred")
 	f.Fuzz(func(t *testing.T, s string) {
 		out := sanitize(s)
 		for _, r := range out {
 			if unicode.IsControl(r) {
 				t.Fatalf("control rune %U survived: %q -> %q", r, s, out)
 			}
+		}
+		if !utf8.ValidString(out) {
+			t.Fatalf("invalid UTF-8 survived: %q -> %q", s, out)
 		}
 		if again := sanitize(out); again != out {
 			t.Fatalf("not idempotent: %q -> %q -> %q", s, out, again)
@@ -321,6 +327,7 @@ package clog
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // sanitize strips control characters from operator-facing log text so
@@ -329,9 +336,12 @@ import (
 // single space; every other control rune is dropped — unicode.IsControl
 // covers C0, DEL, and C1, whose CSI (U+009B) acts like ESC [ in some
 // terminals. Defense-in-depth behind sshread's sanitizeRemote: it also
-// protects future log call sites that forget to sanitize.
+// protects future log call sites that forget to sanitize. Invalid UTF-8
+// never takes the fast path: strings.Map rewrites each invalid byte to
+// U+FFFD, so a raw 0x9B (8-bit CSI on non-UTF-8 terminals) cannot pass
+// through verbatim.
 func sanitize(s string) string {
-	if !strings.ContainsFunc(s, unicode.IsControl) {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl) {
 		return s // fast path: log lines are almost always already clean
 	}
 	return strings.Map(func(r rune) rune {

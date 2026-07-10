@@ -16,6 +16,7 @@ func TestSanitize(t *testing.T) {
 		{name: "C1 CSI stripped", in: "evil\u009b31mred", want: "evil31mred"},
 		{name: "DEL stripped", in: "a\x7fb", want: "ab"},
 		{name: "NUL stripped", in: "a\x00b", want: "ab"},
+		{name: "raw C1 byte becomes replacement rune", in: "a\x9bb", want: "a\ufffdb"},
 		{name: "unicode preserved", in: "clé ✓ 键", want: "clé ✓ 键"},
 		{name: "multi-line hint collapses", in: "bad key\n  hint: run ssh-keyscan", want: "bad key   hint: run ssh-keyscan"},
 	}

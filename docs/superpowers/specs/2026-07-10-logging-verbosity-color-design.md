@@ -134,7 +134,12 @@ identical per column and alignment holds. Golden tests pin this.
   tabs become a single space, all other control characters (C0, DEL, C1) are
   stripped — so a hostile server name or remote error string cannot forge log
   lines or inject terminal escapes. Defense-in-depth behind `sshread.sanitizeRemote`, protecting
-  future call sites that forget to sanitize.
+  future call sites that forget to sanitize. Invalid UTF-8 bytes are rewritten
+  to U+FFFD (never passed through raw — a lone 0x9B is CSI on 8-bit terminals).
+  Unicode format characters (Cf: bidi overrides, zero-width) are deliberately
+  out of scope: the boundary strips control characters only, and stripping Cf
+  would corrupt legitimate international text; revisit if log spoofing via
+  bidi becomes a concern.
 - The handler sanitizer joins the `make fuzz` set.
 - Handler is race-safe (mutex); the audit fan-out exercises it under `-race`.
 
