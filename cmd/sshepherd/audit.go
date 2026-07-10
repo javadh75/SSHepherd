@@ -60,6 +60,7 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				KnownHostsPath: khPath,
 				AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
 				DialTimeout:    dialTimeout,
+				Log:            log,
 			}
 			log.Info(fmt.Sprintf("auditing %d servers (parallelism %d)…", len(cfg.Servers), parallel))
 			start := time.Now()

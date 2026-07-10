@@ -1,12 +1,14 @@
 package sshread
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -429,6 +432,60 @@ func TestClientDeadline(t *testing.T) {
 		}
 		if elapsed > time.Second {
 			t.Errorf("returned after %v, want well under 1s (300ms derived floor)", elapsed)
+		}
+	})
+}
+
+// TestClientLogNilSafe: an unset Log field must yield a usable logger.
+func TestClientLogNilSafe(_ *testing.T) {
+	c := &Client{}
+	c.log().Debug("must not panic")
+}
+
+func TestFinishRead(t *testing.T) {
+	discard := slog.New(slog.DiscardHandler)
+	content := &cappedBuffer{limit: 10}
+	_, _ = content.Write([]byte("key-line\n"))
+
+	t.Run("content returned", func(t *testing.T) {
+		res, err := finishRead(0, content, &cappedBuffer{limit: 10}, "h:22", discard)
+		if err != nil || string(res.Content) != "key-line\n" || res.FileAbsent {
+			t.Fatalf("got (%q, absent=%v, %v)", res.Content, res.FileAbsent, err)
+		}
+	})
+	t.Run("absent sentinel", func(t *testing.T) {
+		res, err := finishRead(fileAbsentExit, &cappedBuffer{limit: 10}, &cappedBuffer{limit: 10}, "h:22", discard)
+		if err != nil || !res.FileAbsent {
+			t.Fatalf("got (absent=%v, %v), want (true, nil)", res.FileAbsent, err)
+		}
+	})
+	t.Run("stdout truncation is an error", func(t *testing.T) {
+		trunc := &cappedBuffer{limit: 2}
+		_, _ = trunc.Write([]byte("too long"))
+		_, err := finishRead(0, trunc, &cappedBuffer{limit: 10}, "h:22", discard)
+		if err == nil || !strings.Contains(err.Error(), "refusing to audit") {
+			t.Fatalf("err = %v, want the truncation refusal", err)
+		}
+	})
+	t.Run("stderr truncation warns but succeeds", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		log := slog.New(clog.NewHandler(&logBuf, clog.Options{Level: slog.LevelInfo}))
+		errTrunc := &cappedBuffer{limit: 2}
+		_, _ = errTrunc.Write([]byte("noisy remote stderr"))
+		res, err := finishRead(0, content, errTrunc, "h:22", log)
+		if err != nil || string(res.Content) != "key-line\n" {
+			t.Fatalf("got (%q, %v), want content and nil error", res.Content, err)
+		}
+		if !strings.Contains(logBuf.String(), "warn: h:22: remote stderr exceeded") {
+			t.Errorf("log = %q, want the stderr-truncation warn", logBuf.String())
+		}
+	})
+	t.Run("nonzero exit is an error", func(t *testing.T) {
+		errOut := &cappedBuffer{limit: 100}
+		_, _ = errOut.Write([]byte("cat: permission denied"))
+		_, err := finishRead(1, &cappedBuffer{limit: 10}, errOut, "h:22", discard)
+		if err == nil || !strings.Contains(err.Error(), "permission denied") {
+			t.Fatalf("err = %v, want the remote stderr embedded", err)
 		}
 	})
 }

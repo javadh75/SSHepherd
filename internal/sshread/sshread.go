@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -53,6 +54,9 @@ func interpretExit(code int, stderr string) (fileAbsent bool, err error) {
 // remote-controlled text so a malicious host cannot inject terminal escape
 // sequences into operator-facing error messages. unicode.IsControl covers
 // C0, DEL, and C1 — C1 CSI (U+009B) acts like ESC [ in some terminals.
+// internal/clog's sanitize applies the same class of defense on the log path
+// (collapsing newlines besides); keep the two in mind together when changing
+// either.
 func sanitizeRemote(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
@@ -181,9 +185,19 @@ type Client struct {
 	KnownHostsPath string
 	AgentSock      string
 	DialTimeout    time.Duration
+	Log            *slog.Logger // optional stage-level telemetry; nil discards
 }
 
 var _ audit.KeyReader = (*Client)(nil)
+
+// log returns the configured logger or a discard logger, so call sites never
+// nil-check.
+func (c *Client) log() *slog.Logger {
+	if c.Log != nil {
+		return c.Log
+	}
+	return slog.New(slog.DiscardHandler)
+}
 
 // ReadAuthorizedKeys connects to srv and reads its authorized_keys via
 // readAuthorizedKeys, wrapping any error so its message is control-stripped:
@@ -222,6 +236,7 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 		defer cancel()
 	}
 	dl, _ := ctx.Deadline() // always present: the floor above guarantees it
+	log := c.log()
 
 	agentDialer := net.Dialer{}
 	agentConn, err := agentDialer.DialContext(ctx, "unix", c.AgentSock)
@@ -243,15 +258,20 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 		if khErr := hostKeys(hostname, remote, key); khErr != nil {
 			return hostKeyHint(khErr, key, srv, c.KnownHostsPath)
 		}
+		log.Debug("host key verified", "server", srv.Name)
 		return nil
 	}
 
 	addr := net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port))
 	dialer := net.Dialer{Timeout: c.DialTimeout}
+	log.Debug("dialing", "server", srv.Name, "addr", addr)
+	dialStart := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return zero, fmt.Errorf("dial %s: %w", addr, err)
 	}
+	log.Debug("dial ok", "server", srv.Name, "addr", addr,
+		"dur", time.Since(dialStart).Round(time.Millisecond))
 	_ = conn.SetDeadline(dl) // bounds handshake + session I/O, not just dial
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
@@ -263,15 +283,16 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 		_ = conn.Close()
 		return zero, fmt.Errorf("ssh %s@%s: %w", srv.User, addr, err)
 	}
+	log.Debug("auth ok", "server", srv.Name, "user", srv.User)
 	client := ssh.NewClient(sshConn, chans, reqs)
 	defer func() { _ = client.Close() }()
 
-	return readRemote(client, addr)
+	return readRemote(client, addr, log)
 }
 
 // readRemote runs the read command over an established SSH connection and
 // maps its output and exit status to a ReadResult.
-func readRemote(client *ssh.Client, addr string) (audit.ReadResult, error) {
+func readRemote(client *ssh.Client, addr string, log *slog.Logger) (audit.ReadResult, error) {
 	var zero audit.ReadResult
 
 	sess, err := client.NewSession()
@@ -293,17 +314,30 @@ func readRemote(client *ssh.Client, addr string) (audit.ReadResult, error) {
 		}
 		code = exitErr.ExitStatus()
 	}
+	log.Debug("remote read done", "addr", addr, "exit", code)
+	return finishRead(code, stdout, stderr, addr, log)
+}
+
+// finishRead maps the remote command outcome (exit code + captured output)
+// to a ReadResult. Pure — unit-testable without a connection. Truncated
+// stdout is an error (a partial authorized_keys must never be diffed as
+// truth: missing tail keys would be misreported as drift); truncated stderr
+// is diagnostics only and is worth a WARN, not a failure.
+func finishRead(code int, stdout, stderr *cappedBuffer, addr string, log *slog.Logger) (audit.ReadResult, error) {
+	var zero audit.ReadResult
+	if stderr.truncated {
+		log.Warn(fmt.Sprintf("%s: remote stderr exceeded %d bytes; diagnostics truncated", addr, maxRemoteOutput))
+	}
 	absent, err := interpretExit(code, stderr.String())
 	if err != nil {
 		return zero, fmt.Errorf("remote read on %s: %w", addr, err)
 	}
 	if stdout.truncated {
-		// A truncated authorized_keys must never be diffed as truth: missing
-		// tail keys would be misreported as drift.
 		return zero, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to audit a truncated authorized_keys", addr)
 	}
 	if absent {
 		return audit.ReadResult{FileAbsent: true}, nil
 	}
+	log.Debug("read authorized_keys", "addr", addr, "bytes", stdout.buf.Len())
 	return audit.ReadResult{Content: stdout.Bytes()}, nil
 }
