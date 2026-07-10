@@ -186,3 +186,8 @@ The third, **`adopt`**, reads every server's actual `authorized_keys`
 through the audit pipeline and generates a complete manifest — unknown keys
 become users, known users' keys found beyond their grants extend access
 (specced in `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md`).
+CLI-wide leveled logging is in place: `-v/--verbose`, `-q/--quiet`, and
+`--color auto|always|never` on the root command, phase-level progress at
+normal verbosity, per-SSH-stage detail at debug, and a colorized audit
+report — all degrading to plain text on non-TTY/`NO_COLOR`/`TERM=dumb`
+(specced in `docs/superpowers/specs/2026-07-10-logging-verbosity-color-design.md`).

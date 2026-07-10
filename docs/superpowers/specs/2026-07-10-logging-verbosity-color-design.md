@@ -1,7 +1,7 @@
 # Design: leveled, color-aware logging (quiet / normal / debug)
 
 - **Date:** 2026-07-10
-- **Status:** Approved
+- **Status:** Implemented (2026-07-10) — see docs/superpowers/plans/2026-07-10-logging-verbosity-color.md
 - **Scope:** New package `internal/clog` (custom `slog.Handler` + color
   detection); persistent `-v/--verbose`, `-q/--quiet`, `--color` flags on the
   root command (`cmd/sshepherd`); `*slog.Logger` injection into

@@ -82,6 +82,7 @@ fuzz:
 	$(GO) test -run='^$$' -fuzz=FuzzParse -fuzztime=15s ./internal/sshcfg
 	$(GO) test -run='^$$' -fuzz=FuzzMatchGlob -fuzztime=15s ./internal/sshcfg
 	$(GO) test -run='^$$' -fuzz=FuzzExpand -fuzztime=15s ./internal/identity
+	$(GO) test -run='^$$' -fuzz=FuzzSanitize -fuzztime=15s ./internal/clog
 
 ## bench: run benchmarks
 bench:

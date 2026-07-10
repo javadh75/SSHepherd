@@ -26,7 +26,7 @@
 - Create: `internal/clog/leak_test.go`
 - Modify: `go.mod` / `go.sum` (add `golang.org/x/term`)
 
-- [ ] **Step 1: Add the `golang.org/x/term` dependency**
+- [x] **Step 1: Add the `golang.org/x/term` dependency**
 
 ```bash
 cd /Users/javad/w/personal/SSHepherd
@@ -36,7 +36,7 @@ go mod tidy
 
 Expected: `go.mod` gains `golang.org/x/term` in the require block (`x/sys` is already there, indirect via `x/crypto`).
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Create `internal/clog/leak_test.go`:
 
@@ -145,12 +145,12 @@ func TestEnabledWriterKinds(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./internal/clog/ -v 2>&1 | head -20`
 Expected: compile FAIL — `undefined: ColorMode`, `undefined: ParseColorMode`, etc.
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 Create `internal/clog/color.go`:
 
@@ -218,12 +218,12 @@ func enabled(mode ColorMode, isTTY bool, noColor, termEnv string) bool {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./internal/clog/ -v`
 Expected: PASS (all three tests).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add go.mod go.sum internal/clog/
@@ -239,7 +239,7 @@ git commit -m "feat(clog): color-mode parsing and per-stream color detection"
 - Create: `internal/clog/sanitize_test.go`
 - Create: `internal/clog/fuzz_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `internal/clog/sanitize_test.go`:
 
@@ -312,12 +312,12 @@ func FuzzSanitize(f *testing.F) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/clog/ -run TestSanitize -v 2>&1 | head -5`
 Expected: compile FAIL — `undefined: sanitize`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `internal/clog/sanitize.go`:
 
@@ -357,14 +357,14 @@ func sanitize(s string) string {
 }
 ```
 
-- [ ] **Step 4: Run tests + a short fuzz to verify**
+- [x] **Step 4: Run tests + a short fuzz to verify**
 
 Run: `go test ./internal/clog/ -run 'TestSanitize|FuzzSanitize' -v`
 Expected: PASS.
 Run: `go test -run='^$' -fuzz=FuzzSanitize -fuzztime=10s ./internal/clog`
 Expected: `ok` with no crashers.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/clog/sanitize.go internal/clog/sanitize_test.go internal/clog/fuzz_test.go
@@ -379,7 +379,7 @@ git commit -m "feat(clog): control-character sanitizer with fuzz coverage"
 - Create: `internal/clog/handler.go`
 - Create: `internal/clog/handler_test.go`
 
-- [ ] **Step 1: Write the failing tests (normal + verbose formats, sanitization, attrs)**
+- [x] **Step 1: Write the failing tests (normal + verbose formats, sanitization, attrs)**
 
 Create `internal/clog/handler_test.go`:
 
@@ -570,12 +570,12 @@ func TestHandlerConcurrent(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/clog/ -run TestHandler -v 2>&1 | head -5`
 Expected: compile FAIL — `undefined: NewHandler`, `undefined: Options`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `internal/clog/handler.go`:
 
@@ -721,12 +721,12 @@ func (h *Handler) appendAttr(b *bytes.Buffer, a slog.Attr) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/clog/ -race -v`
 Expected: PASS (formats, level gate, logger integration, group pass-through, concurrency).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/clog/handler.go internal/clog/handler_test.go
@@ -741,7 +741,7 @@ git commit -m "feat(clog): human-friendly color slog handler (normal + verbose f
 - Modify: `cmd/sshepherd/run.go`
 - Modify: `cmd/sshepherd/run_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `cmd/sshepherd/run_test.go`:
 
@@ -809,12 +809,12 @@ func TestFmtDur(t *testing.T) {
 
 Add `"time"` to the test file's imports.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./cmd/sshepherd/ -run 'TestRunFatal|TestRunVerbose|TestRunInvalidColor|TestRunColorAlways|TestFmtDur' -v 2>&1 | head -10`
 Expected: compile FAIL (`undefined: fmtDur`) — and after that's stubbed, assertion failures (`sshepherd: ` prefix instead of `error: `, unknown flags `-v`/`-q`/`--color`).
 
-- [ ] **Step 3: Rewrite `cmd/sshepherd/run.go`**
+- [x] **Step 3: Rewrite `cmd/sshepherd/run.go`**
 
 Replace the whole file with:
 
@@ -954,12 +954,12 @@ Note: subcommand constructors are untouched in this task; they adopt the
 logger in Tasks 6–8. The fatal line changes from `sshepherd: <err>` to
 `error: <err>` — existing tests only assert substrings, which survive.
 
-- [ ] **Step 4: Run the full cmd test suite**
+- [x] **Step 4: Run the full cmd test suite**
 
 Run: `go test ./cmd/sshepherd/ -race`
 Expected: PASS (new tests pass; all existing tests still pass — they assert substrings/exit codes, not the `sshepherd:` prefix).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/sshepherd/run.go cmd/sshepherd/run_test.go
@@ -976,11 +976,11 @@ git commit -m "feat(cmd): -v/-q/--color flags; logger built at flag parse; fatal
 - Create: `internal/audit/testdata/report_drift_color.golden`
 - Create: `internal/audit/testdata/report_critical_color.golden`
 
-- [ ] **Step 1: Update existing call sites to the new signature (mechanical)**
+- [x] **Step 1: Update existing call sites to the new signature (mechanical)**
 
 In `internal/audit/report_test.go`, every `Render(&buf, cfg, results)` becomes `Render(&buf, cfg, results, RenderOptions{})`. In `cmd/sshepherd/audit.go`, both `audit.Render(stdout, cfg, nil)` and `audit.Render(stdout, cfg, results)` become `audit.Render(stdout, cfg, nil, audit.RenderOptions{})` / `audit.Render(stdout, cfg, results, audit.RenderOptions{})` for now (the real color flag is wired in Task 6).
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 Append to `internal/audit/report_test.go`:
 
@@ -1021,7 +1021,7 @@ func TestRenderDriftColorGolden(t *testing.T) {
 
 Add `"regexp"` to the test file's imports.
 
-- [ ] **Step 3: Extract the drift fixture**
+- [x] **Step 3: Extract the drift fixture**
 
 `TestRenderDrift` currently builds its `[]ServerResult` inline. Extract that construction into a helper so the color tests reuse the exact same fixture:
 
@@ -1046,12 +1046,12 @@ func TestRenderCriticalColorGolden(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they fail**
+- [x] **Step 4: Run tests to verify they fail**
 
 Run: `go test ./internal/audit/ -run TestRender -v 2>&1 | head -10`
 Expected: compile FAIL — `undefined: RenderOptions`.
 
-- [ ] **Step 5: Implement the palette and color paths in `internal/audit/report.go`**
+- [x] **Step 5: Implement the palette and color paths in `internal/audit/report.go`**
 
 Add near the top of the file:
 
@@ -1145,7 +1145,7 @@ stays byte-identical (`head  ERROR: err`). Colored key words (`MISSING`,
 `CRITICAL`, `UNAUTHORIZED`) live only in the **last** tabwriter column,
 where unequal byte lengths cannot affect alignment.
 
-- [ ] **Step 6: Generate the color goldens, then verify everything**
+- [x] **Step 6: Generate the color goldens, then verify everything**
 
 Run: `go test ./internal/audit/ -run 'Golden' -update`
 Then inspect the new files — `testdata/report_drift_color.golden` must show
@@ -1153,7 +1153,7 @@ Then inspect the new files — `testdata/report_drift_color.golden` must show
 Run: `go test ./internal/audit/ ./cmd/sshepherd/ -race`
 Expected: PASS — including the three pre-existing plain goldens **unmodified** (`git status` must show no changes to `report_compliant.golden`, `report_drift.golden`, `report_critical.golden`).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/audit/report.go internal/audit/report_test.go internal/audit/testdata/ cmd/sshepherd/audit.go
@@ -1171,7 +1171,7 @@ git commit -m "feat(audit): colorized report behind RenderOptions; tabwriter-saf
 - Modify: `cmd/sshepherd/run.go` (pass `a` to `newAuditCmd`)
 - Modify: `cmd/sshepherd/audit_test.go`
 
-- [ ] **Step 1: Write the failing package test (audit fan-out logging)**
+- [x] **Step 1: Write the failing package test (audit fan-out logging)**
 
 Append to `internal/audit/audit_test.go` (it already has a fake `KeyReader`; reuse the existing fake, shown here as `fakeReader` — adapt the name to the file's actual fake):
 
@@ -1222,12 +1222,12 @@ func (f readerFunc) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (
 
 Imports to add: `bytes`, `errors`, `log/slog`, `strings`, and `github.com/javadh75/SSHepherd/internal/clog`.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test ./internal/audit/ -run TestRunLogs -v 2>&1 | head -5`
 Expected: compile FAIL — `unknown field Logger in struct literal`.
 
-- [ ] **Step 3: Implement logging in `internal/audit/audit.go`**
+- [x] **Step 3: Implement logging in `internal/audit/audit.go`**
 
 Add `"fmt"` and `"log/slog"` to imports. Extend `Options` and thread the logger:
 
@@ -1274,12 +1274,12 @@ log.Debug("audited", "server", srv.Name, "dur", time.Since(start).Round(time.Mil
 return res
 ```
 
-- [ ] **Step 4: Run package tests**
+- [x] **Step 4: Run package tests**
 
 Run: `go test ./internal/audit/ -race`
 Expected: PASS.
 
-- [ ] **Step 5: Write the failing cmd tests**
+- [x] **Step 5: Write the failing cmd tests**
 
 Append to `cmd/sshepherd/audit_test.go` (there is a `writeManifest`-style helper already in the cmd test files for creating temp manifests — reuse whatever helper `TestAuditEmptyFleet` uses; shown here inline):
 
@@ -1335,12 +1335,12 @@ func TestAuditVerboseFormat(t *testing.T) {
 
 (Imports: these files already use `bytes`/`strings`; add `os`/`filepath` if missing.)
 
-- [ ] **Step 6: Run to verify failure**
+- [x] **Step 6: Run to verify failure**
 
 Run: `go test ./cmd/sshepherd/ -run TestAuditPhase -v 2>&1 | head -5`
 Expected: FAIL — no phase line on stderr yet.
 
-- [ ] **Step 7: Wire the audit command**
+- [x] **Step 7: Wire the audit command**
 
 In `cmd/sshepherd/run.go`, change `root.AddCommand(newAuditCmd(stdout))` to `root.AddCommand(newAuditCmd(a, stdout))`.
 
@@ -1401,12 +1401,12 @@ RunE: func(cmd *cobra.Command, _ []string) error {
 },
 ```
 
-- [ ] **Step 8: Run the suites**
+- [x] **Step 8: Run the suites**
 
 Run: `go test ./cmd/sshepherd/ ./internal/audit/ -race`
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add cmd/sshepherd/run.go cmd/sshepherd/audit.go cmd/sshepherd/audit_test.go internal/audit/
@@ -1421,7 +1421,7 @@ git commit -m "feat(audit): phase-level progress at INFO, live per-server WARN/D
 - Modify: `internal/sshread/sshread.go`
 - Modify: `internal/sshread/sshread_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `internal/sshread/sshread_test.go`:
 
@@ -1483,12 +1483,12 @@ func TestFinishRead(t *testing.T) {
 
 Imports to add in the test file: `bytes`, `log/slog`, `strings` (if missing), and `github.com/javadh75/SSHepherd/internal/clog`.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test ./internal/sshread/ -run 'TestClientLogNil|TestFinishRead' -v 2>&1 | head -5`
 Expected: compile FAIL — `c.log undefined`, `undefined: finishRead`.
 
-- [ ] **Step 3: Implement in `internal/sshread/sshread.go`**
+- [x] **Step 3: Implement in `internal/sshread/sshread.go`**
 
 Add `"log/slog"` to imports. Extend `Client`:
 
@@ -1598,12 +1598,12 @@ Then set the field at the two construction sites: in `cmd/sshepherd/audit.go`
 add `Log: log,` to the `sshread.Client{…}` literal (Task 6 already put `log`
 in scope); `readFleet` in adopt.go is handled in Task 8.
 
-- [ ] **Step 4: Run the suites**
+- [x] **Step 4: Run the suites**
 
 Run: `go test ./internal/sshread/ ./cmd/sshepherd/ -race`
 Expected: PASS. Also run `go vet ./...` — clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/sshread/ cmd/sshepherd/audit.go
@@ -1619,7 +1619,7 @@ git commit -m "feat(sshread): per-stage debug telemetry; stderr truncation warns
 - Modify: `cmd/sshepherd/adopt_test.go`
 - Modify: `cmd/sshepherd/run.go` (pass `a` to `newAdoptCmd`)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `cmd/sshepherd/adopt_test.go` (reuse its existing empty-fleet manifest helper):
 
@@ -1651,12 +1651,12 @@ Existing assertions that must keep passing after migration (verify, don't delete
 - `adopt_test.go:322` — strict-gate stderr contains `web-1` and `--partial` (now `error: server web-1: …` / `error: 1 server(s) could not be fully read — nothing written; fix the errors above or re-run with --partial`).
 - `adopt_test.go:340` — "on the readable servers".
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `go test ./cmd/sshepherd/ -run TestAdoptQuiet -v 2>&1 | head -5`
 Expected: FAIL — stderr not empty (the note prints regardless of -q today).
 
-- [ ] **Step 3: Migrate `cmd/sshepherd/adopt.go` to the logger**
+- [x] **Step 3: Migrate `cmd/sshepherd/adopt.go` to the logger**
 
 Change signatures: `func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command`; in run.go `root.AddCommand(newAdoptCmd(a, stdout))`.
 
@@ -1762,12 +1762,12 @@ if len(unreadable) > 0 {
 And `reportPlan(stderr, plan, unreadable)` becomes `reportPlan(log, plan, unreadable)`.
 Add `"log/slog"` and `"time"` to imports; drop `"io"` if now unused.
 
-- [ ] **Step 4: Run the suite**
+- [x] **Step 4: Run the suite**
 
 Run: `go test ./cmd/sshepherd/ -race`
 Expected: PASS — including the pre-existing strict-gate and note tests listed in Step 1.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/sshepherd/run.go cmd/sshepherd/adopt.go cmd/sshepherd/adopt_test.go
@@ -1783,7 +1783,7 @@ git commit -m "feat(adopt): diagnostics through the leveled logger; fleet-read p
 - Modify: `cmd/sshepherd/import_test.go`
 - Modify: `cmd/sshepherd/run.go` (pass `a` to `newImportCmd`)
 
-- [ ] **Step 1: Update the three empty-stderr assertions (they now see INFO lines)**
+- [x] **Step 1: Update the three empty-stderr assertions (they now see INFO lines)**
 
 In `cmd/sshepherd/import_test.go`:
 - The clean-import test at ~line 200 (`errBuf.Len() != 0 … "want empty for a clean import"`): add `"-q"` to the `run` args and keep the empty assertion — it becomes the quiet-mode e2e proof for import.
@@ -1795,7 +1795,7 @@ if strings.Contains(errBuf.String(), "warn:") || strings.Contains(errBuf.String(
 }
 ```
 
-- [ ] **Step 2: Write the failing phase-log test**
+- [x] **Step 2: Write the failing phase-log test**
 
 Append to `cmd/sshepherd/import_test.go` (reuse the file's existing ssh-config fixture helper, the one used by the clean-import test):
 
@@ -1813,12 +1813,12 @@ func TestImportPhaseLogs(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run to verify failure**
+- [x] **Step 3: Run to verify failure**
 
 Run: `go test ./cmd/sshepherd/ -run TestImport -v 2>&1 | head -20`
 Expected: FAIL — the `-q` test fails (INFO would…) actually at this point `-q` passes vacuously (no INFO yet) but `TestImportPhaseLogs` FAILS (no phase line yet). That failing test drives the change.
 
-- [ ] **Step 4: Migrate `cmd/sshepherd/import.go`**
+- [x] **Step 4: Migrate `cmd/sshepherd/import.go`**
 
 Signature `func newImportCmd(a *app, stdout io.Writer) *cobra.Command`; in run.go `root.AddCommand(newImportCmd(a, stdout))`. In `RunE`, delete `stderr := cmd.ErrOrStderr()` and use the logger:
 
@@ -1855,12 +1855,12 @@ for _, n := range notes {
 
 Rest of `RunE` unchanged. Drop unused imports if any.
 
-- [ ] **Step 5: Run the full cmd suite**
+- [x] **Step 5: Run the full cmd suite**
 
 Run: `go test ./cmd/sshepherd/ -race`
 Expected: PASS — including the updated warn-substring tests (`nouser`, `no access derived` still appear, now behind `warn: `).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add cmd/sshepherd/run.go cmd/sshepherd/import.go cmd/sshepherd/import_test.go
@@ -1883,7 +1883,7 @@ completeness impact).
 - Modify: `CLAUDE.md`
 - Modify: `docs/superpowers/specs/2026-07-10-logging-verbosity-color-design.md`
 
-- [ ] **Step 1: Add the clog fuzzer to `make fuzz`**
+- [x] **Step 1: Add the clog fuzzer to `make fuzz`**
 
 In the `fuzz:` target, append:
 
@@ -1894,7 +1894,7 @@ In the `fuzz:` target, append:
 Run: `make fuzz`
 Expected: all six fuzzers pass 15s runs (watch the new FuzzSanitize line).
 
-- [ ] **Step 2: Run the full gate**
+- [x] **Step 2: Run the full gate**
 
 ```bash
 make check && make coverage
@@ -1906,7 +1906,7 @@ Likely trip points and fixes:
 - `golangci-lint` `wrapcheck` on new cross-package error returns: wrap with `fmt.Errorf("…: %w", err)` at the cmd boundary (already done for `--color`).
 - `gitleaks`: nothing new should trip; goldens contain only test keys already in-repo.
 
-- [ ] **Step 3: Update docs**
+- [x] **Step 3: Update docs**
 
 - Spec: flip `- **Status:** Approved` to `- **Status:** Implemented (2026-07-10) — see docs/superpowers/plans/2026-07-10-logging-verbosity-color.md`.
 - `CLAUDE.md` Status section: append one sentence to the existing paragraph:
@@ -1919,7 +1919,7 @@ report — all degrading to plain text on non-TTY/`NO_COLOR`/`TERM=dumb`
 (specced in `docs/superpowers/specs/2026-07-10-logging-verbosity-color-design.md`).
 ```
 
-- [ ] **Step 4: Manual smoke (eyes on the real thing)**
+- [x] **Step 4: Manual smoke (eyes on the real thing)**
 
 ```bash
 go build -o bin/sshepherd ./cmd/sshepherd
@@ -1929,7 +1929,7 @@ go build -o bin/sshepherd ./cmd/sshepherd
 NO_COLOR=1 ./bin/sshepherd --color=auto; echo                # plain error line, no escapes
 ```
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 ```bash
 git add Makefile CLAUDE.md docs/superpowers/specs/2026-07-10-logging-verbosity-color-design.md
