@@ -73,12 +73,13 @@ var defaultIdentityNames = []string{
 // User is one generated manifest user: a single public key and the host
 // aliases that use it, in first-appearance order.
 type User struct {
-	Name    string   // <LocalUser>-<key file basename>, -2/-3/… on collision
-	Source  string   // IdentityFile value as written (defaults: ~/.ssh/<name>)
-	Default bool     // found by the default-identity scan, not an explicit IdentityFile
-	Comment string   // trailing comment of the .pub, "" when none
-	Key     string   // the full public key line from the .pub
-	Servers []string // granted aliases, appearance order
+	Name     string   // <LocalUser>-<key file basename>, -2/-3/… on collision
+	Source   string   // IdentityFile value as written (defaults: ~/.ssh/<name>)
+	Default  bool     // found by the default-identity scan, not an explicit IdentityFile
+	Operator bool     // marked via --operator: fleet-wide grant, no access entry
+	Comment  string   // trailing comment of the .pub, "" when none
+	Key      string   // the full public key line from the .pub
+	Servers  []string // granted aliases, appearance order
 }
 
 // candidate is one identity to try: the expanded private-key path plus the
@@ -202,20 +203,101 @@ func (res *resolution) grant(c candidate, alias string) bool {
 	return true
 }
 
-// name assigns <LocalUser>-<base>, appending -2, -3, … when a different key
-// already claimed the name.
-func (res *resolution) name(base string) string {
-	name := res.r.LocalUser + "-" + base
-	if !res.taken[name] {
-		res.taken[name] = true
-		return name
+// claimName reserves name in taken, suffixing -2, -3, … when already claimed.
+// The second return reports whether a suffix was needed.
+func claimName(taken map[string]bool, name string) (string, bool) {
+	if !taken[name] {
+		taken[name] = true
+		return name, false
 	}
 	for n := 2; ; n++ {
 		cand := fmt.Sprintf("%s-%d", name, n)
-		if !res.taken[cand] {
-			res.taken[cand] = true
-			res.warnf("user name %q already taken by another key, using %q", name, cand)
-			return cand
+		if !taken[cand] {
+			taken[cand] = true
+			return cand, true
 		}
 	}
+}
+
+// name assigns <LocalUser>-<base>, appending -2, -3, … when a different key
+// already claimed the name.
+func (res *resolution) name(base string) string {
+	want := res.r.LocalUser + "-" + base
+	got, collided := claimName(res.taken, want)
+	if collided {
+		res.warnf("user name %q already taken by another key, using %q", want, got)
+	}
+	return got
+}
+
+// MarkOperators flags the users owning the given key files as operators,
+// appending a new grantless operator user for any key no resolved host uses
+// (operator means "every server" regardless of what the config references).
+// Paths expand like IdentityFile values and may name the private key or the
+// .pub; only the .pub is ever read. Unlike Resolve, failures are errors, not
+// warnings — the operator named these keys explicitly. Repeated paths that
+// resolve to the same key dedupe silently.
+//
+// MarkOperators modifies users in place (matched entries gain Operator) and
+// returns the possibly-grown slice. A created user whose name collides with
+// an existing one is suffixed -2, -3, … silently — the manifest is a
+// reviewed draft, and both users remain visible in it.
+func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
+	byFP := make(map[string]int, len(users))
+	taken := make(map[string]bool, len(users))
+	for i, u := range users {
+		k, err := authkeys.ParseLine(u.Key)
+		if err != nil {
+			return nil, fmt.Errorf("user %q: invalid key line (bug: Resolve validated it): %w", u.Name, err)
+		}
+		if k == nil {
+			return nil, fmt.Errorf("user %q: invalid key line (bug: Resolve validated it): blank entry", u.Name)
+		}
+		byFP[k.Fingerprint] = i
+		taken[u.Name] = true
+	}
+	seen := make(map[string]bool, len(paths))
+	for _, raw := range paths {
+		p, err := r.expand(raw)
+		if err != nil {
+			return nil, fmt.Errorf("operator key %q: %w", raw, err)
+		}
+		pubPath := p + ".pub"
+		if strings.HasSuffix(p, ".pub") {
+			pubPath = p
+			p = strings.TrimSuffix(p, ".pub")
+		}
+		data, err := os.ReadFile(pubPath) // #nosec G304 -- path is the user's own --operator flag
+		if err != nil {
+			return nil, fmt.Errorf("operator key %q: %w (only .pub files are read)", raw, err)
+		}
+		line := strings.TrimSpace(string(data))
+		if strings.ContainsAny(line, "\r\n") {
+			return nil, fmt.Errorf("operator key %q: %s contains a line break", raw, pubPath)
+		}
+		k, err := authkeys.ParseLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("operator key %q: %s is not a valid public key: %w", raw, pubPath, err)
+		}
+		if k == nil {
+			return nil, fmt.Errorf("operator key %q: %s is not a valid public key", raw, pubPath)
+		}
+		if seen[k.Fingerprint] {
+			continue
+		}
+		seen[k.Fingerprint] = true
+		if i, ok := byFP[k.Fingerprint]; ok {
+			users[i].Operator = true
+			continue
+		}
+		name, _ := claimName(taken, r.LocalUser+"-"+filepath.Base(p))
+		users = append(users, User{
+			Name:     name,
+			Source:   raw,
+			Operator: true,
+			Comment:  k.Comment,
+			Key:      line,
+		})
+	}
+	return users, nil
 }

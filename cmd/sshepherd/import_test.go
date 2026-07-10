@@ -65,9 +65,12 @@ func TestGenerateManifestUsersGolden(t *testing.T) {
 		{Name: "javad-work", Source: "~/.ssh/work",
 			Key: testkeys.Line(t, 2), Servers: []string{"web-1", "ci"}},
 	}
-	got, skipped, err := generateManifest(hosts, users, "~/.ssh/config")
-	if err != nil || len(skipped) != 0 {
-		t.Fatalf("generateManifest: skipped %v, err %v", skipped, err)
+	got, notes, err := generateManifest(hosts, users, "~/.ssh/config")
+	if err != nil {
+		t.Fatalf("generateManifest: %v", err)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "wildcard") {
+		t.Errorf("notes = %v, want one wildcard-compaction note for javad-work", notes)
 	}
 	c, err := config.Parse(got)
 	if err != nil {
@@ -77,6 +80,59 @@ func TestGenerateManifestUsersGolden(t *testing.T) {
 		t.Errorf("DesiredFor(web-1) = %d keys, want 2", n)
 	}
 	checkGolden(t, "import_manifest_users.golden", got)
+}
+
+func TestGenerateManifestOperatorGolden(t *testing.T) {
+	hosts := []sshcfg.Host{
+		{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"},
+		{Alias: "ci", HostName: "ci.internal", User: "git"},
+	}
+	users := []identity.User{
+		// Matched operator (also a default identity): keeps its description
+		// suffix, gains operator: true, loses its access entry.
+		{Name: "javad-id_ed25519", Source: "~/.ssh/id_ed25519", Default: true, Operator: true,
+			Key: testkeys.Line(t, 1), Servers: []string{"web-1", "ci"}},
+		// Created by --operator: grantless, gets the (--operator) description.
+		{Name: "javad-spare", Source: "~/.ssh/spare", Operator: true,
+			Key: testkeys.Line(t, 2)},
+		// Plain user, partial coverage: explicit list, no compaction.
+		{Name: "javad-work", Source: "~/.ssh/work",
+			Key: testkeys.Line(t, 3), Servers: []string{"web-1"}},
+	}
+	got, notes, err := generateManifest(hosts, users, "~/.ssh/config")
+	if err != nil {
+		t.Fatalf("generateManifest: %v", err)
+	}
+	if len(notes) != 0 {
+		t.Errorf("notes = %v, want none (operators never compact; javad-work doesn't cover the fleet)", notes)
+	}
+	c, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("generated manifest rejected by config.Parse: %v", err)
+	}
+	if n := len(c.DesiredFor("ci")); n != 2 {
+		t.Errorf("DesiredFor(ci) = %d keys, want 2 (both operators, no access entries)", n)
+	}
+	if strings.Contains(string(got), "user: javad-id_ed25519") {
+		t.Errorf("operator must not get an access entry:\n%s", got)
+	}
+	if !strings.Contains(string(got), "(--operator)") {
+		t.Errorf("created operator lacks the (--operator) description:\n%s", got)
+	}
+	checkGolden(t, "import_manifest_operators.golden", got)
+}
+
+func TestGenerateManifestNoCompactionSingleServer(t *testing.T) {
+	hosts := []sshcfg.Host{{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"}}
+	users := []identity.User{{Name: "javad-work", Source: "~/.ssh/work",
+		Key: testkeys.Line(t, 1), Servers: []string{"web-1"}}}
+	got, notes, err := generateManifest(hosts, users, "x")
+	if err != nil || len(notes) != 0 {
+		t.Fatalf("notes %v, err %v — a single-server fleet says nothing about \"everywhere\"", notes, err)
+	}
+	if strings.Contains(string(got), `"*"`) {
+		t.Errorf("single-server fleet compacted to wildcard:\n%s", got)
+	}
 }
 
 func TestGenerateManifestEmpty(t *testing.T) {
@@ -289,5 +345,61 @@ func TestGenerateManifestQuotesSpecialChars(t *testing.T) {
 	}
 	if len(c.Users) != 1 || c.Users[0].Comment != "note: primary #key" {
 		t.Errorf("round-tripped users = %+v, want the comment preserved exactly", c.Users)
+	}
+}
+
+func TestImportOperator(t *testing.T) {
+	home := hermeticHome(t)
+	referenced := filepath.Join(home, "work")
+	if err := os.WriteFile(referenced+".pub", []byte(testkeys.Line(t, 1)+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	spare := filepath.Join(home, "spare")
+	if err := os.WriteFile(spare+".pub", []byte(testkeys.Line(t, 2)+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n  IdentityFile "+referenced+"\n")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"import", cfg, "--operator", referenced, "--operator", spare}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	c, err := config.Parse(out.Bytes())
+	if err != nil {
+		t.Fatalf("stdout is not a valid manifest: %v", err)
+	}
+	if n := len(c.DesiredFor("web-1")); n != 2 {
+		t.Errorf("DesiredFor(web-1) = %d keys, want 2 (both operators)", n)
+	}
+	if !strings.Contains(out.String(), "operator: true") {
+		t.Errorf("stdout = %q, want operator: true", out.String())
+	}
+	if strings.Contains(out.String(), "user: "+localUsername()+"-work") {
+		t.Errorf("stdout = %q, an operator must not get an access entry", out.String())
+	}
+	if !strings.Contains(out.String(), "(--operator)") {
+		t.Errorf("stdout = %q, want the (--operator) description on the created user", out.String())
+	}
+}
+
+func TestImportOperatorConflictsServersOnly(t *testing.T) {
+	hermeticHome(t)
+	cfg := writeSSHConfig(t, "Host a\n  User u\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--servers-only", "--operator", "x"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "--servers-only") {
+		t.Errorf("stderr = %q, want a conflict message naming --servers-only", errBuf.String())
+	}
+}
+
+func TestImportOperatorMissingKey(t *testing.T) {
+	home := hermeticHome(t)
+	cfg := writeSSHConfig(t, "Host a\n  User u\n")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"import", cfg, "--operator", filepath.Join(home, "nope")}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (an explicitly named operator key must exist)", code)
 	}
 }

@@ -347,6 +347,95 @@ func TestResolveMixedHost(t *testing.T) {
 	}
 }
 
+func TestMarkOperators(t *testing.T) {
+	home := t.TempDir()
+	r := Resolver{Home: home, LocalUser: "javad"}
+	write := func(name, line string) string {
+		t.Helper()
+		p := filepath.Join(home, name)
+		if err := os.WriteFile(p+".pub", []byte(line+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+	matched := write("work", testkeys.Line(t, 1))
+	created := write("spare", testkeys.Line(t, 2)+" spare@laptop")
+
+	users := []User{{Name: "javad-work", Source: "~/.ssh/work",
+		Key: testkeys.Line(t, 1), Servers: []string{"web-1"}}}
+	got, err := r.MarkOperators(users, []string{matched, created, created}) // repeat must dedupe
+	if err != nil {
+		t.Fatalf("MarkOperators: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("users = %d, want 2 (matched + created, repeat deduped)", len(got))
+	}
+	if !got[0].Operator || got[0].Name != "javad-work" || len(got[0].Servers) != 1 {
+		t.Errorf("matched user = %+v, want operator javad-work keeping its servers", got[0])
+	}
+	u := got[1]
+	if !u.Operator || u.Name != "javad-spare" || u.Source != created ||
+		u.Comment != "spare@laptop" || len(u.Servers) != 0 {
+		t.Errorf("created user = %+v, want grantless operator javad-spare", u)
+	}
+}
+
+func TestMarkOperatorsPubSuffixAndTilde(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pub := filepath.Join(home, ".ssh", "id_ed25519.pub")
+	if err := os.WriteFile(pub, []byte(testkeys.Line(t, 1)+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	r := Resolver{Home: home, LocalUser: "javad"}
+	got, err := r.MarkOperators(nil, []string{"~/.ssh/id_ed25519.pub"})
+	if err != nil {
+		t.Fatalf("MarkOperators: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "javad-id_ed25519" || !got[0].Operator {
+		t.Fatalf("users = %+v, want one operator javad-id_ed25519", got)
+	}
+}
+
+func TestMarkOperatorsErrors(t *testing.T) {
+	home := t.TempDir()
+	bad := filepath.Join(home, "bad")
+	if err := os.WriteFile(bad+".pub", []byte("not a key\n"), 0o600); err != nil {
+		t.Fatalf("write bad pub: %v", err)
+	}
+	r := Resolver{Home: home, LocalUser: "javad"}
+	for name, path := range map[string]string{
+		"missing file":      filepath.Join(home, "nope"),
+		"invalid key":       bad,
+		"unsupported token": "%h/key",
+	} {
+		if _, err := r.MarkOperators(nil, []string{path}); err == nil {
+			t.Errorf("%s: MarkOperators succeeded, want error (operator keys are named explicitly)", name)
+		}
+	}
+}
+
+func TestMarkOperatorsNameCollision(t *testing.T) {
+	home := t.TempDir()
+	p := filepath.Join(home, "work")
+	if err := os.WriteFile(p+".pub", []byte(testkeys.Line(t, 2)+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	// A different key already claimed javad-work.
+	users := []User{{Name: "javad-work", Source: "~/other/work",
+		Key: testkeys.Line(t, 1), Servers: []string{"s"}}}
+	r := Resolver{Home: home, LocalUser: "javad"}
+	got, err := r.MarkOperators(users, []string{p})
+	if err != nil {
+		t.Fatalf("MarkOperators: %v", err)
+	}
+	if len(got) != 2 || got[1].Name != "javad-work-2" {
+		t.Fatalf("users = %+v, want created operator javad-work-2", got)
+	}
+}
+
 // FuzzExpand asserts expand never panics and never returns both a value and
 // an error, for arbitrary input.
 func FuzzExpand(f *testing.F) {

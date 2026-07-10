@@ -28,6 +28,7 @@ type userOut struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description,omitempty"`
 	Comment     string   `yaml:"comment,omitempty"`
+	Operator    bool     `yaml:"operator,omitempty"`
 	Keys        []string `yaml:"keys"`
 }
 
@@ -51,13 +52,15 @@ func serverWorthy(h sshcfg.Host) bool { return h.User != "" }
 // src is the config path as the user typed it (kept in the header comment;
 // the expanded form would leak the local home directory into a committed
 // file). Hosts with no resolved User cannot form a valid server entry and are
-// returned as skip notes instead. users may be nil (--servers-only).
+// returned as notes instead. users may be nil (--servers-only). notes also
+// covers wildcard-compaction: a non-operator user covering every server is
+// emitted as servers: ["*"] and noted for review.
 func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([]byte, []string, error) {
 	m := manifestOut{Users: []userOut{}, Servers: []serverOut{}, Access: []accessOut{}}
-	var skipped []string
+	var notes []string
 	for _, h := range hosts {
 		if !serverWorthy(h) {
-			skipped = append(skipped, fmt.Sprintf(
+			notes = append(notes, fmt.Sprintf(
 				"host %q: no User resolved, skipped (the manifest requires user)", h.Alias))
 			continue
 		}
@@ -67,18 +70,35 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 		}
 		m.Servers = append(m.Servers, s)
 	}
-	// Resolve guarantees every user has ≥1 server (RunE passes only server-worthy hosts).
+	// Resolve guarantees every derived user has ≥1 server; only users added
+	// via --operator are grantless (their fleet-wide grant is implied).
 	for _, u := range users {
 		desc := "imported from " + u.Source
-		if u.Default {
+		switch {
+		case u.Operator && len(u.Servers) == 0:
+			desc += " (--operator)"
+		case u.Default:
 			desc += " (default identity)"
 		}
 		m.Users = append(m.Users, userOut{
 			Name:        u.Name,
 			Description: desc,
 			Comment:     u.Comment,
+			Operator:    u.Operator,
 			Keys:        []string{u.Key},
 		})
+		if u.Operator {
+			continue // fleet-wide grant is implied; no access entry
+		}
+		if len(m.Servers) >= 2 && len(u.Servers) == len(m.Servers) {
+			// Grants only reference server-worthy hosts, so matching the count
+			// means covering the fleet. "*" deliberately opts this user into
+			// servers added later — flagged so review catches it.
+			notes = append(notes, fmt.Sprintf(
+				"access for %q covers every server; emitted as wildcard %q (includes servers added later)", u.Name, "*"))
+			m.Access = append(m.Access, accessOut{User: u.Name, Servers: []string{"*"}})
+			continue
+		}
 		m.Access = append(m.Access, accessOut{User: u.Name, Servers: u.Servers})
 	}
 	var buf bytes.Buffer
@@ -91,7 +111,33 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 	if err := enc.Close(); err != nil {
 		return nil, nil, fmt.Errorf("encode manifest: %w", err)
 	}
-	return buf.Bytes(), skipped, nil
+	return buf.Bytes(), notes, nil
+}
+
+// resolveUsers derives identity users for hosts that resolved a server entry,
+// then marks any --operator keys. Resolve failures are warnings (returned
+// alongside the users); MarkOperators failures are errors, since operator
+// keys are named explicitly on the command line.
+func resolveUsers(hosts []sshcfg.Host, operators []string) ([]identity.User, []string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve home for identities: %w", err)
+	}
+	var withUser []sshcfg.Host
+	for _, h := range hosts {
+		if serverWorthy(h) { // hosts skipped as servers must not derive grants
+			withUser = append(withUser, h)
+		}
+	}
+	r := identity.Resolver{Home: home, LocalUser: localUsername()}
+	users, warnings := r.Resolve(withUser)
+	if len(operators) > 0 {
+		users, err = r.MarkOperators(users, operators)
+		if err != nil {
+			return nil, nil, fmt.Errorf("operator keys: %w", err)
+		}
+	}
+	return users, warnings, nil
 }
 
 const defaultSSHConfig = "~/.ssh/config"
@@ -112,6 +158,7 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 		outPath     string
 		force       bool
 		serversOnly bool
+		operators   []string
 	)
 	cmd := &cobra.Command{
 		Use:   "import [ssh-config-path]",
@@ -122,9 +169,14 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 			"IdentityFile (or ssh's default identities when none is set) by reading the\n" +
 			"matching .pub files on this machine — run import where you actually ssh\n" +
 			"from, and review the result before use. Private keys are never read.\n" +
+			"Keys named via --operator become operator users: granted every server\n" +
+			"implicitly (no access entry) and protected from removal by future apply.\n" +
 			"Warnings about skipped entries go to stderr.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if serversOnly && len(operators) > 0 {
+				return fmt.Errorf("--operator conflicts with --servers-only (operators are users)")
+			}
 			src := defaultSSHConfig
 			if len(args) == 1 {
 				src = args[0]
@@ -143,29 +195,21 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 			}
 			var users []identity.User
 			if !serversOnly {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return fmt.Errorf("resolve home for identities: %w", err)
-				}
-				var withUser []sshcfg.Host
-				for _, h := range hosts {
-					if serverWorthy(h) { // hosts skipped as servers must not derive grants
-						withUser = append(withUser, h)
-					}
-				}
-				r := identity.Resolver{Home: home, LocalUser: localUsername()}
 				var idWarnings []string
-				users, idWarnings = r.Resolve(withUser)
+				users, idWarnings, err = resolveUsers(hosts, operators)
+				if err != nil {
+					return err
+				}
 				for _, w := range idWarnings {
 					fmt.Fprintln(stderr, "warning:", w)
 				}
 			}
-			manifest, skipped, err := generateManifest(hosts, users, src)
+			manifest, notes, err := generateManifest(hosts, users, src)
 			if err != nil {
 				return err
 			}
-			for _, s := range skipped {
-				fmt.Fprintln(stderr, "warning:", s)
+			for _, n := range notes {
+				fmt.Fprintln(stderr, "warning:", n)
 			}
 			// Self-check: never emit a manifest our own loader would reject.
 			if _, err := config.Parse(manifest); err != nil {
@@ -183,6 +227,8 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
 	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "leave the users and access sections empty (skip identity resolution)")
+	cmd.Flags().StringArrayVar(&operators, "operator", nil,
+		"key file whose owner is an operator: granted every server and protected from removal (repeatable)")
 	return cmd
 }
 
