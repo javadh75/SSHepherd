@@ -9,7 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/clog"
+	"github.com/javadh75/SSHepherd/internal/config"
 )
 
 // version is the binary version, overridden at build time via
@@ -55,6 +57,24 @@ func fmtDur(d time.Duration) string {
 		return d.Round(time.Millisecond).String()
 	}
 	return d.Round(100 * time.Millisecond).String()
+}
+
+// logFleetReadDone logs the shared fleet-read summary line once a
+// fan-out read returns, tallying how many servers came back with an
+// error. A fleet with no servers never started a read phase, so it
+// logs nothing.
+func logFleetReadDone(log *slog.Logger, cfg *config.Config, results []audit.ServerResult, start time.Time) {
+	if len(cfg.Servers) == 0 {
+		return
+	}
+	var unreachable int
+	for _, r := range results {
+		if r.Err != nil {
+			unreachable++
+		}
+	}
+	log.Info(fmt.Sprintf("done in %s — %d read, %d unreachable",
+		fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
 }
 
 // run is the testable entrypoint: it builds the Cobra tree, executes it

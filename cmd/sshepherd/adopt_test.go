@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/adopt"
 	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -242,6 +244,21 @@ func TestAdoptQuietKeepsProduct(t *testing.T) {
 	}
 }
 
+// TestReportPlanPositiveOutcome pins the adopting-summary line and its
+// mutual exclusion with the nothing-to-adopt note.
+func TestReportPlanPositiveOutcome(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(clog.NewHandler(&buf, clog.Options{Level: slog.LevelInfo}))
+	reportPlan(log, adopt.Plan{NewUsers: []adopt.NewUser{{Name: "u1"}}}, nil)
+	got := buf.String()
+	if !strings.Contains(got, "adopting 1 new users, 0 access extensions") {
+		t.Errorf("log = %q, want the adopting summary", got)
+	}
+	if strings.Contains(got, "nothing to adopt") {
+		t.Errorf("log = %q, positive path must not emit the nothing-to-adopt note", got)
+	}
+}
+
 func TestAdoptOutputFileNoClobber(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	src := writeConfig(t, "")
@@ -345,6 +362,21 @@ servers:
 	}
 	if !strings.Contains(errBuf.String(), "--partial") || !strings.Contains(errBuf.String(), "web-1") {
 		t.Errorf("stderr = %q, want the per-server error and a --partial hint", errBuf.String())
+	}
+
+	// -q suppresses the phase narration but the per-issue ERRORs and the
+	// strict abort must survive quiet mode.
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{"adopt", "-q", "--config", path, "--known-hosts", kh}, &out, &errBuf)
+	if code != 1 {
+		t.Fatalf("-q strict exit = %d, want 1 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "web-1") {
+		t.Errorf("stderr = %q, want the per-server error to survive -q", errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "reading") {
+		t.Errorf("stderr = %q, phase lines must be suppressed under -q", errBuf.String())
 	}
 
 	out.Reset()

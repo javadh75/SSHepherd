@@ -96,23 +96,6 @@ func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownH
 	}), nil
 }
 
-// logFleetReadDone logs the fleet-read summary line once readFleet returns,
-// tallying how many servers came back with an error. A fleet with no
-// servers never started a read phase, so it logs nothing.
-func logFleetReadDone(log *slog.Logger, cfg *config.Config, results []audit.ServerResult, start time.Time) {
-	if len(cfg.Servers) == 0 {
-		return
-	}
-	var unreachable int
-	for _, r := range results {
-		if r.Err != nil {
-			unreachable++
-		}
-	}
-	log.Info(fmt.Sprintf("done in %s — %d read, %d unreachable",
-		fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
-}
-
 // reportUnreadable logs each unreadable-server issue (warn under --partial,
 // error otherwise) and, absent --partial, escalates to the strict abort: a
 // draft generated from a partial read under-represents reality, so a later

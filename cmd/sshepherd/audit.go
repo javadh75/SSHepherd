@@ -69,14 +69,7 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				PerServerTimeout: perServerTimeout,
 				Logger:           log,
 			})
-			var unreachable int
-			for _, r := range results {
-				if r.Err != nil {
-					unreachable++
-				}
-			}
-			log.Info(fmt.Sprintf("done in %s — %d read, %d unreachable",
-				fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
+			logFleetReadDone(log, cfg, results, start)
 			audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor})
 			if audit.ExitCode(results) != 0 {
 				return errNonCompliant
