@@ -171,7 +171,7 @@ including corporate use, while protecting contributors and users).
 
 Early development. In place: full quality/security/container scaffold (Makefile, golangci,
 CI, lefthook, Dockerfile), a CLI skeleton, and `internal/authkeys` (single-line
-`authorized_keys` parser). Two vertical slices are implemented: read-only drift
+`authorized_keys` parser). Three vertical slices are implemented: read-only drift
 **`audit`** (specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`) and
 **`import`** — an OpenSSH client config → manifest converter built on `internal/sshcfg`
 (specced in `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`), which also
@@ -182,3 +182,7 @@ protected management keys) and **wildcard access** (`servers: ["*"]` with
 `except:`); audit renders missing operator keys as CRITICAL, and
 `import --operator <key>` marks them at import time (specced in
 `docs/superpowers/specs/2026-07-10-operator-users-wildcard-access-design.md`).
+The third, **`adopt`**, reads every server's actual `authorized_keys`
+through the audit pipeline and generates a complete manifest — unknown keys
+become users, known users' keys found beyond their grants extend access
+(specced in `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md`).

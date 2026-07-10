@@ -49,7 +49,7 @@ Dependency direction: `cmd/sshepherd` → `internal/adopt` → `internal/audit`/
 - Modify: `internal/authkeys/authkeys.go`
 - Test: `internal/authkeys/authkeys_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `internal/authkeys/authkeys_test.go` (it is `package authkeys`; add `"github.com/javadh75/SSHepherd/internal/testkeys"` to its imports if not already there):
 
@@ -81,12 +81,12 @@ func TestParseLineRaw(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/authkeys/ -run TestParseLineRaw -v`
 Expected: FAIL — `k.Raw undefined (type *Key has no field or method Raw)` (compile error).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `internal/authkeys/authkeys.go`, extend the `Key` struct:
 
@@ -113,12 +113,12 @@ And in `ParseLine`, extend the return:
 	}, nil
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/authkeys/ -v`
 Expected: PASS, including all pre-existing tests (nothing compares `Key` structs wholesale — verified; comparisons are by fingerprint).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/authkeys/
@@ -141,7 +141,7 @@ Pure refactor plus one new field. Existing golden files must stay byte-identical
 - Create: `cmd/sshepherd/manifest_out_test.go`
 - Modify: `cmd/sshepherd/import.go`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `cmd/sshepherd/manifest_out_test.go`:
 
@@ -193,12 +193,12 @@ func TestEncodeManifestExceptRoundTrip(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./cmd/sshepherd/ -run TestEncodeManifestExceptRoundTrip -v`
 Expected: FAIL — `undefined: encodeManifest` and `unknown field Except` (compile errors).
 
-- [ ] **Step 3: Create `cmd/sshepherd/manifest_out.go`**
+- [x] **Step 3: Create `cmd/sshepherd/manifest_out.go`**
 
 Move the output types and `writeFileNoClobber` out of `import.go` verbatim, add `Except`, add `encodeManifest`:
 
@@ -290,7 +290,7 @@ func writeFileNoClobber(path string, data []byte, force bool) error {
 }
 ```
 
-- [ ] **Step 4: Shrink `cmd/sshepherd/import.go`**
+- [x] **Step 4: Shrink `cmd/sshepherd/import.go`**
 
 Delete from `import.go`: the `serverOut`/`userOut`/`accessOut`/`manifestOut` type block (lines 18–44) and the whole `writeFileNoClobber` function. Replace the tail of `generateManifest` (from `var buf bytes.Buffer` through `return buf.Bytes(), notes, nil`) with:
 
@@ -306,12 +306,12 @@ Delete from `import.go`: the `serverOut`/`userOut`/`accessOut`/`manifestOut` typ
 
 Then remove now-unused imports from `import.go` (`bytes` and `gopkg.in/yaml.v3` — run `goimports -w cmd/sshepherd/import.go`).
 
-- [ ] **Step 5: Run the full package tests — goldens must not change**
+- [x] **Step 5: Run the full package tests — goldens must not change**
 
 Run: `go test ./cmd/sshepherd/ -v`
 Expected: PASS, all existing golden tests byte-identical (do NOT run with `-update`; a diff here means the refactor changed output and must be fixed).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add cmd/sshepherd/
@@ -332,7 +332,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `internal/adopt/adopt_test.go`
 - Create: `internal/adopt/leak_test.go`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `internal/adopt/adopt_test.go`:
 
@@ -378,12 +378,12 @@ func TestMain(m *testing.M) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: FAIL — package does not exist yet / `undefined: sanitizeName`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `internal/adopt/adopt.go`:
 
@@ -419,12 +419,12 @@ func sanitizeName(comment string) string {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/adopt/
@@ -443,7 +443,7 @@ Core grouping and naming. Test inputs are built by running the real `audit.Run` 
 - Modify: `internal/adopt/adopt.go`
 - Test: `internal/adopt/adopt_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `internal/adopt/adopt_test.go` — first the shared test harness:
 
@@ -609,12 +609,12 @@ access:
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: FAIL — `undefined: Build` (compile error).
 
-- [ ] **Step 3: Implement the types and `Build`**
+- [x] **Step 3: Implement the types and `Build`**
 
 Add to `internal/adopt/adopt.go` (imports become `fmt`, `sort`, `strings`, plus the two internal packages):
 
@@ -721,12 +721,12 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []N
 
 (Note: a server with `Err != nil` has a zero `Diff`, so the sweep naturally skips it; Task 7 records the issue.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/adopt/
@@ -746,7 +746,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `internal/adopt/adopt.go`
 - Test: `internal/adopt/adopt_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `internal/adopt/adopt_test.go`:
 
@@ -815,12 +815,12 @@ func TestBuildDivergentCopiesFirstWins(t *testing.T) {
 
 (Add `strings` to the test file's imports.)
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/adopt/ -run 'TestBuildWildcard|TestBuildNoCompaction|TestBuildDivergent' -v`
 Expected: FAIL — `Wildcard` always false, no warnings emitted.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `Build`'s sweep, replace the seen-branch:
 
@@ -885,12 +885,12 @@ And the call site in `Build`:
 	return p
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: PASS (all tasks so far).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/adopt/
@@ -907,7 +907,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `internal/adopt/adopt.go`
 - Test: `internal/adopt/adopt_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `internal/adopt/adopt_test.go`:
 
@@ -1017,12 +1017,12 @@ access:
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/adopt/ -run TestBuildExt -v` and `go test ./internal/adopt/ -run TestBuildRespects -v`
 Expected: FAIL — known keys currently produce nothing (`Extensions` empty) and `TestBuildRespectsExceptCarveOut` sees no warning.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add `"slices"` to `adopt.go` imports. In `Build`, replace the known-key branch and add the post-sweep assembly:
 
@@ -1094,12 +1094,12 @@ func hasExceptCarveOut(cfg *config.Config, user, server string) bool {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/adopt/
@@ -1116,7 +1116,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `internal/adopt/adopt.go`
 - Test: `internal/adopt/adopt_test.go`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `internal/adopt/adopt_test.go` (add `"errors"` to imports):
 
@@ -1173,12 +1173,12 @@ func TestBuildParseErrorsAreIssues(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/adopt/ -run 'Issue|ParseErrors' -v`
 Expected: FAIL — `p.Issues` empty, `UnreadableServers` undefined (compile error first).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 At the top of `Build`'s sweep loop body, before the `Unauthorized` loop:
 
@@ -1211,12 +1211,12 @@ func (p Plan) UnreadableServers() []string {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/adopt/ -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/adopt/
@@ -1232,7 +1232,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Create: `internal/adopt/fuzz_test.go`
 
-- [ ] **Step 1: Write the fuzz test**
+- [x] **Step 1: Write the fuzz test**
 
 Create `internal/adopt/fuzz_test.go`:
 
@@ -1269,17 +1269,17 @@ func FuzzSanitizeName(f *testing.F) {
 }
 ```
 
-- [ ] **Step 2: Run the seeds as unit tests**
+- [x] **Step 2: Run the seeds as unit tests**
 
 Run: `go test ./internal/adopt/ -run FuzzSanitizeName -v`
 Expected: PASS (seeds only).
 
-- [ ] **Step 3: Run a short fuzz burst**
+- [x] **Step 3: Run a short fuzz burst**
 
 Run: `go test ./internal/adopt/ -fuzz FuzzSanitizeName -fuzztime 15s`
 Expected: no crashers (`elapsed: 15s, execs: ...` then ok). If a crasher appears, fix `sanitizeName` and keep the generated corpus file under `internal/adopt/testdata/fuzz/` in the commit.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add internal/adopt/
@@ -1300,7 +1300,7 @@ One commit (the `deadcode` check requires render + command + registration togeth
 - Create: `cmd/sshepherd/testdata/adopt_mixed.golden`, `adopt_noop.golden`, `adopt_partial.golden` (via `-update`)
 - Modify: `cmd/sshepherd/run.go`
 
-- [ ] **Step 1: Write the failing golden/render tests**
+- [x] **Step 1: Write the failing golden/render tests**
 
 Create `cmd/sshepherd/adopt_test.go`:
 
@@ -1470,7 +1470,7 @@ func TestGenerateAdoptManifestPartialGolden(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Write the failing run()-level tests**
+- [x] **Step 2: Write the failing run()-level tests**
 
 Append to `cmd/sshepherd/adopt_test.go`:
 
@@ -1628,12 +1628,12 @@ servers:
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `go test ./cmd/sshepherd/ -run Adopt -v`
 Expected: FAIL — `undefined: generateAdoptManifest` (compile error).
 
-- [ ] **Step 4: Implement `cmd/sshepherd/adopt.go`**
+- [x] **Step 4: Implement `cmd/sshepherd/adopt.go`**
 
 ```go
 package main
@@ -1804,7 +1804,7 @@ func newAdoptCmd(stdout io.Writer) *cobra.Command {
 }
 ```
 
-- [ ] **Step 5: Wire into `cmd/sshepherd/run.go`**
+- [x] **Step 5: Wire into `cmd/sshepherd/run.go`**
 
 Add the sentinel next to `errNonCompliant`:
 
@@ -1830,24 +1830,24 @@ And register the command in `newRootCmd`, after the import line:
 	root.AddCommand(newAdoptCmd(stdout))
 ```
 
-- [ ] **Step 6: Generate the golden files, then verify**
+- [x] **Step 6: Generate the golden files, then verify**
 
 Run: `go test ./cmd/sshepherd/ -run Golden -update`
 Expected: PASS; `git status` shows three new files under `cmd/sshepherd/testdata/`.
 
 Open each `adopt_*.golden` and eyeball it against the spec: header first; `adopt_mixed.golden` must show `alice` with her original `web-1` grant *plus* a separate `{user: alice, servers: [web-2]}` entry, `bob` keeping `except: [db-1]`, a `carol-laptop` user with `description: adopted from db-1, web-1, web-2` and a `["*"]` grant, and an `adopted-key-1` user granted `[db-1]`.
 
-- [ ] **Step 7: Run the full package tests**
+- [x] **Step 7: Run the full package tests**
 
 Run: `go test ./cmd/sshepherd/ -v`
 Expected: PASS — including the pre-existing import/audit tests.
 
-- [ ] **Step 8: Lint and vet**
+- [x] **Step 8: Lint and vet**
 
 Run: `gofmt -l ./cmd/sshepherd ./internal/adopt && go vet ./... && golangci-lint run`
 Expected: no output from gofmt, no findings. If `cyclop`/`gocyclo` flags `RunE`'s complexity, extract the preflight-and-read block (agent check through `audit.Run`) into a helper `func readFleet(ctx context.Context, cfg *config.Config, knownHosts string, parallel int) ([]audit.ServerResult, error)` in `adopt.go` and re-run.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add cmd/sshepherd/ 
@@ -1871,22 +1871,22 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `CLAUDE.md` (Status section)
 - Modify: `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md` (Status line)
 
-- [ ] **Step 1: Full check**
+- [x] **Step 1: Full check**
 
 Run: `make check`
 Expected: every stage passes (fmt, vet, lint, deadcode, gosec, govulncheck, gitleaks, tests). `deadcode` must be clean — `generateAdoptManifest` and `newAdoptCmd` are reachable from `main` via `newRootCmd`.
 
-- [ ] **Step 2: Coverage gate**
+- [x] **Step 2: Coverage gate**
 
 Run: `make coverage`
 Expected: total ≥ 80% (the gate fails otherwise). If `internal/adopt` drags the number down, the uncovered lines will be in `Build` branches — add the missing table case rather than trivia tests.
 
-- [ ] **Step 3: Race + fuzz smoke**
+- [x] **Step 3: Race + fuzz smoke**
 
 Run: `go test -race ./... && go test ./internal/adopt/ -fuzz FuzzSanitizeName -fuzztime 10s`
 Expected: PASS, no crashers.
 
-- [ ] **Step 4: Update docs**
+- [x] **Step 4: Update docs**
 
 In the spec `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md`, change the Status line to:
 
@@ -1903,7 +1903,7 @@ become users, known users' keys found beyond their grants extend access
 (specced in `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md`).
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md

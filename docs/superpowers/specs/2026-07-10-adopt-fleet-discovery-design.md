@@ -1,7 +1,7 @@
 # Design: `sshepherd adopt` — discover fleet keys into the manifest
 
 - **Date:** 2026-07-10
-- **Status:** Approved, not yet implemented
+- **Status:** Implemented (2026-07-10) — see docs/superpowers/plans/2026-07-10-adopt-fleet-discovery.md
 - **Scope:** New subcommand `adopt` (`cmd/sshepherd`), new pure package
   `internal/adopt`, one field added to `internal/authkeys.Key`. Reuses
   `internal/audit`'s fleet read/diff and `import`'s manifest rendering
@@ -60,6 +60,16 @@ reviewable draft, never an in-place edit.
 - Reading non-default `authorized_keys` paths or `sshd_config` key sources
   (`audit`'s `FileAbsent` semantics apply unchanged).
 - Any write/apply behavior — adopt is read-only toward the fleet.
+- Follow-ups recorded at implementation review (none blocking): thread a
+  context into `sshread.CheckAgent` so the `//nolint:contextcheck` in
+  `cmd/sshepherd/adopt.go` can go away; atomic temp-file+rename write in
+  `writeFileNoClobber` (a failed `--force` overwrite can truncate the
+  destination); treat an embedded `\r` inside an `authorized_keys` line as a
+  ParseError in `internal/authkeys` so hostile line breaks hit the
+  strict/`--partial` gate instead of adopt's "bug:" self-check; consider
+  stripping bidi/format (Cf) characters in the sanitizers; consider a length
+  cap in `sanitizeName`; share `readFleet` with `audit` when a third fleet
+  reader appears.
 
 ## CLI surface
 
@@ -77,8 +87,7 @@ sshepherd adopt [--config sshepherd.yaml] [--known-hosts ~/.ssh/known_hosts]
 - Fully readable fleet with nothing to adopt (no unknown keys *and* no
   access extensions): success, manifest emitted (content-identical to input,
   re-rendered), stderr note "nothing to adopt".
-- Exit codes: 0 success; 1 on errors, including the strict gate (unreachable
-  servers / parse errors without `--partial`).
+- Exit codes: 0 success; 1 for the strict gate (fleet not fully readable without `--partial` — mirrors audit's drift exit); 2 for usage/config/preflight errors, matching the existing run() convention.
 
 ## Attribution semantics
 
