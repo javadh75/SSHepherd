@@ -2,6 +2,7 @@ package adopt
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -347,5 +348,131 @@ access:
 	}
 	if !reflect.DeepEqual(p.Extensions, want) {
 		t.Errorf("Extensions = %+v, want %+v (manifest user order)", p.Extensions, want)
+	}
+}
+
+func TestBuildUnreachableServerIsAnIssue(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	stranger := testkeys.Line(t, 7) + " carol@x"
+	r := &fakeReader{
+		byName: map[string]audit.ReadResult{
+			"web-1": {Content: []byte(op + "\n" + stranger + "\n")},
+			"web-2": {Content: []byte(op + "\n")},
+		},
+		errs: map[string]error{"db-1": errors.New("dial tcp: connection refused")},
+	}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Issues) != 1 || p.Issues[0].Server != "db-1" ||
+		!strings.Contains(p.Issues[0].Detail, "connection refused") {
+		t.Fatalf("Issues = %+v, want db-1 with the dial error", p.Issues)
+	}
+	// Readable servers are still attributed.
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Name != "carol-x" {
+		t.Errorf("NewUsers = %+v, want carol-x from web-1", p.NewUsers)
+	}
+	if got := p.UnreadableServers(); !reflect.DeepEqual(got, []string{"db-1"}) {
+		t.Errorf("UnreadableServers = %v, want [db-1]", got)
+	}
+}
+
+// Unparseable lines are issues too (they might be real access we would
+// silently drop), but the lines that did parse are still attributed.
+func TestBuildParseErrorsAreIssues(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	stranger := testkeys.Line(t, 7) + " carol@x"
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\ngarbage-line\nmore garbage\n" + stranger + "\n")},
+		"web-1": {Content: []byte(op + "\n")},
+		"web-2": {Content: []byte(op + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Issues) != 2 {
+		t.Fatalf("Issues = %+v, want two (one per bad line)", p.Issues)
+	}
+	if p.Issues[0].Server != "db-1" || p.Issues[1].Server != "db-1" {
+		t.Errorf("Issues = %+v, want both on db-1", p.Issues)
+	}
+	if got := p.UnreadableServers(); !reflect.DeepEqual(got, []string{"db-1"}) {
+		t.Errorf("UnreadableServers = %v, want [db-1] (deduped)", got)
+	}
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Name != "carol-x" {
+		t.Errorf("NewUsers = %+v, want carol-x (parsed lines still adopted)", p.NewUsers)
+	}
+}
+
+// A wildcard user whose except server is ALSO explicitly granted is simply
+// granted there (entries union): their key on that server is authorized, so
+// adopt neither extends nor warns. Pins the config-layer union invariant
+// hasExceptCarveOut relies on.
+func TestBuildExceptOverriddenByExplicitGrant(t *testing.T) {
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+  - {name: bob, keys: ["`+testkeys.Line(t, 4)+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: bob, servers: ["*"], except: [db-1]}
+  - {user: bob, servers: [db-1]}
+`)
+	op, bo := testkeys.Line(t, 1), testkeys.Line(t, 4)
+	content := audit.ReadResult{Content: []byte(op + "\n" + bo + "\n")}
+	r := &fakeReader{byName: map[string]audit.ReadResult{"db-1": content, "web-1": content}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Extensions) != 0 || len(p.Warnings) != 0 || len(p.NewUsers) != 0 {
+		t.Errorf("plan = %+v, want empty (explicit grant overrides except)", p)
+	}
+}
+
+// Divergence and compaction compose: a key on every server, one copy with a
+// different comment, still compacts to a wildcard and warns once about each.
+func TestBuildDivergenceAndCompactionCompose(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	first := testkeys.Line(t, 7) + " carol@a"
+	variant := testkeys.Line(t, 7) + " carol@b"
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + first + "\n")},
+		"web-1": {Content: []byte(op + "\n" + variant + "\n")},
+		"web-2": {Content: []byte(op + "\n" + first + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || !p.NewUsers[0].Wildcard || p.NewUsers[0].Line != first {
+		t.Fatalf("NewUsers = %+v, want one wildcard user keeping the first copy", p.NewUsers)
+	}
+	var divergence, wildcard int
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "differs") {
+			divergence++
+		}
+		if strings.Contains(w, "wildcard") {
+			wildcard++
+		}
+	}
+	if divergence != 1 || wildcard != 1 || len(p.Warnings) != 2 {
+		t.Errorf("Warnings = %v, want one divergence + one wildcard note", p.Warnings)
+	}
+}
+
+// An unreadable server prevents wildcard compaction: found-on can't cover a
+// fleet we couldn't fully see.
+func TestBuildUnreadableServerSuppressesCompaction(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	stranger := testkeys.Line(t, 7) + " carol@x"
+	content := audit.ReadResult{Content: []byte(op + "\n" + stranger + "\n")}
+	r := &fakeReader{
+		byName: map[string]audit.ReadResult{"web-1": content, "web-2": content},
+		errs:   map[string]error{"db-1": errors.New("connection refused")},
+	}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Wildcard {
+		t.Fatalf("NewUsers = %+v, want one non-wildcard user (db-1 was unreadable)", p.NewUsers)
+	}
+	if got := p.UnreadableServers(); !reflect.DeepEqual(got, []string{"db-1"}) {
+		t.Errorf("UnreadableServers = %v, want [db-1]", got)
 	}
 }

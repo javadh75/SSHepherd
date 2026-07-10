@@ -62,12 +62,19 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	var order []string // fingerprints in discovery order
 	extByUser := make(map[string]map[string]bool)
 	for _, r := range results {
+		if r.Err != nil {
+			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: r.Err.Error()})
+			continue
+		}
+		for _, pe := range r.ParseErrs {
+			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: pe.Error()})
+		}
 		for _, k := range r.Diff.Unauthorized {
 			if owner, known := cfg.OwnerOf(k.Fingerprint); known {
 				if hasExceptCarveOut(cfg, owner.Name, r.Server.Name) {
 					p.Warnings = append(p.Warnings, fmt.Sprintf(
-						"key of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
-						owner.Name, r.Server.Name))
+						"key %s of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
+						k.Fingerprint, owner.Name, r.Server.Name))
 					continue
 				}
 				if extByUser[owner.Name] == nil {
@@ -79,8 +86,8 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			if pd, seen := byFP[k.Fingerprint]; seen {
 				if pd.line != k.Raw {
 					p.Warnings = append(p.Warnings, fmt.Sprintf(
-						"key %s on %s differs from its first-seen copy (options/comment); keeping %q",
-						k.Fingerprint, r.Server.Name, pd.line))
+						"key %s on %s differs from the copy first seen on %s (options/comment); keeping the first",
+						k.Fingerprint, r.Server.Name, pd.foundOn[0]))
 				}
 				pd.foundOn = append(pd.foundOn, r.Server.Name)
 				continue
@@ -107,9 +114,27 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	return p
 }
 
+// UnreadableServers lists the distinct servers with issues, in result order.
+func (p Plan) UnreadableServers() []string {
+	var names []string
+	seen := make(map[string]bool)
+	for _, is := range p.Issues {
+		if !seen[is.Server] {
+			seen[is.Server] = true
+			names = append(names, is.Server)
+		}
+	}
+	return names
+}
+
 // hasExceptCarveOut reports whether user's access deliberately excludes
 // server via a wildcard except: list. Such a server is never re-granted by
 // adopt — the carve-out is a statement of intent; the installed key is drift.
+//
+// Callers must only ask about (user, server) pairs the grant union does not
+// cover — Build's Unauthorized loop guarantees this; outside that context a
+// wildcard user with an explicit grant of an excepted server would be
+// misclassified.
 func hasExceptCarveOut(cfg *config.Config, user, server string) bool {
 	for _, a := range cfg.Access {
 		if a.User != user || !slices.Contains(a.Servers, "*") {
