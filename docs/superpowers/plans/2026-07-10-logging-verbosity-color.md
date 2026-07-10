@@ -1867,6 +1867,13 @@ git add cmd/sshepherd/run.go cmd/sshepherd/import.go cmd/sshepherd/import_test.g
 git commit -m "feat(import): diagnostics through the leveled logger; parse/derive phase telemetry"
 ```
 
+**Review follow-up (landed):** import's skipped-host notes are additionally
+embedded as manifest header comments (`# WARNING: host "x" skipped (no User
+resolved) — not represented in this manifest`), mirroring adopt's
+unreadable-server header warnings — a quiet dirty import still documents what
+it dropped. The wildcard-compaction note stays stderr-only (review-only, no
+completeness impact).
+
 ---
 
 ### Task 10: Gate, fuzz target, docs

@@ -115,7 +115,10 @@ with `--color=always`.
 **Migration of existing ad-hoc stderr prints:** adopt's `warning:` lines →
 WARN; its strict-mode per-server `error:` lines → ERROR; the
 "nothing to adopt" note → INFO (consequence: hidden under `-q`, consistent
-with quiet's meaning). Wording unchanged.
+with quiet's meaning). Wording unchanged. Import's completeness-affecting
+skip notes are additionally embedded as manifest header comments (mirroring
+adopt's unreadable-server warnings), so the product carries its own caveat
+regardless of verbosity.
 
 ## Report coloring
 

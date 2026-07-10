@@ -215,8 +215,31 @@ func TestImportWarningsGoToStderrOnly(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "nouser") {
 		t.Errorf("stderr = %q, want a skip warning naming nouser", errBuf.String())
 	}
-	if strings.Contains(out.String(), "warning") {
-		t.Errorf("stdout = %q, must not carry warnings", out.String())
+	// Completeness-affecting skips are also embedded in the manifest itself,
+	// so a quiet import still documents what it dropped (adopt's precedent).
+	if !strings.Contains(out.String(), `# WARNING: host "nouser" skipped`) {
+		t.Errorf("stdout = %q, want a skipped-host header warning", out.String())
+	}
+	if strings.Contains(out.String(), "warn:") {
+		t.Errorf("stdout = %q, must not carry stderr log lines", out.String())
+	}
+}
+
+// TestImportQuietKeepsHeaderWarning: -q silences the stderr warn, but the
+// manifest still carries the skipped-host caveat in its header — the product
+// self-documents regardless of verbosity.
+func TestImportQuietKeepsHeaderWarning(t *testing.T) {
+	hermeticHome(t)
+	path := writeSSHConfig(t, "Host nouser\n  HostName 10.0.0.9\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path, "-q"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("stderr = %q, want empty under -q", errBuf.String())
+	}
+	if !strings.Contains(out.String(), `# WARNING: host "nouser" skipped`) {
+		t.Errorf("stdout = %q, want the skipped-host header warning to survive -q", out.String())
 	}
 }
 
@@ -287,6 +310,9 @@ func TestImportDerivesUsersAndAccess(t *testing.T) {
 	}
 	if wantName := "name: " + localUsername() + "-work"; !strings.Contains(out.String(), wantName) {
 		t.Errorf("stdout = %q, want %q", out.String(), wantName)
+	}
+	if !strings.Contains(errBuf.String(), "derived") {
+		t.Errorf("stderr = %q, want a derived-users phase line", errBuf.String())
 	}
 	if strings.Contains(errBuf.String(), "warn:") || strings.Contains(errBuf.String(), "error:") {
 		t.Errorf("stderr = %q, want no warnings for a clean import", errBuf.String())
