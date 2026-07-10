@@ -399,6 +399,38 @@ access:
 	}
 }
 
+func TestOperatorAndWildcardCompose(t *testing.T) {
+	k1, k2 := testkeys.Line(t, 1), testkeys.Line(t, 2)
+	// An operator and a wildcard-granted user in one manifest: every server
+	// desires the operator's key first, then the wildcard user's.
+	y := `
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+  - {name: alice, keys: ["` + k2 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+  - {name: s2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: ["*"]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []string{mustFingerprint(t, k1), mustFingerprint(t, k2)}
+	for _, srv := range []string{"s1", "s2"} {
+		got := cfg.DesiredFor(srv)
+		if len(got) != len(want) {
+			t.Fatalf("DesiredFor(%s) = %d keys, want %d", srv, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].Fingerprint != want[i] {
+				t.Errorf("DesiredFor(%s)[%d] = %s, want %s", srv, i, got[i].Fingerprint, want[i])
+			}
+		}
+	}
+}
+
 func TestWildcardAndExplicitEntriesUnion(t *testing.T) {
 	k1 := testkeys.Line(t, 1)
 	// A wildcard-with-except entry and a later explicit entry for the same

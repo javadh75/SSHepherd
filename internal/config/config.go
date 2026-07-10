@@ -256,6 +256,8 @@ func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []e
 // first (users order — operators are implicitly granted every server), then
 // the keys of every user granted access to it (access order). Deterministic;
 // a user is never emitted twice.
+// An operator's implicit grant also wins over any except carve-out in that
+// user's own access entries — operator means every server, unconditionally.
 func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 	var keys []authkeys.Key
 	asOperator := make(map[string]bool, len(c.operators))

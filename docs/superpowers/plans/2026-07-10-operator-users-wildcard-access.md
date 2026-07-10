@@ -20,7 +20,7 @@ Five tasks = five commits, each independently green. Work on `master` (trunk-bas
 - Modify: `internal/config/config.go`
 - Test: `internal/config/config_test.go`
 
-- [ ] **Step 1.1: Write the failing tests**
+- [x] **Step 1.1: Write the failing tests**
 
 Append to `internal/config/config_test.go`:
 
@@ -121,12 +121,12 @@ users:
 `, "operator requires at least one valid key"},
 ```
 
-- [ ] **Step 1.2: Run tests to verify they fail**
+- [x] **Step 1.2: Run tests to verify they fail**
 
 Run: `go test ./internal/config/ -run 'TestOperator|TestParseInvalid' -v`
 Expected: FAIL — the three new tests fail with `field operator not found in type config.User` (strict `KnownFields` rejects the unknown field), and the new table row fails the same way (error text mismatch).
 
-- [ ] **Step 1.3: Implement**
+- [x] **Step 1.3: Implement**
 
 In `internal/config/config.go`, make four edits.
 
@@ -189,17 +189,17 @@ func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 }
 ```
 
-- [ ] **Step 1.4: Run the package tests**
+- [x] **Step 1.4: Run the package tests**
 
 Run: `go test ./internal/config/ -v`
 Expected: PASS (all tests, including every pre-existing one — zero-operator manifests are untouched).
 
-- [ ] **Step 1.5: Full gate**
+- [x] **Step 1.5: Full gate**
 
 Run: `make check`
 Expected: all green (fmt, vet, lint, deadcode, security, test).
 
-- [ ] **Step 1.6: Commit**
+- [x] **Step 1.6: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go
@@ -214,7 +214,7 @@ git commit -m "feat(config): operator users — fleet-wide protected keys in the
 - Modify: `internal/config/config.go`
 - Test: `internal/config/config_test.go`
 
-- [ ] **Step 2.1: Write the failing tests**
+- [x] **Step 2.1: Write the failing tests**
 
 Append to `internal/config/config_test.go`:
 
@@ -292,12 +292,12 @@ servers:
 `, "reserved"},
 ```
 
-- [ ] **Step 2.2: Run tests to verify they fail**
+- [x] **Step 2.2: Run tests to verify they fail**
 
 Run: `go test ./internal/config/ -run 'TestWildcardAccess|TestParseInvalid' -v`
 Expected: FAIL — `field except not found in type config.Access` for the except cases; the wildcard-only cases fail with `unknown server "*"` instead of the wanted messages.
 
-- [ ] **Step 2.3: Implement**
+- [x] **Step 2.3: Implement**
 
 In `internal/config/config.go`:
 
@@ -396,17 +396,17 @@ func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []e
 }
 ```
 
-- [ ] **Step 2.4: Run the package tests**
+- [x] **Step 2.4: Run the package tests**
 
 Run: `go test ./internal/config/ -v`
 Expected: PASS.
 
-- [ ] **Step 2.5: Full gate**
+- [x] **Step 2.5: Full gate**
 
 Run: `make check`
 Expected: all green.
 
-- [ ] **Step 2.6: Commit**
+- [x] **Step 2.6: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go
@@ -423,7 +423,7 @@ git commit -m "feat(config): wildcard access grants with except lists"
 - Regenerate: `internal/audit/testdata/report_drift.golden`, `internal/audit/testdata/report_compliant.golden`
 - Create (via `-update`): `internal/audit/testdata/report_critical.golden`
 
-- [ ] **Step 3.1: Write the failing tests**
+- [x] **Step 3.1: Write the failing tests**
 
 Append to `internal/audit/report_test.go`:
 
@@ -494,12 +494,12 @@ func TestRenderUnreachableServerNotCritical(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3.2: Run tests to verify they fail**
+- [x] **Step 3.2: Run tests to verify they fail**
 
 Run: `go test ./internal/audit/ -run 'TestRenderCritical|TestRenderUnreachable' -v`
 Expected: FAIL — `CRITICAL rows = 0, want 2`, missing `(2 critical)` / `(0 critical)` in the summary, and a missing-golden fatal.
 
-- [ ] **Step 3.3: Implement**
+- [x] **Step 3.3: Implement**
 
 In `internal/audit/report.go`:
 
@@ -553,23 +553,23 @@ func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
 }
 ```
 
-- [ ] **Step 3.4: Regenerate goldens and inspect the diff**
+- [x] **Step 3.4: Regenerate goldens and inspect the diff**
 
 Run: `go test ./internal/audit/ -update`
 Then: `git diff internal/audit/testdata/`
 Expected: `report_critical.golden` is new; in `report_drift.golden` and `report_compliant.golden` the **only** change is the summary line gaining `(0 critical)`. Any other diff is a bug — stop and fix.
 
-- [ ] **Step 3.5: Run the package tests without `-update`**
+- [x] **Step 3.5: Run the package tests without `-update`**
 
 Run: `go test ./internal/audit/ -v`
 Expected: PASS.
 
-- [ ] **Step 3.6: Full gate**
+- [x] **Step 3.6: Full gate**
 
 Run: `make check`
 Expected: all green.
 
-- [ ] **Step 3.7: Commit**
+- [x] **Step 3.7: Commit**
 
 ```bash
 git add internal/audit/report.go internal/audit/report_test.go internal/audit/testdata/
@@ -587,7 +587,7 @@ git commit -m "feat(audit): flag missing operator keys as CRITICAL"
 - Regenerate: `cmd/sshepherd/testdata/import_manifest_users.golden`
 - Create (via `-update`): `cmd/sshepherd/testdata/import_manifest_operators.golden`
 
-- [ ] **Step 4.1: Write the failing identity tests**
+- [x] **Step 4.1: Write the failing identity tests**
 
 Append to `internal/identity/identity_test.go`:
 
@@ -682,12 +682,12 @@ func TestMarkOperatorsNameCollision(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4.2: Run tests to verify they fail**
+- [x] **Step 4.2: Run tests to verify they fail**
 
 Run: `go test ./internal/identity/ -run TestMarkOperators -v`
 Expected: FAIL to compile — `r.MarkOperators undefined` and `unknown field Operator`.
 
-- [ ] **Step 4.3: Implement the identity half**
+- [x] **Step 4.3: Implement the identity half**
 
 In `internal/identity/identity.go`:
 
@@ -796,12 +796,12 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 }
 ```
 
-- [ ] **Step 4.4: Run the identity tests**
+- [x] **Step 4.4: Run the identity tests**
 
 Run: `go test ./internal/identity/ -v`
 Expected: PASS (new tests and every pre-existing one — `name` behavior is unchanged).
 
-- [ ] **Step 4.5: Write the failing cmd tests**
+- [x] **Step 4.5: Write the failing cmd tests**
 
 In `cmd/sshepherd/import_test.go`:
 
@@ -932,12 +932,12 @@ func TestImportOperatorMissingKey(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4.6: Run tests to verify they fail**
+- [x] **Step 4.6: Run tests to verify they fail**
 
 Run: `go test ./cmd/sshepherd/ -run 'TestGenerateManifest|TestImportOperator' -v`
 Expected: FAIL — `unknown flag: --operator` for the command tests; the compaction/operator manifest tests fail on missing `operator: true` / wildcard output.
 
-- [ ] **Step 4.7: Implement the cmd half**
+- [x] **Step 4.7: Implement the cmd half**
 
 In `cmd/sshepherd/import.go`:
 
@@ -1033,23 +1033,23 @@ Also extend the command's `Long` text with one sentence after the "Private keys 
 "implicitly (no access entry) and protected from removal by future apply.\n" +
 ```
 
-- [ ] **Step 4.8: Regenerate goldens and inspect**
+- [x] **Step 4.8: Regenerate goldens and inspect**
 
 Run: `go test ./cmd/sshepherd/ -update`
 Then: `git diff cmd/sshepherd/testdata/`
 Expected: `import_manifest_operators.golden` is new; in `import_manifest_users.golden` the only change is `javad-work`'s access entry becoming `servers: ["*"]`. `import_manifest.golden` (servers-only) must be untouched.
 
-- [ ] **Step 4.9: Run the full test suite**
+- [x] **Step 4.9: Run the full test suite**
 
 Run: `go test ./... -count=1`
 Expected: PASS everywhere (in particular `TestImportBasic` still sees empty stderr — the ≥2-server guard keeps single-server imports compaction-free).
 
-- [ ] **Step 4.10: Full gate**
+- [x] **Step 4.10: Full gate**
 
 Run: `make check`
 Expected: all green (`deadcode` confirms `MarkOperators`/`claimName` are reachable from main).
 
-- [ ] **Step 4.11: Commit**
+- [x] **Step 4.11: Commit**
 
 ```bash
 git add internal/identity/ cmd/sshepherd/
@@ -1064,7 +1064,7 @@ git commit -m "feat(import): --operator marks management keys"
 - Modify: `CLAUDE.md` (Status section)
 - Modify: `docs/superpowers/specs/2026-07-10-operator-users-wildcard-access-design.md` (Status line)
 
-- [ ] **Step 5.1: Update the spec status line**
+- [x] **Step 5.1: Update the spec status line**
 
 In the spec, replace:
 
@@ -1078,7 +1078,7 @@ with:
 - **Status:** Implemented (2026-07-10) — see docs/superpowers/plans/2026-07-10-operator-users-wildcard-access.md
 ```
 
-- [ ] **Step 5.2: Update CLAUDE.md Status**
+- [x] **Step 5.2: Update CLAUDE.md Status**
 
 Append to the `## Status` paragraph (after the sentence about the import slice):
 
@@ -1090,7 +1090,7 @@ protected management keys) and **wildcard access** (`servers: ["*"]` with
 `docs/superpowers/specs/2026-07-10-operator-users-wildcard-access-design.md`).
 ```
 
-- [ ] **Step 5.3: Commit**
+- [x] **Step 5.3: Commit**
 
 ```bash
 git add CLAUDE.md docs/superpowers/specs/2026-07-10-operator-users-wildcard-access-design.md
@@ -1105,3 +1105,17 @@ git commit -m "docs: mark operator/wildcard slice implemented"
 - Golden files: always regenerate with `-update`, then **read the diff** before committing. A golden diff you didn't expect is a failing test with extra steps.
 - YAML note: `"*"` must be quoted in manifests (bare `*` is YAML alias syntax and fails to parse — with a yaml-level error, which is acceptable).
 - Deferred by spec (do NOT implement): apply/revoke protection enforcement, audit exit code for critical, `except` compaction in import, server groups/tags.
+
+---
+
+## Completion note (2026-07-10)
+
+All five tasks implemented and committed (see git history 0c685ad..HEAD); each
+passed a spec-compliance review and a code-quality review, plus a final
+holistic review. Deferred follow-up recorded during execution:
+
+- Pre-existing quirk (not from this slice): `run(nil, ...)` passes nil to
+  Cobra's SetArgs, which then falls back to os.Args[1:], so TestRunNoCommand
+  fails when the test binary is invoked with extra flags like `-update`.
+  Fix candidate: `root.SetArgs([]string{})` normalization in run(), or pass
+  `[]string{}` from the test.
