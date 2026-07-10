@@ -4,8 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/javadh75/SSHepherd/internal/clog"
 )
 
 // version is the binary version, overridden at build time via
@@ -21,10 +25,42 @@ var errNonCompliant = errors.New("fleet not compliant")
 // are already on stderr.
 var errFleetUnreadable = errors.New("fleet not fully readable")
 
+// app carries the per-invocation logging state from flag parsing
+// (PersistentPreRunE) to the subcommands and to run()'s fatal-error path.
+type app struct {
+	logger      *slog.Logger // stderr logger; nil until flags are parsed
+	reportColor bool         // whether stdout renderers may color
+}
+
+// log returns the flag-configured logger, or a safe default for failures
+// that happen before flags parse (usage errors, unknown flags).
+// The fallback constructs a second handler (own mutex) on the same stderr;
+// that is safe only because it is used strictly after Execute returns, when
+// the flag-built logger (if any) is no longer being written to.
+func (a *app) log(stderr io.Writer) *slog.Logger {
+	if a.logger != nil {
+		return a.logger
+	}
+	return slog.New(clog.NewHandler(stderr, clog.Options{
+		Level: slog.LevelInfo,
+		Color: clog.Enabled(stderr, clog.ColorAuto),
+	}))
+}
+
+// fmtDur renders durations at operator resolution: whole milliseconds under
+// a second, tenths of a second above.
+func fmtDur(d time.Duration) string {
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.Round(100 * time.Millisecond).String()
+}
+
 // run is the testable entrypoint: it builds the Cobra tree, executes it
 // against the provided streams, and maps errors to process exit codes.
 func run(args []string, stdout, stderr io.Writer) int {
-	root := newRootCmd(stdout, stderr)
+	a := &app{}
+	root := newRootCmd(a, stdout, stderr)
 	if args == nil {
 		args = []string{} // SetArgs(nil) would fall back to os.Args[1:]
 	}
@@ -36,18 +72,43 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case errors.Is(err, errNonCompliant), errors.Is(err, errFleetUnreadable):
 		return 1 // report already rendered; nothing more to say
 	default:
-		fmt.Fprintln(stderr, "sshepherd:", err)
+		a.log(stderr).Error(err.Error())
 		return 2
 	}
 }
 
-func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
+func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
+	var (
+		verbose   bool
+		quiet     bool
+		colorFlag string
+	)
 	root := &cobra.Command{
 		Use:           "sshepherd",
 		Short:         "Manage SSH authorized_keys across a fleet of servers",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true, // run() prints errors with consistent formatting
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			mode, err := clog.ParseColorMode(colorFlag)
+			if err != nil {
+				return fmt.Errorf("--color: %w", err)
+			}
+			level := slog.LevelInfo
+			switch {
+			case quiet:
+				level = slog.LevelError
+			case verbose:
+				level = slog.LevelDebug
+			}
+			a.logger = slog.New(clog.NewHandler(stderr, clog.Options{
+				Level:   level,
+				Color:   clog.Enabled(stderr, mode),
+				Verbose: verbose,
+			}))
+			a.reportColor = clog.Enabled(stdout, mode)
+			return nil
+		},
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return errors.New("no command given (try --help)")
 		},
@@ -55,6 +116,11 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetVersionTemplate("sshepherd {{.Version}}\n")
+	pf := root.PersistentFlags()
+	pf.BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
+	pf.BoolVarP(&quiet, "quiet", "q", false, "log errors only")
+	pf.StringVar(&colorFlag, "color", "auto", "colorize output: auto, always, or never")
+	root.MarkFlagsMutuallyExclusive("verbose", "quiet")
 	root.AddCommand(newAuditCmd(stdout))
 	root.AddCommand(newImportCmd(stdout))
 	root.AddCommand(newAdoptCmd(stdout))

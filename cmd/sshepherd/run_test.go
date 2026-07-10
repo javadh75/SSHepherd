@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -52,5 +53,65 @@ func TestRunUnknownFlag(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"--nope"}, &out, &errBuf); code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRunFatalErrorPrefix(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run(nil, &out, &errBuf); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.HasPrefix(errBuf.String(), "error: ") {
+		t.Errorf("stderr = %q, want an %q prefix", errBuf.String(), "error: ")
+	}
+}
+
+func TestRunVerboseQuietConflict(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"-v", "-q"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	got := errBuf.String()
+	if !strings.Contains(got, "verbose") || !strings.Contains(got, "quiet") {
+		t.Errorf("stderr = %q, want the mutual-exclusion message naming both flags", got)
+	}
+}
+
+func TestRunInvalidColor(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--color", "sometimes"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "invalid color mode") {
+		t.Errorf("stderr = %q, want the invalid-color message", errBuf.String())
+	}
+}
+
+// TestRunColorAlwaysFatal proves the --color flag reaches the logger: with
+// always, the fatal line carries ANSI even though stderr is a buffer.
+func TestRunColorAlwaysFatal(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"--color", "always"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "\x1b[31merror:\x1b[0m") {
+		t.Errorf("stderr = %q, want a red error: prefix", errBuf.String())
+	}
+}
+
+func TestFmtDur(t *testing.T) {
+	tests := []struct {
+		in   time.Duration
+		want string
+	}{
+		{in: 34 * time.Millisecond, want: "34ms"},
+		{in: 999 * time.Millisecond, want: "999ms"},
+		{in: 2340 * time.Millisecond, want: "2.3s"},
+		{in: 61 * time.Second, want: "1m1s"},
+	}
+	for _, tt := range tests {
+		if got := fmtDur(tt.in); got != tt.want {
+			t.Errorf("fmtDur(%v) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
