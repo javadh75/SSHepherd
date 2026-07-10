@@ -3,6 +3,7 @@ package adopt
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
@@ -181,5 +182,66 @@ access:
 	}
 	if p.NewUsers[1].Name != "carol-2" {
 		t.Errorf("second = %q, want carol-2 (collides with manifest user carol)", p.NewUsers[1].Name)
+	}
+}
+
+func TestBuildWildcardCompaction(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	everywhere := testkeys.Line(t, 7) + " carol@laptop"
+	content := audit.ReadResult{Content: []byte(op + "\n" + everywhere + "\n")}
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1": content, "web-1": content, "web-2": content,
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || !p.NewUsers[0].Wildcard {
+		t.Fatalf("NewUsers = %+v, want one wildcard user", p.NewUsers)
+	}
+	if !reflect.DeepEqual(p.NewUsers[0].FoundOn, []string{"db-1", "web-1", "web-2"}) {
+		t.Errorf("FoundOn = %v, want all three servers (for the description)", p.NewUsers[0].FoundOn)
+	}
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "wildcard") {
+		t.Errorf("Warnings = %v, want one wildcard-compaction note", p.Warnings)
+	}
+}
+
+// A single-server fleet says nothing about "everywhere" — no compaction.
+func TestBuildNoCompactionSingleServer(t *testing.T) {
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+`)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 7) + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Wildcard {
+		t.Fatalf("NewUsers = %+v, want one non-wildcard user", p.NewUsers)
+	}
+}
+
+// Same fingerprint, different comment on the second server: first copy wins,
+// a warning names the divergence.
+func TestBuildDivergentCopiesFirstWins(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	first := testkeys.Line(t, 7) + " carol@a"
+	second := testkeys.Line(t, 7) + " carol@b"
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + first + "\n")},
+		"web-1": {Content: []byte(op + "\n" + second + "\n")},
+		"web-2": {Content: []byte(op + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Line != first {
+		t.Fatalf("NewUsers = %+v, want one user keeping the db-1 copy", p.NewUsers)
+	}
+	if p.NewUsers[0].Name != "carol-a" {
+		t.Errorf("Name = %q, want carol-a (first-seen comment names the user)", p.NewUsers[0].Name)
+	}
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "web-1") {
+		t.Errorf("Warnings = %v, want one divergence note naming web-1", p.Warnings)
 	}
 }

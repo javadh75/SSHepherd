@@ -65,6 +65,11 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 				continue // Task 6 extends the owner's access
 			}
 			if pd, seen := byFP[k.Fingerprint]; seen {
+				if pd.line != k.Raw {
+					p.Warnings = append(p.Warnings, fmt.Sprintf(
+						"key %s on %s differs from its first-seen copy (options/comment); keeping %q",
+						k.Fingerprint, r.Server.Name, pd.line))
+				}
 				pd.foundOn = append(pd.foundOn, r.Server.Name)
 				continue
 			}
@@ -72,18 +77,23 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			order = append(order, k.Fingerprint)
 		}
 	}
-	p.NewUsers = nameUsers(cfg, byFP, order)
+	var nameWarnings []string
+	p.NewUsers, nameWarnings = nameUsers(cfg, byFP, order)
+	p.Warnings = append(p.Warnings, nameWarnings...)
 	return p
 }
 
 // nameUsers turns accumulated unknown keys into named users, resolving
 // collisions against manifest names and each other with numeric suffixes.
-func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []NewUser {
+// A key found on every server of a 2+-server fleet compacts to a wildcard
+// grant, mirroring import's rule, with the same review warning.
+func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) ([]NewUser, []string) {
 	taken := make(map[string]bool, len(cfg.Users))
 	for _, u := range cfg.Users {
 		taken[u.Name] = true
 	}
 	var users []NewUser
+	var warnings []string
 	anon := 0
 	for _, fp := range order {
 		pd := byFP[fp]
@@ -98,9 +108,15 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []N
 		}
 		taken[name] = true
 		sort.Strings(pd.foundOn)
-		users = append(users, NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn})
+		nu := NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn}
+		if len(cfg.Servers) >= 2 && len(pd.foundOn) == len(cfg.Servers) {
+			nu.Wildcard = true
+			warnings = append(warnings, fmt.Sprintf(
+				"access for %q covers every server; emitted as wildcard %q (includes servers added later)", name, "*"))
+		}
+		users = append(users, nu)
 	}
-	return users
+	return users, warnings
 }
 
 // sanitizeName derives a manifest user name from a key comment: lowercase,
