@@ -1117,5 +1117,6 @@ holistic review. Deferred follow-up recorded during execution:
 - Pre-existing quirk (not from this slice): `run(nil, ...)` passes nil to
   Cobra's SetArgs, which then falls back to os.Args[1:], so TestRunNoCommand
   fails when the test binary is invoked with extra flags like `-update`.
-  Fix candidate: `root.SetArgs([]string{})` normalization in run(), or pass
-  `[]string{}` from the test.
+  **Fixed** right after the slice landed: run() normalizes nil args to an
+  empty slice, with regression test TestRunNilArgsIgnoresOSArgs
+  (`fix(cmd): run(nil) must not fall back to os.Args`).

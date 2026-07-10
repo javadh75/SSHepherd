@@ -20,6 +20,9 @@ var errNonCompliant = errors.New("fleet not compliant")
 // against the provided streams, and maps errors to process exit codes.
 func run(args []string, stdout, stderr io.Writer) int {
 	root := newRootCmd(stdout, stderr)
+	if args == nil {
+		args = []string{} // SetArgs(nil) would fall back to os.Args[1:]
+	}
 	root.SetArgs(args)
 	err := root.Execute()
 	switch {
