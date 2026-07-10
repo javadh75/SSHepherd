@@ -124,6 +124,6 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	root.MarkFlagsMutuallyExclusive("verbose", "quiet")
 	root.AddCommand(newAuditCmd(a, stdout))
 	root.AddCommand(newImportCmd(stdout))
-	root.AddCommand(newAdoptCmd(stdout))
+	root.AddCommand(newAdoptCmd(a, stdout))
 	return root
 }

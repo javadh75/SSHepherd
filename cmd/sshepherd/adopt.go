@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -65,7 +67,7 @@ func generateAdoptManifest(cfg *config.Config, plan adopt.Plan, src string, unre
 // readFleet runs the agent/known_hosts preflights and reads every server's
 // authorized_keys via the same SSH path as audit. An empty fleet needs no
 // agent and returns nil results.
-func readFleet(ctx context.Context, cfg *config.Config, knownHosts string, parallel int) ([]audit.ServerResult, error) {
+func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownHosts string, parallel int) ([]audit.ServerResult, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, nil
 	}
@@ -85,18 +87,63 @@ func readFleet(ctx context.Context, cfg *config.Config, knownHosts string, paral
 		KnownHostsPath: khPath,
 		AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
 		DialTimeout:    dialTimeout,
+		Log:            log,
 	}
 	return audit.Run(ctx, cfg, reader, audit.Options{
 		Parallel:         parallel,
 		PerServerTimeout: perServerTimeout,
+		Logger:           log,
 	}), nil
 }
 
-// reportPlan prints the plan's operator-facing notes: attribution warnings,
-// then a nothing-to-adopt note, qualified when part of the fleet went unread.
-func reportPlan(stderr io.Writer, plan adopt.Plan, unreadable []string) {
+// logFleetReadDone logs the fleet-read summary line once readFleet returns,
+// tallying how many servers came back with an error. A fleet with no
+// servers never started a read phase, so it logs nothing.
+func logFleetReadDone(log *slog.Logger, cfg *config.Config, results []audit.ServerResult, start time.Time) {
+	if len(cfg.Servers) == 0 {
+		return
+	}
+	var unreachable int
+	for _, r := range results {
+		if r.Err != nil {
+			unreachable++
+		}
+	}
+	log.Info(fmt.Sprintf("done in %s — %d read, %d unreachable",
+		fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
+}
+
+// reportUnreadable logs each unreadable-server issue (warn under --partial,
+// error otherwise) and, absent --partial, escalates to the strict abort: a
+// draft generated from a partial read under-represents reality, so a later
+// apply would revoke keys we never saw.
+func reportUnreadable(log *slog.Logger, plan adopt.Plan, unreadable []string, partial bool) error {
+	if len(unreadable) == 0 {
+		return nil
+	}
+	for _, is := range plan.Issues {
+		msg := fmt.Sprintf("server %s: %s", is.Server, is.Detail)
+		if partial {
+			log.Warn(msg)
+		} else {
+			log.Error(msg)
+		}
+	}
+	if !partial {
+		log.Error(fmt.Sprintf(
+			"%d server(s) could not be fully read — nothing written; fix the errors above or re-run with --partial",
+			len(unreadable)))
+		return errFleetUnreadable
+	}
+	return nil
+}
+
+// reportPlan logs the plan's operator-facing notes: attribution warnings,
+// the adoption outcome, and a nothing-to-adopt note qualified when part of
+// the fleet went unread.
+func reportPlan(log *slog.Logger, plan adopt.Plan, unreadable []string) {
 	for _, w := range plan.Warnings {
-		fmt.Fprintln(stderr, "warning:", w)
+		log.Warn(w)
 	}
 	if len(plan.NewUsers) == 0 && len(plan.Extensions) == 0 {
 		note := "nothing to adopt: the manifest already accounts for every key found"
@@ -105,11 +152,14 @@ func reportPlan(stderr io.Writer, plan adopt.Plan, unreadable []string) {
 			// note read as "the whole fleet is clean".
 			note += " on the readable servers"
 		}
-		fmt.Fprintln(stderr, note)
+		log.Info(note)
+		return
 	}
+	log.Info(fmt.Sprintf("adopting %d new users, %d access extensions",
+		len(plan.NewUsers), len(plan.Extensions)))
 }
 
-func newAdoptCmd(stdout io.Writer) *cobra.Command {
+func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
 		cfgPath    string
 		knownHosts string
@@ -133,39 +183,31 @@ func newAdoptCmd(stdout io.Writer) *cobra.Command {
 			if parallel < 1 {
 				return fmt.Errorf("--parallel must be >= 1 (got %d)", parallel)
 			}
+			log := a.logger
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
 				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
 			}
-			stderr := cmd.ErrOrStderr()
-			results, err := readFleet(cmd.Context(), cfg, knownHosts, parallel)
+			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
+			if len(cfg.Servers) > 0 {
+				log.Info(fmt.Sprintf("reading %d servers (parallelism %d)…", len(cfg.Servers), parallel))
+			}
+			start := time.Now()
+			results, err := readFleet(cmd.Context(), log, cfg, knownHosts, parallel)
 			if err != nil {
 				return err
 			}
+			logFleetReadDone(log, cfg, results, start)
 			plan := adopt.Build(cfg, results)
 			unreadable := plan.UnreadableServers()
-			if len(unreadable) > 0 {
-				level := "warning"
-				if !partial {
-					level = "error"
-				}
-				for _, is := range plan.Issues {
-					fmt.Fprintf(stderr, "%s: server %s: %s\n", level, is.Server, is.Detail)
-				}
-				if !partial {
-					// A draft generated from a partial read under-represents
-					// reality; a later apply would revoke the unseen keys.
-					fmt.Fprintf(stderr,
-						"adopt: %d server(s) could not be fully read — nothing written; fix the errors above or re-run with --partial\n",
-						len(unreadable))
-					return errFleetUnreadable
-				}
+			if err := reportUnreadable(log, plan, unreadable, partial); err != nil {
+				return err
 			}
 			manifest, err := generateAdoptManifest(cfg, plan, cfgPath, unreadable)
 			if err != nil {
 				return err
 			}
-			reportPlan(stderr, plan, unreadable)
+			reportPlan(log, plan, unreadable)
 			// Self-check: never emit a manifest our own loader would reject.
 			if _, err := config.Parse(manifest); err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
