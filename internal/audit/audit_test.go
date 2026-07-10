@@ -1,17 +1,24 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// discardLogger is passed to direct auditOne calls that don't exercise
+// logging themselves (see TestRunLogsPerServer for the logging behavior).
+var discardLogger = slog.New(slog.DiscardHandler)
 
 // fakeReader returns canned results per server name.
 type fakeReader struct {
@@ -50,7 +57,7 @@ func TestAuditOneCompliant(t *testing.T) {
 	r := &fakeReader{byName: map[string]ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 	}}
-	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0)
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
 	if !res.Compliant() {
 		t.Errorf("want compliant, got %+v", res)
 	}
@@ -65,7 +72,7 @@ func TestAuditOneDrift(t *testing.T) {
 	r := &fakeReader{byName: map[string]ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 9) + "\n")},
 	}}
-	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0)
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
 	if res.Compliant() {
 		t.Error("want non-compliant")
 	}
@@ -79,7 +86,7 @@ func TestAuditOneConnectionError(t *testing.T) {
 	cfg := testConfig(t)
 	boom := errors.New("dial tcp: connection refused")
 	r := &fakeReader{errs: map[string]error{"web-1": boom}}
-	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0)
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
 	if res.Compliant() {
 		t.Error("errored server must be non-compliant")
 	}
@@ -93,7 +100,7 @@ func TestAuditOneFileAbsent(t *testing.T) {
 	r := &fakeReader{byName: map[string]ReadResult{
 		"web-1": {FileAbsent: true},
 	}}
-	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0)
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
 	if !res.FileAbsent {
 		t.Error("FileAbsent not propagated")
 	}
@@ -107,7 +114,7 @@ func TestAuditOneParseErrors(t *testing.T) {
 	r := &fakeReader{byName: map[string]ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\ngarbage\n")},
 	}}
-	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0)
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
 	if len(res.ParseErrs) != 1 {
 		t.Fatalf("ParseErrs = %d, want 1", len(res.ParseErrs))
 	}
@@ -121,7 +128,7 @@ func TestAuditOneNoUsersGranted(t *testing.T) {
 	r := &fakeReader{byName: map[string]ReadResult{
 		"orphan": {Content: []byte(testkeys.Line(t, 9) + "\n")},
 	}}
-	res := auditOne(context.Background(), cfg, r, cfg.Servers[1], 0)
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[1], 0, discardLogger)
 	if !res.NoUsersGranted {
 		t.Error("NoUsersGranted = false, want true")
 	}
@@ -220,4 +227,31 @@ func TestRunHangingServerDoesNotPoisonOthers(t *testing.T) {
 	if hung != 1 || fine != 4 {
 		t.Errorf("hung=%d fine=%d, want 1/4", hung, fine)
 	}
+}
+
+// TestRunLogsPerServer pins the live per-server telemetry: failures WARN as
+// they happen, successes leave a DEBUG breadcrumb with a duration.
+func TestRunLogsPerServer(t *testing.T) {
+	cfg := reportConfig(t)
+	reader := &fakeReader{errs: map[string]error{
+		"web-2": errors.New("dial tcp: connection refused"),
+	}}
+	var buf bytes.Buffer
+	log := slog.New(clog.NewHandler(&buf, clog.Options{Level: slog.LevelDebug}))
+	Run(context.Background(), cfg, reader, Options{Parallel: 2, Logger: log})
+
+	got := buf.String()
+	if !strings.Contains(got, "warn: web-2: dial tcp: connection refused") {
+		t.Errorf("log = %q, want a live warn line for web-2", got)
+	}
+	if !strings.Contains(got, "audited") || !strings.Contains(got, "server=web-1") {
+		t.Errorf("log = %q, want a debug audited line for web-1", got)
+	}
+}
+
+// TestRunNilLoggerSafe: Options.Logger is optional.
+func TestRunNilLoggerSafe(t *testing.T) {
+	cfg := reportConfig(t)
+	reader := &fakeReader{}
+	Run(context.Background(), cfg, reader, Options{Parallel: 1}) // must not panic
 }

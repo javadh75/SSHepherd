@@ -5,6 +5,8 @@ package audit
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -50,7 +52,7 @@ func (r ServerResult) Compliant() bool {
 
 // auditOne audits a single server. It is self-contained and shares no mutable
 // state, so Run can execute many of these concurrently.
-func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv config.Server, timeout time.Duration) ServerResult {
+func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv config.Server, timeout time.Duration, log *slog.Logger) ServerResult {
 	res := ServerResult{Server: srv}
 	desired := cfg.DesiredFor(srv.Name)
 	res.NoUsersGranted = len(desired) == 0
@@ -61,8 +63,12 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 		defer cancel()
 	}
 
+	start := time.Now()
 	read, err := reader.ReadAuthorizedKeys(ctx, srv)
 	if err != nil {
+		// Live telemetry: the report will also show this, but during a slow
+		// fan-out the operator sees which server failed as it happens.
+		log.Warn(fmt.Sprintf("%s: %v", srv.Name, err))
 		res.Err = err
 		return res
 	}
@@ -71,6 +77,7 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	actual, parseErrs := authkeys.ParseFile(read.Content)
 	res.ParseErrs = parseErrs
 	res.Diff = authkeys.Diff(desired, actual)
+	log.Debug("audited", "server", srv.Name, "dur", time.Since(start).Round(time.Millisecond))
 	return res
 }
 
@@ -78,6 +85,16 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 type Options struct {
 	Parallel         int           // max concurrent server audits (>= 1)
 	PerServerTimeout time.Duration // overall deadline per server; 0 = none
+	Logger           *slog.Logger  // optional per-server telemetry; nil discards
+}
+
+// logger returns the configured logger or a discard logger, so auditOne
+// never nil-checks.
+func (o Options) logger() *slog.Logger {
+	if o.Logger != nil {
+		return o.Logger
+	}
+	return slog.New(slog.DiscardHandler)
 }
 
 // Run audits every server concurrently through a bounded worker pool and
@@ -87,6 +104,7 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 	if opts.Parallel < 1 {
 		opts.Parallel = 1
 	}
+	log := opts.logger()
 	results := make([]ServerResult, len(cfg.Servers))
 	sem := make(chan struct{}, opts.Parallel)
 	var wg sync.WaitGroup
@@ -96,7 +114,7 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = auditOne(ctx, cfg, reader, srv, opts.PerServerTimeout)
+			results[i] = auditOne(ctx, cfg, reader, srv, opts.PerServerTimeout, log)
 		}()
 	}
 	wg.Wait()

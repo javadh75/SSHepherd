@@ -122,7 +122,7 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	pf.BoolVarP(&quiet, "quiet", "q", false, "log errors only")
 	pf.StringVar(&colorFlag, "color", "auto", "colorize output: auto, always, or never")
 	root.MarkFlagsMutuallyExclusive("verbose", "quiet")
-	root.AddCommand(newAuditCmd(stdout))
+	root.AddCommand(newAuditCmd(a, stdout))
 	root.AddCommand(newImportCmd(stdout))
 	root.AddCommand(newAdoptCmd(stdout))
 	return root

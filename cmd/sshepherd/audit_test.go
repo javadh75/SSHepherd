@@ -103,3 +103,51 @@ access:
 		t.Errorf("stderr = %q, want known_hosts preflight error", errBuf.String())
 	}
 }
+
+// TestAuditPhaseLogs: normal mode narrates phases on stderr.
+func TestAuditPhaseLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(path, []byte("users: []\nservers: []\naccess: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "loaded manifest: 0 users, 0 servers") {
+		t.Errorf("stderr = %q, want the loaded-manifest phase line", errBuf.String())
+	}
+}
+
+// TestAuditQuietSilencesPhases: -q leaves stderr empty on a clean run.
+func TestAuditQuietSilencesPhases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(path, []byte("users: []\nservers: []\naccess: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "-q", "--config", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if errBuf.Len() != 0 {
+		t.Errorf("stderr = %q, want empty under -q", errBuf.String())
+	}
+	if !strings.Contains(out.String(), "0 servers configured") {
+		t.Errorf("stdout = %q, the product must survive -q", out.String())
+	}
+}
+
+// TestAuditVerboseFormat: -v switches stderr to the timestamped format.
+func TestAuditVerboseFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(path, []byte("users: []\nservers: []\naccess: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "-v", "--config", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "INFO") {
+		t.Errorf("stderr = %q, want verbose INFO tags", errBuf.String())
+	}
+}

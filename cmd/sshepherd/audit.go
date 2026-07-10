@@ -20,7 +20,7 @@ const (
 	defaultKnownHosts = "~/.ssh/known_hosts"
 )
 
-func newAuditCmd(stdout io.Writer) *cobra.Command {
+func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
 		cfgPath    string
 		knownHosts string
@@ -34,12 +34,14 @@ func newAuditCmd(stdout io.Writer) *cobra.Command {
 			if parallel < 1 {
 				return fmt.Errorf("--parallel must be >= 1 (got %d)", parallel)
 			}
+			log := a.logger
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
 				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
 			}
+			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
 			if len(cfg.Servers) == 0 {
-				audit.Render(stdout, cfg, nil, audit.RenderOptions{})
+				audit.Render(stdout, cfg, nil, audit.RenderOptions{Color: a.reportColor})
 				return nil
 			}
 			if err := sshread.CheckAgent(os.Getenv("SSH_AUTH_SOCK")); err != nil {
@@ -59,11 +61,22 @@ func newAuditCmd(stdout io.Writer) *cobra.Command {
 				AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
 				DialTimeout:    dialTimeout,
 			}
+			log.Info(fmt.Sprintf("auditing %d servers (parallelism %d)…", len(cfg.Servers), parallel))
+			start := time.Now()
 			results := audit.Run(cmd.Context(), cfg, reader, audit.Options{
 				Parallel:         parallel,
 				PerServerTimeout: perServerTimeout,
+				Logger:           log,
 			})
-			audit.Render(stdout, cfg, results, audit.RenderOptions{})
+			var unreachable int
+			for _, r := range results {
+				if r.Err != nil {
+					unreachable++
+				}
+			}
+			log.Info(fmt.Sprintf("done in %s — %d read, %d unreachable",
+				fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
+			audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor})
 			if audit.ExitCode(results) != 0 {
 				return errNonCompliant
 			}
