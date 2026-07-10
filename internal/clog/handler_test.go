@@ -147,6 +147,44 @@ func TestHandlerThroughLogger(t *testing.T) {
 	}
 }
 
+// TestHandlerWithAttrsSiblingIsolation pins the three-index append in
+// WithAttrs: two children derived from the same attr-bearing parent must
+// not clobber each other's attrs via a shared backing array.
+func TestHandlerWithAttrsSiblingIsolation(t *testing.T) {
+	var buf bytes.Buffer
+	base := slog.New(NewHandler(&buf, Options{Level: slog.LevelInfo})).With("a", "1")
+	c1 := base.With("b", "2")
+	c2 := base.With("c", "3")
+	c1.Info("one")
+	c2.Info("two")
+	base.Info("parent")
+	want := "• one a=1 b=2\n• two a=1 c=3\n• parent a=1\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestHandlerWithAttrsSiblingIsolationDeep repeats the sibling check on a
+// three-deep With chain, which is what actually catches a plain-append
+// regression: a one-attr parent has len==cap, so both children reallocate
+// and never alias even without the capacity cap. Growing 2→4 leaves a
+// three-attr parent one slot of spare capacity; with a plain append both
+// siblings would write their attr into that shared slot and c1 would log
+// c2's attr.
+func TestHandlerWithAttrsSiblingIsolationDeep(t *testing.T) {
+	var buf bytes.Buffer
+	parent := slog.New(NewHandler(&buf, Options{Level: slog.LevelInfo})).
+		With("a", "1").With("b", "2").With("c", "3")
+	c1 := parent.With("d", "4")
+	c2 := parent.With("e", "5")
+	c1.Info("one")
+	c2.Info("two")
+	want := "• one a=1 b=2 c=3 d=4\n• two a=1 b=2 c=3 e=5\n"
+	if got := buf.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestHandlerWithGroupPassesThrough(t *testing.T) {
 	h := NewHandler(&bytes.Buffer{}, Options{})
 	if h.WithGroup("g") != slog.Handler(h) {
