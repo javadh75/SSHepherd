@@ -1,7 +1,7 @@
 # Design: operator users, wildcard access grants, critical audit severity
 
 - **Date:** 2026-07-10
-- **Status:** Accepted (2026-07-10) — implementation pending
+- **Status:** Implemented (2026-07-10) — see docs/superpowers/plans/2026-07-10-operator-users-wildcard-access.md
 - **Scope:** Extends the manifest schema (`internal/config`), the audit report
   (`internal/audit`), and the import command (`cmd/sshepherd`). Three features
   land together because they share one motivation: first-class support for the

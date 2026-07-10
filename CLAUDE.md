@@ -177,3 +177,8 @@ CI, lefthook, Dockerfile), a CLI skeleton, and `internal/authkeys` (single-line
 (specced in `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`), which also
 derives `users:`/`access:` from `IdentityFile` `.pub` files via `internal/identity`
 (specced in `docs/superpowers/specs/2026-07-09-import-identityfile-users-design.md`).
+The manifest supports **operator users** (`operator: true` — fleet-wide,
+protected management keys) and **wildcard access** (`servers: ["*"]` with
+`except:`); audit renders missing operator keys as CRITICAL, and
+`import --operator <key>` marks them at import time (specced in
+`docs/superpowers/specs/2026-07-10-operator-users-wildcard-access-design.md`).
