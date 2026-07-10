@@ -152,6 +152,12 @@ func TestStripControlDELAndC1(t *testing.T) {
 	if got := stripControl("a\u009bb"); got != "ab" {
 		t.Errorf("stripControl(C1 CSI) = %q, want %q", got, "ab")
 	}
+	// A raw (non-UTF-8) C1 byte is not valid UTF-8 on its own; strings.Map
+	// decodes it as U+FFFD and passes it through, safely, but unpinned until
+	// now.
+	if got := stripControl("a\x9bb"); got != "a\ufffdb" {
+		t.Errorf("stripControl(raw C1 byte) = %q, want %q", got, "a\ufffdb")
+	}
 }
 
 func TestParseFileEmpty(t *testing.T) {
