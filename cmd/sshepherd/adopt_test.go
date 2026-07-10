@@ -319,4 +319,9 @@ servers:
 	if _, err := config.Parse(out.Bytes()); err != nil {
 		t.Errorf("stdout is not a valid manifest: %v", err)
 	}
+	// The nothing-to-adopt note must not read as "the whole fleet is clean"
+	// when a server went unread.
+	if !strings.Contains(errBuf.String(), "on the readable servers") {
+		t.Errorf("stderr = %q, want the nothing-to-adopt note qualified for the unread server", errBuf.String())
+	}
 }

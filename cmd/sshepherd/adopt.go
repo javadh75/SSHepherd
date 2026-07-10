@@ -92,6 +92,23 @@ func readFleet(ctx context.Context, cfg *config.Config, knownHosts string, paral
 	}), nil
 }
 
+// reportPlan prints the plan's operator-facing notes: attribution warnings,
+// then a nothing-to-adopt note, qualified when part of the fleet went unread.
+func reportPlan(stderr io.Writer, plan adopt.Plan, unreadable []string) {
+	for _, w := range plan.Warnings {
+		fmt.Fprintln(stderr, "warning:", w)
+	}
+	if len(plan.NewUsers) == 0 && len(plan.Extensions) == 0 {
+		note := "nothing to adopt: the manifest already accounts for every key found"
+		if len(unreadable) > 0 {
+			// Unreadable servers may hold keys we never saw; don't let the
+			// note read as "the whole fleet is clean".
+			note += " on the readable servers"
+		}
+		fmt.Fprintln(stderr, note)
+	}
+}
+
 func newAdoptCmd(stdout io.Writer) *cobra.Command {
 	var (
 		cfgPath    string
@@ -148,12 +165,7 @@ func newAdoptCmd(stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			for _, w := range plan.Warnings {
-				fmt.Fprintln(stderr, "warning:", w)
-			}
-			if len(plan.NewUsers) == 0 && len(plan.Extensions) == 0 {
-				fmt.Fprintln(stderr, "nothing to adopt: the manifest already accounts for every key found")
-			}
+			reportPlan(stderr, plan, unreadable)
 			// Self-check: never emit a manifest our own loader would reject.
 			if _, err := config.Parse(manifest); err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
