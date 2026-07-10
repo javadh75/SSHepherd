@@ -17,6 +17,7 @@ type Key struct {
 	Comment     string   // trailing comment, conventionally user@host
 	Options     []string // leading options, e.g. ["no-port-forwarding"]
 	Fingerprint string   // SHA256 fingerprint, e.g. "SHA256:abc..."
+	Raw         string   // the original line, whitespace-trimmed: options, key material, comment
 }
 
 // ParseLine parses a single authorized_keys line. Blank lines and comment lines
@@ -37,6 +38,7 @@ func ParseLine(line string) (*Key, error) {
 		Comment:     comment,
 		Options:     options,
 		Fingerprint: ssh.FingerprintSHA256(pub),
+		Raw:         strings.TrimSpace(line),
 	}, nil
 }
 

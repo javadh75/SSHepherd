@@ -247,3 +247,29 @@ func BenchmarkDiff(b *testing.B) {
 		Diff(desired, actual)
 	}
 }
+
+func TestParseLineRaw(t *testing.T) {
+	base := testkeys.Line(t, 1)
+	tests := []struct {
+		name, line, want string
+	}{
+		{"bare key", base, base},
+		{"options and comment",
+			`no-port-forwarding,command="true" ` + base + " alice@laptop",
+			`no-port-forwarding,command="true" ` + base + " alice@laptop"},
+		{"surrounding whitespace trimmed",
+			"  " + base + " alice@laptop\t",
+			base + " alice@laptop"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k, err := ParseLine(tt.line)
+			if err != nil || k == nil {
+				t.Fatalf("ParseLine(%q) = %v, %v", tt.line, k, err)
+			}
+			if k.Raw != tt.want {
+				t.Errorf("Raw = %q, want %q", k.Raw, tt.want)
+			}
+		})
+	}
+}
