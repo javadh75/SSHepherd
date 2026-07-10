@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,22 +83,7 @@ func TestAuditInvalidParallel(t *testing.T) {
 func TestAuditBadKnownHosts(t *testing.T) {
 	// A live (fake) agent gets past the agent preflight; a nonexistent
 	// known_hosts must then fail once with exit 2, not once per server.
-	sock := filepath.Join(t.TempDir(), "agent.sock")
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer l.Close()
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			c.Close()
-		}
-	}()
-	t.Setenv("SSH_AUTH_SOCK", sock)
+	fakeAgent(t)
 
 	path := writeConfig(t, `
 users:

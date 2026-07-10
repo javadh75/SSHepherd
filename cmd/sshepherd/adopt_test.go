@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"net"
 	"os"
@@ -10,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/javadh75/SSHepherd/internal/adopt"
 	"github.com/javadh75/SSHepherd/internal/audit"
@@ -240,11 +244,20 @@ func TestAdoptOutputFileNoClobber(t *testing.T) {
 	}
 }
 
-// fakeAgent satisfies the agent preflight without a real ssh-agent.
+// fakeAgent satisfies the agent preflight without a real ssh-agent: a real
+// in-memory keyring holding one generated key, served over a unix socket.
 // The socket lives in a short os.MkdirTemp dir, not t.TempDir(): this test's
 // name would push the path past the ~104-byte unix sun_path limit on macOS.
 func fakeAgent(t *testing.T) {
 	t.Helper()
+	keyring := agent.NewKeyring()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	if err := keyring.Add(agent.AddedKey{PrivateKey: priv}); err != nil {
+		t.Fatalf("keyring add: %v", err)
+	}
 	dir, err := os.MkdirTemp("", "sshep")
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
@@ -262,7 +275,10 @@ func fakeAgent(t *testing.T) {
 			if err != nil {
 				return
 			}
-			_ = c.Close()
+			go func() {
+				_ = agent.ServeAgent(keyring, c) // returns on client close (EOF)
+				_ = c.Close()
+			}()
 		}
 	}()
 	t.Setenv("SSH_AUTH_SOCK", sock)

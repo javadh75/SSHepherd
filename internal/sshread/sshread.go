@@ -99,8 +99,10 @@ func PreflightKnownHosts(path string) error {
 	return nil
 }
 
-// CheckAgent verifies a usable SSH agent before any server is dialed, so a
-// missing agent fails once with a clear message instead of once per server.
+// CheckAgent verifies a usable SSH agent — reachable and holding at least
+// one key — before any server is dialed, so a missing or empty agent fails
+// once with a clear message instead of once per server with a cryptic
+// "no supported methods remain" auth error.
 func CheckAgent(sock string) error {
 	if sock == "" {
 		return errors.New("no SSH agent: SSH_AUTH_SOCK is not set (start ssh-agent and ssh-add a key)")
@@ -110,7 +112,15 @@ func CheckAgent(sock string) error {
 	if err != nil {
 		return fmt.Errorf("SSH agent unreachable at %s: %w", sock, err)
 	}
-	_ = conn.Close()
+	defer func() { _ = conn.Close() }()                   // errcheck: close error is uninteresting on a preflight
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second)) // a wedged agent must not hang the preflight
+	keys, err := agent.NewClient(conn).List()
+	if err != nil {
+		return fmt.Errorf("SSH agent at %s is not answering (is it an SSH agent?): %w", sock, err)
+	}
+	if len(keys) == 0 {
+		return fmt.Errorf("SSH agent at %s has no keys loaded (run ssh-add to load your key)", sock)
+	}
 	return nil
 }
 

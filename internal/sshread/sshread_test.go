@@ -3,6 +3,7 @@ package sshread
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -85,8 +87,25 @@ func TestCheckAgent(t *testing.T) {
 			t.Error("CheckAgent(dead) = nil, want error")
 		}
 	})
-	t.Run("live socket", func(t *testing.T) {
-		sock := filepath.Join(t.TempDir(), "agent.sock")
+	t.Run("agent with keys", func(t *testing.T) {
+		if err := CheckAgent(serveAgent(t, true)); err != nil {
+			t.Errorf("CheckAgent(agent with keys) = %v, want nil", err)
+		}
+	})
+	t.Run("empty agent", func(t *testing.T) {
+		// The socket answers the agent protocol but holds zero keys: every
+		// later per-server auth would fail. The preflight must say so once.
+		err := CheckAgent(serveAgent(t, false))
+		if err == nil || !strings.Contains(err.Error(), "no keys") {
+			t.Errorf("CheckAgent(empty agent) = %v, want a no-keys error", err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "ssh-add") {
+			t.Errorf("err %q should tell the operator to run ssh-add", err)
+		}
+	})
+	t.Run("unresponsive socket", func(t *testing.T) {
+		// Reachable but not speaking the agent protocol (closes on accept).
+		sock := filepath.Join(shortTempDir(t), "agent.sock")
 		l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
 		if err != nil {
 			t.Fatalf("listen: %v", err)
@@ -101,10 +120,58 @@ func TestCheckAgent(t *testing.T) {
 				c.Close()
 			}
 		}()
-		if err := CheckAgent(sock); err != nil {
-			t.Errorf("CheckAgent(live) = %v, want nil", err)
+		if err := CheckAgent(sock); err == nil {
+			t.Error("CheckAgent(unresponsive) = nil, want error")
 		}
 	})
+}
+
+// shortTempDir returns a temp dir with a short absolute path: unix socket
+// paths are capped (~104 bytes on macOS) and t.TempDir() embeds the full
+// subtest name, which can exceed it.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ag")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// serveAgent runs a real in-memory SSH agent on a unix socket, holding one
+// generated key when withKey is set, and returns the socket path.
+func serveAgent(t *testing.T, withKey bool) string {
+	t.Helper()
+	keyring := agent.NewKeyring()
+	if withKey {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate key: %v", err)
+		}
+		if err := keyring.Add(agent.AddedKey{PrivateKey: priv}); err != nil {
+			t.Fatalf("keyring add: %v", err)
+		}
+	}
+	sock := filepath.Join(shortTempDir(t), "agent.sock")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_ = agent.ServeAgent(keyring, c) // returns on client close (EOF)
+				_ = c.Close()
+			}()
+		}
+	}()
+	return sock
 }
 
 func TestHostKeyHint(t *testing.T) {
