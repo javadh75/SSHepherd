@@ -225,6 +225,9 @@ func TestAdoptEmptyFleet(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "nothing to adopt") {
 		t.Errorf("stderr = %q, want a nothing-to-adopt note", errBuf.String())
 	}
+	if strings.Contains(errBuf.String(), "adopting") {
+		t.Errorf("stderr = %q, nothing-to-adopt path must not emit the adopting summary", errBuf.String())
+	}
 }
 
 // TestAdoptQuietKeepsProduct: -q silences the nothing-to-adopt note but the
