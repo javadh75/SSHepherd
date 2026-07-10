@@ -173,12 +173,31 @@ type Client struct {
 
 var _ audit.KeyReader = (*Client)(nil)
 
-// ReadAuthorizedKeys connects to srv (agent auth, strict known_hosts) and
+// ReadAuthorizedKeys connects to srv and reads its authorized_keys via
+// readAuthorizedKeys, wrapping any error so its message is control-stripped:
+// handshake errors can embed server-supplied text (disconnect messages,
+// algorithm names), which must never reach an operator's terminal raw.
+func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
+	res, err := c.readAuthorizedKeys(ctx, srv)
+	if err != nil {
+		return res, sanitizedError{err}
+	}
+	return res, nil
+}
+
+// sanitizedError control-strips the wrapped error's message while preserving
+// the errors.Is/As chain.
+type sanitizedError struct{ err error }
+
+func (e sanitizedError) Error() string { return sanitizeRemote(e.err.Error()) }
+func (e sanitizedError) Unwrap() error { return e.err }
+
+// readAuthorizedKeys connects to srv (agent auth, strict known_hosts) and
 // reads ~/.ssh/authorized_keys via a one-shot session. The ctx deadline (set
 // by the audit orchestrator) bounds the whole exchange — agent I/O, dial,
 // handshake, and session — not just the dial. Callers without a ctx deadline
 // still get a hard bound: 3×DialTimeout (30s when DialTimeout is zero).
-func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
+func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
 	var zero audit.ReadResult
 
 	if _, ok := ctx.Deadline(); !ok {

@@ -30,7 +30,9 @@ type Extension struct {
 }
 
 // Issue is a server whose keys could not be (fully) read; the cmd layer
-// enforces the strict/--partial gate on these.
+// enforces the strict/--partial gate on these. Detail can embed
+// remote-influenced text, but the sshread and authkeys layers control-strip
+// it at the source, so it is safe to print.
 type Issue struct {
 	Server string
 	Detail string

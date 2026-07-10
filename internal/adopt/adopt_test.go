@@ -457,6 +457,27 @@ func TestBuildDivergenceAndCompactionCompose(t *testing.T) {
 	}
 }
 
+// Issues on two servers: UnreadableServers dedupes per server and preserves
+// result order.
+func TestUnreadableServersOrderAndDedup(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	r := &fakeReader{
+		byName: map[string]audit.ReadResult{
+			"web-1": {Content: []byte(op + "\ngarbage-one\ngarbage-two\n")},
+			"web-2": {Content: []byte(op + "\n")},
+		},
+		errs: map[string]error{"db-1": errors.New("connection refused")},
+	}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Issues) != 3 {
+		t.Fatalf("Issues = %+v, want three (one dial + two parse)", p.Issues)
+	}
+	if got := p.UnreadableServers(); !reflect.DeepEqual(got, []string{"db-1", "web-1"}) {
+		t.Errorf("UnreadableServers = %v, want [db-1, web-1] (deduped, result order)", got)
+	}
+}
+
 // An unreadable server prevents wildcard compaction: found-on can't cover a
 // fleet we couldn't fully see.
 func TestBuildUnreadableServerSuppressesCompaction(t *testing.T) {

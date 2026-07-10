@@ -49,10 +49,21 @@ type ParseError struct {
 }
 
 func (e ParseError) Error() string {
-	return fmt.Sprintf("line %d: %v", e.Line, e.Err)
+	return stripControl(fmt.Sprintf("line %d: %v", e.Line, e.Err))
 }
 
 func (e ParseError) Unwrap() error { return e.Err }
+
+// stripControl drops control bytes (except newline and tab) so error text
+// derived from remote file content cannot carry terminal escape sequences.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
+}
 
 // ParseFile parses a whole authorized_keys file. Blank and comment lines are
 // skipped. Every line that is neither is either a parsed Key or a ParseError

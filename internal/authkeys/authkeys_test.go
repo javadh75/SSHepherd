@@ -2,6 +2,8 @@ package authkeys
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"testing"
@@ -113,6 +115,30 @@ func TestParseFileMixed(t *testing.T) {
 	}
 	if !strings.Contains(errs[0].Error(), "line 4") {
 		t.Errorf("Error() = %q, want it to mention line 4", errs[0].Error())
+	}
+}
+
+// A parse error's message reflects bytes from the remote file; Error() must
+// strip control characters so a malicious host cannot inject terminal escape
+// sequences into operator-facing output. The hostile line embeds its escape
+// bytes in the wire blob's algorithm name — x/crypto formats that name
+// verbatim into "ssh: unknown key algorithm: ...".
+func TestParseErrorStripsControlBytes(t *testing.T) {
+	algo := "ssh-\x1b[31mevil\x07"
+	blob := make([]byte, 4+len(algo))
+	binary.BigEndian.PutUint32(blob, uint32(len(algo)))
+	copy(blob[4:], algo)
+	line := "ssh-rsa " + base64.StdEncoding.EncodeToString(blob)
+	_, errs := ParseFile([]byte(line + "\n"))
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly 1", errs)
+	}
+	msg := errs[0].Error()
+	if strings.ContainsAny(msg, "\x1b\x07") {
+		t.Errorf("Error() = %q, must not contain control bytes", msg)
+	}
+	if !strings.Contains(msg, "line 1") {
+		t.Errorf("Error() = %q, want it to still mention line 1", msg)
 	}
 }
 

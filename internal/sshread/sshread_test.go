@@ -233,6 +233,21 @@ func TestCappedBuffer(t *testing.T) {
 	}
 }
 
+// sanitizedError control-strips at the KeyReader boundary: handshake errors
+// can embed server-supplied text (disconnect messages, algorithm names).
+func TestSanitizedError(t *testing.T) {
+	e := sanitizedError{errors.New("bad\x1b[31m\x07host")}
+	if got := e.Error(); strings.ContainsAny(got, "\x1b\x07") {
+		t.Errorf("Error() = %q, must not contain control bytes", got)
+	}
+	if got, want := e.Error(), "bad[31mhost"; got != want {
+		t.Errorf("Error() = %q, want %q (control bytes stripped)", got, want)
+	}
+	if !errors.Is(sanitizedError{context.DeadlineExceeded}, context.DeadlineExceeded) {
+		t.Error("errors.Is through sanitizedError = false, want true (Unwrap must preserve the chain)")
+	}
+}
+
 func TestSanitizeRemote(t *testing.T) {
 	in := "a\x1b[31mred\x07\rb\nc\td\x00"
 	want := "a[31mredb\nc\td"
