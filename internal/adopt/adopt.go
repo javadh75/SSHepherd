@@ -6,6 +6,7 @@ package adopt
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -59,10 +60,21 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	var p Plan
 	byFP := make(map[string]*pending)
 	var order []string // fingerprints in discovery order
+	extByUser := make(map[string]map[string]bool)
 	for _, r := range results {
 		for _, k := range r.Diff.Unauthorized {
-			if _, known := cfg.OwnerOf(k.Fingerprint); known {
-				continue // Task 6 extends the owner's access
+			if owner, known := cfg.OwnerOf(k.Fingerprint); known {
+				if hasExceptCarveOut(cfg, owner.Name, r.Server.Name) {
+					p.Warnings = append(p.Warnings, fmt.Sprintf(
+						"key of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
+						owner.Name, r.Server.Name))
+					continue
+				}
+				if extByUser[owner.Name] == nil {
+					extByUser[owner.Name] = make(map[string]bool)
+				}
+				extByUser[owner.Name][r.Server.Name] = true
+				continue
 			}
 			if pd, seen := byFP[k.Fingerprint]; seen {
 				if pd.line != k.Raw {
@@ -77,10 +89,37 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			order = append(order, k.Fingerprint)
 		}
 	}
+	for _, u := range cfg.Users { // manifest order keeps output deterministic
+		srvSet := extByUser[u.Name]
+		if len(srvSet) == 0 {
+			continue
+		}
+		srvs := make([]string, 0, len(srvSet))
+		for s := range srvSet {
+			srvs = append(srvs, s)
+		}
+		sort.Strings(srvs)
+		p.Extensions = append(p.Extensions, Extension{User: u.Name, Servers: srvs})
+	}
 	var nameWarnings []string
 	p.NewUsers, nameWarnings = nameUsers(cfg, byFP, order)
 	p.Warnings = append(p.Warnings, nameWarnings...)
 	return p
+}
+
+// hasExceptCarveOut reports whether user's access deliberately excludes
+// server via a wildcard except: list. Such a server is never re-granted by
+// adopt — the carve-out is a statement of intent; the installed key is drift.
+func hasExceptCarveOut(cfg *config.Config, user, server string) bool {
+	for _, a := range cfg.Access {
+		if a.User != user || !slices.Contains(a.Servers, "*") {
+			continue
+		}
+		if slices.Contains(a.Except, server) {
+			return true
+		}
+	}
+	return false
 }
 
 // nameUsers turns accumulated unknown keys into named users, resolving

@@ -245,3 +245,107 @@ func TestBuildDivergentCopiesFirstWins(t *testing.T) {
 		t.Errorf("Warnings = %v, want one divergence note naming web-1", p.Warnings)
 	}
 }
+
+// extCfg: alice (two keys) granted web-1 only; bob wildcard except db-1.
+func extCfg(t *testing.T) *config.Config {
+	t.Helper()
+	return parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+  - {name: alice, keys: ["`+testkeys.Line(t, 2)+`", "`+testkeys.Line(t, 3)+`"]}
+  - {name: bob, keys: ["`+testkeys.Line(t, 4)+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+  - {user: bob, servers: ["*"], except: [db-1]}
+`)
+}
+
+func TestBuildExtendsKnownUser(t *testing.T) {
+	cfg := extCfg(t)
+	op, al := testkeys.Line(t, 1), testkeys.Line(t, 2)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + al + "\n")},
+		"web-1": {Content: []byte(op + "\n" + al + "\n")}, // granted: not an extension
+		"web-2": {Content: []byte(op + "\n" + al + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	want := []Extension{{User: "alice", Servers: []string{"db-1", "web-2"}}}
+	if !reflect.DeepEqual(p.Extensions, want) {
+		t.Errorf("Extensions = %+v, want %+v", p.Extensions, want)
+	}
+	if len(p.NewUsers) != 0 {
+		t.Errorf("NewUsers = %+v, want none (the key is alice's)", p.NewUsers)
+	}
+}
+
+// Two different keys of the same user on one ungranted server extend it once.
+func TestBuildExtensionDedupesServers(t *testing.T) {
+	cfg := extCfg(t)
+	op, al1, al2 := testkeys.Line(t, 1), testkeys.Line(t, 2), testkeys.Line(t, 3)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n")},
+		"web-1": {Content: []byte(op + "\n")},
+		"web-2": {Content: []byte(op + "\n" + al1 + "\n" + al2 + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	want := []Extension{{User: "alice", Servers: []string{"web-2"}}}
+	if !reflect.DeepEqual(p.Extensions, want) {
+		t.Errorf("Extensions = %+v, want %+v (web-2 once, not twice)", p.Extensions, want)
+	}
+}
+
+// An except: carve-out is a deliberate "must not be here": never re-granted,
+// warned instead.
+func TestBuildRespectsExceptCarveOut(t *testing.T) {
+	cfg := extCfg(t)
+	op, bo := testkeys.Line(t, 1), testkeys.Line(t, 4)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + bo + "\n")}, // bob is excepted from db-1
+		"web-1": {Content: []byte(op + "\n")},
+		"web-2": {Content: []byte(op + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Extensions) != 0 {
+		t.Errorf("Extensions = %+v, want none (db-1 is bob's except carve-out)", p.Extensions)
+	}
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "bob") ||
+		!strings.Contains(p.Warnings[0], "db-1") {
+		t.Errorf("Warnings = %v, want one naming bob and db-1", p.Warnings)
+	}
+}
+
+// Extensions come out in manifest user order regardless of discovery order.
+func TestBuildExtensionsManifestOrder(t *testing.T) {
+	op, al, bo := testkeys.Line(t, 1), testkeys.Line(t, 2), testkeys.Line(t, 4)
+	// bob's key on web-1 is discovered before alice's on web-2, but alice
+	// precedes bob in the manifest. Explicit grants only (no wildcard), so
+	// both users have exactly one ungranted server to be found on.
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+  - {name: alice, keys: ["`+testkeys.Line(t, 2)+`"]}
+  - {name: bob, keys: ["`+testkeys.Line(t, 4)+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+  - {user: bob, servers: [web-2]}
+`)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(op + "\n" + al + "\n" + bo + "\n")},
+		"web-2": {Content: []byte(op + "\n" + al + "\n" + bo + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	want := []Extension{
+		{User: "alice", Servers: []string{"web-2"}},
+		{User: "bob", Servers: []string{"web-1"}},
+	}
+	if !reflect.DeepEqual(p.Extensions, want) {
+		t.Errorf("Extensions = %+v, want %+v (manifest user order)", p.Extensions, want)
+	}
+}
