@@ -7,6 +7,7 @@ package authkeys
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -54,11 +55,13 @@ func (e ParseError) Error() string {
 
 func (e ParseError) Unwrap() error { return e.Err }
 
-// stripControl drops control bytes (except newline and tab) so error text
-// derived from remote file content cannot carry terminal escape sequences.
+// stripControl drops control characters (except newline and tab) so error
+// text derived from remote file content cannot carry terminal escape
+// sequences. unicode.IsControl covers C0, DEL, and C1 — C1 CSI (U+009B)
+// acts like ESC [ in some terminals.
 func stripControl(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return -1
 		}
 		return r

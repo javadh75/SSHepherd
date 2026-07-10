@@ -249,13 +249,22 @@ func TestSanitizedError(t *testing.T) {
 }
 
 func TestSanitizeRemote(t *testing.T) {
-	in := "a\x1b[31mred\x07\rb\nc\td\x00"
-	want := "a[31mredb\nc\td"
-	if got := sanitizeRemote(in); got != want {
-		t.Errorf("sanitizeRemote(%q) = %q, want %q", in, got, want)
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"C0 controls stripped, newline and tab kept", "a\x1b[31mred\x07\rb\nc\td\x00", "a[31mredb\nc\td"},
+		{"clean text unaltered", "clean text", "clean text"},
+		{"DEL stripped", "a\x7fb", "ab"},
+		{"C1 CSI (U+009B) stripped", "a\u009bb", "ab"},
 	}
-	if got := sanitizeRemote("clean text"); got != "clean text" {
-		t.Errorf("clean input altered: %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeRemote(tt.in); got != tt.want {
+				t.Errorf("sanitizeRemote(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

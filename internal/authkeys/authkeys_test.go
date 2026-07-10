@@ -142,6 +142,18 @@ func TestParseErrorStripsControlBytes(t *testing.T) {
 	}
 }
 
+// stripControl must also drop DEL and C1 controls (not just C0): a
+// UTF-8-encoded C1 CSI (U+009B) is honored like ESC [ by some terminals.
+func TestStripControlDELAndC1(t *testing.T) {
+	got := stripControl("a\x7fbc\nd\te")
+	if got != "abc\nd\te" {
+		t.Errorf("stripControl = %q, want %q", got, "abc\nd\te")
+	}
+	if got := stripControl("a\u009bb"); got != "ab" {
+		t.Errorf("stripControl(C1 CSI) = %q, want %q", got, "ab")
+	}
+}
+
 func TestParseFileEmpty(t *testing.T) {
 	keys, errs := ParseFile(nil)
 	if len(keys) != 0 || len(errs) != 0 {

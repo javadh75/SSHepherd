@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -48,12 +49,13 @@ func interpretExit(code int, stderr string) (fileAbsent bool, err error) {
 	}
 }
 
-// sanitizeRemote strips control bytes (except newline and tab) from
+// sanitizeRemote strips control characters (except newline and tab) from
 // remote-controlled text so a malicious host cannot inject terminal escape
-// sequences into operator-facing error messages.
+// sequences into operator-facing error messages. unicode.IsControl covers
+// C0, DEL, and C1 — C1 CSI (U+009B) acts like ESC [ in some terminals.
 func sanitizeRemote(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 && r != '\n' && r != '\t' {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return -1
 		}
 		return r
