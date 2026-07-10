@@ -185,7 +185,7 @@ func TestImportBasic(t *testing.T) {
 	}
 	path := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
+	if code := run([]string{"import", path, "-q"}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
 	}
 	if _, err := config.Parse(out.Bytes()); err != nil {
@@ -288,8 +288,8 @@ func TestImportDerivesUsersAndAccess(t *testing.T) {
 	if wantName := "name: " + localUsername() + "-work"; !strings.Contains(out.String(), wantName) {
 		t.Errorf("stdout = %q, want %q", out.String(), wantName)
 	}
-	if errBuf.Len() != 0 {
-		t.Errorf("stderr = %q, want empty", errBuf.String())
+	if strings.Contains(errBuf.String(), "warn:") || strings.Contains(errBuf.String(), "error:") {
+		t.Errorf("stderr = %q, want no warnings for a clean import", errBuf.String())
 	}
 }
 
@@ -303,8 +303,8 @@ func TestImportServersOnly(t *testing.T) {
 	if !strings.Contains(out.String(), "users: []") || !strings.Contains(out.String(), "access: []") {
 		t.Errorf("stdout = %q, want empty users and access", out.String())
 	}
-	if errBuf.Len() != 0 {
-		t.Errorf("stderr = %q, want empty (no identity scan with --servers-only)", errBuf.String())
+	if strings.Contains(errBuf.String(), "warn:") || strings.Contains(errBuf.String(), "error:") {
+		t.Errorf("stderr = %q, want no warnings for a clean import", errBuf.String())
 	}
 }
 
@@ -401,5 +401,17 @@ func TestImportOperatorMissingKey(t *testing.T) {
 	code := run([]string{"import", cfg, "--operator", filepath.Join(home, "nope")}, &out, &errBuf)
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (an explicitly named operator key must exist)", code)
+	}
+}
+
+// TestImportPhaseLogs: normal mode narrates parsing on stderr.
+func TestImportPhaseLogs(t *testing.T) {
+	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n") // reuse the fixture helper the clean-import test uses
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--servers-only"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "parsed") || !strings.Contains(errBuf.String(), "hosts") {
+		t.Errorf("stderr = %q, want a parsed-hosts phase line", errBuf.String())
 	}
 }

@@ -118,7 +118,7 @@ func localUsername() string {
 	return "user"
 }
 
-func newImportCmd(stdout io.Writer) *cobra.Command {
+func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
 		outPath     string
 		force       bool
@@ -138,7 +138,7 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 			"implicitly (no access entry) and protected from removal by future apply.\n" +
 			"Warnings about skipped entries go to stderr.",
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			if serversOnly && len(operators) > 0 {
 				return fmt.Errorf("--operator conflicts with --servers-only (operators are users)")
 			}
@@ -150,13 +150,14 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			log := a.logger
 			hosts, warnings, err := sshcfg.Load(srcPath)
 			if err != nil {
 				return fmt.Errorf("load ssh config: %w", err) // wrapcheck: wrap at package boundary
 			}
-			stderr := cmd.ErrOrStderr()
+			log.Info(fmt.Sprintf("parsed %s: %d hosts", src, len(hosts)))
 			for _, w := range warnings {
-				fmt.Fprintln(stderr, "warning:", w)
+				log.Warn(w)
 			}
 			var users []identity.User
 			if !serversOnly {
@@ -166,15 +167,16 @@ func newImportCmd(stdout io.Writer) *cobra.Command {
 					return err
 				}
 				for _, w := range idWarnings {
-					fmt.Fprintln(stderr, "warning:", w)
+					log.Warn(w)
 				}
+				log.Info(fmt.Sprintf("derived %d users from identity files", len(users)))
 			}
 			manifest, notes, err := generateManifest(hosts, users, src)
 			if err != nil {
 				return err
 			}
 			for _, n := range notes {
-				fmt.Fprintln(stderr, "warning:", n)
+				log.Warn(n)
 			}
 			// Self-check: never emit a manifest our own loader would reject.
 			if _, err := config.Parse(manifest); err != nil {
