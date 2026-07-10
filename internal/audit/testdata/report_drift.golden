@@ -7,4 +7,4 @@ web-1 (deploy@10.0.0.1:22)
 
 web-2 (deploy@10.0.0.2:22)  ERROR: dial tcp 10.0.0.2:22: connection refused
 
-Summary: 0/2 servers compliant · 1 with drift · 1 unreachable  → exit 1
+Summary: 0/2 servers compliant · 1 with drift (0 critical) · 1 unreachable  → exit 1

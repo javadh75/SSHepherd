@@ -150,3 +150,97 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 1", ExitCode(results))
 	}
 }
+
+// operatorConfig: op(k3) is an operator (desired everywhere); alice(k1) -> web-1.
+func operatorConfig(t *testing.T) *config.Config {
+	t.Helper()
+	y := `
+users:
+  - {name: op, operator: true, comment: "op@sshepherd", keys: ["` + testkeys.Line(t, 3) + `"]}
+  - {name: alice, keys: ["` + testkeys.Line(t, 1) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("operatorConfig: %v", err)
+	}
+	return cfg
+}
+
+func TestRenderCriticalOperatorMissing(t *testing.T) {
+	cfg := operatorConfig(t)
+	// web-1: operator key missing (CRITICAL), alice present.
+	// web-2: file absent — the operator key is desired and missing → CRITICAL too.
+	reader := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
+		"web-2": {FileAbsent: true},
+	}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results)
+	out := buf.String()
+	if got := strings.Count(out, "CRITICAL: operator key"); got != 2 {
+		t.Errorf("CRITICAL rows = %d, want 2:\n%s", got, out)
+	}
+	if !strings.Contains(out, "(2 critical)") {
+		t.Errorf("summary lacks the critical count:\n%s", out)
+	}
+	if ExitCode(results) != 1 {
+		t.Errorf("ExitCode = %d, want 1 (severity is render-only)", ExitCode(results))
+	}
+	checkGolden(t, "report_critical.golden", buf.Bytes())
+}
+
+func TestRenderUnreachableServerNotCritical(t *testing.T) {
+	cfg := operatorConfig(t)
+	// web-1 fully compliant; web-2 unreachable — nothing knowable about its
+	// keys, so it must stay a plain ERROR, not a critical finding.
+	reader := &fakeReader{
+		byName: map[string]ReadResult{
+			"web-1": {Content: []byte(testkeys.Line(t, 3) + "\n" + testkeys.Line(t, 1) + "\n")},
+		},
+		errs: map[string]error{"web-2": errors.New("dial tcp 10.0.0.2:22: connection refused")},
+	}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results)
+	if strings.Contains(buf.String(), "CRITICAL") {
+		t.Errorf("unreachable server must not render CRITICAL:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "(0 critical)") {
+		t.Errorf("summary should show 0 critical:\n%s", buf.String())
+	}
+}
+
+func TestCriticalCountsServersNotKeys(t *testing.T) {
+	// Two operators, both missing from the single audited server: the summary
+	// must count one critical server, not two critical keys.
+	y := `
+users:
+  - {name: op-a, operator: true, keys: ["` + testkeys.Line(t, 3) + `"]}
+  - {name: op-b, operator: true, keys: ["` + testkeys.Line(t, 4) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	reader := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
+	}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results)
+	out := buf.String()
+	if got := strings.Count(out, "CRITICAL: operator key"); got != 2 {
+		t.Errorf("CRITICAL rows = %d, want 2:\n%s", got, out)
+	}
+	if !strings.Contains(out, "(1 critical)") {
+		t.Errorf("summary must count servers, not keys:\n%s", out)
+	}
+}

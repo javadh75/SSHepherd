@@ -32,7 +32,7 @@ func Render(w io.Writer, cfg *config.Config, results []ServerResult) {
 		renderServer(w, cfg, r)
 		fmt.Fprintln(w)
 	}
-	renderSummary(w, results)
+	renderSummary(w, cfg, results)
 }
 
 func renderServer(w io.Writer, cfg *config.Config, r ServerResult) {
@@ -48,6 +48,11 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult) {
 		fmt.Fprintf(tw, "  ✓\t%s\t%s\t%s\tpresent & authorized\n", label(cfg, k), k.Fingerprint, k.Type)
 	}
 	for _, k := range r.Diff.Missing {
+		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
+			fmt.Fprintf(tw, "  ‼\t%s\t%s\t%s\tauthorized but MISSING (CRITICAL: operator key)\n",
+				label(cfg, k), k.Fingerprint, k.Type)
+			continue
+		}
 		fmt.Fprintf(tw, "  ✗\t%s\t%s\t%s\tauthorized but MISSING\n", label(cfg, k), k.Fingerprint, k.Type)
 	}
 	for _, k := range r.Diff.Unauthorized {
@@ -95,8 +100,22 @@ func label(cfg *config.Config, k authkeys.Key) string {
 	return u.Name
 }
 
-func renderSummary(w io.Writer, results []ServerResult) {
-	var compliant, drift, unreachable int
+// criticalDrift reports whether this server's drift includes a missing
+// operator key — the drift class that threatens fleet access itself.
+func criticalDrift(cfg *config.Config, r ServerResult) bool {
+	if r.Err != nil {
+		return false // unreachable: nothing knowable about its keys
+	}
+	for _, k := range r.Diff.Missing {
+		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
+			return true
+		}
+	}
+	return false
+}
+
+func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
+	var compliant, drift, critical, unreachable int
 	for _, r := range results {
 		switch {
 		case r.Err != nil:
@@ -105,8 +124,11 @@ func renderSummary(w io.Writer, results []ServerResult) {
 			compliant++
 		default:
 			drift++
+			if criticalDrift(cfg, r) {
+				critical++
+			}
 		}
 	}
-	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift · %d unreachable  → exit %d\n",
-		compliant, len(results), drift, unreachable, ExitCode(results))
+	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable  → exit %d\n",
+		compliant, len(results), drift, critical, unreachable, ExitCode(results))
 }
