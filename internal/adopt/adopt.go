@@ -4,7 +4,104 @@
 // extensions. Pure logic — no I/O; the cmd layer owns SSH and rendering.
 package adopt
 
-import "strings"
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/config"
+)
+
+// NewUser is one unknown key adopted into a generated user.
+type NewUser struct {
+	Name     string
+	Line     string   // raw authorized_keys line; first occurrence wins
+	FoundOn  []string // sorted names of servers where the key was found
+	Wildcard bool     // grant renders as ["*"]: the key covers the whole fleet
+}
+
+// Extension grants an existing user the servers their key was found on
+// beyond the manifest's current grants.
+type Extension struct {
+	User    string
+	Servers []string // sorted
+}
+
+// Issue is a server whose keys could not be (fully) read; the cmd layer
+// enforces the strict/--partial gate on these.
+type Issue struct {
+	Server string
+	Detail string
+}
+
+// Plan is everything adopt would add to the manifest, plus warnings for the
+// operator and issues for the strict gate.
+type Plan struct {
+	NewUsers   []NewUser
+	Extensions []Extension
+	Warnings   []string
+	Issues     []Issue
+}
+
+// pending accumulates one unknown key during the sweep.
+type pending struct {
+	line    string
+	comment string
+	foundOn []string
+}
+
+// Build attributes every unauthorized key in results: keys owned by a
+// manifest user extend that user's access; unknown keys become new users.
+// results must be sorted by server name (audit.Run guarantees this) and keys
+// are processed in file order, so the output is deterministic.
+func Build(cfg *config.Config, results []audit.ServerResult) Plan {
+	var p Plan
+	byFP := make(map[string]*pending)
+	var order []string // fingerprints in discovery order
+	for _, r := range results {
+		for _, k := range r.Diff.Unauthorized {
+			if _, known := cfg.OwnerOf(k.Fingerprint); known {
+				continue // Task 6 extends the owner's access
+			}
+			if pd, seen := byFP[k.Fingerprint]; seen {
+				pd.foundOn = append(pd.foundOn, r.Server.Name)
+				continue
+			}
+			byFP[k.Fingerprint] = &pending{line: k.Raw, comment: k.Comment, foundOn: []string{r.Server.Name}}
+			order = append(order, k.Fingerprint)
+		}
+	}
+	p.NewUsers = nameUsers(cfg, byFP, order)
+	return p
+}
+
+// nameUsers turns accumulated unknown keys into named users, resolving
+// collisions against manifest names and each other with numeric suffixes.
+func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []NewUser {
+	taken := make(map[string]bool, len(cfg.Users))
+	for _, u := range cfg.Users {
+		taken[u.Name] = true
+	}
+	var users []NewUser
+	anon := 0
+	for _, fp := range order {
+		pd := byFP[fp]
+		base := sanitizeName(pd.comment)
+		if base == "" {
+			anon++
+			base = fmt.Sprintf("adopted-key-%d", anon)
+		}
+		name := base
+		for n := 2; taken[name]; n++ {
+			name = fmt.Sprintf("%s-%d", base, n)
+		}
+		taken[name] = true
+		sort.Strings(pd.foundOn)
+		users = append(users, NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn})
+	}
+	return users
+}
 
 // sanitizeName derives a manifest user name from a key comment: lowercase,
 // every run of characters outside [a-z0-9] collapses to a single '-',
