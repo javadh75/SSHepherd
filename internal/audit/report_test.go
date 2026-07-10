@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -54,10 +55,10 @@ access:
 	return cfg
 }
 
-func TestRenderDrift(t *testing.T) {
-	cfg := reportConfig(t)
-	// web-1: alice ok, bob missing, one unauthorized, one parse error.
-	// web-2: unreachable.
+// driftResults builds the standard drift scenario: web-1 with alice ok, bob
+// missing, one unauthorized key and one parse error; web-2 unreachable.
+func driftResults(t *testing.T, cfg *config.Config) []ServerResult {
+	t.Helper()
 	reader := &fakeReader{
 		byName: map[string]ReadResult{
 			"web-1": {Content: []byte(
@@ -69,13 +70,53 @@ func TestRenderDrift(t *testing.T) {
 			"web-2": errors.New("dial tcp 10.0.0.2:22: connection refused"),
 		},
 	}
-	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	return Run(context.Background(), cfg, reader, Options{Parallel: 2})
+}
+
+func TestRenderDrift(t *testing.T) {
+	cfg := reportConfig(t)
+	// web-1: alice ok, bob missing, one unauthorized, one parse error.
+	// web-2: unreachable.
+	results := driftResults(t, cfg)
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 	checkGolden(t, "report_drift.golden", buf.Bytes())
 	if ExitCode(results) != 1 {
 		t.Errorf("ExitCode = %d, want 1", ExitCode(results))
 	}
+}
+
+// ansiRE strips SGR sequences; see TestRenderColorStrippedEqualsPlain.
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// TestRenderColorStrippedEqualsPlain pins the two load-bearing invariants at
+// once: color adds nothing but SGR codes (content identical), and because
+// every glyph-column SGR prefix has equal byte length, tabwriter computes
+// the same column widths — so stripping color must reproduce the plain
+// output byte-for-byte, alignment included.
+func TestRenderColorStrippedEqualsPlain(t *testing.T) {
+	cfg := reportConfig(t)
+	results := driftResults(t, cfg)
+
+	var plain, colored bytes.Buffer
+	Render(&plain, cfg, results, RenderOptions{})
+	Render(&colored, cfg, results, RenderOptions{Color: true})
+
+	if plain.String() == colored.String() {
+		t.Fatal("colored output is identical to plain — no color was applied")
+	}
+	stripped := ansiRE.ReplaceAllString(colored.String(), "")
+	if stripped != plain.String() {
+		t.Errorf("stripped colored output differs from plain:\n--- stripped ---\n%s\n--- plain ---\n%s",
+			stripped, plain.String())
+	}
+}
+
+func TestRenderDriftColorGolden(t *testing.T) {
+	cfg := reportConfig(t)
+	var buf bytes.Buffer
+	Render(&buf, cfg, driftResults(t, cfg), RenderOptions{Color: true})
+	checkGolden(t, "report_drift_color.golden", buf.Bytes())
 }
 
 func TestRenderCompliant(t *testing.T) {
@@ -86,7 +127,7 @@ func TestRenderCompliant(t *testing.T) {
 	}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 	checkGolden(t, "report_compliant.golden", buf.Bytes())
 	if ExitCode(results) != 0 {
 		t.Errorf("ExitCode = %d, want 0", ExitCode(results))
@@ -95,7 +136,7 @@ func TestRenderCompliant(t *testing.T) {
 
 func TestRenderEmptyFleet(t *testing.T) {
 	var buf bytes.Buffer
-	Render(&buf, &config.Config{}, nil)
+	Render(&buf, &config.Config{}, nil, RenderOptions{})
 	if !bytes.Contains(buf.Bytes(), []byte("0 servers")) {
 		t.Errorf("empty-fleet output = %q, want a '0 servers' note", buf.String())
 	}
@@ -112,7 +153,7 @@ func TestRenderFileAbsentDiagnostic(t *testing.T) {
 	}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 	out := buf.String()
 	if !strings.Contains(out, "another key source") {
 		t.Errorf("file-absent diagnostic missing from:\n%s", out)
@@ -129,7 +170,7 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 	}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 
 	var unauthorized []string
 	for _, line := range strings.Split(buf.String(), "\n") {
@@ -171,17 +212,25 @@ access:
 	return cfg
 }
 
-func TestRenderCriticalOperatorMissing(t *testing.T) {
-	cfg := operatorConfig(t)
-	// web-1: operator key missing (CRITICAL), alice present.
-	// web-2: file absent — the operator key is desired and missing → CRITICAL too.
+// criticalResults builds the standard critical scenario: web-1 with the
+// operator key missing (alice present), web-2 with the authorized_keys file
+// absent — the operator key is desired and missing there too.
+func criticalResults(t *testing.T, cfg *config.Config) []ServerResult {
+	t.Helper()
 	reader := &fakeReader{byName: map[string]ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 		"web-2": {FileAbsent: true},
 	}}
-	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	return Run(context.Background(), cfg, reader, Options{Parallel: 2})
+}
+
+func TestRenderCriticalOperatorMissing(t *testing.T) {
+	cfg := operatorConfig(t)
+	// web-1: operator key missing (CRITICAL), alice present.
+	// web-2: file absent — the operator key is desired and missing → CRITICAL too.
+	results := criticalResults(t, cfg)
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 	out := buf.String()
 	if got := strings.Count(out, "CRITICAL: operator key"); got != 2 {
 		t.Errorf("CRITICAL rows = %d, want 2:\n%s", got, out)
@@ -193,6 +242,13 @@ func TestRenderCriticalOperatorMissing(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 1 (severity is render-only)", ExitCode(results))
 	}
 	checkGolden(t, "report_critical.golden", buf.Bytes())
+}
+
+func TestRenderCriticalColorGolden(t *testing.T) {
+	cfg := operatorConfig(t)
+	var buf bytes.Buffer
+	Render(&buf, cfg, criticalResults(t, cfg), RenderOptions{Color: true})
+	checkGolden(t, "report_critical_color.golden", buf.Bytes())
 }
 
 func TestRenderUnreachableServerNotCritical(t *testing.T) {
@@ -207,7 +263,7 @@ func TestRenderUnreachableServerNotCritical(t *testing.T) {
 	}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 	if strings.Contains(buf.String(), "CRITICAL") {
 		t.Errorf("unreachable server must not render CRITICAL:\n%s", buf.String())
 	}
@@ -235,7 +291,7 @@ servers:
 	}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
 	var buf bytes.Buffer
-	Render(&buf, cfg, results)
+	Render(&buf, cfg, results, RenderOptions{})
 	out := buf.String()
 	if got := strings.Count(out, "CRITICAL: operator key"); got != 2 {
 		t.Errorf("CRITICAL rows = %d, want 2:\n%s", got, out)

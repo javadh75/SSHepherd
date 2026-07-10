@@ -20,43 +20,76 @@ func ExitCode(results []ServerResult) int {
 	return 0
 }
 
+// RenderOptions tunes report presentation.
+type RenderOptions struct {
+	Color bool // ANSI-color drift glyphs and key words; off = byte-identical to plain
+}
+
+// SGR codes used by the report. Every code is exactly four bytes ("0;32"),
+// so each painted glyph cell carries identically-sized invisible bytes:
+// text/tabwriter sizes columns by byte count, and equal-length prefixes are
+// what keep the columns aligned when color is on.
+const (
+	codeGreen   = "0;32"
+	codeRed     = "0;31"
+	codeBoldRed = "1;31"
+	codeYellow  = "0;33"
+)
+
+// palette paints report fragments when color is on.
+type palette struct{ on bool }
+
+func (p palette) paint(code, s string) string {
+	if !p.on {
+		return s
+	}
+	return "\x1b[" + code + "m" + s + "\x1b[0m"
+}
+
 // Render writes the human-readable audit report. The report is the command's
 // stdout product; diagnostics beyond the report belong on stderr (caller's
 // concern).
-func Render(w io.Writer, cfg *config.Config, results []ServerResult) {
+func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts RenderOptions) {
 	if len(results) == 0 {
 		fmt.Fprintln(w, "Summary: 0 servers configured — nothing to audit")
 		return
 	}
+	pal := palette{on: opts.Color}
 	for _, r := range results {
-		renderServer(w, cfg, r)
+		renderServer(w, cfg, r, pal)
 		fmt.Fprintln(w)
 	}
 	renderSummary(w, cfg, results)
 }
 
-func renderServer(w io.Writer, cfg *config.Config, r ServerResult) {
+func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette) {
 	head := fmt.Sprintf("%s (%s@%s:%d)", r.Server.Name, r.Server.User, r.Server.Host, r.Server.Port)
 	if r.Err != nil {
-		fmt.Fprintf(w, "%s  ERROR: %v\n", head, r.Err)
+		fmt.Fprintf(w, "%s  %s %v\n", head, pal.paint(codeRed, "ERROR:"), r.Err)
 		return
 	}
 	fmt.Fprintln(w, head)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, k := range r.Diff.OK {
-		fmt.Fprintf(tw, "  ✓\t%s\t%s\t%s\tpresent & authorized\n", label(cfg, k), k.Fingerprint, k.Type)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tpresent & authorized\n",
+			pal.paint(codeGreen, "✓"), label(cfg, k), k.Fingerprint, k.Type)
 	}
 	for _, k := range r.Diff.Missing {
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
-			fmt.Fprintf(tw, "  ‼\t%s\t%s\t%s\tauthorized but MISSING (CRITICAL: operator key)\n",
-				label(cfg, k), k.Fingerprint, k.Type)
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tauthorized but %s (%s: operator key)\n",
+				pal.paint(codeBoldRed, "‼"), label(cfg, k), k.Fingerprint, k.Type,
+				pal.paint(codeRed, "MISSING"), pal.paint(codeBoldRed, "CRITICAL"))
 			continue
 		}
-		fmt.Fprintf(tw, "  ✗\t%s\t%s\t%s\tauthorized but MISSING\n", label(cfg, k), k.Fingerprint, k.Type)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tauthorized but %s\n",
+			pal.paint(codeRed, "✗"), label(cfg, k), k.Fingerprint, k.Type,
+			pal.paint(codeRed, "MISSING"))
 	}
 	for _, k := range r.Diff.Unauthorized {
-		fmt.Fprintf(tw, "  ⚠\t%s\t%s\t%s\tinstalled but UNAUTHORIZED\n", label(cfg, k), k.Fingerprint, k.Type)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s\n",
+			pal.paint(codeYellow, "⚠"), label(cfg, k), k.Fingerprint, k.Type,
+			pal.paint(codeYellow, "UNAUTHORIZED"))
 	}
 	_ = tw.Flush()
 

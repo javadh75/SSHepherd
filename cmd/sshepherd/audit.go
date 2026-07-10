@@ -39,7 +39,7 @@ func newAuditCmd(stdout io.Writer) *cobra.Command {
 				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
 			}
 			if len(cfg.Servers) == 0 {
-				audit.Render(stdout, cfg, nil)
+				audit.Render(stdout, cfg, nil, audit.RenderOptions{})
 				return nil
 			}
 			if err := sshread.CheckAgent(os.Getenv("SSH_AUTH_SOCK")); err != nil {
@@ -63,7 +63,7 @@ func newAuditCmd(stdout io.Writer) *cobra.Command {
 				Parallel:         parallel,
 				PerServerTimeout: perServerTimeout,
 			})
-			audit.Render(stdout, cfg, results)
+			audit.Render(stdout, cfg, results, audit.RenderOptions{})
 			if audit.ExitCode(results) != 0 {
 				return errNonCompliant
 			}
