@@ -92,7 +92,9 @@ quiet included, with a red `error:` prefix when stderr color is on.
 `*slog.Logger` → `clog.Handler` → the injected stderr writer, and computes
 the stdout color flag for renderers. `run()` uses the logger for the final
 error line when it exists; flag-parse failures that die before
-`PersistentPreRunE` fall back to today's plain `Fprintln`. Tests keep passing
+`PersistentPreRunE` fall back to an uncolored handler-rendered `error:` line —
+plain is always safe, and an explicit `--color` choice cannot be known before
+parsing succeeds. Tests keep passing
 buffers exactly as now — color detects false on a buffer; tests can force it
 with `--color=always`.
 

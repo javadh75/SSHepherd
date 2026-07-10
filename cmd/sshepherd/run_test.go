@@ -87,6 +87,21 @@ func TestRunInvalidColor(t *testing.T) {
 	}
 }
 
+// TestRunQuietFatalStillPrints pins the spec promise: errors are never
+// swallowed, quiet mode included.
+func TestRunQuietFatalStillPrints(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"-q"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "no command") {
+		t.Errorf("stderr = %q, want the fatal error even under -q", errBuf.String())
+	}
+	if !strings.HasPrefix(errBuf.String(), "error: ") {
+		t.Errorf("stderr = %q, want the error: prefix", errBuf.String())
+	}
+}
+
 // TestRunColorAlwaysFatal proves the --color flag reaches the logger: with
 // always, the fatal line carries ANSI even though stderr is a buffer.
 func TestRunColorAlwaysFatal(t *testing.T) {

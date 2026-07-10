@@ -853,15 +853,19 @@ type app struct {
 	reportColor bool         // whether stdout renderers may color
 }
 
-// log returns the flag-configured logger, or a safe default for failures
-// that happen before flags parse (usage errors, unknown flags).
+// log returns the flag-configured logger, or a plain never-colored fallback
+// for failures before or during flag parsing (unknown flags, --color
+// validation), where no explicit color choice can be known yet.
+// The fallback constructs a second handler (own mutex) on the same stderr;
+// that is safe only because it is used strictly after Execute returns, when
+// the flag-built logger (if any) is no longer being written to.
 func (a *app) log(stderr io.Writer) *slog.Logger {
 	if a.logger != nil {
 		return a.logger
 	}
 	return slog.New(clog.NewHandler(stderr, clog.Options{
 		Level: slog.LevelInfo,
-		Color: clog.Enabled(stderr, clog.ColorAuto),
+		Color: clog.Enabled(stderr, clog.ColorNever),
 	}))
 }
 
