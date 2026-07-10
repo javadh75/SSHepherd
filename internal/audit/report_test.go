@@ -91,24 +91,55 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // TestRenderColorStrippedEqualsPlain pins the two load-bearing invariants at
 // once: color adds nothing but SGR codes (content identical), and because
-// every glyph-column SGR prefix has equal byte length, tabwriter computes
-// the same column widths — so stripping color must reproduce the plain
-// output byte-for-byte, alignment included.
+// every glyph-column SGR prefix has equal length, tabwriter computes the
+// same column widths — so stripping color must reproduce the plain output
+// byte-for-byte, alignment included. Both fixtures run so the ‼/CRITICAL
+// operator rows are under the invariant too.
 func TestRenderColorStrippedEqualsPlain(t *testing.T) {
-	cfg := reportConfig(t)
-	results := driftResults(t, cfg)
+	driftCfg := reportConfig(t)
+	criticalCfg := operatorConfig(t)
+	for _, fix := range []struct {
+		name    string
+		cfg     *config.Config
+		results []ServerResult
+	}{
+		{"drift", driftCfg, driftResults(t, driftCfg)},
+		{"critical", criticalCfg, criticalResults(t, criticalCfg)},
+	} {
+		t.Run(fix.name, func(t *testing.T) {
+			var plain, colored bytes.Buffer
+			Render(&plain, fix.cfg, fix.results, RenderOptions{})
+			Render(&colored, fix.cfg, fix.results, RenderOptions{Color: true})
 
-	var plain, colored bytes.Buffer
-	Render(&plain, cfg, results, RenderOptions{})
-	Render(&colored, cfg, results, RenderOptions{Color: true})
-
-	if plain.String() == colored.String() {
-		t.Fatal("colored output is identical to plain — no color was applied")
+			if plain.String() == colored.String() {
+				t.Fatal("colored output is identical to plain — no color was applied")
+			}
+			stripped := ansiRE.ReplaceAllString(colored.String(), "")
+			if stripped != plain.String() {
+				t.Errorf("stripped colored output differs from plain:\n--- stripped ---\n%s\n--- plain ---\n%s",
+					stripped, plain.String())
+			}
+		})
 	}
-	stripped := ansiRE.ReplaceAllString(colored.String(), "")
-	if stripped != plain.String() {
-		t.Errorf("stripped colored output differs from plain:\n--- stripped ---\n%s\n--- plain ---\n%s",
-			stripped, plain.String())
+}
+
+// TestRenderErrorHeadIsOneLine pins the report-forgery defense: a hostile
+// error containing newlines must not become extra report lines.
+func TestRenderErrorHeadIsOneLine(t *testing.T) {
+	cfg := reportConfig(t)
+	results := []ServerResult{{
+		Server: cfg.Servers[0],
+		Err:    errors.New("dial failed\n  ✓ forged-user SHA256:xxx ssh-ed25519 present & authorized\nSummary: 99/99 servers compliant"),
+	}}
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{})
+	got := buf.String()
+	if strings.Count(got, "forged-user") != 1 {
+		t.Fatalf("forged content missing or duplicated:\n%s", got)
+	}
+	line, _, _ := strings.Cut(got, "\n")
+	if !strings.Contains(line, "forged-user") || !strings.Contains(line, "Summary: 99/99") {
+		t.Errorf("hostile newlines were not collapsed into the head line:\n%s", got)
 	}
 }
 

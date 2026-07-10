@@ -3,6 +3,7 @@ package audit
 import (
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
@@ -25,10 +26,11 @@ type RenderOptions struct {
 	Color bool // ANSI-color drift glyphs and key words; off = byte-identical to plain
 }
 
-// SGR codes used by the report. Every code is exactly four bytes ("0;32"),
-// so each painted glyph cell carries identically-sized invisible bytes:
-// text/tabwriter sizes columns by byte count, and equal-length prefixes are
-// what keep the columns aligned when color is on.
+// SGR codes used by the report. Every code is exactly four characters
+// ("0;32"): text/tabwriter sizes columns by rune count and knows nothing of
+// ANSI, and because SGR codes are pure ASCII (bytes == runes) every painted
+// glyph cell inflates by the same amount — so columns stay aligned whether
+// or not color is on.
 const (
 	codeGreen   = "0;32"
 	codeRed     = "0;31"
@@ -44,6 +46,14 @@ func (p palette) paint(code, s string) string {
 		return s
 	}
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
+}
+
+// oneLine renders err for the report head. Newlines are collapsed so a
+// hostile server's error text cannot forge report rows or a Summary line;
+// terminal escapes are already stripped upstream (sshread), this closes the
+// line-forgery half of the boundary.
+func oneLine(err error) string {
+	return strings.Join(strings.Fields(err.Error()), " ")
 }
 
 // Render writes the human-readable audit report. The report is the command's
@@ -65,7 +75,7 @@ func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts Render
 func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette) {
 	head := fmt.Sprintf("%s (%s@%s:%d)", r.Server.Name, r.Server.User, r.Server.Host, r.Server.Port)
 	if r.Err != nil {
-		fmt.Fprintf(w, "%s  %s %v\n", head, pal.paint(codeRed, "ERROR:"), r.Err)
+		fmt.Fprintf(w, "%s  %s %s\n", head, pal.paint(codeRed, "ERROR:"), oneLine(r.Err))
 		return
 	}
 	fmt.Fprintln(w, head)

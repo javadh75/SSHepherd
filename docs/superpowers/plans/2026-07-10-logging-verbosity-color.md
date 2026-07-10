@@ -1061,10 +1061,11 @@ type RenderOptions struct {
 	Color bool // ANSI-color drift glyphs and key words; off = byte-identical to plain
 }
 
-// SGR codes used by the report. Every code is exactly four bytes ("0;32"),
-// so each painted glyph cell carries identically-sized invisible bytes:
-// text/tabwriter sizes columns by byte count, and equal-length prefixes are
-// what keep the columns aligned when color is on.
+// SGR codes used by the report. Every code is exactly four characters
+// ("0;32"): text/tabwriter sizes columns by rune count and knows nothing of
+// ANSI, and because SGR codes are pure ASCII (bytes == runes) every painted
+// glyph cell inflates by the same amount — so columns stay aligned whether
+// or not color is on.
 const (
 	codeGreen   = "0;32"
 	codeRed     = "0;31"

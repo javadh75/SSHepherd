@@ -124,11 +124,12 @@ byte-identical to today. Color on: green `✓`, red `✗`, bold-red `‼` with b
 `CRITICAL`, yellow `⚠`, red `ERROR` on unreachable-server heads. Glyphs and
 key words only — fingerprints, counts, and notes stay plain.
 
-**tabwriter pitfall.** `text/tabwriter` counts bytes for column widths; ANSI
-escapes inside a cell inflate its apparent width and wreck alignment. Fix:
-every variant appearing in the same column uses SGR sequences of equal byte
-length (pad e.g. `\x1b[0;32m` vs `\x1b[1;31m`), so invisible bytes are
-identical per column and alignment holds. Golden tests pin this.
+**tabwriter pitfall.** `text/tabwriter` counts runes (ANSI-unaware) for
+column widths; ANSI escapes inside a cell inflate its apparent width and
+wreck alignment. Fix: every variant appearing in the same column uses SGR
+sequences of equal length (pad e.g. `\x1b[0;32m` vs `\x1b[1;31m` — pure
+ASCII, so bytes == runes), so invisible characters are identical per column
+and alignment holds. Golden tests pin this.
 
 ## Security & robustness
 
