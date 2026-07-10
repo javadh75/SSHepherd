@@ -14,6 +14,7 @@ users:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMqTrBcFGHBx1nuDx/8O/oEI6OxFMFdddyaHkzPb2r58
 servers:
   - name: db-1
+    description: primary db
     host: 10.0.0.3
     port: 2222
     user: deploy

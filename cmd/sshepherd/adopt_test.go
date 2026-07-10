@@ -58,7 +58,7 @@ users:
   - {name: alice, description: hand-written, keys: ["` + testkeys.Line(t, 2) + `", "` + testkeys.Line(t, 3) + `"]}
   - {name: bob, keys: ["` + testkeys.Line(t, 4) + `"]}
 servers:
-  - {name: db-1, host: 10.0.0.3, port: 2222, user: deploy}
+  - {name: db-1, host: 10.0.0.3, port: 2222, user: deploy, description: primary db}
   - {name: web-1, host: 10.0.0.1, user: deploy}
   - {name: web-2, host: 10.0.0.2, user: deploy}
 access:
@@ -127,9 +127,9 @@ func TestGenerateAdoptManifestNoopGolden(t *testing.T) {
 	if _, err := config.Parse(got); err != nil {
 		t.Fatalf("generated manifest rejected by config.Parse: %v", err)
 	}
-	// Content-identical re-render: port 2222 kept, port 22 omitted,
-	// alice's description and bob's except preserved.
-	for _, want := range []string{"port: 2222", "description: hand-written", "except:"} {
+	// Content-identical re-render: port 2222 kept, port 22 omitted, alice's
+	// and db-1's descriptions and bob's except preserved.
+	for _, want := range []string{"port: 2222", "description: hand-written", "description: primary db", "except:"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("output lacks %q:\n%s", want, got)
 		}
