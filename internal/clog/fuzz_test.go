@@ -12,7 +12,7 @@ func FuzzSanitize(f *testing.F) {
 	f.Add("plain text")
 	f.Add("evil\x1b[31mred")
 	f.Add("line1\nline2\tend")
-	f.Add("31m csi")
+	f.Add("\u009b31m csi")
 	f.Add("a\x00\x7f\rb")
 	f.Fuzz(func(t *testing.T, s string) {
 		out := sanitize(s)
