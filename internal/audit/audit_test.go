@@ -181,7 +181,11 @@ func fleetConfig(t testing.TB, n int) *config.Config {
 func TestRunPoolCap(t *testing.T) {
 	cfg := fleetConfig(t, 20)
 	g := &gateReader{delay: 20 * time.Millisecond}
-	Run(context.Background(), cfg, g, Options{Parallel: 3})
+	// A real clog handler (not discard) so concurrent workers exercise the
+	// handler mutex under genuine contention; the race detector is the assert.
+	var logBuf bytes.Buffer
+	log := slog.New(clog.NewHandler(&logBuf, clog.Options{Level: slog.LevelDebug}))
+	Run(context.Background(), cfg, g, Options{Parallel: 3, Logger: log})
 	gotMax := g.maxSeen.Load()
 	if gotMax > 3 {
 		t.Errorf("max concurrent reads = %d, want <= 3", gotMax)
@@ -246,6 +250,9 @@ func TestRunLogsPerServer(t *testing.T) {
 	}
 	if !strings.Contains(got, "audited") || !strings.Contains(got, "server=web-1") {
 		t.Errorf("log = %q, want a debug audited line for web-1", got)
+	}
+	if strings.Contains(got, "warn: web-1") {
+		t.Errorf("log = %q, drift must not warn — only read failures do", got)
 	}
 }
 
