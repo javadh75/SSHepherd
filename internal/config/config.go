@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -34,10 +35,12 @@ type Server struct {
 	User        string `yaml:"user"`
 }
 
-// Access grants one user access to a list of servers.
+// Access grants one user access to a list of servers. servers: ["*"] grants
+// every server (including ones added later), minus the except names.
 type Access struct {
 	User    string   `yaml:"user"`
 	Servers []string `yaml:"servers"`
+	Except  []string `yaml:"except"` // only valid with servers: ["*"]
 }
 
 // Config is the parsed, validated manifest.
@@ -146,6 +149,10 @@ func (c *Config) validateServers() []error {
 			errs = append(errs, fmt.Errorf("servers[%d]: empty name", i))
 			continue
 		}
+		if s.Name == "*" {
+			errs = append(errs, fmt.Errorf("servers[%d]: name %q is reserved for wildcard grants", i, "*"))
+			continue
+		}
 		if seen[s.Name] {
 			errs = append(errs, fmt.Errorf("duplicate server %q", s.Name))
 			continue
@@ -184,7 +191,12 @@ func (c *Config) validateAccess() []error {
 			errs = append(errs, fmt.Errorf("access: unknown user %q", a.User))
 			continue
 		}
-		for _, srv := range a.Servers {
+		targets, tErrs := c.expandServers(a, servers)
+		if len(tErrs) > 0 {
+			errs = append(errs, tErrs...)
+			continue
+		}
+		for _, srv := range targets {
 			if !servers[srv] {
 				errs = append(errs, fmt.Errorf("access for %q: unknown server %q", a.User, srv))
 				continue
@@ -200,6 +212,44 @@ func (c *Config) validateAccess() []error {
 		}
 	}
 	return errs
+}
+
+// expandServers resolves an access entry's server list: ["*"] expands to
+// every server (manifest order) minus the except names; explicit lists pass
+// through untouched. Errors cover misused wildcard/except syntax; an entry
+// that grants nothing is certainly a mistake.
+func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []error) {
+	if !slices.Contains(a.Servers, "*") {
+		if len(a.Except) > 0 {
+			return nil, []error{fmt.Errorf(`access for %q: except requires servers ["*"]`, a.User)}
+		}
+		return a.Servers, nil
+	}
+	if len(a.Servers) != 1 {
+		return nil, []error{fmt.Errorf("access for %q: %q must be the only servers entry", a.User, "*")}
+	}
+	var errs []error
+	excluded := make(map[string]bool, len(a.Except))
+	for _, e := range a.Except {
+		if !servers[e] {
+			errs = append(errs, fmt.Errorf("access for %q: unknown except server %q", a.User, e))
+			continue
+		}
+		excluded[e] = true // duplicates are tolerated, like grants unioning
+	}
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	var targets []string
+	for i := range c.Servers {
+		if !excluded[c.Servers[i].Name] {
+			targets = append(targets, c.Servers[i].Name)
+		}
+	}
+	if len(targets) == 0 {
+		return nil, []error{fmt.Errorf("access for %q: wildcard grants no servers", a.User)}
+	}
+	return targets, nil
 }
 
 // DesiredFor returns the desired key set for a server: operator users' keys

@@ -129,6 +129,49 @@ servers:
 servers:
   - {name: s, host: h, user: u, port: 70000}
 `, "port"},
+		{"wildcard not alone", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+servers:
+  - {name: s1, host: h, user: u}
+access:
+  - {user: alice, servers: ["*", s1]}
+`, "must be the only servers entry"},
+		{"except without wildcard", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+servers:
+  - {name: s1, host: h, user: u}
+  - {name: s2, host: h2, user: u}
+access:
+  - {user: alice, servers: [s1], except: [s2]}
+`, "except requires servers"},
+		{"unknown except server", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+servers:
+  - {name: s1, host: h, user: u}
+access:
+  - {user: alice, servers: ["*"], except: [nope]}
+`, "unknown except server"},
+		{"wildcard grants nothing", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+servers:
+  - {name: s1, host: h, user: u}
+access:
+  - {user: alice, servers: ["*"], except: [s1]}
+`, "grants no servers"},
+		{"wildcard empty fleet", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+access:
+  - {user: alice, servers: ["*"]}
+`, "grants no servers"},
+		{"reserved server name", `
+servers:
+  - {name: "*", host: h, user: u}
+`, "reserved"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -329,5 +372,55 @@ access:
 	}
 	if got := len(cfg.DesiredFor("s1")); got != 1 {
 		t.Errorf("DesiredFor(s1) = %d keys, want 1 (no duplicate emission)", got)
+	}
+}
+
+func TestWildcardAccess(t *testing.T) {
+	k1 := testkeys.Line(t, 1)
+	// except lists s2 twice: duplicates are tolerated, not errors.
+	y := `
+users:
+  - {name: alice, keys: ["` + k1 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+  - {name: s2, host: 10.0.0.2, user: deploy}
+  - {name: s3, host: 10.0.0.3, user: deploy}
+access:
+  - {user: alice, servers: ["*"], except: [s2, s2]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for name, want := range map[string]int{"s1": 1, "s2": 0, "s3": 1} {
+		if got := len(cfg.DesiredFor(name)); got != want {
+			t.Errorf("DesiredFor(%s) = %d keys, want %d", name, got, want)
+		}
+	}
+}
+
+func TestWildcardAndExplicitEntriesUnion(t *testing.T) {
+	k1 := testkeys.Line(t, 1)
+	// A wildcard-with-except entry and a later explicit entry for the same
+	// user must union: s2 is excepted by the first grant but restored by the
+	// second, so alice ends up on every server exactly once.
+	y := `
+users:
+  - {name: alice, keys: ["` + k1 + `"]}
+servers:
+  - {name: s1, host: 10.0.0.1, user: deploy}
+  - {name: s2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: ["*"], except: [s2]}
+  - {user: alice, servers: [s2]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, name := range []string{"s1", "s2"} {
+		if got := len(cfg.DesiredFor(name)); got != 1 {
+			t.Errorf("DesiredFor(%s) = %d keys, want 1", name, got)
+		}
 	}
 }
