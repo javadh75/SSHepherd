@@ -16,6 +16,11 @@ var version = "dev"
 // (provably) compliant. Everything else non-nil maps to usage/config exit 2.
 var errNonCompliant = errors.New("fleet not compliant")
 
+// errFleetUnreadable signals exit code 1 for adopt's strict gate: some
+// servers could not be read and --partial was not given. Per-server details
+// are already on stderr.
+var errFleetUnreadable = errors.New("fleet not fully readable")
+
 // run is the testable entrypoint: it builds the Cobra tree, executes it
 // against the provided streams, and maps errors to process exit codes.
 func run(args []string, stdout, stderr io.Writer) int {
@@ -28,7 +33,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, errNonCompliant):
+	case errors.Is(err, errNonCompliant), errors.Is(err, errFleetUnreadable):
 		return 1 // report already rendered; nothing more to say
 	default:
 		fmt.Fprintln(stderr, "sshepherd:", err)
@@ -52,5 +57,6 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 	root.SetVersionTemplate("sshepherd {{.Version}}\n")
 	root.AddCommand(newAuditCmd(stdout))
 	root.AddCommand(newImportCmd(stdout))
+	root.AddCommand(newAdoptCmd(stdout))
 	return root
 }
