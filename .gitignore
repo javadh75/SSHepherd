@@ -5,3 +5,6 @@ coverage.html
 
 # Graphify generated knowledge-graph output
 graphify-out/
+
+# Local test manifests and scratch files (real fleet data — never committed)
+/local/
