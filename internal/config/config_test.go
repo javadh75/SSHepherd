@@ -238,7 +238,7 @@ func TestAuthorizedKeysFileAccepted(t *testing.T) {
 		{"explicit default is an override", "~/.ssh/authorized_keys"},
 		{"spaces", "/etc/ssh keys/deploy"},
 		{"single quote", "/etc/o'brien/keys"},
-		{"tilde-double-slash allowed, fails at runtime", "~//x"},
+		{"tilde-double-slash allowed, resolves to $HOME/x (POSIX collapses //)", "~//x"},
 		{"trailing slash allowed, fails at runtime", "/etc/keys/"},
 	}
 	for _, tt := range tests {

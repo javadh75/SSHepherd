@@ -35,9 +35,11 @@ existing invariant that no manifest text reaches a remote shell unquoted.
 
 ## Validation edge cases (decisions, not omissions)
 
-- `~//x`, `~/./x`, and trailing-slash paths **pass validation** and fail at
-  runtime (cat exit ≠ 0/44 → normal remote-read error). Validation checks
-  shape and injection surface, not remote filesystem semantics.
+- `~//x`, `~/./x`, and trailing-slash paths **pass validation**. POSIX
+  collapses non-leading `//` and `/./`, so those two resolve to the intended
+  file; a trailing slash fails at runtime (cat exit ≠ 0/44 → normal
+  remote-read error). Validation checks shape and injection surface, not
+  remote filesystem semantics.
 - Paths containing spaces or single quotes are **valid** — rendering them
   inert is the quoting layer's job, and rejecting legitimate paths for
   implementer convenience is the wrong trade for a security tool.
@@ -55,8 +57,9 @@ existing invariant that no manifest text reaches a remote shell unquoted.
 - **Integration coverage** (dockerized sshd with a custom
   `AuthorizedKeysFile`, override hit/miss, space-containing path) — noted as
   a follow-up for `scripts/integration.sh`; out of scope for this slice.
-- **`make fuzz` wiring** for `FuzzShQuote` — follow-up (Makefile owned
-  elsewhere in this change window).
+- ~~**`make fuzz` wiring** for `FuzzShQuote`~~ — done in the same change
+  window (Makefile `fuzz:` target). The fuzz target exercises both
+  production splice shapes (absolute and `"${HOME:?}"/`-relative).
 
 ## Testing
 
