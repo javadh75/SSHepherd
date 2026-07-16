@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 2,
+    "compliant": 0,
+    "drift": 2,
+    "critical": 2,
+    "unreachable": 0,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "operator": true
+          }
+        ],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [],
+        "missing": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "operator": true
+          }
+        ],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": true,
+      "no_users_granted": false
+    }
+  ]
+}

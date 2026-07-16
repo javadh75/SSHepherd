@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 2,
+    "compliant": 0,
+    "drift": 1,
+    "critical": 0,
+    "unreachable": 1,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "drift",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "unauthorized": [
+          {
+            "owner": null,
+            "comment": "who@is-this",
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519"
+          }
+        ]
+      },
+      "parse_errors": [
+        {
+          "line": 3,
+          "error": "line 3: parse authorized_keys line: ssh: no key found; last parsing error for ignored line: illegal base64 data at input byte 4"
+        }
+      ],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "unreachable",
+      "error": "dial tcp 10.0.0.2:22: connection refused",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    }
+  ]
+}

@@ -165,21 +165,32 @@ func criticalDrift(cfg *config.Config, r ServerResult) bool {
 	return false
 }
 
-func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
-	var compliant, drift, critical, unreachable int
+// tallyCounts aggregates fleet outcomes for the summary line and the JSON
+// report. A critical server counts in both drift and critical.
+type tallyCounts struct {
+	compliant, drift, critical, unreachable int
+}
+
+func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
+	var c tallyCounts
 	for _, r := range results {
 		switch {
 		case r.Err != nil:
-			unreachable++
+			c.unreachable++
 		case r.Compliant():
-			compliant++
+			c.compliant++
 		default:
-			drift++
+			c.drift++
 			if criticalDrift(cfg, r) {
-				critical++
+				c.critical++
 			}
 		}
 	}
+	return c
+}
+
+func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
+	c := tallyResults(cfg, results)
 	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable  → exit %d\n",
-		compliant, len(results), drift, critical, unreachable, ExitCode(cfg, results))
+		c.compliant, len(results), c.drift, c.critical, c.unreachable, ExitCode(cfg, results))
 }
