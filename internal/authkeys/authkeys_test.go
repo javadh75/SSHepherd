@@ -294,14 +294,25 @@ func TestDiffPreservesOrder(t *testing.T) {
 }
 
 func BenchmarkParseFile(b *testing.B) {
+	// One deterministic key repeated: testkeys-style seeds are a single byte
+	// (max 256 distinct keys), so for corpora beyond that we vary the comment,
+	// not the key — ParseFile's cost is per-line and key-identity-blind.
 	line, err := deterministicKeyLine()
 	if err != nil {
 		b.Fatal(err)
 	}
-	data := []byte(strings.Repeat(line+" user@host\n# comment\n", 100))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		ParseFile(data)
+	for _, lines := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("lines=%d", lines), func(b *testing.B) {
+			var sb strings.Builder
+			for i := 0; i < lines; i++ {
+				fmt.Fprintf(&sb, "%s user%d@host\n# comment %d\n", line, i, i)
+			}
+			data := []byte(sb.String())
+			b.SetBytes(int64(len(data)))
+			for b.Loop() {
+				ParseFile(data)
+			}
+		})
 	}
 }
 
@@ -311,16 +322,30 @@ func BenchmarkDiff(b *testing.B) {
 		b.Fatal(err)
 	}
 	k, _ := ParseLine(line)
-	desired := make([]Key, 0, 50)
-	for i := 0; i < 50; i++ {
-		kk := *k
-		kk.Fingerprint = fmt.Sprintf("SHA256:fake%04d", i)
-		desired = append(desired, kk)
-	}
-	actual := append([]Key{}, desired[:25]...)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		Diff(desired, actual)
+	for _, size := range []int{50, 500, 5000} {
+		b.Run(fmt.Sprintf("keys=%d", size), func(b *testing.B) {
+			// Fingerprints are synthesized (%06d) rather than derived from
+			// real keys: single-byte seeds cap distinct real keys at 256, and
+			// Diff compares by fingerprint string, so synthetic fingerprints
+			// still measure the true map/lookup cost at this size.
+			desired := make([]Key, 0, size)
+			for i := 0; i < size; i++ {
+				kk := *k
+				kk.Fingerprint = fmt.Sprintf("SHA256:fake%06d", i)
+				desired = append(desired, kk)
+			}
+			// actual = half of desired installed + an equal tranche of
+			// unauthorized keys: exercises OK, Missing, and Unauthorized.
+			actual := append([]Key{}, desired[:size/2]...)
+			for i := 0; i < size/2; i++ {
+				kk := *k
+				kk.Fingerprint = fmt.Sprintf("SHA256:rogue%06d", i)
+				actual = append(actual, kk)
+			}
+			for b.Loop() {
+				Diff(desired, actual)
+			}
+		})
 	}
 }
 
