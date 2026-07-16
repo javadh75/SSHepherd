@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -56,30 +57,40 @@ func encodeManifest(header string, m manifestOut) ([]byte, error) {
 }
 
 // writeFileNoClobber writes data to path with owner-only permissions,
-// refusing to replace an existing file unless force is set.
+// refusing to replace an existing file unless force is set. The write goes
+// to a temp file in the destination directory first — link (no-clobber) or
+// rename (force) publishes it, so a failed write can never truncate an
+// existing manifest and readers never observe a half-written file.
 func writeFileNoClobber(path string, data []byte, force bool) error {
-	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	if !force {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	}
-	f, err := os.OpenFile(path, flags, 0o600) // #nosec G304 -- path is the user's own -o flag
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op once published; cleans up every failure path
+	// CreateTemp modes are umask-subject; pin owner-only explicitly.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if !force {
+		// Link fails with EEXIST when path exists — the same atomic
+		// no-clobber guarantee O_EXCL gave the previous in-place write.
+		if err := os.Link(tmp.Name(), path); err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("%s already exists; pass --force to overwrite", path)
+			}
+			return fmt.Errorf("write %s: %w", path, err)
 		}
-		return fmt.Errorf("write %s: %w", path, err)
+		return nil
 	}
-	// The mode above only applies at creation; a --force overwrite via
-	// O_TRUNC would keep the existing file's permissions, so pin them.
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

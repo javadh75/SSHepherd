@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,5 +43,78 @@ func TestEncodeManifestExceptRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(got), "except: []") {
 		t.Errorf("output %q emits an explicit empty except for bob", got)
+	}
+}
+
+// A --force overwrite that cannot complete must leave the destination file
+// untouched: the write goes to a temp file first and only a successful write
+// is renamed into place. Making the directory unwritable blocks the temp
+// file; the old in-place O_TRUNC write would have destroyed the original.
+func TestWriteFileNoClobberFailedForceOverwriteKeepsDestination(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "out.yaml")
+	if err := os.WriteFile(dest, []byte("original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := writeFileNoClobber(dest, []byte("replacement\n"), true); err == nil {
+		t.Fatal("writeFileNoClobber(force) = nil in a read-only directory, want error (atomic replace needs a writable directory)")
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read destination back: %v", err)
+	}
+	if string(got) != "original\n" {
+		t.Errorf("destination = %q after failed overwrite, want original content intact", got)
+	}
+}
+
+// Success and refusal paths must not litter the output directory with temp
+// files, and the no-clobber contract must survive the temp-file rewrite:
+// an existing file without --force refuses with the actionable message, and
+// a forced overwrite lands with owner-only permissions.
+func TestWriteFileNoClobberTempFileHygiene(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "out.yaml")
+
+	if err := writeFileNoClobber(dest, []byte("first\n"), false); err != nil {
+		t.Fatalf("fresh write: %v", err)
+	}
+	err := writeFileNoClobber(dest, []byte("second\n"), false)
+	if err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("no-force overwrite = %v, want refusal mentioning --force", err)
+	}
+	if err := writeFileNoClobber(dest, []byte("third\n"), true); err != nil {
+		t.Fatalf("forced overwrite: %v", err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "third\n" {
+		t.Errorf("content = %q, want %q", got, "third\n")
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("mode = %o, want 600", perm)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "out.yaml" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory contains %v, want only out.yaml (no temp leftovers)", names)
 	}
 }
