@@ -103,11 +103,17 @@ func checkTopLevelKeys(root *yaml.Node) error {
 // config.Parse's struct decode tolerates but a re-encode → re-parse does
 // not (all fuzz-found): a mapping key that is not a plain, non-empty scalar
 // (an anchored empty key decodes as skippable but re-encodes into a key the
-// reparse rejects), and a null sequence item (silently skipped when decoding
-// into a slice, materialized as an empty string by the re-encode). Only
-// called on trees config.Parse already accepted, so nesting depth is
-// schema-bounded.
+// reparse rejects), a null sequence item (silently skipped when decoding
+// into a slice, materialized as an empty string by the re-encode), and any
+// anchor or alias anywhere (append rebuilds null sections without carrying
+// anchors, so an alias elsewhere would dangle; sharing structure across
+// sections also makes "append to the anchored node" ambiguous — reject the
+// whole class rather than half-support it). Only called on trees
+// config.Parse already accepted, so nesting depth is schema-bounded.
 func checkNodeShapes(n *yaml.Node) error {
+	if n.Anchor != "" || n.Kind == yaml.AliasNode {
+		return fmt.Errorf("manifest contains a YAML anchor or alias (line %d); merge does not support them", n.Line)
+	}
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
@@ -185,9 +191,9 @@ func (f *File) Encode() ([]byte, error) {
 
 // appendToSection appends items to the sequence under key in the root
 // mapping, normalizing the shapes a validated manifest can present: a
-// missing key (created at the end), a null value (`users:`), a flow-style
-// empty list (`users: []` — our own generators' bootstrap output), or an
-// alias to a sequence anchored elsewhere.
+// missing key (created at the end), a null value (`users:`), or a
+// flow-style empty list (`users: []` — our own generators' bootstrap
+// output). Anchors and aliases were rejected at Load, so none appear here.
 func (f *File) appendToSection(key string, items []*yaml.Node) error {
 	if len(items) == 0 {
 		return nil
@@ -201,11 +207,6 @@ func (f *File) appendToSection(key string, items []*yaml.Node) error {
 	if seq == nil {
 		seq = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
 		m.Content = append(m.Content, strScalar(key), seq)
-	}
-	if seq.Kind == yaml.AliasNode && seq.Alias != nil {
-		// Appending through an alias edits the anchored sequence; every
-		// reference sees the additions, which is the only coherent reading.
-		seq = seq.Alias
 	}
 	if seq.Kind == yaml.ScalarNode && seq.Tag == "!!null" {
 		// `users:` with no value decodes to a null scalar; rebuild it as a

@@ -4,7 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 // FuzzMergeRoundTrip asserts the merge machinery's core safety property: any
@@ -47,6 +49,45 @@ func FuzzMergeRoundTrip(f *testing.F) {
 		}
 		if !reflect.DeepEqual(accessPairs(want), accessPairs(got)) {
 			t.Errorf("access entries changed: %v -> %v (input %q)", accessPairs(want), accessPairs(got), in)
+		}
+
+		// Second pass: the mutation half of the invariant. Appending a fixed
+		// user through the real node surgery must still yield a manifest
+		// config.Parse accepts, with the originals AND the addition intact.
+		// Skipped when the fuzzed input already claims the name or the key
+		// (config validation would rightly reject the duplicate).
+		keyLine := testkeys.Line(t, 7)
+		k, err := authkeys.ParseLine(keyLine)
+		if err != nil || k == nil {
+			t.Fatalf("parse fuzz key line: %v", err)
+		}
+		if _, taken := want.OwnerOf(k.Fingerprint); taken {
+			return
+		}
+		for _, u := range want.Users {
+			if u.Name == "fuzz-added-user" {
+				return
+			}
+		}
+		mf2, err := Load([]byte(in))
+		if err != nil {
+			t.Fatalf("second Load of accepted input %q failed: %v", in, err)
+		}
+		if err := mf2.Append([]string{"fuzz merge marker"}, []UserEntry{
+			{Name: "fuzz-added-user", Keys: []string{keyLine}},
+		}, nil); err != nil {
+			t.Fatalf("Append on Load-accepted input %q: %v", in, err)
+		}
+		out2, err := mf2.Encode()
+		if err != nil {
+			t.Fatalf("Encode after Append on input %q: %v", in, err)
+		}
+		got2, err := config.Parse(out2)
+		if err != nil {
+			t.Fatalf("appended manifest rejected by config.Parse for input %q:\n%s\nerr: %v", in, out2, err)
+		}
+		if !reflect.DeepEqual(append(userNames(want), "fuzz-added-user"), userNames(got2)) {
+			t.Errorf("after append, user names = %v, want originals plus fuzz-added-user (input %q)", userNames(got2), in)
 		}
 	})
 }

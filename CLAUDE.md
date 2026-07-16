@@ -201,3 +201,11 @@ single-quote escaping; specced in
 `docs/superpowers/specs/2026-07-16-authorized-keys-file-override-design.md`),
 and fleet-scale fan-out benchmarks (`make bench`) back the
 `--parallel`/timeout tuning question with data.
+The write-time comment policy is decided (`comment` → inline → `name`;
+`config.DesiredComment`), manifests warn on multi-key `comment:`, and
+`audit --comments` opt-in reports comment drift, informational only
+(decided in `docs/superpowers/specs/2026-07-16-comment-policy-memo.md`).
+`adopt --merge` appends discoveries to an existing manifest while
+preserving its comments via the new `internal/manifest` package
+(specced in `docs/superpowers/specs/2026-07-16-adopt-merge-design.md`);
+`import --merge` is deferred to a later slice.

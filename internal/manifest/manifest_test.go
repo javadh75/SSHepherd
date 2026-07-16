@@ -87,6 +87,10 @@ users:
   - {name: a, keys: ["` + testkeys.Line(t, 2) + `"]}
 `,
 		"root not a mapping": "- just\n- a\n- list\n",
+		// Review-found: append rebuilds null sections without carrying
+		// anchors, so an alias elsewhere would dangle after a merge — Load
+		// rejects the whole anchor/alias class up front.
+		"anchored section value": "users: &u\nservers:\naccess: *u\n",
 		// Fuzz-found: config.Parse tolerates an anchored empty top-level key,
 		// but the re-encode → re-parse self-check does not; Load must be the
 		// stricter gate so anything it accepts is re-encodable.
