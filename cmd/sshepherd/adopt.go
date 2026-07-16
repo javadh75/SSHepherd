@@ -14,6 +14,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/adopt"
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/manifest"
 	"github.com/javadh75/SSHepherd/internal/sshread"
 )
 
@@ -65,6 +66,51 @@ func generateAdoptManifest(cfg *config.Config, plan adopt.Plan, src string, unre
 		fmt.Fprintf(&header, "# WARNING: server %s unreadable — its access is NOT represented\n", srv)
 	}
 	return encodeManifest(header.String(), m)
+}
+
+// renderMergedManifest renders the plan as a comment-preserving append to
+// the original manifest text (--merge): existing bytes kept — comments
+// intact, no regenerated header — with the plan's new users and grants
+// appended under a dated merge marker. An empty plan returns raw unchanged,
+// byte for byte. date is injected (never read from the clock here) so tests
+// and goldens stay deterministic. unreadable servers (only non-empty under
+// --partial) are named as comment lines on the marker, so the gap survives
+// stderr exactly as in regenerate mode.
+func renderMergedManifest(mf *manifest.File, raw []byte, plan adopt.Plan, unreadable []string, date string) ([]byte, error) {
+	if len(plan.NewUsers) == 0 && len(plan.Extensions) == 0 {
+		return raw, nil
+	}
+	comments := []string{"merged by sshepherd adopt on " + date}
+	for _, srv := range unreadable {
+		comments = append(comments, fmt.Sprintf("WARNING: server %s unreadable — its access is NOT represented", srv))
+	}
+	users := make([]manifest.UserEntry, 0, len(plan.NewUsers))
+	for _, nu := range plan.NewUsers {
+		users = append(users, manifest.UserEntry{
+			Name:        nu.Name,
+			Description: "adopted from " + strings.Join(nu.FoundOn, ", "),
+			Keys:        []string{nu.Line},
+		})
+	}
+	access := make([]manifest.AccessEntry, 0, len(plan.Extensions)+len(plan.NewUsers))
+	for _, e := range plan.Extensions {
+		access = append(access, manifest.AccessEntry{User: e.User, Servers: e.Servers})
+	}
+	for _, nu := range plan.NewUsers {
+		servers := nu.FoundOn
+		if nu.Wildcard {
+			servers = []string{"*"}
+		}
+		access = append(access, manifest.AccessEntry{User: nu.Name, Servers: servers})
+	}
+	if err := mf.Append(comments, users, access); err != nil {
+		return nil, fmt.Errorf("merge manifest: %w", err)
+	}
+	out, err := mf.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("merge manifest: %w", err)
+	}
+	return out, nil
 }
 
 // readFleet runs the agent/known_hosts preflights and reads every server's
@@ -157,6 +203,7 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 		parallel   int
 		force      bool
 		partial    bool
+		merge      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt",
@@ -174,9 +221,30 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 				return fmt.Errorf("--parallel must be >= 1 (got %d)", parallel)
 			}
 			log := a.logger
-			cfg, err := config.Load(cfgPath)
-			if err != nil {
-				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
+			var (
+				cfg *config.Config
+				mf  *manifest.File
+				raw []byte
+			)
+			if merge {
+				// --merge needs the original bytes: they are the output when
+				// there is nothing to adopt, and the append base otherwise.
+				var err error
+				raw, err = os.ReadFile(cfgPath) // #nosec G304 -- path is the user's own --config flag
+				if err != nil {
+					return fmt.Errorf("load manifest: %w", err)
+				}
+				mf, err = manifest.Load(raw)
+				if err != nil {
+					return fmt.Errorf("load manifest: %w", err)
+				}
+				cfg = mf.Config()
+			} else {
+				var err error
+				cfg, err = config.Load(cfgPath)
+				if err != nil {
+					return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
+				}
 			}
 			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
 			if len(cfg.Servers) > 0 {
@@ -193,22 +261,27 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err := reportUnreadable(log, plan, unreadable, partial); err != nil {
 				return err
 			}
-			manifest, err := generateAdoptManifest(cfg, plan, cfgPath, unreadable)
+			var rendered []byte
+			if merge {
+				rendered, err = renderMergedManifest(mf, raw, plan, unreadable, time.Now().Format("2006-01-02"))
+			} else {
+				rendered, err = generateAdoptManifest(cfg, plan, cfgPath, unreadable)
+			}
 			if err != nil {
 				return err
 			}
 			reportPlan(log, plan, unreadable)
 			// Self-check: never emit a manifest our own loader would reject.
-			if _, err := config.Parse(manifest); err != nil {
+			if _, err := config.Parse(rendered); err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
 			}
 			if outPath == "" {
-				if _, err := stdout.Write(manifest); err != nil {
+				if _, err := stdout.Write(rendered); err != nil {
 					return fmt.Errorf("write stdout: %w", err)
 				}
 				return nil
 			}
-			return writeFileNoClobber(outPath, manifest, force)
+			return writeFileNoClobber(outPath, rendered, force)
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", "sshepherd.yaml", "path to the manifest")
@@ -217,5 +290,6 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
 	cmd.Flags().BoolVar(&partial, "partial", false, "proceed even if some servers cannot be read (their access will be missing from the output)")
+	cmd.Flags().BoolVar(&merge, "merge", false, "preserve the manifest text (comments intact) and append the additions instead of regenerating")
 	return cmd
 }

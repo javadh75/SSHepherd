@@ -1,0 +1,35 @@
+# fleet manifest — hand-maintained, do not regenerate
+# contact: ops@example.com
+users:
+  # op holds the break-glass key
+  - name: op
+    operator: true
+    keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c
+  - name: bob # bob predates sshepherd
+    keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMqTrBcFGHBx1nuDx/8O/oEI6OxFMFdddyaHkzPb2r58
+  # merged by sshepherd adopt on 2026-07-16
+  # WARNING: server db-9 unreadable — its access is NOT represented
+  - name: carol-laptop
+    description: adopted from web-1, web-2
+    keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs carol@laptop
+servers:
+  - name: web-1
+    host: 10.0.0.1
+    user: deploy # inline: the deploy account
+  - name: web-2
+    host: 10.0.0.2
+    user: deploy
+access:
+  - user: bob
+    servers: [web-1]
+  - user: bob
+    servers:
+      - web-2
+  - user: carol-laptop
+    servers:
+      - web-1
+      - web-2
+# reviewed 2026-07-01

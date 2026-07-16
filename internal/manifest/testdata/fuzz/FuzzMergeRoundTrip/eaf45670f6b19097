@@ -1,0 +1,2 @@
+go test fuzz v1
+string("users:\n  - name: 00\n    keys:\n    - 0 AAAAC3NzaC1lZDI1NTE5AAAAIA000000000000000000000000000000000000000000\n  - name: bob\n    keys:\n    - 0 AAAAC3NzaC1lZDI1NTE5AAAAIA000000000000000000000000000000000000000001\nservers:\n  - name: web-1\n    host: 0\n    user: 0\n  - name: 0\n    host: 0\n    user: 0\naccess:\n  - user: bob\n    servers: [&0000]")

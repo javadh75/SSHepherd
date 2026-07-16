@@ -84,6 +84,7 @@ fuzz:
 	$(GO) test -run='^$$' -fuzz=FuzzExpand -fuzztime=15s ./internal/identity
 	$(GO) test -run='^$$' -fuzz=FuzzSanitize -fuzztime=15s ./internal/clog
 	$(GO) test -run='^$$' -fuzz=FuzzShQuote -fuzztime=15s ./internal/sshread
+	$(GO) test -run='^$$' -fuzz=FuzzMergeRoundTrip -fuzztime=15s ./internal/manifest
 
 ## bench: run benchmarks
 bench:
