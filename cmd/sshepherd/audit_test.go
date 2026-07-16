@@ -156,7 +156,7 @@ func TestAuditInvalidParallel(t *testing.T) {
 
 func TestAuditBadKnownHosts(t *testing.T) {
 	// A live (fake) agent gets past the agent preflight; a nonexistent
-	// known_hosts must then fail once with exit 2, not once per server.
+	// known_hosts must then fail once with exit 3, not once per server.
 	fakeAgent(t)
 
 	path := writeConfig(t, `

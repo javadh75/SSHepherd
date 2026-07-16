@@ -97,8 +97,9 @@ are always present.
 
 - **`status`** derivation, in order: `Err != nil` → `"unreachable"`;
   `Compliant()` → `"compliant"`; `criticalDrift()` → `"critical"`; else
-  `"drift"`. An unreachable server carries `error` (string) and an empty
-  `keys` object.
+  `"drift"`. An unreachable server carries `error` (string) and empty key
+  sets. The three `keys` arrays and `parse_errors` are always present
+  (empty `[]`, never `null` or omitted) so consumers get a stable shape.
 - **`summary`** counts mirror the human summary line exactly (a critical
   server counts in both `drift` and `critical`, as today); `exit_code`
   duplicates the process exit for consumers that only capture stdout.
