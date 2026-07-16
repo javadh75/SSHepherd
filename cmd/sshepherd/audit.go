@@ -44,7 +44,7 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				audit.Render(stdout, cfg, nil, audit.RenderOptions{Color: a.reportColor})
 				return nil
 			}
-			if err := sshread.CheckAgent(os.Getenv("SSH_AUTH_SOCK")); err != nil {
+			if err := sshread.CheckAgent(cmd.Context(), os.Getenv("SSH_AUTH_SOCK")); err != nil {
 				return fmt.Errorf("agent preflight: %w", err)
 			}
 			khPath, err := expandHome(knownHosts)

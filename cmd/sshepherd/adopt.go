@@ -71,7 +71,7 @@ func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownH
 	if len(cfg.Servers) == 0 {
 		return nil, nil
 	}
-	if err := sshread.CheckAgent(os.Getenv("SSH_AUTH_SOCK")); err != nil { //nolint:contextcheck // CheckAgent's API takes no ctx; it preflights with its own 3s dial timeout
+	if err := sshread.CheckAgent(ctx, os.Getenv("SSH_AUTH_SOCK")); err != nil {
 		return nil, fmt.Errorf("agent preflight: %w", err)
 	}
 	khPath, err := expandHome(knownHosts)

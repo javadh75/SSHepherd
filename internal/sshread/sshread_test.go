@@ -81,29 +81,39 @@ func TestInterpretExit(t *testing.T) {
 
 func TestCheckAgent(t *testing.T) {
 	t.Run("unset", func(t *testing.T) {
-		if err := CheckAgent(""); err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+		if err := CheckAgent(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
 			t.Errorf("CheckAgent(\"\") = %v, want SSH_AUTH_SOCK error", err)
 		}
 	})
 	t.Run("dead socket", func(t *testing.T) {
-		if err := CheckAgent(filepath.Join(t.TempDir(), "nope.sock")); err == nil {
+		if err := CheckAgent(context.Background(), filepath.Join(t.TempDir(), "nope.sock")); err == nil {
 			t.Error("CheckAgent(dead) = nil, want error")
 		}
 	})
 	t.Run("agent with keys", func(t *testing.T) {
-		if err := CheckAgent(serveAgent(t, true)); err != nil {
+		if err := CheckAgent(context.Background(), serveAgent(t, true)); err != nil {
 			t.Errorf("CheckAgent(agent with keys) = %v, want nil", err)
 		}
 	})
 	t.Run("empty agent", func(t *testing.T) {
 		// The socket answers the agent protocol but holds zero keys: every
 		// later per-server auth would fail. The preflight must say so once.
-		err := CheckAgent(serveAgent(t, false))
+		err := CheckAgent(context.Background(), serveAgent(t, false))
 		if err == nil || !strings.Contains(err.Error(), "no keys") {
 			t.Errorf("CheckAgent(empty agent) = %v, want a no-keys error", err)
 		}
 		if err != nil && !strings.Contains(err.Error(), "ssh-add") {
 			t.Errorf("err %q should tell the operator to run ssh-add", err)
+		}
+	})
+	t.Run("canceled context", func(t *testing.T) {
+		// Ctrl-C during the preflight must abort the dial: the caller's
+		// context flows into DialContext instead of being dropped.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := CheckAgent(ctx, serveAgent(t, true))
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("CheckAgent(canceled ctx) = %v, want context.Canceled", err)
 		}
 	})
 	t.Run("unresponsive socket", func(t *testing.T) {
@@ -123,7 +133,7 @@ func TestCheckAgent(t *testing.T) {
 				c.Close()
 			}
 		}()
-		if err := CheckAgent(sock); err == nil {
+		if err := CheckAgent(context.Background(), sock); err == nil {
 			t.Error("CheckAgent(unresponsive) = nil, want error")
 		}
 	})

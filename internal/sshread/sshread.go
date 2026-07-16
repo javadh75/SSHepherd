@@ -106,13 +106,14 @@ func PreflightKnownHosts(path string) error {
 // CheckAgent verifies a usable SSH agent — reachable and holding at least
 // one key — before any server is dialed, so a missing or empty agent fails
 // once with a clear message instead of once per server with a cryptic
-// "no supported methods remain" auth error.
-func CheckAgent(sock string) error {
+// "no supported methods remain" auth error. ctx cancellation aborts the
+// dial; the 3s timeout still bounds a wedged agent on its own.
+func CheckAgent(ctx context.Context, sock string) error {
 	if sock == "" {
 		return errors.New("no SSH agent: SSH_AUTH_SOCK is not set (start ssh-agent and ssh-add a key)")
 	}
 	dialer := net.Dialer{Timeout: 3 * time.Second}
-	conn, err := dialer.DialContext(context.Background(), "unix", sock)
+	conn, err := dialer.DialContext(ctx, "unix", sock)
 	if err != nil {
 		return fmt.Errorf("SSH agent unreachable at %s: %w", sock, err)
 	}
