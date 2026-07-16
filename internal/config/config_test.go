@@ -261,6 +261,80 @@ servers:
 	}
 }
 
+// TestDesiredComment pins the decided write-time comment order
+// (2026-07-16 comment-policy memo, Option A): user comment: → the key's own
+// inline comment → the user's name.
+func TestDesiredComment(t *testing.T) {
+	tests := []struct {
+		name     string
+		userName string
+		comment  string // users[].comment
+		inline   string // the key line's own trailing comment
+		want     string
+	}{
+		{"user comment wins over inline", "alice", "alice@corp", "alice@laptop", "alice@corp"},
+		{"user comment wins with no inline", "alice", "alice@corp", "", "alice@corp"},
+		{"inline comment is the fallback", "alice", "", "alice@laptop", "alice@laptop"},
+		{"name is the last resort", "alice", "", "", "alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u := User{Name: tt.userName, Comment: tt.comment}
+			k := authkeys.Key{Comment: tt.inline}
+			if got := DesiredComment(u, k); got != tt.want {
+				t.Errorf("DesiredComment = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCommentMultiKeyWarning: comment: on a multi-key user collapses every
+// key to one comment at apply time — validation must warn (never error) so
+// the collapse is a conscious choice.
+func TestCommentMultiKeyWarning(t *testing.T) {
+	k1, k2 := testkeys.Line(t, 1), testkeys.Line(t, 2)
+	t.Run("comment with two keys warns", func(t *testing.T) {
+		y := `
+users:
+  - {name: alice, comment: "alice@corp", keys: ["` + k1 + `", "` + k2 + `"]}
+`
+		cfg, err := Parse([]byte(y))
+		if err != nil {
+			t.Fatalf("Parse: %v (multi-key comment must warn, not error)", err)
+		}
+		want := `user "alice": comment is set on a user with 2 keys; apply will write the same comment on every key`
+		if len(cfg.Warnings) != 1 || cfg.Warnings[0] != want {
+			t.Errorf("Warnings = %q, want exactly [%q]", cfg.Warnings, want)
+		}
+	})
+	t.Run("comment with one key: no warning", func(t *testing.T) {
+		y := `
+users:
+  - {name: alice, comment: "alice@corp", keys: ["` + k1 + `"]}
+`
+		cfg, err := Parse([]byte(y))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(cfg.Warnings) != 0 {
+			t.Errorf("Warnings = %q, want none", cfg.Warnings)
+		}
+	})
+	t.Run("two keys without comment: no warning", func(t *testing.T) {
+		y := `
+users:
+  - {name: alice, keys: ["` + k1 + `", "` + k2 + `"]}
+`
+		cfg, err := Parse([]byte(y))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(cfg.Warnings) != 0 {
+			t.Errorf("Warnings = %q, want none", cfg.Warnings)
+		}
+	})
+}
+
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load("does-not-exist.yaml"); err == nil {
 		t.Error("Load(missing) = nil error, want error")

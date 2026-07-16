@@ -56,6 +56,11 @@ type Config struct {
 	Servers []Server `yaml:"servers"`
 	Access  []Access `yaml:"access"`
 
+	// Warnings collects non-fatal validation findings (e.g. a comment: set
+	// on a multi-key user). The manifest is still valid and safe to act on;
+	// callers surface these on stderr. Never part of the YAML itself.
+	Warnings []string `yaml:"-"`
+
 	// Built during validation.
 	keysByUser map[string][]authkeys.Key // user name -> parsed keys, manifest order
 	owners     map[string]User           // fingerprint -> owning user
@@ -100,6 +105,7 @@ func (c *Config) validateUsers() []error {
 	c.keysByUser = make(map[string][]authkeys.Key)
 	c.owners = make(map[string]User)
 	c.operators = nil
+	c.Warnings = nil
 	seen := make(map[string]bool)
 	for ui, u := range c.Users {
 		if u.Name == "" {
@@ -113,6 +119,14 @@ func (c *Config) validateUsers() []error {
 		seen[u.Name] = true
 		if strings.ContainsAny(u.Comment, "\r\n") {
 			errs = append(errs, fmt.Errorf("user %q: comment contains a line break", u.Name))
+		}
+		if u.Comment != "" && len(u.Keys) >= 2 {
+			// Not an error: collapsing every key to one comment is a valid,
+			// deliberate normalization (2026-07-16 memo) — but make it a
+			// conscious choice.
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"user %q: comment is set on a user with %d keys; apply will write the same comment on every key",
+				u.Name, len(u.Keys)))
 		}
 		for i, line := range u.Keys {
 			if strings.ContainsAny(line, "\r\n") {
@@ -316,6 +330,22 @@ func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 		keys = append(keys, c.keysByUser[userName]...)
 	}
 	return keys
+}
+
+// DesiredComment returns the comment the apply slice will write for key k
+// owned by u, encoding the decided write-time order (2026-07-16
+// comment-policy memo, Option A): the user's comment: field if non-empty,
+// else the key line's own inline comment, else the user's name. Apply and
+// audit's --comments drift reporting both consume this, so the write path
+// and the drift preview can never disagree.
+func DesiredComment(u User, k authkeys.Key) string {
+	if u.Comment != "" {
+		return u.Comment
+	}
+	if k.Comment != "" {
+		return k.Comment
+	}
+	return u.Name
 }
 
 // OwnerOf resolves a key fingerprint to the user that owns it in the manifest.

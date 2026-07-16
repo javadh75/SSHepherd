@@ -32,6 +32,11 @@ func ExitCode(cfg *config.Config, results []ServerResult) int {
 // RenderOptions tunes report presentation.
 type RenderOptions struct {
 	Color bool // ANSI-color drift glyphs and key words; off = byte-identical to plain
+	// Comments annotates OK rows whose on-server comment differs from the
+	// write-policy's desired comment (config.DesiredComment). Informational
+	// only — never affects classification or the exit code; off (the
+	// default) keeps output byte-identical to earlier releases.
+	Comments bool
 }
 
 // SGR codes used by the report. Every code is exactly four characters
@@ -74,13 +79,13 @@ func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts Render
 	}
 	pal := palette{on: opts.Color}
 	for _, r := range results {
-		renderServer(w, cfg, r, pal)
+		renderServer(w, cfg, r, pal, opts.Comments)
 		fmt.Fprintln(w)
 	}
 	renderSummary(w, cfg, results)
 }
 
-func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette) {
+func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, comments bool) {
 	head := fmt.Sprintf("%s (%s@%s:%d)", r.Server.Name, r.Server.User, r.Server.Host, r.Server.Port)
 	if r.Err != nil {
 		fmt.Fprintf(w, "%s  %s %s\n", head, pal.paint(codeRed, "ERROR:"), oneLine(r.Err))
@@ -90,8 +95,14 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette) 
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, k := range r.Diff.OK {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tpresent & authorized\n",
-			pal.paint(codeGreen, "✓"), label(cfg, k), k.Fingerprint, k.Type)
+		status := "present & authorized"
+		// Plain text on purpose: no new SGR codes, so the color-stripped-
+		// equals-plain invariant keeps holding.
+		if actual, desired, drifted := commentDrift(cfg, r, k); comments && drifted {
+			status = fmt.Sprintf("present & authorized · comment differs: %q → %q", actual, desired)
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+			pal.paint(codeGreen, "✓"), label(cfg, k), k.Fingerprint, k.Type, status)
 	}
 	for _, k := range r.Diff.Missing {
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
@@ -168,6 +179,21 @@ func label(cfg *config.Config, k authkeys.Key) string {
 		return fmt.Sprintf("%s (%s)", u.Name, u.Comment)
 	}
 	return u.Name
+}
+
+// commentDrift compares a present key's on-server comment (Diff.Actual)
+// against the decided write-time comment (config.DesiredComment). Keys with
+// unknown owners have no desired comment and never drift. Cosmetic by
+// definition: consumed only by the opt-in --comments annotations, never by
+// classification or exit codes.
+func commentDrift(cfg *config.Config, r ServerResult, k authkeys.Key) (actual, desired string, drifted bool) {
+	u, ok := cfg.OwnerOf(k.Fingerprint)
+	if !ok {
+		return "", "", false
+	}
+	desired = config.DesiredComment(u, k)
+	actual = r.Diff.Actual[k.Fingerprint].Comment
+	return actual, desired, actual != desired
 }
 
 // criticalDrift reports whether this server's drift includes a missing

@@ -99,17 +99,19 @@ func TestRenderColorStrippedEqualsPlain(t *testing.T) {
 	driftCfg := reportConfig(t)
 	criticalCfg := operatorConfig(t)
 	for _, fix := range []struct {
-		name    string
-		cfg     *config.Config
-		results []ServerResult
+		name     string
+		cfg      *config.Config
+		results  []ServerResult
+		comments bool
 	}{
-		{"drift", driftCfg, driftResults(t, driftCfg)},
-		{"critical", criticalCfg, criticalResults(t, criticalCfg)},
+		{"drift", driftCfg, driftResults(t, driftCfg), false},
+		{"critical", criticalCfg, criticalResults(t, criticalCfg), false},
+		{"comment drift", driftCfg, commentDriftResults(t, driftCfg), true},
 	} {
 		t.Run(fix.name, func(t *testing.T) {
 			var plain, colored bytes.Buffer
-			Render(&plain, fix.cfg, fix.results, RenderOptions{})
-			Render(&colored, fix.cfg, fix.results, RenderOptions{Color: true})
+			Render(&plain, fix.cfg, fix.results, RenderOptions{Comments: fix.comments})
+			Render(&colored, fix.cfg, fix.results, RenderOptions{Color: true, Comments: fix.comments})
 
 			if plain.String() == colored.String() {
 				t.Fatal("colored output is identical to plain — no color was applied")
@@ -322,6 +324,70 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 	}
 	if ExitCode(cfg, results) != 1 {
 		t.Errorf("ExitCode = %d, want 1", ExitCode(cfg, results))
+	}
+}
+
+// commentDriftResults builds a fleet whose ONLY divergence is cosmetic:
+// every desired fingerprint is present, but alice's key on web-1 carries a
+// stale on-server comment ("alice@laptop" vs her manifest comment
+// "alice@sshepherd"). bob's key carries "bob" — exactly his desired
+// name-fallback comment — and web-2's copy of alice's key already matches.
+func commentDriftResults(t *testing.T, cfg *config.Config) []ServerResult {
+	t.Helper()
+	reader := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(
+			testkeys.Line(t, 1) + " alice@laptop\n" +
+				testkeys.Line(t, 2) + " bob\n")},
+		"web-2": {Content: []byte(testkeys.Line(t, 1) + " alice@sshepherd\n")},
+	}}
+	return Run(context.Background(), cfg, reader, Options{Parallel: 2})
+}
+
+// TestRenderCommentsGolden pins the --comments human rendering: exactly one
+// OK row gains the informational annotation, plain text only.
+func TestRenderCommentsGolden(t *testing.T) {
+	cfg := reportConfig(t)
+	results := commentDriftResults(t, cfg)
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{Comments: true})
+	out := buf.String()
+	if got := strings.Count(out, "comment differs"); got != 1 {
+		t.Errorf("comment-differs rows = %d, want 1:\n%s", got, out)
+	}
+	if !strings.Contains(out, `comment differs: "alice@laptop" → "alice@sshepherd"`) {
+		t.Errorf("annotation must show actual → desired:\n%s", out)
+	}
+	checkGolden(t, "report_comments.golden", buf.Bytes())
+}
+
+// TestRenderCommentsOffIsSilent: without the flag the very same drifting
+// fleet renders no annotation at all — the default report shape is pinned
+// byte-for-byte by the existing goldens, this pins the substring half.
+func TestRenderCommentsOffIsSilent(t *testing.T) {
+	cfg := reportConfig(t)
+	var buf bytes.Buffer
+	Render(&buf, cfg, commentDriftResults(t, cfg), RenderOptions{})
+	if strings.Contains(buf.String(), "comment differs") {
+		t.Errorf("comment drift leaked into the default report:\n%s", buf.String())
+	}
+}
+
+// TestCommentDriftExitCodeNeutral pins the memo's hard rule: comment drift
+// is cosmetic — a fleet whose only divergence is comments stays compliant
+// with exit 0, with and without --comments.
+func TestCommentDriftExitCodeNeutral(t *testing.T) {
+	cfg := reportConfig(t)
+	results := commentDriftResults(t, cfg)
+	if got := ExitCode(cfg, results); got != 0 {
+		t.Fatalf("ExitCode = %d, want 0 (comment drift must not affect it)", got)
+	}
+	for _, opts := range []RenderOptions{{}, {Comments: true}} {
+		var buf bytes.Buffer
+		Render(&buf, cfg, results, opts)
+		if !strings.Contains(buf.String(), "Summary: 2/2 servers compliant") ||
+			!strings.Contains(buf.String(), "exit 0") {
+			t.Errorf("Comments=%v summary must stay compliant/exit 0:\n%s", opts.Comments, buf.String())
+		}
 	}
 }
 

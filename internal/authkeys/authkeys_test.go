@@ -247,6 +247,38 @@ func TestDiff(t *testing.T) {
 	}
 }
 
+// TestDiffActual: Result.Actual exposes the on-server form (comment/options)
+// of every installed key by fingerprint — first occurrence per fingerprint,
+// exactly the dedup Diff already applies — so callers (audit --comments) can
+// compare a matched key's actual comment against the desired one.
+func TestDiffActual(t *testing.T) {
+	desired := mustKey(t, testKeyLine(t))
+	first := mustKey(t, testKeyLine(t)+" alice@laptop")
+	dupe := mustKey(t, testKeyLine(t)+" alice@old-box")
+	other := mustKey(t, testkeys.Line(t, 2)+" who@is-this")
+
+	r := Diff([]Key{desired}, []Key{first, dupe, other})
+
+	if len(r.Actual) != 2 {
+		t.Fatalf("Actual has %d entries, want 2 (dupes collapsed)", len(r.Actual))
+	}
+	got, ok := r.Actual[desired.Fingerprint]
+	if !ok {
+		t.Fatalf("Actual lacks the matched fingerprint %s", desired.Fingerprint)
+	}
+	if got.Comment != "alice@laptop" {
+		t.Errorf("Actual[matched].Comment = %q, want %q (first occurrence wins)", got.Comment, "alice@laptop")
+	}
+	if got, ok := r.Actual[other.Fingerprint]; !ok || got.Comment != "who@is-this" {
+		t.Errorf("Actual[unauthorized] = (%+v, %v), want the installed key", got, ok)
+	}
+
+	// Empty actual: the map is empty, never nil-panicking lookups.
+	if r := Diff([]Key{desired}, nil); len(r.Actual) != 0 {
+		t.Errorf("Actual = %v for empty actual, want empty", r.Actual)
+	}
+}
+
 // fingerprints projects keys to their fingerprint sequence for order checks.
 func fingerprints(keys []Key) []string {
 	fps := make([]string, len(keys))

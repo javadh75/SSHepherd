@@ -13,8 +13,13 @@ import (
 
 func renderJSON(t *testing.T, cfg *config.Config, results []ServerResult) []byte {
 	t.Helper()
+	return renderJSONOpts(t, cfg, results, JSONOptions{})
+}
+
+func renderJSONOpts(t *testing.T, cfg *config.Config, results []ServerResult, opts JSONOptions) []byte {
+	t.Helper()
 	var buf bytes.Buffer
-	if err := RenderJSON(&buf, cfg, results); err != nil {
+	if err := RenderJSON(&buf, cfg, results, opts); err != nil {
 		t.Fatalf("RenderJSON: %v", err)
 	}
 	if !json.Valid(buf.Bytes()) {
@@ -189,6 +194,66 @@ func TestRenderJSONAuthorizedKeysFile(t *testing.T) {
 			if _, ok := s["authorized_keys_file"]; ok {
 				t.Errorf("authorized_keys_file emitted for a server without an override: %s", s["name"])
 			}
+		}
+	})
+}
+
+// commentDriftView decodes present keys as raw maps so key presence/absence
+// of comment_drift is assertable, not just its value.
+type commentDriftView struct {
+	Summary struct {
+		ExitCode int `json:"exit_code"`
+	} `json:"summary"`
+	Servers []struct {
+		Name string `json:"name"`
+		Keys struct {
+			Present []map[string]json.RawMessage `json:"present"`
+		} `json:"keys"`
+	} `json:"servers"`
+}
+
+// TestRenderJSONCommentDrift pins the opt-in additive field (schema stays 1):
+// with Comments on, a present key whose actual comment differs from the
+// desired one gains comment_drift{actual, desired}; matching keys and
+// flag-off runs never emit the field. Exit code stays 0 throughout.
+func TestRenderJSONCommentDrift(t *testing.T) {
+	cfg := reportConfig(t)
+	results := commentDriftResults(t, cfg)
+
+	t.Run("flag on: set exactly where drifting", func(t *testing.T) {
+		var rep commentDriftView
+		if err := json.Unmarshal(renderJSONOpts(t, cfg, results, JSONOptions{Comments: true}), &rep); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if rep.Summary.ExitCode != 0 {
+			t.Errorf("exit_code = %d, want 0 (comment drift is informational)", rep.Summary.ExitCode)
+		}
+		web1 := rep.Servers[0]
+		if len(web1.Keys.Present) != 2 {
+			t.Fatalf("web-1 present = %d keys, want 2", len(web1.Keys.Present))
+		}
+		raw, ok := web1.Keys.Present[0]["comment_drift"] // alice: drifting
+		if !ok {
+			t.Fatal("alice's drifting key lacks comment_drift")
+		}
+		var d struct{ Actual, Desired string }
+		if err := json.Unmarshal(raw, &d); err != nil {
+			t.Fatalf("unmarshal comment_drift: %v", err)
+		}
+		if d.Actual != "alice@laptop" || d.Desired != "alice@sshepherd" {
+			t.Errorf("comment_drift = %+v, want alice@laptop → alice@sshepherd", d)
+		}
+		if _, ok := web1.Keys.Present[1]["comment_drift"]; ok {
+			t.Error("bob's matching key must not carry comment_drift")
+		}
+		if _, ok := rep.Servers[1].Keys.Present[0]["comment_drift"]; ok {
+			t.Error("web-2's matching key must not carry comment_drift")
+		}
+	})
+	t.Run("flag off: never emitted", func(t *testing.T) {
+		got := renderJSONOpts(t, cfg, results, JSONOptions{})
+		if strings.Contains(string(got), "comment_drift") {
+			t.Errorf("comment_drift emitted without the flag:\n%s", got)
 		}
 	})
 }

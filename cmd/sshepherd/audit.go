@@ -26,6 +26,7 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 		knownHosts string
 		parallel   int
 		jsonOut    bool
+		comments   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -41,13 +42,16 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
 			}
 			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
+			for _, w := range cfg.Warnings {
+				log.Warn(w)
+			}
 			// One render path for the empty-fleet early return and the main
 			// flow, so the two cannot drift apart.
 			render := func(results []audit.ServerResult) error {
 				if jsonOut {
-					return audit.RenderJSON(stdout, cfg, results)
+					return audit.RenderJSON(stdout, cfg, results, audit.JSONOptions{Comments: comments})
 				}
-				audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor})
+				audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor, Comments: comments})
 				return nil
 			}
 			if len(cfg.Servers) == 0 {
@@ -89,6 +93,8 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
 	cmd.Flags().IntVar(&parallel, "parallel", defaultParallel, "max concurrent server audits")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the report as machine-readable JSON on stdout")
+	cmd.Flags().BoolVar(&comments, "comments", false,
+		"also report comment drift on present keys (informational; never affects the exit code)")
 	return cmd
 }
 

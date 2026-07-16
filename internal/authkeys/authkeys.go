@@ -103,6 +103,12 @@ type Result struct {
 	OK           []Key // fingerprint present in both
 	Missing      []Key // desired but not installed
 	Unauthorized []Key // installed but not desired
+
+	// Actual indexes every installed key by fingerprint — first occurrence
+	// per fingerprint, exactly the dedup Diff applies. It lets callers
+	// inspect the on-server form (comment/options) of matched keys, whose
+	// OK entries carry the desired form instead.
+	Actual map[string]Key
 }
 
 // Diff compares key sets by SHA256 fingerprint. Order is deterministic without
@@ -120,7 +126,7 @@ func Diff(desired, actual []Key) Result {
 		}
 	}
 	desiredFP := make(map[string]bool, len(desired))
-	var r Result
+	r := Result{Actual: actualByFP}
 	for _, k := range desired {
 		desiredFP[k.Fingerprint] = true
 		if _, ok := actualByFP[k.Fingerprint]; ok {

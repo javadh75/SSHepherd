@@ -258,6 +258,44 @@ func TestAuditVerboseFormat(t *testing.T) {
 	}
 }
 
+// TestAuditCommentWarningReachesStderr: a comment: on a multi-key user is a
+// non-fatal validation warning — audit surfaces it on stderr via the leveled
+// logger and proceeds normally.
+func TestAuditCommentWarningReachesStderr(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	path := writeConfig(t, `
+users:
+  - {name: alice, comment: "alice@corp", keys: ["`+testkeys.Line(t, 1)+`", "`+testkeys.Line(t, 2)+`"]}
+`)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"audit", "--config", path}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (a warning must not fail the run; stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), `user "alice": comment is set on a user with 2 keys`) {
+		t.Errorf("stderr = %q, want the multi-key comment warning", errBuf.String())
+	}
+}
+
+// TestAuditCommentsFlag: --comments parses and reaches both renderers; on an
+// empty fleet it changes nothing (exit 0, --json stays one valid document).
+func TestAuditCommentsFlag(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	path := writeConfig(t, "users: []\nservers: []\naccess: []\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--comments", "--config", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("--comments exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"audit", "--comments", "--json", "--config", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("--comments --json exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !json.Valid(out.Bytes()) {
+		t.Errorf("--comments --json stdout is not valid JSON:\n%s", out.String())
+	}
+}
+
 // verdictConfig: op (operator, key 1) desired everywhere; alice (key 2) -> web-1.
 func verdictConfig(t *testing.T) *config.Config {
 	t.Helper()

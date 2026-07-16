@@ -63,6 +63,16 @@ type jsonKey struct {
 	Fingerprint string  `json:"fingerprint"`
 	Type        string  `json:"type"`
 	Operator    bool    `json:"operator,omitempty"`
+	// CommentDrift is additive-optional (schema stays 1): present keys only,
+	// and only when JSONOptions.Comments is on AND the on-server comment
+	// differs from the decided write-time comment (config.DesiredComment).
+	// Informational — never affects status or exit_code.
+	CommentDrift *jsonCommentDrift `json:"comment_drift,omitempty"`
+}
+
+type jsonCommentDrift struct {
+	Actual  string `json:"actual"`
+	Desired string `json:"desired"`
 }
 
 type jsonParseError struct {
@@ -70,13 +80,20 @@ type jsonParseError struct {
 	Error string `json:"error"`
 }
 
+// JSONOptions tunes the JSON report. Comments is the --comments twin of
+// RenderOptions.Comments: opt-in comment_drift fields on present keys,
+// informational only.
+type JSONOptions struct {
+	Comments bool
+}
+
 // RenderJSON writes the machine-readable audit report: one indented JSON
 // document with a trailing newline. It is the --json twin of Render and
 // takes the same inputs.
-func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult) error {
+func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult, opts JSONOptions) error {
 	rep := jsonReport{Schema: schemaVersion, Servers: make([]jsonServer, 0, len(results))}
 	for _, r := range results {
-		rep.Servers = append(rep.Servers, jsonServerFor(cfg, r))
+		rep.Servers = append(rep.Servers, jsonServerFor(cfg, r, opts))
 	}
 	c := tallyResults(cfg, results)
 	rep.Summary = jsonSummary{
@@ -95,7 +112,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult) error {
 	return nil
 }
 
-func jsonServerFor(cfg *config.Config, r ServerResult) jsonServer {
+func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonServer {
 	s := jsonServer{
 		Name:               r.Server.Name,
 		Host:               r.Server.Host,
@@ -120,7 +137,11 @@ func jsonServerFor(cfg *config.Config, r ServerResult) jsonServer {
 		return s
 	}
 	for _, k := range r.Diff.OK {
-		s.Keys.Present = append(s.Keys.Present, jsonKeyFor(cfg, k, false))
+		jk := jsonKeyFor(cfg, k, false)
+		if actual, desired, drifted := commentDrift(cfg, r, k); opts.Comments && drifted {
+			jk.CommentDrift = &jsonCommentDrift{Actual: actual, Desired: desired}
+		}
+		s.Keys.Present = append(s.Keys.Present, jk)
 	}
 	for _, k := range r.Diff.Missing {
 		s.Keys.Missing = append(s.Keys.Missing, jsonKeyFor(cfg, k, true))
