@@ -60,16 +60,17 @@ reviewable draft, never an in-place edit.
 - Reading non-default `authorized_keys` paths or `sshd_config` key sources
   (`audit`'s `FileAbsent` semantics apply unchanged).
 - Any write/apply behavior — adopt is read-only toward the fleet.
-- Follow-ups recorded at implementation review (none blocking): thread a
-  context into `sshread.CheckAgent` so the `//nolint:contextcheck` in
-  `cmd/sshepherd/adopt.go` can go away; atomic temp-file+rename write in
-  `writeFileNoClobber` (a failed `--force` overwrite can truncate the
-  destination); treat an embedded `\r` inside an `authorized_keys` line as a
-  ParseError in `internal/authkeys` so hostile line breaks hit the
-  strict/`--partial` gate instead of adopt's "bug:" self-check; consider
-  stripping bidi/format (Cf) characters in the sanitizers; consider a length
-  cap in `sanitizeName`; share `readFleet` with `audit` when a third fleet
-  reader appears.
+- Follow-ups recorded at implementation review (none blocking) — all
+  resolved 2026-07-16 except the last: context threaded into
+  `sshread.CheckAgent` (the `//nolint:contextcheck` in
+  `cmd/sshepherd/adopt.go` is gone); `writeFileNoClobber` writes atomically
+  via temp file + link/rename (a failed `--force` overwrite can no longer
+  truncate the destination); an embedded `\r` inside an `authorized_keys`
+  line is a ParseError in `internal/authkeys`, hitting the strict/`--partial`
+  gate instead of adopt's "bug:" self-check; the sanitizers (clog, sshread,
+  authkeys) strip bidi/format (Cf) characters; `sanitizeName` caps names at
+  64 characters. Still open: share `readFleet` with `audit` when a third
+  fleet reader appears.
 
 ## CLI surface
 
