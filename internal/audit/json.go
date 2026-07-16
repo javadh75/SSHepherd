@@ -50,6 +50,9 @@ type jsonKeySets struct {
 	Unauthorized []jsonKey `json:"unauthorized"`
 }
 
+// jsonKey field presence is deliberately mixed: owner is always emitted
+// (null = unknown key), while comment (identity hint, often empty) and
+// operator (exception marker, missing keys only) are omitted when unset.
 type jsonKey struct {
 	Owner       *string `json:"owner"`
 	Comment     string  `json:"comment,omitempty"`
@@ -88,28 +91,13 @@ func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult) error {
 	return nil
 }
 
-// statusOf derives the per-server status, in spec order: unreachable
-// (nothing knowable) > compliant > critical > drift.
-func statusOf(cfg *config.Config, r ServerResult) string {
-	switch {
-	case r.Err != nil:
-		return "unreachable"
-	case r.Compliant():
-		return "compliant"
-	case criticalDrift(cfg, r):
-		return "critical"
-	default:
-		return "drift"
-	}
-}
-
 func jsonServerFor(cfg *config.Config, r ServerResult) jsonServer {
 	s := jsonServer{
 		Name:   r.Server.Name,
 		Host:   r.Server.Host,
 		Port:   r.Server.Port,
 		User:   r.Server.User,
-		Status: statusOf(cfg, r),
+		Status: string(statusOf(cfg, r)),
 		Keys: jsonKeySets{
 			Present:      []jsonKey{},
 			Missing:      []jsonKey{},

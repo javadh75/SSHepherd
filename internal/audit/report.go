@@ -165,6 +165,33 @@ func criticalDrift(cfg *config.Config, r ServerResult) bool {
 	return false
 }
 
+// serverStatus classifies one server's audit outcome. The string values are
+// wire contract: they appear verbatim as the JSON report's status field.
+type serverStatus string
+
+const (
+	statusUnreachable serverStatus = "unreachable"
+	statusCompliant   serverStatus = "compliant"
+	statusCritical    serverStatus = "critical"
+	statusDrift       serverStatus = "drift"
+)
+
+// statusOf is the single classifier behind the JSON status field, the
+// summary counts, and (via ExitCode's criticalDrift use) the exit code.
+// Precedence: unreachable (nothing knowable) > compliant > critical > drift.
+func statusOf(cfg *config.Config, r ServerResult) serverStatus {
+	switch {
+	case r.Err != nil:
+		return statusUnreachable
+	case r.Compliant():
+		return statusCompliant
+	case criticalDrift(cfg, r):
+		return statusCritical
+	default:
+		return statusDrift
+	}
+}
+
 // tallyCounts aggregates fleet outcomes for the summary line and the JSON
 // report. A critical server counts in both drift and critical.
 type tallyCounts struct {
@@ -174,16 +201,16 @@ type tallyCounts struct {
 func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 	var c tallyCounts
 	for _, r := range results {
-		switch {
-		case r.Err != nil:
+		switch statusOf(cfg, r) {
+		case statusUnreachable:
 			c.unreachable++
-		case r.Compliant():
+		case statusCompliant:
 			c.compliant++
+		case statusCritical:
+			c.drift++
+			c.critical++
 		default:
 			c.drift++
-			if criticalDrift(cfg, r) {
-				c.critical++
-			}
 		}
 	}
 	return c
