@@ -140,7 +140,7 @@ func TestDefaultCmdBehavesLikeOldConst(t *testing.T) {
 	home := t.TempDir()
 	run := func(cmd string) (string, int) {
 		t.Helper()
-		c := exec.Command("sh", "-c", cmd)
+		c := exec.CommandContext(t.Context(), "sh", "-c", cmd)
 		c.Env = append(os.Environ(), "HOME="+home)
 		out, err := c.Output()
 		code := 0

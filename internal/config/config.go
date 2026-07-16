@@ -209,7 +209,9 @@ func validateAuthorizedKeysFile(server, path string) []error {
 			break
 		}
 	}
-	if !strings.HasPrefix(path, "/") && !(strings.HasPrefix(path, "~/") && len(path) > 2) {
+	validPrefix := strings.HasPrefix(path, "/") ||
+		(strings.HasPrefix(path, "~/") && len(path) > 2)
+	if !validPrefix {
 		errs = append(errs, fmt.Errorf(
 			"server %q: authorized_keys_file must be an absolute path or start with ~/ (got %q)", server, path))
 	}

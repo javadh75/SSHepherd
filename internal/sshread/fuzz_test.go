@@ -49,7 +49,7 @@ func FuzzShQuote(f *testing.F) {
 				[]string{"HOME=/h"}, append([]byte("/h/"), s...)},
 		}
 		for _, sh := range shapes {
-			cmd := exec.Command("sh", "-c", sh.script)
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", sh.script)
 			cmd.Env = sh.env
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr
