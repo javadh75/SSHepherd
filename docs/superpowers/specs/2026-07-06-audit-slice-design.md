@@ -46,7 +46,9 @@ depends on: the **YAML source-of-truth model** and the **diff engine**.
   written, so no rendering needed yet).
 - `apply` / `revoke` / `rotate` and all write-path safety (atomic write, mode
   0600, backup/rollback, lockout guard).
-- `--json` output.
+- `--json` output (implemented 2026-07-16 — see
+  2026-07-16-audit-json-exit-codes-design.md, which also settled the
+  critical-drift exit code).
 - `--identity` key-file auth — v1 is SSH-agent-only (`SSH_AUTH_SOCK`); the agent
   natively handles multiple keys by offering each held key in turn. A repeatable
   `--identity` flag for headless/CI use (no agent available) is a **planned**

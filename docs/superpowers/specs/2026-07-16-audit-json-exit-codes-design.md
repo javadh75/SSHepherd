@@ -1,7 +1,7 @@
 # Design: audit --json output & monitoring-style exit codes
 
 - **Date:** 2026-07-16
-- **Status:** Approved, awaiting implementation
+- **Status:** Implemented (2026-07-16) — see docs/superpowers/plans/2026-07-16-audit-json-exit-codes.md
 - **Scope:** `internal/audit` (a JSON renderer beside the human one, richer
   `ExitCode`), `cmd/sshepherd` (`audit --json` flag, exit-code mapping in
   `run()`). Settles two open questions recorded in the audit slice spec

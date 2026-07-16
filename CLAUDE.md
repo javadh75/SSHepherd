@@ -191,3 +191,7 @@ CLI-wide leveled logging is in place: `-v/--verbose`, `-q/--quiet`, and
 normal verbosity, per-SSH-stage detail at debug, and a colorized audit
 report — all degrading to plain text on non-TTY/`NO_COLOR`/`TERM=dumb`
 (specced in `docs/superpowers/specs/2026-07-10-logging-verbosity-color-design.md`).
+Audit is scriptable: `--json` emits a machine-readable report (schema 1)
+and exit codes are monitoring-style — 0 compliant, 1 drift/unreachable,
+2 critical drift, 3 tool error (specced in
+`docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md`).
