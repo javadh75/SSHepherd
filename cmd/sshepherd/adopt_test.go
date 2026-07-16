@@ -170,16 +170,16 @@ func TestGenerateAdoptManifestPartialGolden(t *testing.T) {
 
 func TestAdoptMissingConfig(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"adopt", "--config", "no-such-file.yaml"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errBuf.String())
+	if code := run([]string{"adopt", "--config", "no-such-file.yaml"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
 	}
 }
 
 func TestAdoptInvalidParallel(t *testing.T) {
 	path := writeConfig(t, "")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"adopt", "--config", path, "--parallel", "0"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	if code := run([]string{"adopt", "--config", path, "--parallel", "0"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
 	}
 }
 
@@ -190,8 +190,8 @@ servers:
   - {name: web-1, host: 10.0.0.1, user: deploy}
 `)
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"adopt", "--config", path}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	if code := run([]string{"adopt", "--config", path}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "SSH_AUTH_SOCK") {
 		t.Errorf("stderr = %q, want agent guidance", errBuf.String())
@@ -277,8 +277,8 @@ func TestAdoptOutputFileNoClobber(t *testing.T) {
 		t.Fatalf("output file: %v", err)
 	}
 	errBuf.Reset()
-	if code := run([]string{"adopt", "--config", src, "-o", dst}, &out, &errBuf); code != 2 {
-		t.Fatalf("overwrite without --force: exit = %d, want 2", code)
+	if code := run([]string{"adopt", "--config", src, "-o", dst}, &out, &errBuf); code != 3 {
+		t.Fatalf("overwrite without --force: exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "--force") {
 		t.Errorf("stderr = %q, want --force hint", errBuf.String())

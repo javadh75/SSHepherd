@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/authkeys"
+	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -22,16 +26,16 @@ func writeConfig(t *testing.T, content string) string {
 func TestAuditMissingConfig(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"audit", "--config", "no-such-file.yaml"}, &out, &errBuf)
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errBuf.String())
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
 	}
 }
 
 func TestAuditInvalidConfig(t *testing.T) {
 	path := writeConfig(t, "users: [\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"audit", "--config", path}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	if code := run([]string{"audit", "--config", path}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
 	}
 }
 
@@ -64,8 +68,8 @@ access:
 `)
 	var out, errBuf bytes.Buffer
 	code := run([]string{"audit", "--config", path}, &out, &errBuf)
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "SSH_AUTH_SOCK") {
 		t.Errorf("stderr = %q, want agent guidance", errBuf.String())
@@ -75,8 +79,8 @@ access:
 func TestAuditInvalidParallel(t *testing.T) {
 	path := writeConfig(t, "")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"audit", "--config", path, "--parallel", "0"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	if code := run([]string{"audit", "--config", path, "--parallel", "0"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
 	}
 }
 
@@ -96,8 +100,8 @@ access:
 	kh := filepath.Join(t.TempDir(), "does-not-exist")
 	var out, errBuf bytes.Buffer
 	code := run([]string{"audit", "--config", path, "--known-hosts", kh}, &out, &errBuf)
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errBuf.String())
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
 	}
 	if !strings.Contains(errBuf.String(), "known_hosts") {
 		t.Errorf("stderr = %q, want known_hosts preflight error", errBuf.String())
@@ -181,5 +185,57 @@ func TestAuditVerboseFormat(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "INFO") {
 		t.Errorf("stderr = %q, want verbose INFO tags", errBuf.String())
+	}
+}
+
+// verdictConfig: op (operator, key 1) desired everywhere; alice (key 2) -> web-1.
+func verdictConfig(t *testing.T) *config.Config {
+	t.Helper()
+	y := `
+users:
+  - {name: op, operator: true, keys: ["` + testkeys.Line(t, 1) + `"]}
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("verdictConfig: %v", err)
+	}
+	return cfg
+}
+
+func mustParseKey(t *testing.T, line string) authkeys.Key {
+	t.Helper()
+	k, err := authkeys.ParseLine(line)
+	if err != nil || k == nil {
+		t.Fatalf("mustParseKey(%q): %v", line, err)
+	}
+	return *k
+}
+
+// TestAuditVerdict pins the sentinel choice: ExitCode 2 -> errCriticalDrift,
+// 1 -> errNonCompliant, 0 -> nil.
+func TestAuditVerdict(t *testing.T) {
+	cfg := verdictConfig(t)
+	opKey := mustParseKey(t, testkeys.Line(t, 1))
+	aliceKey := mustParseKey(t, testkeys.Line(t, 2))
+
+	compliant := []audit.ServerResult{{Server: cfg.Servers[0]}}
+	drift := []audit.ServerResult{{Server: cfg.Servers[0],
+		Diff: authkeys.Result{Missing: []authkeys.Key{aliceKey}}}}
+	critical := []audit.ServerResult{{Server: cfg.Servers[0],
+		Diff: authkeys.Result{Missing: []authkeys.Key{opKey}}}}
+
+	if err := auditVerdict(cfg, compliant); err != nil {
+		t.Errorf("compliant verdict = %v, want nil", err)
+	}
+	if err := auditVerdict(cfg, drift); !errors.Is(err, errNonCompliant) {
+		t.Errorf("drift verdict = %v, want errNonCompliant", err)
+	}
+	if err := auditVerdict(cfg, critical); !errors.Is(err, errCriticalDrift) {
+		t.Errorf("critical verdict = %v, want errCriticalDrift", err)
 	}
 }

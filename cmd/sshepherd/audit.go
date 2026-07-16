@@ -71,14 +71,24 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 			})
 			logFleetReadDone(log, cfg, results, start)
 			audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor})
-			if audit.ExitCode(results) != 0 {
-				return errNonCompliant
-			}
-			return nil
+			return auditVerdict(cfg, results)
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", "sshepherd.yaml", "path to the manifest")
 	cmd.Flags().StringVar(&knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
 	cmd.Flags().IntVar(&parallel, "parallel", defaultParallel, "max concurrent server audits")
 	return cmd
+}
+
+// auditVerdict converts the fleet's ExitCode into run()'s sentinel errors so
+// the process exits 0 (compliant), 1 (drift/unreachable), or 2 (critical).
+func auditVerdict(cfg *config.Config, results []audit.ServerResult) error {
+	switch audit.ExitCode(cfg, results) {
+	case 2:
+		return errCriticalDrift
+	case 1:
+		return errNonCompliant
+	default:
+		return nil
+	}
 }

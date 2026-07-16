@@ -19,13 +19,18 @@ import (
 var version = "dev"
 
 // errNonCompliant signals exit code 1: the audit ran but the fleet is not
-// (provably) compliant. Everything else non-nil maps to usage/config exit 2.
+// (provably) compliant. Everything else non-nil maps to usage/config exit 3.
 var errNonCompliant = errors.New("fleet not compliant")
 
 // errFleetUnreadable signals exit code 1 for adopt's strict gate: some
 // servers could not be read and --partial was not given. Per-server details
 // are already on stderr.
 var errFleetUnreadable = errors.New("fleet not fully readable")
+
+// errCriticalDrift signals exit code 2: the audit ran and at least one
+// server is missing an operator key — the drift class that threatens fleet
+// access itself.
+var errCriticalDrift = errors.New("fleet has critical drift")
 
 // app carries the per-invocation logging state from flag parsing
 // (PersistentPreRunE) to the subcommands and to run()'s fatal-error path.
@@ -87,14 +92,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	root.SetArgs(args)
 	err := root.Execute()
+	code := exitCodeFor(err)
+	if code == 3 {
+		a.log(stderr).Error(err.Error())
+	}
+	return code
+}
+
+// exitCodeFor maps Execute's error to the monitoring-style process exit code
+// (see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md).
+// Sentinel-mapped outcomes have already rendered their report; only the
+// tool-error case (3) still needs the error logged.
+func exitCodeFor(err error) int {
 	switch {
 	case err == nil:
 		return 0
 	case errors.Is(err, errNonCompliant), errors.Is(err, errFleetUnreadable):
-		return 1 // report already rendered; nothing more to say
-	default:
-		a.log(stderr).Error(err.Error())
+		return 1
+	case errors.Is(err, errCriticalDrift):
 		return 2
+	default:
+		return 3
 	}
 }
 

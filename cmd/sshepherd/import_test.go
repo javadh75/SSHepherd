@@ -160,8 +160,8 @@ func writeSSHConfig(t *testing.T, content string) string {
 func TestImportMissingSource(t *testing.T) {
 	hermeticHome(t)
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"import", "/no/such/ssh_config"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errBuf.String())
+	if code := run([]string{"import", "/no/such/ssh_config"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
 	}
 }
 
@@ -265,8 +265,8 @@ func TestImportOutputFile(t *testing.T) {
 
 	// Second run must refuse to clobber...
 	errBuf.Reset()
-	if code := run([]string{"import", src, "-o", dst}, &out, &errBuf); code != 2 {
-		t.Fatalf("overwrite without --force: exit = %d, want 2", code)
+	if code := run([]string{"import", src, "-o", dst}, &out, &errBuf); code != 3 {
+		t.Fatalf("overwrite without --force: exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "--force") {
 		t.Errorf("stderr = %q, want --force hint", errBuf.String())
@@ -412,8 +412,8 @@ func TestImportOperatorConflictsServersOnly(t *testing.T) {
 	hermeticHome(t)
 	cfg := writeSSHConfig(t, "Host a\n  User u\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"import", cfg, "--servers-only", "--operator", "x"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit = %d, want 2", code)
+	if code := run([]string{"import", cfg, "--servers-only", "--operator", "x"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "--servers-only") {
 		t.Errorf("stderr = %q, want a conflict message naming --servers-only", errBuf.String())
@@ -425,8 +425,8 @@ func TestImportOperatorMissingKey(t *testing.T) {
 	cfg := writeSSHConfig(t, "Host a\n  User u\n")
 	var out, errBuf bytes.Buffer
 	code := run([]string{"import", cfg, "--operator", filepath.Join(home, "nope")}, &out, &errBuf)
-	if code != 2 {
-		t.Fatalf("exit = %d, want 2 (an explicitly named operator key must exist)", code)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3 (an explicitly named operator key must exist)", code)
 	}
 }
 

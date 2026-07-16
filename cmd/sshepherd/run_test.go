@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -22,8 +24,8 @@ func TestRunVersion(t *testing.T) {
 func TestRunNoCommand(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run(nil, &out, &errBuf)
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "no command") {
 		t.Errorf("stderr = %q, want it to mention %q", errBuf.String(), "no command")
@@ -41,8 +43,8 @@ func TestRunNilArgsIgnoresOSArgs(t *testing.T) {
 
 	var out, errBuf bytes.Buffer
 	code := run(nil, &out, &errBuf)
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2 (run(nil) must not read os.Args; stdout: %q)", code, out.String())
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3 (run(nil) must not read os.Args; stdout: %q)", code, out.String())
 	}
 	if !strings.Contains(errBuf.String(), "no command") {
 		t.Errorf("stderr = %q, want the no-command error", errBuf.String())
@@ -51,15 +53,15 @@ func TestRunNilArgsIgnoresOSArgs(t *testing.T) {
 
 func TestRunUnknownFlag(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"--nope"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code := run([]string{"--nope"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 }
 
 func TestRunFatalErrorPrefix(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run(nil, &out, &errBuf); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code := run(nil, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 	if !strings.HasPrefix(errBuf.String(), "error: ") {
 		t.Errorf("stderr = %q, want an %q prefix", errBuf.String(), "error: ")
@@ -68,8 +70,8 @@ func TestRunFatalErrorPrefix(t *testing.T) {
 
 func TestRunVerboseQuietConflict(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"-v", "-q"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code := run([]string{"-v", "-q"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 	got := errBuf.String()
 	if !strings.Contains(got, "verbose") || !strings.Contains(got, "quiet") {
@@ -79,8 +81,8 @@ func TestRunVerboseQuietConflict(t *testing.T) {
 
 func TestRunInvalidColor(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"--color", "sometimes"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code := run([]string{"--color", "sometimes"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "invalid color mode") {
 		t.Errorf("stderr = %q, want the invalid-color message", errBuf.String())
@@ -91,8 +93,8 @@ func TestRunInvalidColor(t *testing.T) {
 // swallowed, quiet mode included.
 func TestRunQuietFatalStillPrints(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"-q"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code := run([]string{"-q"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "no command") {
 		t.Errorf("stderr = %q, want the fatal error even under -q", errBuf.String())
@@ -106,8 +108,8 @@ func TestRunQuietFatalStillPrints(t *testing.T) {
 // always, the fatal line carries ANSI even though stderr is a buffer.
 func TestRunColorAlwaysFatal(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"--color", "always"}, &out, &errBuf); code != 2 {
-		t.Fatalf("exit code = %d, want 2", code)
+	if code := run([]string{"--color", "always"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "\x1b[31merror:\x1b[0m") {
 		t.Errorf("stderr = %q, want a red error: prefix", errBuf.String())
@@ -128,5 +130,29 @@ func TestFmtDur(t *testing.T) {
 		if got := fmtDur(tt.in); got != tt.want {
 			t.Errorf("fmtDur(%v) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// TestExitCodeFor pins the tool-wide exit contract from the 2026-07-16 spec:
+// 0 ok, 1 drift/unreachable, 2 critical drift, 3 everything else.
+func TestExitCodeFor(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, 0},
+		{"non-compliant", errNonCompliant, 1},
+		{"fleet unreadable", errFleetUnreadable, 1},
+		{"critical drift", errCriticalDrift, 2},
+		{"wrapped critical", fmt.Errorf("audit: %w", errCriticalDrift), 2},
+		{"generic error", errors.New("boom"), 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCodeFor(tt.err); got != tt.want {
+				t.Errorf("exitCodeFor(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
 	}
 }
