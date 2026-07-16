@@ -11,4 +11,4 @@ web-2 (deploy@10.0.0.2:22)
         verify before dismissing
   → 1 authorized · 0 present · 1 missing · 0 unauthorized
 
-Summary: 0/2 servers compliant · 2 with drift (2 critical) · 0 unreachable  → exit 1
+Summary: 0/2 servers compliant · 2 with drift (2 critical) · 0 unreachable  → exit 2

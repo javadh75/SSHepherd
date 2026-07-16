@@ -10,15 +10,23 @@ import (
 	"github.com/javadh75/SSHepherd/internal/config"
 )
 
-// ExitCode maps audit results to the process exit code: 0 only when every
-// server is compliant. An empty fleet is trivially compliant.
-func ExitCode(results []ServerResult) int {
+// ExitCode maps audit results to the process exit code (monitoring-style,
+// see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md):
+// 0 every server compliant (an empty fleet is trivially compliant);
+// 1 drift and/or unreachable servers — compliance not proven;
+// 2 critical drift — at least one server is missing an operator key.
+// Tool errors (exit 3) are the caller's domain; this function never sees them.
+func ExitCode(cfg *config.Config, results []ServerResult) int {
+	code := 0
 	for _, r := range results {
+		if criticalDrift(cfg, r) {
+			return 2
+		}
 		if !r.Compliant() {
-			return 1
+			code = 1
 		}
 	}
-	return 0
+	return code
 }
 
 // RenderOptions tunes report presentation.
@@ -173,5 +181,5 @@ func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
 		}
 	}
 	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable  → exit %d\n",
-		compliant, len(results), drift, critical, unreachable, ExitCode(results))
+		compliant, len(results), drift, critical, unreachable, ExitCode(cfg, results))
 }

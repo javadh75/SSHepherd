@@ -81,8 +81,8 @@ func TestRenderDrift(t *testing.T) {
 	var buf bytes.Buffer
 	Render(&buf, cfg, results, RenderOptions{})
 	checkGolden(t, "report_drift.golden", buf.Bytes())
-	if ExitCode(results) != 1 {
-		t.Errorf("ExitCode = %d, want 1", ExitCode(results))
+	if ExitCode(cfg, results) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(cfg, results))
 	}
 }
 
@@ -160,8 +160,8 @@ func TestRenderCompliant(t *testing.T) {
 	var buf bytes.Buffer
 	Render(&buf, cfg, results, RenderOptions{})
 	checkGolden(t, "report_compliant.golden", buf.Bytes())
-	if ExitCode(results) != 0 {
-		t.Errorf("ExitCode = %d, want 0", ExitCode(results))
+	if ExitCode(cfg, results) != 0 {
+		t.Errorf("ExitCode = %d, want 0", ExitCode(cfg, results))
 	}
 }
 
@@ -171,8 +171,36 @@ func TestRenderEmptyFleet(t *testing.T) {
 	if !bytes.Contains(buf.Bytes(), []byte("0 servers")) {
 		t.Errorf("empty-fleet output = %q, want a '0 servers' note", buf.String())
 	}
-	if ExitCode(nil) != 0 {
-		t.Errorf("ExitCode(nil) = %d, want 0", ExitCode(nil))
+	if ExitCode(&config.Config{}, nil) != 0 {
+		t.Errorf("ExitCode(empty) = %d, want 0", ExitCode(&config.Config{}, nil))
+	}
+}
+
+// TestExitCodeSeverity pins the monitoring-style scheme from the 2026-07-16
+// spec: 0 compliant, 1 drift/unreachable, 2 critical — critical wins over
+// everything, unreachable alone is only 1 (nothing knowable about its keys).
+func TestExitCodeSeverity(t *testing.T) {
+	driftCfg := reportConfig(t)
+	critCfg := operatorConfig(t)
+	tests := []struct {
+		name    string
+		cfg     *config.Config
+		results []ServerResult
+		want    int
+	}{
+		{"empty fleet", &config.Config{}, nil, 0},
+		{"drift plus unreachable, no critical", driftCfg, driftResults(t, driftCfg), 1},
+		{"critical present", critCfg, criticalResults(t, critCfg), 2},
+		{"unreachable only", critCfg, []ServerResult{
+			{Server: critCfg.Servers[0], Err: errors.New("dial tcp: connection refused")},
+		}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExitCode(tt.cfg, tt.results); got != tt.want {
+				t.Errorf("ExitCode = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -218,8 +246,8 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 	if strings.Contains(unauthorized[0], "(unknown)") {
 		t.Errorf("unauthorized row = %q, must not label a known manifest key (unknown)", unauthorized[0])
 	}
-	if ExitCode(results) != 1 {
-		t.Errorf("ExitCode = %d, want 1", ExitCode(results))
+	if ExitCode(cfg, results) != 1 {
+		t.Errorf("ExitCode = %d, want 1", ExitCode(cfg, results))
 	}
 }
 
@@ -269,8 +297,8 @@ func TestRenderCriticalOperatorMissing(t *testing.T) {
 	if !strings.Contains(out, "(2 critical)") {
 		t.Errorf("summary lacks the critical count:\n%s", out)
 	}
-	if ExitCode(results) != 1 {
-		t.Errorf("ExitCode = %d, want 1 (severity is render-only)", ExitCode(results))
+	if ExitCode(cfg, results) != 2 {
+		t.Errorf("ExitCode = %d, want 2 (critical drift)", ExitCode(cfg, results))
 	}
 	checkGolden(t, "report_critical.golden", buf.Bytes())
 }
