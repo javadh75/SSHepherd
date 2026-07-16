@@ -25,8 +25,17 @@ type Key struct {
 // (those whose first non-space character is '#') are not entries and return
 // (nil, nil). Anything else that is not a valid key returns an error.
 func ParseLine(line string) (*Key, error) {
-	if trimmed := strings.TrimSpace(line); trimmed == "" || strings.HasPrefix(trimmed, "#") {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return nil, nil
+	}
+	// An embedded CR is a hostile line break: x/crypto parses through it,
+	// folding what looks like a second line into the comment/Raw, and any
+	// later write-out would split it back into two lines. Reject it so it
+	// hits the strict/--partial gate. (A trailing CR is trimmed above;
+	// ParseFile strips CRLF endings before calling.)
+	if strings.ContainsRune(trimmed, '\r') {
+		return nil, fmt.Errorf("parse authorized_keys line: embedded carriage return")
 	}
 
 	pub, comment, options, _, err := ssh.ParseAuthorizedKey([]byte(line))

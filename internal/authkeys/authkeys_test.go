@@ -178,6 +178,33 @@ func TestParseFileCRLF(t *testing.T) {
 	}
 }
 
+// An embedded carriage return is a hostile line break: written back out it
+// would split into two lines, smuggling an extra key past review. It must be
+// a parse error, not something that survives into Key.Raw or the comment.
+func TestParseLineEmbeddedCR(t *testing.T) {
+	line := testKeyLine(t) + " alice@laptop\r" + testKeyLine(t)
+	k, err := ParseLine(line)
+	if err == nil || !strings.Contains(err.Error(), "carriage return") {
+		t.Errorf("ParseLine(embedded CR) = (%v, %v), want a carriage-return error", k, err)
+	}
+}
+
+// In a file, the embedded CR must surface as a ParseError with the right
+// line number, hitting the strict/--partial gate like any other bad line.
+func TestParseFileEmbeddedCR(t *testing.T) {
+	data := []byte(testKeyLine(t) + "\n" + testKeyLine(t) + " bob\rhidden\n")
+	keys, errs := ParseFile(data)
+	if len(keys) != 1 {
+		t.Errorf("keys = %d, want 1 (only the clean line)", len(keys))
+	}
+	if len(errs) != 1 {
+		t.Fatalf("errs = %v, want exactly one ParseError", errs)
+	}
+	if errs[0].Line != 2 {
+		t.Errorf("ParseError.Line = %d, want 2", errs[0].Line)
+	}
+}
+
 func mustKey(t *testing.T, line string) Key {
 	t.Helper()
 	k, err := ParseLine(line)
