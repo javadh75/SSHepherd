@@ -32,16 +32,20 @@ type jsonSummary struct {
 }
 
 type jsonServer struct {
-	Name           string           `json:"name"`
-	Host           string           `json:"host"`
-	Port           int              `json:"port"`
-	User           string           `json:"user"`
-	Status         string           `json:"status"`
-	Error          *string          `json:"error"`
-	Keys           jsonKeySets      `json:"keys"`
-	ParseErrors    []jsonParseError `json:"parse_errors"`
-	FileAbsent     bool             `json:"file_absent"`
-	NoUsersGranted bool             `json:"no_users_granted"`
+	Name string `json:"name"`
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	User string `json:"user"`
+	// AuthorizedKeysFile is additive-optional (schema stays 1): present
+	// exactly when the manifest sets the per-server override; omitempty
+	// keeps override-free reports byte-identical to earlier releases.
+	AuthorizedKeysFile string           `json:"authorized_keys_file,omitempty"`
+	Status             string           `json:"status"`
+	Error              *string          `json:"error"`
+	Keys               jsonKeySets      `json:"keys"`
+	ParseErrors        []jsonParseError `json:"parse_errors"`
+	FileAbsent         bool             `json:"file_absent"`
+	NoUsersGranted     bool             `json:"no_users_granted"`
 }
 
 type jsonKeySets struct {
@@ -93,11 +97,12 @@ func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult) error {
 
 func jsonServerFor(cfg *config.Config, r ServerResult) jsonServer {
 	s := jsonServer{
-		Name:   r.Server.Name,
-		Host:   r.Server.Host,
-		Port:   r.Server.Port,
-		User:   r.Server.User,
-		Status: string(statusOf(cfg, r)),
+		Name:               r.Server.Name,
+		Host:               r.Server.Host,
+		Port:               r.Server.Port,
+		User:               r.Server.User,
+		AuthorizedKeysFile: r.Server.AuthorizedKeysFile,
+		Status:             string(statusOf(cfg, r)),
 		Keys: jsonKeySets{
 			Present:      []jsonKey{},
 			Missing:      []jsonKey{},

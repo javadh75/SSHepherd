@@ -195,3 +195,9 @@ Audit is scriptable: `--json` emits a machine-readable report (schema 1)
 and exit codes are monitoring-style — 0 compliant, 1 drift/unreachable,
 2 critical drift, 3 tool error (specced in
 `docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md`).
+Servers may set `authorized_keys_file` to override the audited path
+(absolute or `~/`-relative; injection-safe via validation + POSIX
+single-quote escaping; specced in
+`docs/superpowers/specs/2026-07-16-authorized-keys-file-override-design.md`),
+and fleet-scale fan-out benchmarks (`make bench`) back the
+`--parallel`/timeout tuning question with data.

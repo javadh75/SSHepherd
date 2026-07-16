@@ -1,0 +1,9 @@
+web-1 (deploy@10.0.0.1:22)
+  ✗  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  authorized but MISSING
+  note: /etc/ssh/keys/deploy is absent yet login succeeded — the
+        authorized_keys_file override may not match sshd's AuthorizedKeysFile,
+        or sshd consults another key source (AuthorizedKeysCommand, CA
+        certificates); verify the override before dismissing
+  → 1 authorized · 0 present · 1 missing · 0 unauthorized
+
+Summary: 0/1 servers compliant · 1 with drift (0 critical) · 0 unreachable  → exit 1

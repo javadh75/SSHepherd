@@ -37,7 +37,10 @@ func generateAdoptManifest(cfg *config.Config, plan adopt.Plan, src string, unre
 		})
 	}
 	for _, s := range cfg.Servers {
-		so := serverOut{Name: s.Name, Description: s.Description, Host: s.Host, User: s.User}
+		so := serverOut{
+			Name: s.Name, Description: s.Description, Host: s.Host, User: s.User,
+			AuthorizedKeysFile: s.AuthorizedKeysFile, // must round-trip, or adopt would strip every override
+		}
 		if s.Port != 22 { // validation defaulted 0 to 22 already
 			so.Port = s.Port
 		}

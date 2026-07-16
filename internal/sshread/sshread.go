@@ -25,13 +25,47 @@ import (
 	"github.com/javadh75/SSHepherd/internal/config"
 )
 
-// authorizedKeysCmd reads the default authorized_keys, using a distinctive
-// exit code to signal "file does not exist" (vs. cat failing for other
-// reasons). The path is fixed — no user input reaches the remote command.
-const authorizedKeysCmd = `if [ -e ~/.ssh/authorized_keys ]; then cat ~/.ssh/authorized_keys; else exit 44; fi`
+// defaultAuthorizedKeysPath is the file read when a server sets no
+// authorized_keys_file override in the manifest.
+const defaultAuthorizedKeysPath = "~/.ssh/authorized_keys"
 
-// fileAbsentExit is the sentinel exit status in authorizedKeysCmd.
+// fileAbsentExit is the sentinel exit status emitted by the command that
+// authorizedKeysCmdFor builds, signaling "file does not exist" (vs. cat
+// failing for other reasons).
 const fileAbsentExit = 44
+
+// shQuote returns s as one fully single-quoted POSIX shell token: the result
+// is wrapped in single quotes and each embedded single quote is rendered by
+// the standard POSIX idiom — close the quote, emit an escaped quote, reopen
+// (quote, backslash, quote, quote; pinned exactly by TestShQuote — the
+// four-character sequence cannot be written literally in a doc comment
+// because gofmt rewrites doubled apostrophes). Inside single quotes every
+// other byte is literal, so shell metacharacters (;, $(), backticks, |,
+// spaces, double quotes) in s are inert. Callers splice the returned token
+// verbatim — never add surrounding quotes. Correctness is load-bearing
+// (the input is manifest-controlled and runs on every server): pinned by
+// table tests and FuzzShQuote's sh round-trip.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// authorizedKeysCmdFor builds the remote command that reads path, exiting
+// with the fileAbsentExit sentinel when the file does not exist. The
+// manifest-controlled path enters the command exactly once, as a shQuote-d
+// variable assignment — config validation has already rejected control and
+// format characters, and the quoting renders everything else inert (defense
+// in depth). "~/" paths become "${HOME:?}"/<rest>: tilde expansion inside an
+// assignment next to quoted text is a dash/ash portability footgun, and if
+// HOME were ever unset remotely, ${HOME:?} fails the command loudly (a
+// normal remote-read error) instead of silently reading a wrong path.
+// The default and override cases share this one code path.
+func authorizedKeysCmdFor(path string) string {
+	assign := "p=" + shQuote(path)
+	if rest, ok := strings.CutPrefix(path, "~/"); ok {
+		assign = `p="${HOME:?}"/` + shQuote(rest)
+	}
+	return assign + `; if [ -e "$p" ]; then cat "$p"; else exit 44; fi`
+}
 
 // maxRemoteOutput caps how much remote stdout/stderr is buffered (1 MiB).
 // authorized_keys files are tiny; anything larger is hostile or broken.
@@ -221,7 +255,8 @@ func (e sanitizedError) Error() string { return sanitizeRemote(e.err.Error()) }
 func (e sanitizedError) Unwrap() error { return e.err }
 
 // readAuthorizedKeys connects to srv (agent auth, strict known_hosts) and
-// reads ~/.ssh/authorized_keys via a one-shot session. The ctx deadline (set
+// reads the server's authorized_keys — srv.AuthorizedKeysFile when set,
+// ~/.ssh/authorized_keys otherwise — via a one-shot session. The ctx deadline (set
 // by the audit orchestrator) bounds the whole exchange — agent I/O, dial,
 // handshake, and session — not just the dial. Callers without a ctx deadline
 // still get a hard bound: 3×DialTimeout (30s when DialTimeout is zero).
@@ -289,12 +324,18 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 	client := ssh.NewClient(sshConn, chans, reqs)
 	defer func() { _ = client.Close() }()
 
-	return readRemote(client, addr, log)
+	path := srv.AuthorizedKeysFile
+	if path == "" {
+		path = defaultAuthorizedKeysPath
+	}
+	return readRemote(client, addr, authorizedKeysCmdFor(path), log)
 }
 
-// readRemote runs the read command over an established SSH connection and
-// maps its output and exit status to a ReadResult.
-func readRemote(client *ssh.Client, addr string, log *slog.Logger) (audit.ReadResult, error) {
+// readRemote runs cmd (built by authorizedKeysCmdFor) over an established
+// SSH connection and maps its output and exit status to a ReadResult. It is
+// deliberately dumb network glue: the security-relevant command construction
+// lives in the pure, unit-tested builder.
+func readRemote(client *ssh.Client, addr, cmd string, log *slog.Logger) (audit.ReadResult, error) {
 	var zero audit.ReadResult
 
 	sess, err := client.NewSession()
@@ -309,7 +350,7 @@ func readRemote(client *ssh.Client, addr string, log *slog.Logger) (audit.ReadRe
 	sess.Stderr = stderr
 
 	code := 0
-	if runErr := sess.Run(authorizedKeysCmd); runErr != nil {
+	if runErr := sess.Run(cmd); runErr != nil {
 		var exitErr *ssh.ExitError
 		if !errors.As(runErr, &exitErr) {
 			return zero, fmt.Errorf("remote read on %s: %w", addr, runErr)

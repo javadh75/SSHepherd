@@ -13,11 +13,12 @@ import (
 // keeps default ports and never-set fields out of the generated YAML. Shared
 // by every command that emits a manifest (import, adopt).
 type serverOut struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Host        string `yaml:"host"`
-	Port        int    `yaml:"port,omitempty"`
-	User        string `yaml:"user"`
+	Name               string `yaml:"name"`
+	Description        string `yaml:"description,omitempty"`
+	Host               string `yaml:"host"`
+	Port               int    `yaml:"port,omitempty"`
+	User               string `yaml:"user"`
+	AuthorizedKeysFile string `yaml:"authorized_keys_file,omitempty"`
 }
 
 type userOut struct {

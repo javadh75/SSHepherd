@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -33,6 +34,12 @@ type Server struct {
 	Host        string `yaml:"host"`
 	Port        int    `yaml:"port"` // defaults to 22
 	User        string `yaml:"user"`
+	// AuthorizedKeysFile overrides the file read on this server (mirrors
+	// sshd_config's AuthorizedKeysFile directive). Unset means
+	// ~/.ssh/authorized_keys. Must be absolute ("/...") or home-relative
+	// with an explicit "~/" prefix; validated strictly because this value
+	// reaches a remote shell (quoted by sshread's shQuote).
+	AuthorizedKeysFile string `yaml:"authorized_keys_file"`
 }
 
 // Access grants one user access to a list of servers. servers: ["*"] grants
@@ -170,6 +177,41 @@ func (c *Config) validateServers() []error {
 		if s.Port < 1 || s.Port > 65535 {
 			errs = append(errs, fmt.Errorf("server %q: port %d out of range", s.Name, s.Port))
 		}
+		errs = append(errs, validateAuthorizedKeysFile(s.Name, s.AuthorizedKeysFile)...)
+	}
+	return errs
+}
+
+// maxAuthorizedKeysFileLen caps the override path length; PATH_MAX is 4096
+// on Linux and anything longer is hostile or broken.
+const maxAuthorizedKeysFileLen = 4096
+
+// validateAuthorizedKeysFile checks a server's authorized_keys_file
+// override. The value reaches a remote shell (single-quoted by sshread), so
+// control and format runes are rejected outright: newline/CSI smuggling must
+// die here even if the quoting layer ever regressed. Shape: absolute or an
+// explicit "~/" prefix with a non-empty remainder — bare-relative paths are
+// ambiguous (home-relative per sshd vs cwd-relative per shell intuition) and
+// "~user/" expansion is unsupported. Unset means the default
+// ~/.ssh/authorized_keys.
+func validateAuthorizedKeysFile(server, path string) []error {
+	if path == "" {
+		return nil
+	}
+	var errs []error
+	if len(path) > maxAuthorizedKeysFileLen {
+		errs = append(errs, fmt.Errorf("server %q: authorized_keys_file is too long (%d bytes, max %d)",
+			server, len(path), maxAuthorizedKeysFileLen))
+	}
+	for _, r := range path {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			errs = append(errs, fmt.Errorf("server %q: authorized_keys_file contains control characters", server))
+			break
+		}
+	}
+	if !strings.HasPrefix(path, "/") && !(strings.HasPrefix(path, "~/") && len(path) > 2) {
+		errs = append(errs, fmt.Errorf(
+			"server %q: authorized_keys_file must be an absolute path or start with ~/ (got %q)", server, path))
 	}
 	return errs
 }

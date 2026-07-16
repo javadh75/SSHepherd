@@ -143,6 +143,48 @@ func TestGenerateAdoptManifestNoopGolden(t *testing.T) {
 	checkGolden(t, "adopt_noop.golden", got)
 }
 
+// TestGenerateAdoptManifestRoundTripsAuthorizedKeysFile: adopt regenerates
+// the full manifest from the loaded config — a server's
+// authorized_keys_file override must survive into the output (and re-parse),
+// or running adopt would silently strip every override.
+func TestGenerateAdoptManifestRoundTripsAuthorizedKeysFile(t *testing.T) {
+	y := `
+users:
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy, authorized_keys_file: /etc/ssh/keys/deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: alice, servers: [web-1, web-2]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("test config: %v", err)
+	}
+	al := testkeys.Line(t, 2)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(al + "\n")},
+		"web-2": {Content: []byte(al + "\n")},
+	}}
+	got, err := generateAdoptManifest(cfg, adoptPlan(t, cfg, r), "sshepherd.yaml", nil)
+	if err != nil {
+		t.Fatalf("generateAdoptManifest: %v", err)
+	}
+	out, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("generated manifest rejected by config.Parse: %v", err)
+	}
+	if p := out.Servers[0].AuthorizedKeysFile; p != "/etc/ssh/keys/deploy" {
+		t.Errorf("web-1 authorized_keys_file = %q after round-trip, want /etc/ssh/keys/deploy:\n%s", p, got)
+	}
+	if p := out.Servers[1].AuthorizedKeysFile; p != "" {
+		t.Errorf("web-2 authorized_keys_file = %q, want empty (omitempty must keep unset fields out):\n%s", p, got)
+	}
+	if strings.Count(string(got), "authorized_keys_file") != 1 {
+		t.Errorf("authorized_keys_file must appear exactly once in the output:\n%s", got)
+	}
+}
+
 func TestGenerateAdoptManifestPartialGolden(t *testing.T) {
 	cfg := mixedCfg(t)
 	op := testkeys.Line(t, 1)

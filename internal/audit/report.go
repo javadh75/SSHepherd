@@ -114,15 +114,34 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette) 
 	for _, pe := range r.ParseErrs {
 		fmt.Fprintf(w, "  ⚠ line %d: unparseable entry\n", pe.Line)
 	}
+	// The absent/empty notes are path-aware only when an override is set:
+	// the no-override wording below is pinned byte-identical by the existing
+	// goldens. With an override, the most likely cause flips from "sshd has
+	// a custom AuthorizedKeysFile" (moot — the operator declared a path) to
+	// "the declared path is wrong", so that hypothesis leads.
 	if r.FileAbsent {
-		fmt.Fprintln(w, "  note: authorized_keys is absent yet login succeeded — either sshd consults")
-		fmt.Fprintln(w, "        another key source (custom AuthorizedKeysFile, AuthorizedKeysCommand,")
-		fmt.Fprintln(w, "        or CA certificates) or all keys have been removed from this file;")
-		fmt.Fprintln(w, "        verify before dismissing")
+		if p := r.Server.AuthorizedKeysFile; p != "" {
+			fmt.Fprintf(w, "  note: %s is absent yet login succeeded — the\n", p)
+			fmt.Fprintln(w, "        authorized_keys_file override may not match sshd's AuthorizedKeysFile,")
+			fmt.Fprintln(w, "        or sshd consults another key source (AuthorizedKeysCommand, CA")
+			fmt.Fprintln(w, "        certificates); verify the override before dismissing")
+		} else {
+			fmt.Fprintln(w, "  note: authorized_keys is absent yet login succeeded — either sshd consults")
+			fmt.Fprintln(w, "        another key source (custom AuthorizedKeysFile, AuthorizedKeysCommand,")
+			fmt.Fprintln(w, "        or CA certificates) or all keys have been removed from this file;")
+			fmt.Fprintln(w, "        verify before dismissing")
+		}
 	} else if emptyFile(r) {
-		fmt.Fprintln(w, "  note: authorized_keys is empty yet login succeeded — either sshd consults")
-		fmt.Fprintln(w, "        another key source or all keys have been removed from this file;")
-		fmt.Fprintln(w, "        verify before dismissing")
+		if p := r.Server.AuthorizedKeysFile; p != "" {
+			fmt.Fprintf(w, "  note: %s is empty yet login succeeded — the\n", p)
+			fmt.Fprintln(w, "        authorized_keys_file override may not match sshd's AuthorizedKeysFile,")
+			fmt.Fprintln(w, "        or sshd consults another key source, or all keys have been removed")
+			fmt.Fprintln(w, "        from this file; verify the override before dismissing")
+		} else {
+			fmt.Fprintln(w, "  note: authorized_keys is empty yet login succeeded — either sshd consults")
+			fmt.Fprintln(w, "        another key source or all keys have been removed from this file;")
+			fmt.Fprintln(w, "        verify before dismissing")
+		}
 	}
 	if r.NoUsersGranted {
 		fmt.Fprintln(w, "  note: no users granted access in the manifest")

@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -151,6 +152,45 @@ func TestRenderJSONOperatorMarker(t *testing.T) {
 	if operatorMarks != 2 {
 		t.Errorf("operator-marked missing keys = %d, want 2 (one per server)", operatorMarks)
 	}
+}
+
+// TestRenderJSONAuthorizedKeysFile pins the additive optional field
+// (schema stays 1): servers[].authorized_keys_file appears exactly when the
+// manifest sets the override — omitempty keeps override-free reports (and
+// every existing JSON golden) byte-identical.
+func TestRenderJSONAuthorizedKeysFile(t *testing.T) {
+	t.Run("set: field emitted", func(t *testing.T) {
+		cfg := overrideConfig(t, "/etc/ssh/keys/deploy")
+		reader := &fakeReader{byName: map[string]ReadResult{"web-1": {FileAbsent: true}}}
+		results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+		var rep struct {
+			Servers []map[string]json.RawMessage `json:"servers"`
+		}
+		if err := json.Unmarshal(renderJSON(t, cfg, results), &rep); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		raw, ok := rep.Servers[0]["authorized_keys_file"]
+		if !ok {
+			t.Fatal("authorized_keys_file missing from server record with an override set")
+		}
+		if got := string(raw); got != `"/etc/ssh/keys/deploy"` {
+			t.Errorf("authorized_keys_file = %s, want \"/etc/ssh/keys/deploy\"", got)
+		}
+	})
+	t.Run("unset: field omitted", func(t *testing.T) {
+		cfg := reportConfig(t)
+		var rep struct {
+			Servers []map[string]json.RawMessage `json:"servers"`
+		}
+		if err := json.Unmarshal(renderJSON(t, cfg, driftResults(t, cfg)), &rep); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, s := range rep.Servers {
+			if _, ok := s["authorized_keys_file"]; ok {
+				t.Errorf("authorized_keys_file emitted for a server without an override: %s", s["name"])
+			}
+		}
+	})
 }
 
 // TestRenderJSONHostileErrorEscaped: even if a raw control byte reaches the

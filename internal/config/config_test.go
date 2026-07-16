@@ -172,6 +172,42 @@ access:
 servers:
   - {name: "*", host: h, user: u}
 `, "reserved"},
+		{"authorized_keys_file bare relative", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: .ssh/authorized_keys}
+`, "absolute path or start with ~/"},
+		{"authorized_keys_file lone tilde", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "~"}
+`, "absolute path or start with ~/"},
+		{"authorized_keys_file bare tilde-slash", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "~/"}
+`, "absolute path or start with ~/"},
+		{"authorized_keys_file tilde-user", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "~deploy/.ssh/authorized_keys"}
+`, "absolute path or start with ~/"},
+		{"authorized_keys_file embedded newline", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\nrm -rf /"}
+`, "control characters"},
+		{"authorized_keys_file embedded ESC", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\u001b[31m"}
+`, "control characters"},
+		{"authorized_keys_file C1 CSI", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\u009bx"}
+`, "control characters"},
+		{"authorized_keys_file bidi override (Cf)", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\u202ex"}
+`, "control characters"},
+		{"authorized_keys_file too long", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/` + strings.Repeat("a", 4096) + `"}
+`, "too long"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,6 +219,43 @@ servers:
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestAuthorizedKeysFileAccepted pins the accept side of the override
+// validation: absolute and ~/-prefixed paths pass, including paths with
+// spaces and single quotes (rendering those inert is the quoting layer's
+// job, not validation's), and the parsed field round-trips verbatim.
+func TestAuthorizedKeysFileAccepted(t *testing.T) {
+	tests := []struct {
+		name, path string
+	}{
+		{"unset", ""},
+		{"absolute", "/etc/ssh/authorized_keys.d/deploy"},
+		{"home-relative", "~/.ssh/keys2"},
+		{"explicit default is an override", "~/.ssh/authorized_keys"},
+		{"spaces", "/etc/ssh keys/deploy"},
+		{"single quote", "/etc/o'brien/keys"},
+		{"tilde-double-slash allowed, fails at runtime", "~//x"},
+		{"trailing slash allowed, fails at runtime", "/etc/keys/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			y := `
+servers:
+  - {name: s, host: h, user: u`
+			if tt.path != "" {
+				y += `, authorized_keys_file: "` + tt.path + `"`
+			}
+			y += "}\n"
+			cfg, err := Parse([]byte(y))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := cfg.Servers[0].AuthorizedKeysFile; got != tt.path {
+				t.Errorf("AuthorizedKeysFile = %q, want %q", got, tt.path)
 			}
 		})
 	}

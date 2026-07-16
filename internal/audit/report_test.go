@@ -219,6 +219,80 @@ func TestRenderFileAbsentDiagnostic(t *testing.T) {
 	}
 }
 
+// overrideConfig: alice(k1) -> web-1, which reads a custom
+// authorized_keys_file (the path is override-test input).
+func overrideConfig(t *testing.T, path string) *config.Config {
+	t.Helper()
+	y := `
+users:
+  - {name: alice, keys: ["` + testkeys.Line(t, 1) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy, authorized_keys_file: "` + path + `"}
+access:
+  - {user: alice, servers: [web-1]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("overrideConfig: %v", err)
+	}
+	return cfg
+}
+
+// TestRenderFileAbsentOverrideGolden pins the path-aware absent note: with
+// an authorized_keys_file override set, the note names the overridden path
+// and leads with the override-mismatch hypothesis (the operator already
+// declared a path, so "sshd has a custom AuthorizedKeysFile" is moot).
+func TestRenderFileAbsentOverrideGolden(t *testing.T) {
+	cfg := overrideConfig(t, "/etc/ssh/keys/deploy")
+	reader := &fakeReader{byName: map[string]ReadResult{"web-1": {FileAbsent: true}}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{})
+	out := buf.String()
+	if !strings.Contains(out, "/etc/ssh/keys/deploy is absent") {
+		t.Errorf("absent note must name the overridden path:\n%s", out)
+	}
+	if !strings.Contains(out, "override may not match sshd's AuthorizedKeysFile") {
+		t.Errorf("absent note must lead with the override-mismatch hypothesis:\n%s", out)
+	}
+	checkGolden(t, "report_absent_override.golden", buf.Bytes())
+}
+
+// TestRenderEmptyFileOverrideNamesPath: the empty-file paradox note likewise
+// names the overridden path when one is set.
+func TestRenderEmptyFileOverrideNamesPath(t *testing.T) {
+	cfg := overrideConfig(t, "/etc/ssh/keys/deploy")
+	reader := &fakeReader{byName: map[string]ReadResult{"web-1": {Content: []byte{}}}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{})
+	out := buf.String()
+	if !strings.Contains(out, "/etc/ssh/keys/deploy is empty") {
+		t.Errorf("empty note must name the overridden path:\n%s", out)
+	}
+	if !strings.Contains(out, "override may not match sshd's AuthorizedKeysFile") {
+		t.Errorf("empty note must lead with the override-mismatch hypothesis:\n%s", out)
+	}
+}
+
+// TestRenderExplicitDefaultIsOverride pins a locked decision: setting
+// authorized_keys_file to the default ~/.ssh/authorized_keys explicitly IS
+// an override — the operator declared a path, so the note is path-aware.
+func TestRenderExplicitDefaultIsOverride(t *testing.T) {
+	cfg := overrideConfig(t, "~/.ssh/authorized_keys")
+	reader := &fakeReader{byName: map[string]ReadResult{"web-1": {FileAbsent: true}}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{})
+	out := buf.String()
+	if !strings.Contains(out, "~/.ssh/authorized_keys is absent") {
+		t.Errorf("explicit-default note must name the path:\n%s", out)
+	}
+	if !strings.Contains(out, "override may not match sshd's AuthorizedKeysFile") {
+		t.Errorf("explicit-default note must use the override wording:\n%s", out)
+	}
+}
+
 func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 	cfg := reportConfig(t)
 	// web-2: alice ok; bob's key is installed although bob is NOT granted
