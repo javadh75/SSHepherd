@@ -312,8 +312,10 @@ Additional report rules:
 ## Open questions / to settle in later slices
 
 - Interaction between a user's `comment` and a key's inline comment at write time
-  (apply slice).
+  (apply slice). *(Settled 2026-07-16: `comment` → inline → `name`; see
+  2026-07-16-comment-policy-memo.md.)*
 - Whether comment drift should ever be reported (informational, non-failing).
+  *(Settled 2026-07-16: opt-in `audit --comments`, informational only; same memo.)*
 - Whether a guarded trust-on-first-use escape hatch (or a `sshepherd trust`
   command that shows fingerprints for confirmation) is ever warranted; v1 is
   strict-only by decision.

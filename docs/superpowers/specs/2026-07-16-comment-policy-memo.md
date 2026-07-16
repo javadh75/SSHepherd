@@ -1,4 +1,8 @@
-- **Status:** Proposed — awaiting owner decision (drafted 2026-07-16 by parallel design workflow)
+- **Status:** Decided 2026-07-16 — Option A for write-time (`comment` → inline → `name`, with the
+  multi-key warning and full-file-render-in-apply mitigations) and Option 2 for
+  drift reporting (opt-in `--comments`, informational only, exit codes
+  untouched). The "can land now" items are implemented; the write path itself
+  waits for the apply slice.
 
 # Decision memo: key comments at write time, and comment drift in audit
 

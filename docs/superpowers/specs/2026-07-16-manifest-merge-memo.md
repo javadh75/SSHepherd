@@ -1,4 +1,11 @@
-- **Status:** Proposed — awaiting owner decision (drafted 2026-07-16 by parallel design workflow)
+- **Status:** Decided 2026-07-16 — Slice 1 (`adopt --merge`, strategy A comment-preserving
+  node-API append) approved and implemented; Slice 2 (`import --merge`)
+  deferred. Open decisions resolved: (1) accept A's fidelity contract
+  (comments yes, blank lines/quote style may normalize); (2) stay on
+  yaml.v3, re-evaluate goccy/go-yaml only if a node-API defect actually
+  bites; (3) manifest-wins-and-warn, no --prefer; (4) settle at slice 2;
+  (5) flag spelled `--merge`, not default; (6) in-place via explicit
+  `--merge -o <same file> --force` is acceptable.
 
 # Design-draft memo: manifest merging for `import` and `adopt`
 
