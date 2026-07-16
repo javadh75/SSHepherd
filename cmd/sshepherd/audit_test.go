@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -53,6 +54,45 @@ users:
 	}
 	if !strings.Contains(out.String(), "0 servers") {
 		t.Errorf("stdout = %q, want '0 servers' note", out.String())
+	}
+}
+
+// TestAuditJSONEmptyFleet: --json must emit exactly one valid JSON document
+// on stdout — nothing else — with logs on stderr, and exit 0. Like the human
+// empty-fleet path, it must not require an agent.
+func TestAuditJSONEmptyFleet(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	path := writeConfig(t, `
+users: []
+servers: []
+access: []
+`)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"audit", "--config", path, "--json"}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	var rep struct {
+		Schema  int               `json:"schema"`
+		Servers []json.RawMessage `json:"servers"`
+		Summary struct {
+			Servers  int `json:"servers"`
+			ExitCode int `json:"exit_code"`
+		} `json:"summary"`
+	}
+	// Unmarshal the WHOLE stdout: any human-report text before or after the
+	// document (or a second document) fails here.
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("stdout is not exactly one JSON document: %v\n%s", err, out.String())
+	}
+	if rep.Schema != 1 || rep.Summary.Servers != 0 || rep.Summary.ExitCode != 0 {
+		t.Errorf("report = %+v, want schema 1, 0 servers, exit 0", rep)
+	}
+	if rep.Servers == nil {
+		t.Errorf("servers must be [], not null:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "Summary:") {
+		t.Errorf("human summary leaked into --json stdout:\n%s", out.String())
 	}
 }
 

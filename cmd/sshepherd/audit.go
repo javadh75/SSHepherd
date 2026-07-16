@@ -25,6 +25,7 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 		cfgPath    string
 		knownHosts string
 		parallel   int
+		jsonOut    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -40,9 +41,17 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
 			}
 			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
-			if len(cfg.Servers) == 0 {
-				audit.Render(stdout, cfg, nil, audit.RenderOptions{Color: a.reportColor})
+			// One render path for the empty-fleet early return and the main
+			// flow, so the two cannot drift apart.
+			render := func(results []audit.ServerResult) error {
+				if jsonOut {
+					return audit.RenderJSON(stdout, cfg, results)
+				}
+				audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor})
 				return nil
+			}
+			if len(cfg.Servers) == 0 {
+				return render(nil)
 			}
 			if err := sshread.CheckAgent(cmd.Context(), os.Getenv("SSH_AUTH_SOCK")); err != nil {
 				return fmt.Errorf("agent preflight: %w", err)
@@ -70,13 +79,16 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				Logger:           log,
 			})
 			logFleetReadDone(log, cfg, results, start)
-			audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor})
+			if err := render(results); err != nil {
+				return err
+			}
 			return auditVerdict(cfg, results)
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", "sshepherd.yaml", "path to the manifest")
 	cmd.Flags().StringVar(&knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
 	cmd.Flags().IntVar(&parallel, "parallel", defaultParallel, "max concurrent server audits")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the report as machine-readable JSON on stdout")
 	return cmd
 }
 
