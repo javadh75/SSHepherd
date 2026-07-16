@@ -247,6 +247,9 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 				}
 			}
 			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
+			for _, w := range cfg.Warnings {
+				log.Warn(w)
+			}
 			if len(cfg.Servers) > 0 {
 				log.Info(fmt.Sprintf("reading %d servers (parallelism %d)…", len(cfg.Servers), parallel))
 			}

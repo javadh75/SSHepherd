@@ -344,6 +344,25 @@ users:
 `)
 }
 
+// TestAdoptLogsManifestWarnings: the multi-key comment warning must reach
+// stderr on adopt too, not just audit — both commands load the manifest.
+func TestAdoptLogsManifestWarnings(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	path := writeConfig(t, `
+users:
+  - name: alice
+    comment: "alice — platform team"
+    keys: ["`+testkeys.Line(t, 1)+`", "`+testkeys.Line(t, 2)+`"]
+`)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "--config", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "comment is set on a user with 2 keys") {
+		t.Errorf("stderr = %q, want the multi-key comment warning", errBuf.String())
+	}
+}
+
 // An empty fleet needs no agent and emits a valid manifest with a note.
 func TestAdoptEmptyFleet(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
