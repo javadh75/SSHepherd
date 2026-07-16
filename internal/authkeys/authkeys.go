@@ -67,10 +67,11 @@ func (e ParseError) Unwrap() error { return e.Err }
 // stripControl drops control characters (except newline and tab) so error
 // text derived from remote file content cannot carry terminal escape
 // sequences. unicode.IsControl covers C0, DEL, and C1 — C1 CSI (U+009B)
-// acts like ESC [ in some terminals.
+// acts like ESC [ in some terminals. Format (Cf) runes are dropped too:
+// bidi overrides like U+202E can visually reorder the message.
 func stripControl(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		if (unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) && r != '\n' && r != '\t' {
 			return -1
 		}
 		return r

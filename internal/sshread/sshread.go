@@ -54,12 +54,13 @@ func interpretExit(code int, stderr string) (fileAbsent bool, err error) {
 // remote-controlled text so a malicious host cannot inject terminal escape
 // sequences into operator-facing error messages. unicode.IsControl covers
 // C0, DEL, and C1 — C1 CSI (U+009B) acts like ESC [ in some terminals.
-// internal/clog's sanitize applies the same class of defense on the log path
-// (collapsing newlines besides); keep the two in mind together when changing
-// either.
+// Format (Cf) runes are dropped too: bidi overrides like U+202E can visually
+// reorder the message. internal/clog's sanitize applies the same class of
+// defense on the log path (collapsing newlines besides); keep the two in
+// mind together when changing either.
 func sanitizeRemote(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		if (unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) && r != '\n' && r != '\t' {
 			return -1
 		}
 		return r

@@ -18,6 +18,8 @@ func TestSanitize(t *testing.T) {
 		{name: "NUL stripped", in: "a\x00b", want: "ab"},
 		{name: "raw C1 byte becomes replacement rune", in: "a\x9bb", want: "a\ufffdb"},
 		{name: "unicode preserved", in: "clé ✓ 键", want: "clé ✓ 键"},
+		{name: "bidi override (Cf) stripped", in: "user\u202eevil\u202c", want: "userevil"},
+		{name: "zero-width space (Cf) stripped", in: "a\u200bb", want: "ab"},
 		{name: "multi-line hint collapses", in: "bad key\n  hint: run ssh-keyscan", want: "bad key   hint: run ssh-keyscan"},
 	}
 	for _, tt := range tests {

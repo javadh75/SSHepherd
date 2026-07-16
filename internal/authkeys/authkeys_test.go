@@ -158,6 +158,11 @@ func TestStripControlDELAndC1(t *testing.T) {
 	if got := stripControl("a\x9bb"); got != "a\ufffdb" {
 		t.Errorf("stripControl(raw C1 byte) = %q, want %q", got, "a\ufffdb")
 	}
+	// Bidi/format (Cf) runes can visually reorder or hide error text in a
+	// terminal; they carry no meaning in authorized_keys content, so drop them.
+	if got := stripControl("user\u202eevil\u202c"); got != "userevil" {
+		t.Errorf("stripControl(bidi override) = %q, want %q", got, "userevil")
+	}
 }
 
 func TestParseFileEmpty(t *testing.T) {

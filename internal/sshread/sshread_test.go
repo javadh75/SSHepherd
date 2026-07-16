@@ -339,6 +339,8 @@ func TestSanitizeRemote(t *testing.T) {
 		{"DEL stripped", "a\x7fb", "ab"},
 		{"C1 CSI (U+009B) stripped", "a\u009bb", "ab"},
 		{"raw C1 byte becomes replacement rune", "a\x9bb", "a\ufffdb"},
+		{"bidi override (Cf) stripped", "user\u202eevil\u202c", "userevil"},
+		{"zero-width space (Cf) stripped", "a\u200bb", "ab"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
