@@ -23,6 +23,9 @@ func FuzzSanitizeName(f *testing.F) {
 		if !validName.MatchString(got) {
 			t.Errorf("sanitizeName(%q) = %q: not a clean name", comment, got)
 		}
+		if len(got) > 64 {
+			t.Errorf("sanitizeName(%q) = %q: %d chars, cap is 64", comment, got, len(got))
+		}
 		if again := sanitizeName(got); again != got {
 			t.Errorf("not idempotent: sanitizeName(%q) = %q, re-sanitized to %q", comment, got, again)
 		}

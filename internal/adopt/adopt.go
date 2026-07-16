@@ -185,10 +185,15 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) ([]
 	return users, warnings
 }
 
+// maxNameLen caps generated user names: a key comment is attacker-supplied
+// remote content and must not balloon into an unbounded manifest name.
+const maxNameLen = 64
+
 // sanitizeName derives a manifest user name from a key comment: lowercase,
 // every run of characters outside [a-z0-9] collapses to a single '-',
-// leading and trailing '-' trimmed. Returns "" when nothing usable remains —
-// the caller falls back to a numbered name.
+// leading and trailing '-' trimmed, capped at maxNameLen characters.
+// Returns "" when nothing usable remains — the caller falls back to a
+// numbered name.
 func sanitizeName(comment string) string {
 	var b strings.Builder
 	pendingDash := false
@@ -204,5 +209,11 @@ func sanitizeName(comment string) string {
 			pendingDash = true
 		}
 	}
-	return b.String()
+	name := b.String()
+	if len(name) > maxNameLen {
+		// Output is pure ASCII, so byte slicing is rune-safe; a dash at
+		// the cut would leave an invalid trailing '-'.
+		name = strings.TrimRight(name[:maxNameLen], "-")
+	}
+	return name
 }

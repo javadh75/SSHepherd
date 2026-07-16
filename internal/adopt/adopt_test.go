@@ -32,6 +32,19 @@ func TestSanitizeName(t *testing.T) {
 	}
 }
 
+// A huge key comment must not become a huge manifest user name: names are
+// capped at 64 characters, and the cut never leaves a trailing dash.
+func TestSanitizeNameCapsLength(t *testing.T) {
+	if got, want := sanitizeName(strings.Repeat("a", 200)), strings.Repeat("a", 64); got != want {
+		t.Errorf("sanitizeName(200 chars) = %q (len %d), want capped at 64", got, len(got))
+	}
+	// The 64th character lands on a dash: it must be trimmed, not kept.
+	in := strings.Repeat("a", 63) + "@" + strings.Repeat("b", 50)
+	if got, want := sanitizeName(in), strings.Repeat("a", 63); got != want {
+		t.Errorf("sanitizeName(dash at cut) = %q, want %q", got, want)
+	}
+}
+
 // fakeReader returns canned authorized_keys content per server name.
 type fakeReader struct {
 	byName map[string]audit.ReadResult
