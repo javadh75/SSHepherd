@@ -58,8 +58,8 @@ users:
 }
 
 // TestAuditJSONEmptyFleet: --json must emit exactly one valid JSON document
-// on stdout — nothing else — with logs on stderr, and exit 0. Like the human
-// empty-fleet path, it must not require an agent.
+// on stdout — nothing else — and exit 0. Like the human empty-fleet path,
+// it must not require an agent.
 func TestAuditJSONEmptyFleet(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	path := writeConfig(t, `
@@ -93,6 +93,36 @@ access: []
 	}
 	if strings.Contains(out.String(), "Summary:") {
 		t.Errorf("human summary leaked into --json stdout:\n%s", out.String())
+	}
+}
+
+// TestAuditJSONMainPath pins the properties unique to the non-empty fleet:
+// the JSON document reaches stdout even though the verdict is non-zero, and
+// the embedded exit_code matches the process exit.
+func TestAuditJSONMainPath(t *testing.T) {
+	path, kh := unreachableFleet(t)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"audit", "--config", path, "--known-hosts", kh, "--json"}, &out, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr: %s)", code, errBuf.String())
+	}
+	var rep struct {
+		Summary struct {
+			ExitCode int `json:"exit_code"`
+		} `json:"summary"`
+		Servers []struct {
+			Status string  `json:"status"`
+			Error  *string `json:"error"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+		t.Fatalf("stdout is not exactly one JSON document: %v\n%s", err, out.String())
+	}
+	if rep.Summary.ExitCode != code {
+		t.Errorf("summary.exit_code = %d, want the process exit %d", rep.Summary.ExitCode, code)
+	}
+	if len(rep.Servers) != 1 || rep.Servers[0].Status != "unreachable" || rep.Servers[0].Error == nil {
+		t.Errorf("servers = %+v, want one unreachable entry carrying its error", rep.Servers)
 	}
 }
 

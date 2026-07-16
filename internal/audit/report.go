@@ -19,10 +19,10 @@ import (
 func ExitCode(cfg *config.Config, results []ServerResult) int {
 	code := 0
 	for _, r := range results {
-		if criticalDrift(cfg, r) {
+		switch statusOf(cfg, r) {
+		case statusCritical:
 			return 2
-		}
-		if !r.Compliant() {
+		case statusDrift, statusUnreachable:
 			code = 1
 		}
 	}
