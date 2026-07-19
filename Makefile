@@ -78,6 +78,7 @@ coverage: test
 fuzz:
 	$(GO) test -run='^$$' -fuzz=FuzzParseLine -fuzztime=15s ./internal/authkeys
 	$(GO) test -run='^$$' -fuzz=FuzzParseFile -fuzztime=15s ./internal/authkeys
+	$(GO) test -run='^$$' -fuzz=FuzzRenderRoundTrip -fuzztime=15s ./internal/authkeys
 	$(GO) test -run='^$$' -fuzz=FuzzSanitizeName -fuzztime=15s ./internal/adopt
 	$(GO) test -run='^$$' -fuzz=FuzzParse -fuzztime=15s ./internal/sshcfg
 	$(GO) test -run='^$$' -fuzz=FuzzMatchGlob -fuzztime=15s ./internal/sshcfg

@@ -1,0 +1,67 @@
+package authkeys
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+
+	"golang.org/x/crypto/ssh"
+)
+
+// ManagedHeader is the fixed first line of every rendered file. Deliberately
+// undated: output stays byte-stable and golden-testable, so a repeated apply
+// is a byte-for-byte no-op (2026-07-19 apply spec, owner-approved).
+const ManagedHeader = "# Managed by SSHepherd. Manual edits will be overwritten by 'sshepherd apply'."
+
+// RenderEntry pairs a parsed key with the comment the write policy decided
+// on (config.DesiredComment — resolved by the caller; authkeys cannot
+// import config).
+type RenderEntry struct {
+	Key     Key
+	Comment string
+}
+
+// RenderLine renders one authorized_keys line: options comma-joined
+// verbatim (the parser preserves quoted values, so the join is faithful —
+// pinned by FuzzRenderRoundTrip), key material re-marshaled to the one
+// canonical base64 form regardless of odd whitespace in the source line,
+// then the comment. Re-parsing Key.Raw is cheap and keeps Key small; a
+// failure means the Key was not produced by ParseLine — a caller bug,
+// surfaced as an error rather than a dropped line (a silently missing key
+// is a lockout hazard).
+func RenderLine(e RenderEntry) (string, error) {
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(e.Key.Raw))
+	if err != nil {
+		return "", fmt.Errorf("render key %s: raw line does not re-parse: %w", e.Key.Fingerprint, err)
+	}
+	var b strings.Builder
+	if len(e.Key.Options) > 0 {
+		b.WriteString(strings.Join(e.Key.Options, ","))
+		b.WriteByte(' ')
+	}
+	b.WriteString(strings.TrimSuffix(string(ssh.MarshalAuthorizedKey(pub)), "\n"))
+	if e.Comment != "" {
+		b.WriteByte(' ')
+		b.WriteString(e.Comment)
+	}
+	return b.String(), nil
+}
+
+// Render renders the complete managed authorized_keys file: the managed
+// header, one line per entry in order, trailing newline. Deterministic —
+// equal input yields byte-identical output; apply's byte-exact convergence
+// test and its idempotency both hang on this.
+func Render(entries []RenderEntry) ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteString(ManagedHeader)
+	b.WriteByte('\n')
+	for _, e := range entries {
+		line, err := RenderLine(e)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.Bytes(), nil
+}
