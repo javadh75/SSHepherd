@@ -258,8 +258,10 @@ func TestPlanEmptyDesiredSplit(t *testing.T) {
 func TestGuardRefusesLockout(t *testing.T) {
 	cfg := planCfg(t)
 	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
-	// The agent holds only a key the manifest never grants to web-1.
-	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 9), fp(t, 8)}), "web-1")
+	// The agent holds only keys the manifest never grants to web-1. One
+	// fingerprint is listed twice: the refusal must count distinct keys,
+	// not raw listing entries.
+	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 9), fp(t, 8), fp(t, 9)}), "web-1")
 	if p.Class != ClassRefused {
 		t.Fatalf("Class = %s, want refused (predicted lockout)", p.Class)
 	}

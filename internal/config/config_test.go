@@ -125,6 +125,10 @@ users:
 users:
   - {name: alice, comment: "   ", keys: ["KEYA"]}
 `, "comment has leading or trailing whitespace"},
+		{"key inline comment with escape byte", `
+users:
+  - {name: alice, keys: ["KEYA \u001B[31mred"]}
+`, "inline comment contains control or format characters"},
 		{"keyless operator", `
 users:
   - {name: op, operator: true}

@@ -67,21 +67,24 @@ func TestWrapSignersPreservesAlgorithmSigner(t *testing.T) {
 	rec := &sessionKey{}
 	// x/crypto type-asserts AlgorithmSigner to negotiate rsa-sha2-*; losing
 	// the upgrade in the wrapper would silently downgrade RSA agent keys.
-	if _, ok := realSigner.(ssh.AlgorithmSigner); ok {
-		w := wrapSigners([]ssh.Signer{realSigner}, rec)[0]
-		alg, ok := w.(ssh.AlgorithmSigner)
-		if !ok {
-			t.Fatal("wrapped signer lost the AlgorithmSigner upgrade")
-		}
-		if _, err := alg.SignWithAlgorithm(rand.Reader, []byte("d"), ""); err != nil {
-			t.Fatalf("SignWithAlgorithm: %v", err)
-		}
-		if rec.get() == "" {
-			t.Error("SignWithAlgorithm did not record the fingerprint")
-		}
+	// The fixture must implement it, or this test stops exercising the
+	// upgrade path — assert the precondition instead of skipping silently.
+	if _, ok := realSigner.(ssh.AlgorithmSigner); !ok {
+		t.Fatal("fixture signer no longer implements AlgorithmSigner — the upgrade path is untested")
+	}
+	w := wrapSigners([]ssh.Signer{realSigner}, rec)[0]
+	alg, ok := w.(ssh.AlgorithmSigner)
+	if !ok {
+		t.Fatal("wrapped signer lost the AlgorithmSigner upgrade")
+	}
+	if _, err := alg.SignWithAlgorithm(rand.Reader, []byte("d"), ""); err != nil {
+		t.Fatalf("SignWithAlgorithm: %v", err)
+	}
+	if rec.get() == "" {
+		t.Error("SignWithAlgorithm did not record the fingerprint")
 	}
 	// A bare signer wraps without gaining an upgrade it never had.
-	w := wrapSigners([]ssh.Signer{bareSigner{s: realSigner}}, &sessionKey{})[0]
+	w = wrapSigners([]ssh.Signer{bareSigner{s: realSigner}}, &sessionKey{})[0]
 	if _, ok := w.(ssh.AlgorithmSigner); ok {
 		t.Error("bare signer wrapper must not claim AlgorithmSigner")
 	}

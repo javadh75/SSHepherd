@@ -310,9 +310,11 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 		}
 	}
 	if len(surviving) == 0 {
+		// len(held), not len(agentFPs): an agent can list one key twice and
+		// the message must count distinct keys.
 		return guardVerdict{Refusal: fmt.Sprintf(
 			"none of the %d keys in this agent would remain in %s's authorized_keys — applying would lock this session out. Add one of your keys to the manifest (or mark its user operator: true)",
-			len(agentFPs), r.Server.Name)}
+			len(held), r.Server.Name)}
 	}
 
 	var v guardVerdict

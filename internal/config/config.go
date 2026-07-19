@@ -135,17 +135,9 @@ func (c *Config) validateUsers() []error {
 				u.Name, len(u.Keys)))
 		}
 		for i, line := range u.Keys {
-			if strings.ContainsAny(line, "\r\n") {
-				errs = append(errs, fmt.Errorf("user %q key %d: contains a line break", u.Name, i+1))
-				continue
-			}
-			k, err := authkeys.ParseLine(line)
+			k, err := parseUserKey(u, i, line)
 			if err != nil {
-				errs = append(errs, fmt.Errorf("user %q key %d (%q): %w", u.Name, i+1, line, err))
-				continue
-			}
-			if k == nil {
-				errs = append(errs, fmt.Errorf("user %q key %d: blank entry is not a key", u.Name, i+1))
+				errs = append(errs, err)
 				continue
 			}
 			if owner, dup := c.owners[k.Fingerprint]; dup {
@@ -165,6 +157,28 @@ func (c *Config) validateUsers() []error {
 		}
 	}
 	return errs
+}
+
+// parseUserKey validates one manifest key line and returns its parsed form.
+// The inline comment is a DesiredComment fallback, so it reaches the render
+// path like name/comment do — the same RenderTextIssue predicate applies
+// (only the control/format arm can fire: the key parser already trims edge
+// whitespace off comments).
+func parseUserKey(u User, i int, line string) (*authkeys.Key, error) {
+	if strings.ContainsAny(line, "\r\n") {
+		return nil, fmt.Errorf("user %q key %d: contains a line break", u.Name, i+1)
+	}
+	k, err := authkeys.ParseLine(line)
+	if err != nil {
+		return nil, fmt.Errorf("user %q key %d (%q): %w", u.Name, i+1, line, err)
+	}
+	if k == nil {
+		return nil, fmt.Errorf("user %q key %d: blank entry is not a key", u.Name, i+1)
+	}
+	if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
+		return nil, fmt.Errorf("user %q key %d: inline comment %s", u.Name, i+1, issue)
+	}
+	return k, nil
 }
 
 func (c *Config) validateServers() []error {
