@@ -117,5 +117,10 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 		return zero, fmt.Errorf("remote read on %s: %w", addr, err)
 	}
 	c.log().Debug("remote read done", "addr", addr, "exit", code)
-	return sshconn.FinishRead(code, stdout, stderr, addr, c.log())
+	res, err := sshconn.FinishRead(code, stdout, stderr, addr, c.log())
+	if err != nil {
+		return zero, err
+	}
+	res.SessionKeyFP = conn.SessionKeyFP()
+	return res, nil
 }

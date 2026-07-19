@@ -262,3 +262,37 @@ func TestRunNilLoggerSafe(t *testing.T) {
 	reader := &fakeReader{}
 	Run(context.Background(), cfg, reader, Options{Parallel: 1}) // must not panic
 }
+
+func TestAuditOneRetainsContentAndSessionKey(t *testing.T) {
+	cfg := testConfig(t)
+	content := testkeys.Line(t, 1) + "\n"
+	r := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(content), SessionKeyFP: "SHA256:sessionkey"},
+	}}
+	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
+	if string(res.Content) != content {
+		t.Errorf("Content = %q, want the raw bytes retained (apply's byte-exact convergence input)", res.Content)
+	}
+	if res.SessionKeyFP != "SHA256:sessionkey" {
+		t.Errorf("SessionKeyFP = %q, want carried through", res.SessionKeyFP)
+	}
+}
+
+func TestRunServerSubset(t *testing.T) {
+	cfg := testConfig(t)
+	r := &fakeReader{byName: map[string]ReadResult{
+		"web-1":  {Content: []byte(testkeys.Line(t, 1) + "\n")},
+		"orphan": {Content: []byte("")},
+	}}
+	results := Run(context.Background(), cfg, r, Options{
+		Parallel: 2,
+		Servers:  []config.Server{cfg.Servers[1]}, // orphan only
+	})
+	if len(results) != 1 || results[0].Server.Name != "orphan" {
+		t.Fatalf("results = %d (%v), want exactly the orphan subset", len(results), results)
+	}
+	// nil Servers still means the whole fleet.
+	if got := len(Run(context.Background(), cfg, r, Options{Parallel: 2})); got != 2 {
+		t.Errorf("nil subset audited %d servers, want 2", got)
+	}
+}

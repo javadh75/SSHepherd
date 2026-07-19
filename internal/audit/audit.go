@@ -21,6 +21,11 @@ import (
 type ReadResult struct {
 	Content    []byte
 	FileAbsent bool
+	// SessionKeyFP is the SHA256 fingerprint of the agent key that completed
+	// this read's SSH handshake — apply's guard note ("removes the key this
+	// session logged in with") consumes it. Empty for readers that do not
+	// authenticate (fakes).
+	SessionKeyFP string
 }
 
 // KeyReader fetches a server's current authorized_keys. Implementations must
@@ -34,6 +39,8 @@ type ServerResult struct {
 	Server         config.Server
 	Err            error // connection/auth/host-key/read failure: server unauditable
 	FileAbsent     bool
+	Content        []byte // raw file bytes as read; apply's byte-exact convergence input
+	SessionKeyFP   string // agent key that completed the phase-1 handshake
 	NoUsersGranted bool
 	ParseErrs      []authkeys.ParseError
 	Diff           authkeys.Result
@@ -73,6 +80,8 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 		return res
 	}
 	res.FileAbsent = read.FileAbsent
+	res.Content = read.Content
+	res.SessionKeyFP = read.SessionKeyFP
 
 	actual, parseErrs := authkeys.ParseFile(read.Content)
 	res.ParseErrs = parseErrs
@@ -83,7 +92,10 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 
 // Options tunes the fleet fan-out.
 type Options struct {
-	Parallel         int           // max concurrent server audits (>= 1)
+	Parallel int // max concurrent server audits (>= 1)
+	// Servers restricts the fan-out to a subset of cfg's servers (apply's
+	// --server canary flag); nil or empty audits the whole fleet.
+	Servers          []config.Server
 	PerServerTimeout time.Duration // overall deadline per server; 0 = none
 	Logger           *slog.Logger  // optional per-server telemetry; nil discards
 }
@@ -105,10 +117,14 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 		opts.Parallel = 1
 	}
 	log := opts.logger()
-	results := make([]ServerResult, len(cfg.Servers))
+	servers := opts.Servers
+	if len(servers) == 0 {
+		servers = cfg.Servers
+	}
+	results := make([]ServerResult, len(servers))
 	sem := make(chan struct{}, opts.Parallel)
 	var wg sync.WaitGroup
-	for i, srv := range cfg.Servers {
+	for i, srv := range servers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

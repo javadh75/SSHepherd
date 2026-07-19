@@ -49,6 +49,9 @@ func TestIntegrationReadPresent(t *testing.T) {
 	if !strings.Contains(string(res.Content), "ssh-ed25519") {
 		t.Errorf("content = %q, want the seeded key", res.Content)
 	}
+	if res.SessionKeyFP == "" {
+		t.Error("SessionKeyFP empty after a real agent-authenticated read")
+	}
 }
 
 func TestIntegrationFileAbsent(t *testing.T) {
