@@ -37,7 +37,18 @@ func (d *Dialer) log() *slog.Logger {
 
 // Conn is an authenticated SSH connection to one server.
 type Conn struct {
-	Client *ssh.Client
+	Client  *ssh.Client
+	session *sessionKey
+}
+
+// SessionKeyFP returns the SHA256 fingerprint of the agent key whose
+// signature completed this connection's handshake — the key this session
+// logged in with. Empty when unknown (test fakes, or nothing signed).
+func (c *Conn) SessionKeyFP() string {
+	if c.session == nil {
+		return ""
+	}
+	return c.session.get()
 }
 
 // Close is nil-safe so test fakes can hand out a bare Conn.
@@ -96,6 +107,15 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 		return nil
 	}
 
+	rec := &sessionKey{}
+	auth := ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+		signers, err := ag.Signers()
+		if err != nil {
+			return nil, fmt.Errorf("agent signers: %w", err)
+		}
+		return wrapSigners(signers, rec), nil
+	})
+
 	addr := net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port))
 	dialer := net.Dialer{Timeout: d.DialTimeout}
 	log.Debug("dialing", "server", srv.Name, "addr", addr)
@@ -110,7 +130,7 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
 		User:            srv.User,
-		Auth:            []ssh.AuthMethod{ssh.PublicKeysCallback(ag.Signers)},
+		Auth:            []ssh.AuthMethod{auth},
 		HostKeyCallback: cb,
 	})
 	if err != nil {
@@ -118,7 +138,7 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 		return nil, fmt.Errorf("ssh %s@%s: %w", srv.User, addr, err)
 	}
 	log.Debug("auth ok", "server", srv.Name, "user", srv.User)
-	return &Conn{Client: ssh.NewClient(sshConn, chans, reqs)}, nil
+	return &Conn{Client: ssh.NewClient(sshConn, chans, reqs), session: rec}, nil
 }
 
 // Exec runs cmd in one session over client, optionally feeding stdin, and
