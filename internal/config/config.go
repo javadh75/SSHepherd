@@ -117,8 +117,14 @@ func (c *Config) validateUsers() []error {
 			continue
 		}
 		seen[u.Name] = true
-		if strings.ContainsAny(u.Comment, "\r\n") {
-			errs = append(errs, fmt.Errorf("user %q: comment contains a line break", u.Name))
+		if issue := authkeys.RenderTextIssue(u.Name); issue != "" {
+			// name is both an identifier and the comment of last resort
+			// (DesiredComment's floor): a hostile name would inject content
+			// into every rendered authorized_keys file.
+			errs = append(errs, fmt.Errorf("user %q: name %s", u.Name, issue))
+		}
+		if issue := authkeys.RenderTextIssue(u.Comment); issue != "" {
+			errs = append(errs, fmt.Errorf("user %q: comment %s", u.Name, issue))
 		}
 		if u.Comment != "" && len(u.Keys) >= 2 {
 			// Not an error: collapsing every key to one comment is a valid,

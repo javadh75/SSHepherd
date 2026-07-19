@@ -96,7 +96,35 @@ users:
 		{"comment with line break", `
 users:
   - {name: alice, comment: "a\nb", keys: ["KEYA"]}
-`, "comment contains a line break"},
+`, "comment contains control or format characters"},
+		{"name with newline", `
+users:
+  - {name: "x\nEVIL", keys: ["KEYA"]}
+`, "name contains control or format characters"},
+		{"name with escape byte", `
+users:
+  - {name: "x\u001B[31m", keys: ["KEYA"]}
+`, "name contains control or format characters"},
+		{"name with bidi override", `
+users:
+  - {name: "x\u202Evil", keys: ["KEYA"]}
+`, "name contains control or format characters"},
+		{"name with trailing space", `
+users:
+  - {name: "alice ", keys: ["KEYA"]}
+`, "name has leading or trailing whitespace"},
+		{"comment with control char", `
+users:
+  - {name: alice, comment: "a\u0007b", keys: ["KEYA"]}
+`, "comment contains control or format characters"},
+		{"comment untrimmed", `
+users:
+  - {name: alice, comment: " alice@work", keys: ["KEYA"]}
+`, "comment has leading or trailing whitespace"},
+		{"comment all whitespace", `
+users:
+  - {name: alice, comment: "   ", keys: ["KEYA"]}
+`, "comment has leading or trailing whitespace"},
 		{"keyless operator", `
 users:
   - {name: op, operator: true}

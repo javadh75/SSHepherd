@@ -78,6 +78,26 @@ func stripControl(s string) string {
 	}, s)
 }
 
+// RenderTextIssue reports why s is unsafe to render into an authorized_keys
+// line and read back identically; empty means safe (and the empty string is
+// safe — it means "unset"). Control and format runes would split the
+// one-entry-one-line invariant or smuggle terminal escapes; edge whitespace
+// would not survive ssh.ParseAuthorizedKey's comment trimming on re-read,
+// making the written file permanently disagree with the manifest. config
+// validation applies this to every rendered field (user names, comments) at
+// manifest load, so hostile values die before the render path ever runs.
+func RenderTextIssue(s string) string {
+	for _, r := range s {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return "contains control or format characters"
+		}
+	}
+	if strings.TrimSpace(s) != s {
+		return "has leading or trailing whitespace"
+	}
+	return ""
+}
+
 // ParseFile parses a whole authorized_keys file. Blank and comment lines are
 // skipped. Every line that is neither is either a parsed Key or a ParseError
 // carrying its 1-based line number, so a file can be partially usable while

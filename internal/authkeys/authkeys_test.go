@@ -381,6 +381,30 @@ func BenchmarkDiff(b *testing.B) {
 	}
 }
 
+func TestRenderTextIssue(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"empty is safe (means unset)", "", ""},
+		{"plain", "alice@work", ""},
+		{"internal spaces ok", "alice laptop key", ""},
+		{"newline", "a\nb", "contains control or format characters"},
+		{"carriage return", "a\rb", "contains control or format characters"},
+		{"tab", "a\tb", "contains control or format characters"},
+		{"escape byte", "a\x1b[31mb", "contains control or format characters"},
+		{"C1 CSI", "a\u009bb", "contains control or format characters"},
+		{"bidi override (Cf)", "user\u202eevil", "contains control or format characters"},
+		{"leading space", " a", "has leading or trailing whitespace"},
+		{"trailing space", "a ", "has leading or trailing whitespace"},
+		{"all whitespace", "   ", "has leading or trailing whitespace"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RenderTextIssue(tt.in); got != tt.want {
+				t.Errorf("RenderTextIssue(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseLineRaw(t *testing.T) {
 	base := testkeys.Line(t, 1)
 	tests := []struct {
