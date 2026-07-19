@@ -3,14 +3,18 @@ package main
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/identity"
+	"github.com/javadh75/SSHepherd/internal/manifest"
+	"github.com/javadh75/SSHepherd/internal/reconcile"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
@@ -116,6 +120,159 @@ func resolveUsers(hosts []sshcfg.Host, operators []string) ([]identity.User, []s
 	return users, warnings, nil
 }
 
+// deriveUsers runs identity resolution for the convert pipeline, logging its
+// warnings; nil under --servers-only (identity resolution skipped entirely).
+func deriveUsers(log *slog.Logger, serversOnly bool, hosts []sshcfg.Host, operators []string) ([]identity.User, error) {
+	if serversOnly {
+		return nil, nil
+	}
+	users, warnings, err := resolveUsers(hosts, operators)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range warnings {
+		log.Warn(w)
+	}
+	log.Info(fmt.Sprintf("derived %d users from identity files", len(users)))
+	return users, nil
+}
+
+// renderImport picks the rendering path: a comment-preserving merge append
+// when --merge loaded a manifest (mf non-nil), the full generated draft
+// otherwise. date feeds the merge marker only.
+func renderImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, error) {
+	if mf != nil {
+		return mergeImport(log, mf, raw, hosts, users, src, date)
+	}
+	rendered, notes, err := generateManifest(hosts, users, src)
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range notes {
+		log.Warn(n)
+	}
+	return rendered, nil
+}
+
+// loadMergeTarget reads the --merge manifest once — the bytes are the
+// output when nothing merges and the append base otherwise — and loads it
+// (validation + node tree in one step), surfacing manifest warnings like
+// adopt does.
+func loadMergeTarget(log *slog.Logger, path string) ([]byte, *manifest.File, error) {
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is the user's own --merge flag
+	if err != nil {
+		return nil, nil, fmt.Errorf("load manifest: %w", err)
+	}
+	mf, err := manifest.Load(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load manifest: %w", err)
+	}
+	cfg := mf.Config()
+	log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
+	for _, w := range cfg.Warnings {
+		log.Warn(w)
+	}
+	return raw, mf, nil
+}
+
+// mergeImport reconciles the converted hosts and identity users against the
+// loaded manifest and renders the additions. Warnings go to stderr as WARN,
+// notes at info; an empty plan logs the nothing-to-merge note and returns
+// the original bytes untouched, otherwise the summary line narrates what
+// was appended.
+func mergeImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, error) {
+	var worthy []sshcfg.Host
+	for _, h := range hosts {
+		if !serverWorthy(h) {
+			log.Warn(fmt.Sprintf("host %q: no User resolved, skipped (the manifest requires user)", h.Alias))
+			continue
+		}
+		worthy = append(worthy, h)
+	}
+	plan, err := reconcile.Build(mf.Config(), worthy, users)
+	if err != nil {
+		return nil, fmt.Errorf("merge: %w", err)
+	}
+	for _, w := range plan.Warnings {
+		log.Warn(w)
+	}
+	for _, n := range plan.Notes {
+		log.Info(n)
+	}
+	if plan.Empty() {
+		log.Info("nothing to merge: the manifest already covers " + src)
+		return raw, nil
+	}
+	log.Info(mergeSummary(plan))
+	return renderMergedImport(mf, raw, plan, src, date)
+}
+
+// renderMergedImport renders the plan as a comment-preserving append to the
+// original manifest text: existing bytes kept — comments intact, no
+// regenerated header — with the plan's additions appended under a dated
+// `merged by sshepherd import from <src>` marker carrying the plan's
+// warnings as WARNING: comment lines. src is the ssh-config path as typed
+// (never home-expanded — the expanded form would leak the local home
+// directory); date is injected (never read from the clock here) so goldens
+// stay deterministic. An empty plan returns raw unchanged, byte for byte —
+// deliberately including conflict-only runs: the warnings live on stderr
+// only, because a warnings-only comment block would recur on every re-run
+// and break byte-identical idempotency forever (adjudicated 2026-07-19).
+func renderMergedImport(mf *manifest.File, raw []byte, plan reconcile.Plan, src, date string) ([]byte, error) {
+	if plan.Empty() {
+		return raw, nil
+	}
+	comments := []string{fmt.Sprintf("merged by sshepherd import from %s on %s", src, date)}
+	for _, w := range plan.Warnings {
+		comments = append(comments, "WARNING: "+w)
+	}
+	users := make([]manifest.UserEntry, 0, len(plan.NewUsers))
+	for _, u := range plan.NewUsers {
+		users = append(users, manifest.UserEntry{
+			Name: u.Name, Description: u.Description, Comment: u.Comment,
+			Operator: u.Operator, Keys: u.Keys,
+		})
+	}
+	servers := make([]manifest.ServerEntry, 0, len(plan.NewServers))
+	for _, s := range plan.NewServers {
+		servers = append(servers, manifest.ServerEntry{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User})
+	}
+	access := make([]manifest.AccessEntry, 0, len(plan.Extensions)+len(plan.NewGrants))
+	for _, e := range plan.Extensions {
+		access = append(access, manifest.AccessEntry{User: e.User, Servers: e.Servers})
+	}
+	for _, g := range plan.NewGrants {
+		access = append(access, manifest.AccessEntry{User: g.User, Servers: g.Servers})
+	}
+	if err := mf.Append(comments, users, servers, access); err != nil {
+		return nil, fmt.Errorf("merge manifest: %w", err)
+	}
+	out, err := mf.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("merge manifest: %w", err)
+	}
+	return out, nil
+}
+
+// mergeSummary renders the info-level outcome line, e.g.
+// "merged: +1 server, +2 users, +1 extension, +2 access entries, 1 conflict skipped".
+func mergeSummary(plan reconcile.Plan) string {
+	return fmt.Sprintf("merged: +%d %s, +%d %s, +%d %s, +%d access %s, %d %s skipped",
+		len(plan.NewServers), nWord(len(plan.NewServers), "server", "servers"),
+		len(plan.NewUsers), nWord(len(plan.NewUsers), "user", "users"),
+		len(plan.Extensions), nWord(len(plan.Extensions), "extension", "extensions"),
+		len(plan.NewGrants), nWord(len(plan.NewGrants), "entry", "entries"),
+		plan.ConflictsSkipped(), nWord(plan.ConflictsSkipped(), "conflict", "conflicts"))
+}
+
+// nWord picks the grammatical number for a count.
+func nWord(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
 const defaultSSHConfig = "~/.ssh/config"
 
 // localUsername names generated users. Best-effort: os/user, then $USER.
@@ -135,6 +292,7 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 		force       bool
 		serversOnly bool
 		operators   []string
+		mergePath   string
 	)
 	cmd := &cobra.Command{
 		Use:   "import [ssh-config-path]",
@@ -147,6 +305,9 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			"from, and review the result before use. Private keys are never read.\n" +
 			"Keys named via --operator become operator users: granted every server\n" +
 			"implicitly (no access entry) and protected from removal by future apply.\n" +
+			"With --merge FILE the existing manifest FILE is preserved — comments\n" +
+			"intact — and only what is genuinely new is appended; on any conflict the\n" +
+			"manifest wins and the incoming entry is dropped with a warning.\n" +
 			"Warnings about skipped entries go to stderr.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -162,6 +323,19 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 				return err
 			}
 			log := a.logger
+			var (
+				mf  *manifest.File
+				raw []byte
+			)
+			if mergePath != "" {
+				// Read FILE up front: failing fast beats converting first,
+				// and the early full read is what makes in-place
+				// (--merge X -o X --force) safe.
+				raw, mf, err = loadMergeTarget(log, mergePath)
+				if err != nil {
+					return err
+				}
+			}
 			hosts, warnings, err := sshcfg.Load(srcPath)
 			if err != nil {
 				return fmt.Errorf("load ssh config: %w", err) // wrapcheck: wrap at package boundary
@@ -170,36 +344,26 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			for _, w := range warnings {
 				log.Warn(w)
 			}
-			var users []identity.User
-			if !serversOnly {
-				var idWarnings []string
-				users, idWarnings, err = resolveUsers(hosts, operators)
-				if err != nil {
-					return err
-				}
-				for _, w := range idWarnings {
-					log.Warn(w)
-				}
-				log.Info(fmt.Sprintf("derived %d users from identity files", len(users)))
-			}
-			manifest, notes, err := generateManifest(hosts, users, src)
+			users, err := deriveUsers(log, serversOnly, hosts, operators)
 			if err != nil {
 				return err
 			}
-			for _, n := range notes {
-				log.Warn(n)
+			// The clock is read only here, so tests inject a fixed date.
+			rendered, err := renderImport(log, mf, raw, hosts, users, src, time.Now().Format("2006-01-02"))
+			if err != nil {
+				return err
 			}
 			// Self-check: never emit a manifest our own loader would reject.
-			if _, err := config.Parse(manifest); err != nil {
+			if _, err := config.Parse(rendered); err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
 			}
 			if outPath == "" {
-				if _, err := stdout.Write(manifest); err != nil {
+				if _, err := stdout.Write(rendered); err != nil {
 					return fmt.Errorf("write stdout: %w", err)
 				}
 				return nil
 			}
-			return writeFileNoClobber(outPath, manifest, force)
+			return writeFileNoClobber(outPath, rendered, force)
 		},
 	}
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
@@ -207,5 +371,7 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "leave the users and access sections empty (skip identity resolution)")
 	cmd.Flags().StringArrayVar(&operators, "operator", nil,
 		"key file whose owner is an operator: granted every server and protected from removal (repeatable)")
+	cmd.Flags().StringVar(&mergePath, "merge", "",
+		"merge into this existing manifest: preserve its text (comments intact) and append only what is new")
 	return cmd
 }

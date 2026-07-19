@@ -1,0 +1,13 @@
+# Gitleaks repo config — extends the default ruleset.
+#
+# SSH public-key SHA256 fingerprints (`SHA256:` + 43 base64 chars, as printed
+# by audit/import warnings and pinned in test goldens) are hashes of *public*
+# key material, not secrets; the default generic-api-key rule trips on their
+# entropy. Private keys and real secrets remain fully covered.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SSH public-key SHA256 fingerprints are public material"
+regexTarget = "line"
+regexes = ['''SHA256:[A-Za-z0-9+/]{43}''']

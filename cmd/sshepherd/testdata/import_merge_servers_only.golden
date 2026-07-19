@@ -1,0 +1,20 @@
+# fleet manifest — hand-maintained; comments must survive a merge
+users:
+  # op holds the break-glass key
+  - {name: op, operator: true, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c"]}
+  - {name: alice, description: hand-written, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOU", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO1JKMYo0cLG6ukDOJBZlWEpWSc6XGP5NjbBRhSshzfR"]}
+  - {name: bob, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMqTrBcFGHBx1nuDx/8O/oEI6OxFMFdddyaHkzPb2r58"]} # wildcard user, except db-1
+servers:
+  - {name: db-1, host: 10.0.0.3, port: 2222, user: deploy, description: primary db}
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+  # merged by sshepherd import from ~/.ssh/config on 2026-07-19
+  # WARNING: server "db-1" in the ssh config differs from the manifest (host/port/user) — manifest kept
+  - name: app-1
+    host: 10.0.0.5
+    port: 2200
+    user: deploy
+access:
+  - {user: alice, servers: [web-1]}
+  - {user: bob, servers: ["*"], except: [db-1]}
+# reviewed 2026-07-01
