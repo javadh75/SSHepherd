@@ -179,7 +179,9 @@ func loadMergeTarget(log *slog.Logger, path string) ([]byte, *manifest.File, err
 // loaded manifest and renders the additions. Warnings go to stderr as WARN,
 // notes at info; an empty plan logs the nothing-to-merge note and returns
 // the original bytes untouched, otherwise the summary line narrates what
-// was appended.
+// was appended. Unlike generateManifest, skipped-host warnings stay on
+// stderr and are not embedded in the output: the merged file is the
+// operator's own document, and only plan warnings ride the marker block.
 func mergeImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, error) {
 	var worthy []sshcfg.Host
 	for _, h := range hosts {
@@ -218,6 +220,8 @@ func mergeImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcfg
 // deliberately including conflict-only runs: the warnings live on stderr
 // only, because a warnings-only comment block would recur on every re-run
 // and break byte-identical idempotency forever (adjudicated 2026-07-19).
+// Single-use: a non-empty plan mutates mf's node tree via Append, so a
+// second call on the same File would stack the additions.
 func renderMergedImport(mf *manifest.File, raw []byte, plan reconcile.Plan, src, date string) ([]byte, error) {
 	if plan.Empty() {
 		return raw, nil

@@ -207,5 +207,13 @@ The write-time comment policy is decided (`comment` → inline → `name`;
 (decided in `docs/superpowers/specs/2026-07-16-comment-policy-memo.md`).
 `adopt --merge` appends discoveries to an existing manifest while
 preserving its comments via the new `internal/manifest` package
-(specced in `docs/superpowers/specs/2026-07-16-adopt-merge-design.md`);
-`import --merge` is deferred to a later slice.
+(specced in `docs/superpowers/specs/2026-07-16-adopt-merge-design.md`).
+`import --merge FILE` (merge slice 2) reconciles a fresh ssh-config
+conversion against an existing manifest via the new pure
+`internal/reconcile` package — strictly additive, manifest-wins conflicts
+with loud warnings, fingerprint-first user identity, adopt-style access
+extensions for known keys, byte-identical no-op re-runs (specced in
+`docs/superpowers/specs/2026-07-19-import-merge-design.md`; exposes
+`config.Covers`/`config.ExceptCarveOut` and a servers append on
+`internal/manifest`). The `--parallel` default is 32, tuned from the
+fan-out benchmarks (Tuning resolution in the audit spec, 2026-07-19).
