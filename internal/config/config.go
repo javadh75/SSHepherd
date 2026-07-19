@@ -353,3 +353,50 @@ func (c *Config) OwnerOf(fingerprint string) (User, bool) {
 	u, ok := c.owners[fingerprint]
 	return u, ok
 }
+
+// Covers reports whether user's access — explicit grants, or a wildcard
+// grant minus its except: list — covers server. server need not exist in
+// the manifest yet: a wildcard grant covers future servers by design, so
+// beyond the expanded grants (which only know the current fleet) the
+// user's raw access entries are scanned for a wildcard not excepting
+// server.
+//
+// Operators' implicit fleet-wide grant is deliberately excluded — check
+// Operator first. Reading Covers(op, srv) == false as "no access" would
+// contradict DesiredFor, which grants operators every server
+// unconditionally.
+func (c *Config) Covers(user, server string) bool {
+	if slices.Contains(c.grants[server], user) {
+		return true
+	}
+	for _, a := range c.Access {
+		if a.User != user || !slices.Contains(a.Servers, "*") {
+			continue
+		}
+		if !slices.Contains(a.Except, server) {
+			return true
+		}
+	}
+	return false
+}
+
+// ExceptCarveOut reports whether user's access deliberately excludes
+// server via a wildcard except: list. Such a server is never re-granted by
+// merge tooling — the carve-out is a statement of intent; an installed key
+// there is drift.
+//
+// Callers must only ask about (user, server) pairs the grant union does
+// not cover (i.e. after Covers returned false) — outside that context a
+// wildcard user with an explicit grant of an excepted server would be
+// misclassified.
+func (c *Config) ExceptCarveOut(user, server string) bool {
+	for _, a := range c.Access {
+		if a.User != user || !slices.Contains(a.Servers, "*") {
+			continue
+		}
+		if slices.Contains(a.Except, server) {
+			return true
+		}
+	}
+	return false
+}

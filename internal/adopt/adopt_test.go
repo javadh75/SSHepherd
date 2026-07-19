@@ -418,7 +418,7 @@ func TestBuildParseErrorsAreIssues(t *testing.T) {
 // A wildcard user whose except server is ALSO explicitly granted is simply
 // granted there (entries union): their key on that server is authorized, so
 // adopt neither extends nor warns. Pins the config-layer union invariant
-// hasExceptCarveOut relies on.
+// config.ExceptCarveOut relies on.
 func TestBuildExceptOverriddenByExplicitGrant(t *testing.T) {
 	cfg := parseConfig(t, `
 users:

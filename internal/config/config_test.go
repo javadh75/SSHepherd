@@ -578,6 +578,89 @@ access:
 	}
 }
 
+// coverageCfg exercises every grant shape Covers must see: an operator with
+// no access entries, an explicit grant, a wildcard with an except carve-out,
+// and a wildcard whose except is restored by a later explicit entry.
+func coverageCfg(t *testing.T) *Config {
+	t.Helper()
+	y := `
+users:
+  - {name: op, operator: true, keys: ["` + testkeys.Line(t, 1) + `"]}
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+  - {name: bob, keys: ["` + testkeys.Line(t, 4) + `"]}
+  - {name: carol, keys: ["` + testkeys.Line(t, 7) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+  - {user: bob, servers: ["*"], except: [db-1]}
+  - {user: carol, servers: ["*"], except: [db-1]}
+  - {user: carol, servers: [db-1]}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	return cfg
+}
+
+func TestCovers(t *testing.T) {
+	cfg := coverageCfg(t)
+	cases := []struct {
+		name         string
+		user, server string
+		want         bool
+	}{
+		{"explicit grant", "alice", "web-1", true},
+		{"explicit grant does not spread", "alice", "web-2", false},
+		{"wildcard covers existing server", "bob", "web-2", true},
+		{"wildcard covers not-yet-existing server", "bob", "new-9", true},
+		{"except carve-out", "bob", "db-1", false},
+		{"except restored by explicit entry", "carol", "db-1", true},
+		{"explicit grant, not-yet-existing server", "alice", "new-9", false},
+		{"unknown user", "mallory", "web-1", false},
+		// The doc-comment contract: an operator's implicit fleet-wide grant
+		// is deliberately excluded — callers check Operator first.
+		{"operator implicit grant excluded", "op", "web-1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cfg.Covers(tc.user, tc.server); got != tc.want {
+				t.Errorf("Covers(%q, %q) = %v, want %v", tc.user, tc.server, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExceptCarveOut(t *testing.T) {
+	cfg := coverageCfg(t)
+	cases := []struct {
+		name         string
+		user, server string
+		want         bool
+	}{
+		{"wildcard except", "bob", "db-1", true},
+		{"wildcard, server not excepted", "bob", "web-1", false},
+		{"explicit-only user has no carve-outs", "alice", "db-1", false},
+		{"unknown user", "mallory", "db-1", false},
+		{"not-yet-existing server", "bob", "new-9", false},
+		// Out-of-contract pin (the caveat): carol's carve-out reports true
+		// even though a later explicit entry restores the grant — callers
+		// must ask only about pairs the grant union does not cover
+		// (i.e. after Covers returned false).
+		{"caveat: excepted but explicitly re-granted", "carol", "db-1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cfg.ExceptCarveOut(tc.user, tc.server); got != tc.want {
+				t.Errorf("ExceptCarveOut(%q, %q) = %v, want %v", tc.user, tc.server, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWildcardAndExplicitEntriesUnion(t *testing.T) {
 	k1 := testkeys.Line(t, 1)
 	// A wildcard-with-except entry and a later explicit entry for the same
