@@ -1,4 +1,4 @@
-package sshread
+package sshconn
 
 import (
 	"bytes"
@@ -9,12 +9,12 @@ import (
 )
 
 // FuzzShQuote is the load-bearing check on the quoting layer: for any input,
-// splicing shQuote(s) into BOTH variable-assignment shapes the production
+// splicing ShQuote(s) into BOTH variable-assignment shapes the production
 // command uses — the absolute form p=<token> and the home-relative form
 // p="${HOME:?}"/<token> — and echoing it back through a real sh must
 // reproduce the expected bytes with exit 0. Any quoting escape would corrupt
 // the bytes or make the shell execute something. Inputs containing NUL are
-// skipped: \x00 cannot survive execve arguments (not a shQuote defect;
+// skipped: \x00 cannot survive execve arguments (not a ShQuote defect;
 // config validation independently rejects all control characters).
 func FuzzShQuote(f *testing.F) {
 	seeds := []string{
@@ -42,10 +42,10 @@ func FuzzShQuote(f *testing.F) {
 			env    []string
 			want   []byte
 		}{
-			{"absolute", "p=" + shQuote(s) + `; printf %s "$p"`, nil, []byte(s)},
+			{"absolute", "p=" + ShQuote(s) + `; printf %s "$p"`, nil, []byte(s)},
 			// The tilde shape splices the token after "${HOME:?}"/ — POSIX
 			// token adjacency must keep the rest inert regardless of content.
-			{"home-relative", `p="${HOME:?}"/` + shQuote(s) + `; printf %s "$p"`,
+			{"home-relative", `p="${HOME:?}"/` + ShQuote(s) + `; printf %s "$p"`,
 				[]string{"HOME=/h"}, append([]byte("/h/"), s...)},
 		}
 		for _, sh := range shapes {
@@ -57,12 +57,12 @@ func FuzzShQuote(f *testing.F) {
 			if err != nil {
 				var exitErr *exec.ExitError
 				if errors.As(err, &exitErr) {
-					t.Fatalf("%s: sh exited %d on shQuote(%q): stderr %q", sh.name, exitErr.ExitCode(), s, stderr.String())
+					t.Fatalf("%s: sh exited %d on ShQuote(%q): stderr %q", sh.name, exitErr.ExitCode(), s, stderr.String())
 				}
-				t.Fatalf("%s: run sh on shQuote(%q): %v", sh.name, s, err)
+				t.Fatalf("%s: run sh on ShQuote(%q): %v", sh.name, s, err)
 			}
 			if !bytes.Equal(out, sh.want) {
-				t.Fatalf("%s: round-trip mismatch: shQuote(%q) came back as %q, want %q", sh.name, s, out, sh.want)
+				t.Fatalf("%s: round-trip mismatch: ShQuote(%q) came back as %q, want %q", sh.name, s, out, sh.want)
 			}
 		}
 	})

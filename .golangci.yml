@@ -30,6 +30,14 @@ linters:
         - fmt.Fprintln
     gocyclo:
       min-complexity: 15
+    wrapcheck:
+      # sshconn is connection glue extracted verbatim from sshread (2026-07-19
+      # apply spec): its errors already carry full call-site context ("dial
+      # host:port", "remote read on addr"), and the delegating packages must
+      # return them untouched — double-wrapping would change operator-facing
+      # error text the extraction promised to preserve.
+      ignore-package-globs:
+        - github.com/javadh75/SSHepherd/internal/sshconn
     depguard:
       rules:
         main:
