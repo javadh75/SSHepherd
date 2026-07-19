@@ -1,0 +1,13 @@
+db-1 (deploy@10.0.0.9:22)  REFUSED: 1 keys installed but manifest grants none — refusing to wipe
+
+web-1 (deploy@10.0.0.1:22)
+  +  bob                 SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  add (authorized, missing)
+  -  (unknown)           SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  ~  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite comment: "alice@old" → "alice@work"
+  ~  (formatting)                                                                         normalize: removing 1 non-key lines (comments/blank)
+  → 2 keys desired · 1 add · 1 remove · 1 rewrite
+
+web-2 (deploy@10.0.0.2:22)  converged (no changes)
+
+web-3 (deploy@10.0.0.3:22)  ERROR: dial tcp 10.0.0.3:22: connection refused
+
