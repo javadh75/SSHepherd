@@ -171,7 +171,7 @@ including corporate use, while protecting contributors and users).
 
 Early development. In place: full quality/security/container scaffold (Makefile, golangci,
 CI, lefthook, Dockerfile), a CLI skeleton, and `internal/authkeys` (single-line
-`authorized_keys` parser). Three vertical slices are implemented: read-only drift
+`authorized_keys` parser). Four vertical slices are implemented: read-only drift
 **`audit`** (specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`) and
 **`import`** — an OpenSSH client config → manifest converter built on `internal/sshcfg`
 (specced in `docs/superpowers/specs/2026-07-09-import-ssh-config-design.md`), which also
@@ -217,3 +217,19 @@ extensions for known keys, byte-identical no-op re-runs (specced in
 `config.Covers`/`config.ExceptCarveOut` and a servers append on
 `internal/manifest`). The `--parallel` default is 32, tuned from the
 fan-out benchmarks (Tuning resolution in the audit spec, 2026-07-19).
+The fourth slice, **`apply`**, is the first write path: full-file render
+of each server's `authorized_keys` from the manifest (comment policy via
+`config.DesiredComment`, managed header, operators first), two-phase
+plan → confirm (TTY prompt / `--yes` / `--dry-run`) → write, byte-exact
+convergence, and a self-lockout guard that refuses any write leaving no
+agent-held key on a server. Writes are atomic (remote temp + rename,
+`umask 077`, noclobber), preceded by a `.sshepherd.bak` backup and
+followed by an in-session verify re-read; symlinked targets and
+unparseable files are refused. Built on the extracted `internal/sshconn`
+(shared connection glue + session-key recorder), `internal/sshwrite`
+(remote write protocol), and `internal/apply` (pure plan/guard/report),
+with a dockerized integration matrix and the first full E2E loop
+(adopt → apply → audit) — specced in
+`docs/superpowers/specs/2026-07-19-apply-slice-design.md`, planned in
+`docs/superpowers/plans/2026-07-19-apply-slice.md`. `revoke`/`rotate`
+now reduce to manifest edits + `apply`.

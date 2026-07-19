@@ -4,11 +4,20 @@
   guard contract restated over agent-held keys, render-input validation
   hardened, symlink refusal, normalize plan category, `sshconn` extraction
   enumerated)
-- **Status:** Approved 2026-07-19 by the owner — all four open questions
-  resolved as recommended: refined lockout guard (intersection over
-  agent-held keys), single-generation `.sshepherd.bak` backup,
-  plan-then-prompt confirmation (`--yes` for automation), managed header
-  kept.
+- **Status:** Implemented 2026-07-19 — see
+  `docs/superpowers/plans/2026-07-19-apply-slice.md` (all ten tasks
+  executed; two-stage review passed with no blocker/major findings; the
+  dockerized integration + E2E suite ran green). Approved earlier the same
+  day by the owner with all four open questions resolved as recommended:
+  refined lockout guard (intersection over agent-held keys),
+  single-generation `.sshepherd.bak` backup, plan-then-prompt confirmation
+  (`--yes` for automation), managed header kept. Post-review adjudication:
+  the unparseable-file refusal is covered at unit level
+  (`internal/apply` plan classification) rather than in the integration
+  matrix — it is pure classification of bytes the integration-tested read
+  path delivers; and inline key comments are validated with the same
+  `RenderTextIssue` predicate as names/comments (defense in depth for the
+  `DesiredComment` fallback).
 - **Prior art (binding):**
   - `docs/superpowers/specs/2026-07-16-comment-policy-memo.md` — write-time
     comment order `comment` → inline → `name` via `config.DesiredComment`;
