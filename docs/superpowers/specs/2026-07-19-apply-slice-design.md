@@ -4,8 +4,11 @@
   guard contract restated over agent-held keys, render-input validation
   hardened, symlink refusal, normalize plan category, `sshconn` extraction
   enumerated)
-- **Status:** Draft — awaiting owner approval (apply writes to the fleet;
-  nothing is implemented before this spec is approved)
+- **Status:** Approved 2026-07-19 by the owner — all four open questions
+  resolved as recommended: refined lockout guard (intersection over
+  agent-held keys), single-generation `.sshepherd.bak` backup,
+  plan-then-prompt confirmation (`--yes` for automation), managed header
+  kept.
 - **Prior art (binding):**
   - `docs/superpowers/specs/2026-07-16-comment-policy-memo.md` — write-time
     comment order `comment` → inline → `name` via `config.DesiredComment`;
@@ -365,17 +368,11 @@ slice once something consumes it).
 11. `docs: mark apply slice implemented` (CLAUDE.md status, spec status
     line, roadmap memory)
 
-## Open questions for the owner (approve or amend)
+## Open questions — resolved by the owner (2026-07-19)
 
-1. **Guard refinement** — the intersection-over-agent-keys invariant
-   deviates from the operator spec's literal "never remove the session
-   key" (argument in the guard section: the literal rule nondeterministically
-   blocks self-rotation). Sign off on the refinement, or keep the literal
-   rule and accept that rotating your own key requires a second operator
-   key or `operator: true`?
-2. **Backup file** — single-generation `<path>.sshepherd.bak` as specced,
-   or no backup at all (leaner `~/.ssh`, manifest-as-restore-path)?
-3. **Confirmation default** — prompt-unless-`--yes` as specced, or is
-   `--dry-run`-by-default (write only with an explicit `--write`/`--yes`)
-   preferred for the first destructive verb?
-4. **Managed header line** — keep, drop, or different wording?
+1. **Guard refinement** — approved: intersection-over-agent-keys, as
+   specced in the guard section.
+2. **Backup file** — approved: single-generation `<path>.sshepherd.bak`.
+3. **Confirmation default** — approved: plan + prompt, `--yes` for
+   automation, `--dry-run` available.
+4. **Managed header line** — approved: keep, wording as specced.
