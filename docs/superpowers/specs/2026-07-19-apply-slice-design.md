@@ -244,15 +244,19 @@ phase-2 connection:
    `if [ -L "$p" ]; then exit 45; fi; if [ -e "$p" ]; then cp -p "$p" "$p".sshepherd.bak; fi`
    (exit 45 = symlink sentinel → refusal, sibling of the read path's 44).
 2. **Write:**
-   `umask 077; d=$(dirname "$p"); mkdir -p "$d"; t="$p".sshepherd.tmp.$$; rm -f "$t"; (set -C; cat > "$t") && mv "$t" "$p" || { rm -f "$t"; exit 1; }`
+   `umask 077; d=$(dirname "$p"); mkdir -p "$d"; t="$p".sshepherd.tmp; rm -f "$t"; (set -C; cat > "$t") && mv "$t" "$p" || { rm -f "$t"; exit 1; }`
    — content arrives on stdin (no shell-encoding of key material);
    `umask 077` pins the temp file to 0600 before a byte is written;
    `rm -f` + `set -C` (noclobber) guarantee `cat` creates a fresh file —
    never truncating through a pre-existing file or symlink at the
    predictable temp name; `mv` in the same directory is an atomic rename,
    so sshd never observes a partial file; failure leaves the original
-   untouched and removes the temp. (A connection dropped mid-`cat` can
-   still orphan a temp file; the next apply's `rm -f` reclaims it.)
+   untouched and removes the temp. A connection dropped mid-`cat` can
+   still orphan a temp file; the next apply's `rm -f` reclaims it — which
+   is why the name is deliberately **not** PID-suffixed (a `$$` name would
+   orphan forever): two concurrent applies to one server are already
+   last-writer-wins on `mv`, and `set -C` makes an interleaved `cat` fail
+   loudly instead of corrupting, so the fixed name costs nothing.
    `mkdir -p` covers first-contact servers (file-absent case) — for the
    default path that creates `~/.ssh` with 0700; for an override path it
    creates what the operator configured.
