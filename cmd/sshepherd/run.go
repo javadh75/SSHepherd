@@ -163,5 +163,6 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(newAuditCmd(a, stdout))
 	root.AddCommand(newImportCmd(a, stdout))
 	root.AddCommand(newAdoptCmd(a, stdout))
+	root.AddCommand(newApplyCmd(a, stdout))
 	return root
 }
