@@ -150,7 +150,7 @@ func TestAppendGolden(t *testing.T) {
 		{User: "bob", Servers: []string{"web-2"}},
 		{User: "carol-laptop", Servers: []string{"web-1", "web-2"}},
 	}
-	if err := f.Append(mergeComments, users, access); err != nil {
+	if err := f.Append(mergeComments, users, nil, access); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := f.Encode()
@@ -181,6 +181,115 @@ func TestAppendGolden(t *testing.T) {
 		t.Errorf("DesiredFor(web-2) = %d keys, want 3", n)
 	}
 	checkGolden(t, "append.golden", got)
+}
+
+// TestAppendServers: servers append into the fixture's existing block
+// section, in the generators' field order (name, host, port, user) with
+// port omitted when 0 — the caller's spelling of the effective default 22.
+func TestAppendServers(t *testing.T) {
+	f, err := Load([]byte(commentedFixture(t)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	servers := []ServerEntry{
+		{Name: "db-9", Host: "10.0.0.9", User: "deploy"},
+		{Name: "db-8", Host: "10.0.0.8", Port: 2222, User: "root"},
+	}
+	if err := f.Append(mergeComments, nil, servers, nil); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := f.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	for _, want := range []string{
+		"- name: db-9\n    host: 10.0.0.9\n    user: deploy\n",
+		"- name: db-8\n    host: 10.0.0.8\n    port: 2222\n    user: root\n",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("output lacks block %q:\n%s", want, got)
+		}
+	}
+	out, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("merged manifest rejected by config.Parse: %v", err)
+	}
+	ports := make(map[string]int, len(out.Servers))
+	for _, s := range out.Servers {
+		ports[s.Name] = s.Port
+	}
+	if ports["db-9"] != 22 || ports["db-8"] != 2222 {
+		t.Errorf("ports = %v, want db-9 defaulted to 22 and db-8 at 2222", ports)
+	}
+}
+
+// TestAppendServerSectionShapes: like the users/access shapes, the servers
+// section may be flow-empty (`servers: []`), null, or missing; a
+// servers-only append must produce a valid block-style section in all
+// three, with the marker riding the first server.
+func TestAppendServerSectionShapes(t *testing.T) {
+	cases := map[string]string{
+		"flow empty": "users: []\nservers: []\naccess: []\n",
+		"null":       "users:\nservers:\naccess:\n",
+		"missing":    "users: []\n",
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			f, err := Load([]byte(in))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			servers := []ServerEntry{{Name: "db-9", Host: "10.0.0.9", User: "deploy"}}
+			if err := f.Append(mergeComments, nil, servers, nil); err != nil {
+				t.Fatalf("Append: %v", err)
+			}
+			got, err := f.Encode()
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			if strings.Contains(string(got), "servers: []") {
+				t.Errorf("flow-style empty servers section survived an append:\n%s", got)
+			}
+			out, err := config.Parse(got)
+			if err != nil {
+				t.Fatalf("merged manifest rejected by config.Parse: %v", err)
+			}
+			if len(out.Servers) != 1 || out.Servers[0].Name != "db-9" {
+				t.Errorf("Servers = %+v, want just db-9:\n%s", out.Servers, got)
+			}
+			if !strings.Contains(string(got), "# merged by sshepherd adopt on 2026-07-16") {
+				t.Errorf("output lacks the merge marker:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestAppendCommentLandsOnFirstServer: with no new users, the merge marker
+// must ride the first appended server — not the access entries appended
+// after it (marker priority: first user, else first server, else first
+// access).
+func TestAppendCommentLandsOnFirstServer(t *testing.T) {
+	f, err := Load([]byte(commentedFixture(t)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	servers := []ServerEntry{{Name: "db-9", Host: "10.0.0.9", User: "deploy"}}
+	access := []AccessEntry{{User: "bob", Servers: []string{"db-9"}}}
+	if err := f.Append(mergeComments, nil, servers, access); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := f.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	s := string(got)
+	marker := strings.Index(s, "# merged by sshepherd adopt on 2026-07-16")
+	serversAt := strings.Index(s, "servers:")
+	accessAt := strings.Index(s, "access:")
+	if marker < 0 || marker < serversAt || marker > accessAt {
+		t.Errorf("merge marker must sit inside the servers section (marker@%d, servers@%d, access@%d):\n%s",
+			marker, serversAt, accessAt, s)
+	}
 }
 
 // TestEncodeWithoutAppend: a pure load/encode round-trip keeps every comment
@@ -227,7 +336,7 @@ func TestAppendSectionShapes(t *testing.T) {
 			}
 			users := []UserEntry{carolEntry(t)}
 			access := []AccessEntry{{User: "carol-laptop", Servers: []string{"web-1"}}}
-			if err := f.Append(mergeComments, users, access); err != nil {
+			if err := f.Append(mergeComments, users, nil, access); err != nil {
 				t.Fatalf("Append: %v", err)
 			}
 			got, err := f.Encode()
@@ -258,7 +367,7 @@ func TestAppendCommentLandsOnFirstNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := f.Append(mergeComments, nil, []AccessEntry{{User: "bob", Servers: []string{"web-2"}}}); err != nil {
+	if err := f.Append(mergeComments, nil, nil, []AccessEntry{{User: "bob", Servers: []string{"web-2"}}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := f.Encode()
@@ -281,7 +390,7 @@ func TestAppendNothingIsANoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := f.Append(mergeComments, nil, nil); err != nil {
+	if err := f.Append(mergeComments, nil, nil, nil); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := f.Encode()

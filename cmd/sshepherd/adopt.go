@@ -103,7 +103,7 @@ func renderMergedManifest(mf *manifest.File, raw []byte, plan adopt.Plan, unread
 		}
 		access = append(access, manifest.AccessEntry{User: nu.Name, Servers: servers})
 	}
-	if err := mf.Append(comments, users, access); err != nil {
+	if err := mf.Append(comments, users, nil, access); err != nil {
 		return nil, fmt.Errorf("merge manifest: %w", err)
 	}
 	out, err := mf.Encode()

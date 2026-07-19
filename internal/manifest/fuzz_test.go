@@ -52,10 +52,14 @@ func FuzzMergeRoundTrip(f *testing.F) {
 		}
 
 		// Second pass: the mutation half of the invariant. Appending a fixed
-		// user through the real node surgery must still yield a manifest
-		// config.Parse accepts, with the originals AND the addition intact.
-		// Skipped when the fuzzed input already claims the name or the key
-		// (config validation would rightly reject the duplicate).
+		// user, a fixed server, and a grant tying them together through the
+		// real node surgery must still yield a manifest config.Parse accepts,
+		// with the originals AND every addition intact. Skipped when the
+		// fuzzed input already claims the name, the key, or the server name
+		// (config validation would rightly reject the duplicate). The server
+		// guard also covers every shape incompatible with the fixed grant: a
+		// pre-existing grant or except: naming "fuzz-added-server" can only
+		// exist in a manifest that already declares that server.
 		keyLine := testkeys.Line(t, 7)
 		k, err := authkeys.ParseLine(keyLine)
 		if err != nil || k == nil {
@@ -69,13 +73,22 @@ func FuzzMergeRoundTrip(f *testing.F) {
 				return
 			}
 		}
+		for _, s := range want.Servers {
+			if s.Name == "fuzz-added-server" {
+				return
+			}
+		}
 		mf2, err := Load([]byte(in))
 		if err != nil {
 			t.Fatalf("second Load of accepted input %q failed: %v", in, err)
 		}
 		if err := mf2.Append([]string{"fuzz merge marker"}, []UserEntry{
 			{Name: "fuzz-added-user", Keys: []string{keyLine}},
-		}, nil); err != nil {
+		}, []ServerEntry{
+			{Name: "fuzz-added-server", Host: "10.0.0.99", User: "deploy"},
+		}, []AccessEntry{
+			{User: "fuzz-added-user", Servers: []string{"fuzz-added-server"}},
+		}); err != nil {
 			t.Fatalf("Append on Load-accepted input %q: %v", in, err)
 		}
 		out2, err := mf2.Encode()
@@ -88,6 +101,12 @@ func FuzzMergeRoundTrip(f *testing.F) {
 		}
 		if !reflect.DeepEqual(append(userNames(want), "fuzz-added-user"), userNames(got2)) {
 			t.Errorf("after append, user names = %v, want originals plus fuzz-added-user (input %q)", userNames(got2), in)
+		}
+		if !reflect.DeepEqual(append(serverNames(want), "fuzz-added-server"), serverNames(got2)) {
+			t.Errorf("after append, server names = %v, want originals plus fuzz-added-server (input %q)", serverNames(got2), in)
+		}
+		if !reflect.DeepEqual(append(accessPairs(want), "fuzz-added-user\x00fuzz-added-server"), accessPairs(got2)) {
+			t.Errorf("after append, access pairs = %v, want originals plus the fuzz grant (input %q)", accessPairs(got2), in)
 		}
 	})
 }

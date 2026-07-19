@@ -1,6 +1,6 @@
 // Package manifest provides comment-preserving appends to an existing
 // SSHepherd manifest: the file is decoded into a yaml.v3 node tree (comments
-// intact) alongside the validated config, new user/access entries are
+// intact) alongside the validated config, new user/server/access entries are
 // appended surgically to their section sequences, and the whole document is
 // re-encoded. Nothing existing is reordered, rewritten, or removed.
 //
@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -36,6 +37,16 @@ type UserEntry struct {
 	Comment     string
 	Operator    bool
 	Keys        []string
+}
+
+// ServerEntry is one server to append to the servers: section — the fields
+// import can produce (no Description or AuthorizedKeysFile until a caller
+// exists). Port 0 is the caller's spelling of the effective default 22 and
+// is omitted from the output, mirroring the generators' omitempty rendering.
+type ServerEntry struct {
+	Name, Host string
+	Port       int
+	User       string
 }
 
 // AccessEntry is one grant to append to the access: section. Appends never
@@ -140,16 +151,21 @@ func checkNodeShapes(n *yaml.Node) error {
 // Config returns the validated config parsed from the loaded bytes.
 func (f *File) Config() *config.Config { return f.cfg }
 
-// Append appends users and access entries to their sections, converting a
-// flow-style empty (`[]`) or null section to block style and creating a
-// missing section at the end of the document. comments (lines without the
-// leading "#") become the head comment of the first appended node, so the
+// Append appends users, servers, and access entries to their sections,
+// converting a flow-style empty (`[]`) or null section to block style and
+// creating a missing section at the end of the document. comments (lines
+// without the leading "#") become the head comment of the first appended
+// node — first user, else first server, else first access entry — so the
 // merge marker lands exactly where the additions live. Appending nothing is
 // a no-op.
-func (f *File) Append(comments []string, users []UserEntry, access []AccessEntry) error {
+func (f *File) Append(comments []string, users []UserEntry, servers []ServerEntry, access []AccessEntry) error {
 	userNodes := make([]*yaml.Node, 0, len(users))
 	for _, u := range users {
 		userNodes = append(userNodes, userNode(u))
+	}
+	serverNodes := make([]*yaml.Node, 0, len(servers))
+	for _, s := range servers {
+		serverNodes = append(serverNodes, serverNode(s))
 	}
 	accessNodes := make([]*yaml.Node, 0, len(access))
 	for _, a := range access {
@@ -158,12 +174,17 @@ func (f *File) Append(comments []string, users []UserEntry, access []AccessEntry
 	switch {
 	case len(userNodes) > 0:
 		userNodes[0].HeadComment = strings.Join(comments, "\n")
+	case len(serverNodes) > 0:
+		serverNodes[0].HeadComment = strings.Join(comments, "\n")
 	case len(accessNodes) > 0:
 		accessNodes[0].HeadComment = strings.Join(comments, "\n")
 	default:
 		return nil
 	}
 	if err := f.appendToSection("users", userNodes); err != nil {
+		return err
+	}
+	if err := f.appendToSection("servers", serverNodes); err != nil {
 		return err
 	}
 	return f.appendToSection("access", accessNodes)
@@ -284,6 +305,20 @@ func userNode(u UserEntry) *yaml.Node {
 		pair("operator", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
 	}
 	pair("keys", strSeq(u.Keys))
+	return n
+}
+
+// serverNode renders one appended server in the generators' field order:
+// name, host, port, user — port omitted when 0 (effective default 22).
+func serverNode(s ServerEntry) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	pair := func(k string, v *yaml.Node) { n.Content = append(n.Content, strScalar(k), v) }
+	pair("name", strScalar(s.Name))
+	pair("host", strScalar(s.Host))
+	if s.Port != 0 {
+		pair("port", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(s.Port)})
+	}
+	pair("user", strScalar(s.User))
 	return n
 }
 
