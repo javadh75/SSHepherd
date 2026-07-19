@@ -14,7 +14,14 @@ import (
 )
 
 const (
-	defaultParallel   = 10
+	// defaultParallel is sized from the fan-out benchmarks (make bench),
+	// not core count: workers are network-blocked, scheduler overhead per
+	// server is negligible through p=128, and straggler wall time is
+	// timeout × ⌈hung/parallel⌉ — at 32 a burst of 25 unreachable hosts
+	// costs one 30s wave instead of three. 32 keeps the socket/agent burst
+	// modest on an operator machine; see the tuning note in
+	// docs/superpowers/specs/2026-07-06-audit-slice-design.md.
+	defaultParallel   = 32
 	dialTimeout       = 10 * time.Second
 	perServerTimeout  = 30 * time.Second
 	defaultKnownHosts = "~/.ssh/known_hosts"

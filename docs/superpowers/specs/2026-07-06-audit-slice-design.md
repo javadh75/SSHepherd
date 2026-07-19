@@ -182,14 +182,15 @@ Outcomes of the remote read, and what each means:
 ## Command surface
 
 ```
-sshepherd audit [--config sshepherd.yaml] [--known-hosts ~/.ssh/known_hosts] [--parallel 10]
+sshepherd audit [--config sshepherd.yaml] [--known-hosts ~/.ssh/known_hosts] [--parallel 32]
 ```
 
 - `--config` — path to the manifest (default `sshepherd.yaml`).
 - `--known-hosts` — path to the `known_hosts` file (default `~/.ssh/known_hosts`).
-- `--parallel` — max concurrent server audits (default 10; <1 is a usage error,
-  exit 2). A bounded pool, not unbounded fan-out, so large fleets don't open
-  hundreds of sockets.
+- `--parallel` — max concurrent server audits (default 32 — tuned 2026-07-19
+  from the fan-out benchmarks, see *Tuning resolution* below; <1 is a usage
+  error, exit 2). A bounded pool, not unbounded fan-out, so large fleets don't
+  open hundreds of sockets.
 - Auth: the local SSH agent (`SSH_AUTH_SOCK`) only, in v1. Agent availability is
   checked **once at startup**; if the env var is unset or the socket is dead,
   exit 2 with a clear message *before* dialing any server (otherwise every
@@ -257,7 +258,7 @@ Additional report rules:
 ## Data flow
 
 1. Load + validate `sshepherd.yaml` (fail fast on error → exit 2).
-2. Fan out over servers with a bounded worker pool (`--parallel`, default 10).
+2. Fan out over servers with a bounded worker pool (`--parallel`, default 32).
    Each worker runs one self-contained, shared-state-free call:
    a. Compute the desired key set from `access` + `users`.
    b. `sshread.ReadAuthorizedKeys` → raw bytes; distinguishes connection
@@ -320,7 +321,39 @@ Additional report rules:
   command that shows fingerprints for confirmation) is ever warranted; v1 is
   strict-only by decision.
 - Tuning the `--parallel` default and timeouts once fleet-scale benchmarks
-  exist (`go test -bench` on the fan-out path).
+  exist (`go test -bench` on the fan-out path). *(Settled 2026-07-19 — see
+  Tuning resolution below.)*
+
+### Tuning resolution (2026-07-19)
+
+`--parallel` default raised **10 → 32**; timeouts unchanged (30s per-server
+overall, 10s dial inside it). Rationale, from `make bench` on the fan-out
+path (`internal/audit/bench_test.go`):
+
+- **Scheduler overhead is not the constraint.** The lat=0 cells show pool/
+  scheduling cost of roughly a microsecond per server, flat through p=128 —
+  three orders of magnitude below a single SSH round-trip, so a larger pool
+  costs nothing when the fleet is healthy.
+- **CPU is not the constraint either.** The parse-heavy cells flatten once p
+  reaches GOMAXPROCS: per-server work is dominated by the network, so the
+  pool should be sized for latency hiding, not core count.
+- **Stragglers are the constraint the default must defend against.** The
+  straggler cells validate the cost model *wall ≈ timeout × ⌈hung/parallel⌉*:
+  hung servers drain in waves, each holding a slot for the full per-server
+  timeout. At the old p=10 with the 30s timeout, 25 unreachable hosts added
+  ~90s to every audit; at p=32 the same burst costs one ~30s wave.
+- **Why stop at 32.** Each worker holds a TCP socket plus an in-flight
+  ssh-agent conversation; 32 keeps that burst comfortable on an operator
+  laptop and is already deep in the bench's flat region — going to 128 would
+  shave straggler waves further but at fleet sizes (≤ a few hundred) the
+  marginal wall-clock gain is small next to the resource burst.
+- **Why the timeouts stay put.** They bound correctness (a slow WAN
+  handshake must not be misreported as unreachable), and the wave model
+  shows raising `--parallel` is the lever that shrinks straggler cost —
+  shortening the timeout would trade false unreachables for the same win.
+
+The default lives in one place (`defaultParallel`, `cmd/sshepherd/audit.go`)
+and is shared by `audit` and `adopt`; the future `apply` should reuse it.
 - Per-server `authorized_keys` path override (for custom `AuthorizedKeysFile`
   setups) — the natural fix when the file-absent diagnostic fires; and whether
   `AuthorizedKeysCommand`/CA-cert fleets are ever in scope at all.

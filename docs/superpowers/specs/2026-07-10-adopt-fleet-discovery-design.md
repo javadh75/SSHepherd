@@ -76,7 +76,7 @@ reviewable draft, never an in-place edit.
 
 ```
 sshepherd adopt [--config sshepherd.yaml] [--known-hosts ~/.ssh/known_hosts]
-                [--parallel 10] [-o FILE] [--force] [--partial]
+                [--parallel 32] [-o FILE] [--force] [--partial]
 ```
 
 - Preflights identical to `audit`: SSH agent reachable, known_hosts loads;
