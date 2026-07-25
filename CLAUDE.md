@@ -32,6 +32,37 @@ SSHepherd centralizes and automates this.
   host `ssh` binary; host-key verification via `x/crypto/ssh/knownhosts`, strict (no TOFU).
 - **Config format / CLI:** YAML source of truth (`gopkg.in/yaml.v3`); Cobra for subcommands.
 
+## README (always keep it current)
+
+`README.md` is the project's user-facing front door. **Always keep it updated** —
+treat it like the test suite: a change that makes it stale is an incomplete change.
+Update it *in the same commit* as the work, never as a follow-up.
+
+Update the README whenever any of these change:
+
+- **Commands and flags** — a new subcommand, a new/renamed/removed flag, or a changed
+  default. The command tables list every flag with its default; they must match
+  `--help` exactly.
+- **Manifest schema** — new or changed fields in `internal/config` (users, servers,
+  access), validation rules, or semantics like `operator:`, `servers: ["*"]`/`except:`,
+  `authorized_keys_file`, and the comment policy.
+- **Exit codes** and their meanings.
+- **Behavior a user must be able to predict before running a write** — the full-file
+  rewrite contract, refusal classes, the self-lockout guard, backup/atomicity/verify,
+  the confirmation gate, connection posture (agent-only auth, strict `known_hosts`).
+- **Status** — the implemented-slice table, when a slice lands.
+- **Make targets, install paths, container usage, repo layout.**
+
+Rules for the content:
+
+- **Sample output must be real.** Copy it from the golden fixtures
+  (`internal/*/testdata/*.golden`) or actual command output — never hand-write or
+  "tidy" a report, plan, or prompt string. When a renderer changes, its goldens
+  change; re-copy them.
+- Keep the README a *user* document. Design rationale belongs in
+  `docs/superpowers/specs/`; link there rather than inlining it.
+- Keep it in sync with the Status section below — the two must never disagree.
+
 ## Code quality & checks (Go)
 
 Every check below must pass before commit and in CI. They apply once Go code lands
@@ -169,8 +200,11 @@ including corporate use, while protecting contributors and users).
 
 ## Status
 
-Early development. In place: full quality/security/container scaffold (Makefile, golangci,
-CI, lefthook, Dockerfile), a CLI skeleton, and `internal/authkeys` (single-line
+Early development. In place: a user-facing `README.md` covering install, the manifest
+schema, every command and flag, exit codes, and the write-path safety model (keep it
+current — see the README section above); full quality/security/container scaffold
+(Makefile, golangci, CI, lefthook, Dockerfile), a CLI skeleton, and
+`internal/authkeys` (single-line
 `authorized_keys` parser). Four vertical slices are implemented: read-only drift
 **`audit`** (specced in `docs/superpowers/specs/2026-07-06-audit-slice-design.md`) and
 **`import`** — an OpenSSH client config → manifest converter built on `internal/sshcfg`
