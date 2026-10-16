@@ -28,7 +28,11 @@ type jsonSummary struct {
 	Drift       int `json:"drift"`
 	Critical    int `json:"critical"`
 	Unreachable int `json:"unreachable"`
-	ExitCode    int `json:"exit_code"`
+	// HostKeyAlerts is additive-optional (schema stays 1): unreachable
+	// servers whose host key changed or is @revoked — the reason exit_code
+	// can be 2 with critical 0. Omitted when zero.
+	HostKeyAlerts int `json:"host_key_alerts,omitempty"`
+	ExitCode      int `json:"exit_code"`
 }
 
 type jsonServer struct {
@@ -39,13 +43,27 @@ type jsonServer struct {
 	// AuthorizedKeysFile is additive-optional (schema stays 1): present
 	// exactly when the manifest sets the per-server override; omitempty
 	// keeps override-free reports byte-identical to earlier releases.
-	AuthorizedKeysFile string           `json:"authorized_keys_file,omitempty"`
-	Status             string           `json:"status"`
-	Error              *string          `json:"error"`
-	Keys               jsonKeySets      `json:"keys"`
-	ParseErrors        []jsonParseError `json:"parse_errors"`
-	FileAbsent         bool             `json:"file_absent"`
-	NoUsersGranted     bool             `json:"no_users_granted"`
+	AuthorizedKeysFile string  `json:"authorized_keys_file,omitempty"`
+	Status             string  `json:"status"`
+	Error              *string `json:"error"`
+	// ErrorKind is additive-optional (schema stays 1): present exactly when
+	// error is non-null; one of the audit.ErrorKind values.
+	ErrorKind      string           `json:"error_kind,omitempty"`
+	Keys           jsonKeySets      `json:"keys"`
+	ParseErrors    []jsonParseError `json:"parse_errors"`
+	FileAbsent     bool             `json:"file_absent"`
+	NoUsersGranted bool             `json:"no_users_granted"`
+	// Duplicates and AuthorizedKeys2 are additive-optional (schema stays
+	// 1), omitted when empty/false: fingerprints installed on several lines,
+	// and a non-empty unmanaged ~/.ssh/authorized_keys2. Both are drift.
+	Duplicates      []jsonDuplicate `json:"duplicates,omitempty"`
+	AuthorizedKeys2 bool            `json:"authorized_keys2_present,omitempty"`
+}
+
+type jsonDuplicate struct {
+	Owner       *string `json:"owner"`
+	Fingerprint string  `json:"fingerprint"`
+	Count       int     `json:"count"`
 }
 
 type jsonKeySets struct {
@@ -68,6 +86,15 @@ type jsonKey struct {
 	// differs from the decided write-time comment (config.DesiredComment).
 	// Informational — never affects status or exit_code.
 	CommentDrift *jsonCommentDrift `json:"comment_drift,omitempty"`
+	// OptionsDrift is additive-optional (schema stays 1): present keys
+	// whose on-server options differ from the manifest's. Unlike comment
+	// drift it is real drift (status drift, exit 1) and is always reported.
+	OptionsDrift *jsonOptionsDrift `json:"options_drift,omitempty"`
+}
+
+type jsonOptionsDrift struct {
+	Actual  []string `json:"actual"`
+	Desired []string `json:"desired"`
 }
 
 type jsonCommentDrift struct {
@@ -97,12 +124,13 @@ func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult, opts JS
 	}
 	c := tallyResults(cfg, results)
 	rep.Summary = jsonSummary{
-		Servers:     len(results),
-		Compliant:   c.compliant,
-		Drift:       c.drift,
-		Critical:    c.critical,
-		Unreachable: c.unreachable,
-		ExitCode:    ExitCode(cfg, results),
+		Servers:       len(results),
+		Compliant:     c.compliant,
+		Drift:         c.drift,
+		Critical:      c.critical,
+		Unreachable:   c.unreachable,
+		HostKeyAlerts: c.hostKeyAlerts,
+		ExitCode:      ExitCode(cfg, results),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -134,10 +162,23 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		// encoding/json escapes any remaining control bytes.
 		msg := oneLine(r.Err)
 		s.Error = &msg
+		s.ErrorKind = string(ErrorKindOf(r.Err))
 		return s
+	}
+	s.AuthorizedKeys2 = r.AuthorizedKeys2
+	for _, d := range r.Duplicates {
+		jd := jsonDuplicate{Fingerprint: d.Key.Fingerprint, Count: d.Count}
+		if u, ok := cfg.OwnerOf(d.Key.Fingerprint); ok {
+			name := u.Name
+			jd.Owner = &name
+		}
+		s.Duplicates = append(s.Duplicates, jd)
 	}
 	for _, k := range r.Diff.OK {
 		jk := jsonKeyFor(cfg, k, false)
+		if actual, desired, drifted := r.optionsDrift(k); drifted {
+			jk.OptionsDrift = &jsonOptionsDrift{Actual: nonNil(actual), Desired: nonNil(desired)}
+		}
 		if actual, desired, drifted := commentDrift(cfg, r, k); opts.Comments && drifted {
 			jk.CommentDrift = &jsonCommentDrift{Actual: actual, Desired: desired}
 		}
@@ -170,4 +211,12 @@ func jsonKeyFor(cfg *config.Config, k authkeys.Key, markOperator bool) jsonKey {
 		}
 	}
 	return jk
+}
+
+// nonNil renders an absent options list as [] rather than null.
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

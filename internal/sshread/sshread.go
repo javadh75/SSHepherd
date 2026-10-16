@@ -11,24 +11,22 @@ import (
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh/agent"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
-// PreflightKnownHosts verifies the known_hosts file loads before any server
-// is dialed, so a bad path fails once with a clear message instead of once
-// per server. It keeps the knownhosts dependency inside this package.
-func PreflightKnownHosts(path string) error {
-	if _, err := knownhosts.New(path); err != nil {
-		return fmt.Errorf("load known_hosts %s: %w", path, err)
-	}
-	return nil
+// LoadKnownHosts verifies the known_hosts file loads before any server is
+// dialed, so a bad path fails once with a clear message instead of once per
+// server, and returns the parsed snapshot: set it as Client.KnownHosts (or sshconn.Dialer.KnownHosts) and every
+// server in the run is verified against this one parse.
+func LoadKnownHosts(path string) (*sshconn.KnownHosts, error) {
+	return sshconn.LoadKnownHosts(path) // sshconn labels the error with the path (wrapcheck-exempt package)
 }
 
 // CheckAgent verifies a usable SSH agent — reachable and holding at least
@@ -58,11 +56,22 @@ func CheckAgent(ctx context.Context, sock string) error {
 }
 
 // Client reads remote authorized_keys over SSH. It implements audit.KeyReader.
+// Use it by pointer and share one Client across a fan-out: it builds a
+// single sshconn.Dialer, so known_hosts is parsed once per run.
 type Client struct {
 	KnownHostsPath string
-	AgentSock      string
-	DialTimeout    time.Duration
-	Log            *slog.Logger // optional stage-level telemetry; nil discards
+	// KnownHosts optionally supplies the preflight's parsed snapshot
+	// (LoadKnownHosts); nil parses KnownHostsPath once, on first read.
+	KnownHosts  *sshconn.KnownHosts
+	AgentSock   string
+	DialTimeout time.Duration
+	// PreferKeys optionally names the agent keys to offer first per server
+	// (see sshconn.Dialer.PreferKeys) — typically audit.GrantedFingerprints.
+	PreferKeys func(srv config.Server) []string
+	Log        *slog.Logger // optional stage-level telemetry; nil discards
+
+	once   sync.Once
+	dialer *sshconn.Dialer
 }
 
 var _ audit.KeyReader = (*Client)(nil)
@@ -88,20 +97,31 @@ func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 	return res, nil
 }
 
+// getDialer returns the Client's one Dialer, built on first use.
+func (c *Client) getDialer() *sshconn.Dialer {
+	c.once.Do(func() {
+		c.dialer = &sshconn.Dialer{
+			KnownHostsPath: c.KnownHostsPath,
+			KnownHosts:     c.KnownHosts,
+			AgentSock:      c.AgentSock,
+			DialTimeout:    c.DialTimeout,
+			PreferKeys:     c.PreferKeys,
+			Log:            c.Log,
+		}
+	})
+	return c.dialer
+}
+
 // readAuthorizedKeys connects through sshconn.Dialer and reads the server's
 // authorized_keys — srv.AuthorizedKeysFile when set, ~/.ssh/authorized_keys
-// otherwise — via a one-shot session. Deadline semantics live in Connect:
-// the ctx deadline (or the derived 3×DialTimeout floor) bounds the whole
-// exchange, not just the dial.
+// otherwise — via a one-shot session. For the default path it also probes
+// ~/.ssh/authorized_keys2 (a second session on the same connection), which
+// sshd's default AuthorizedKeysFile consults too. Deadline semantics live
+// in Connect: the ctx deadline (or the derived 3×DialTimeout floor) bounds
+// the whole exchange, not just the dial; ctx cancellation ends it at once.
 func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
 	var zero audit.ReadResult
-	d := &sshconn.Dialer{
-		KnownHostsPath: c.KnownHostsPath,
-		AgentSock:      c.AgentSock,
-		DialTimeout:    c.DialTimeout,
-		Log:            c.Log,
-	}
-	conn, err := d.Connect(ctx, srv)
+	conn, err := c.getDialer().Connect(ctx, srv)
 	if err != nil {
 		return zero, err
 	}
@@ -112,7 +132,7 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 		path = sshconn.DefaultAuthorizedKeysPath
 	}
 	addr := net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port))
-	code, stdout, stderr, err := sshconn.Exec(conn.Client, sshconn.AuthorizedKeysCmdFor(path), nil)
+	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, sshconn.AuthorizedKeysCmdFor(path), nil)
 	if err != nil {
 		return zero, fmt.Errorf("remote read on %s: %w", addr, err)
 	}
@@ -122,5 +142,17 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 		return zero, err
 	}
 	res.SessionKeyFP = conn.SessionKeyFP()
+
+	if path == sshconn.DefaultAuthorizedKeysPath {
+		code, _, stderr, err := sshconn.Exec(ctx, conn.Client, sshconn.SecondaryKeysCmd(), nil)
+		if err != nil {
+			return zero, fmt.Errorf("authorized_keys2 probe on %s: %w", addr, err)
+		}
+		present, err := sshconn.FinishSecondaryProbe(code, stderr)
+		if err != nil {
+			return zero, fmt.Errorf("on %s: %w", addr, err)
+		}
+		res.AuthorizedKeys2 = present
+	}
 	return res, nil
 }

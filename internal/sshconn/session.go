@@ -84,8 +84,8 @@ func wrapSigners(signers []ssh.Signer, rec *sessionKey) []ssh.Signer {
 // AgentFingerprints lists the SHA256 fingerprints of every key the agent at
 // sock holds — captured once at apply's preflight as the self-lockout
 // guard's ground truth. An empty agent yields an empty list, not an error:
-// CheckAgent owns that verdict, and the guard has its own empty-listing
-// fallback (refuse writes that remove keys).
+// CheckAgent owns that verdict, and apply's guard refuses every write when
+// the listing is empty.
 func AgentFingerprints(ctx context.Context, sock string) ([]string, error) {
 	dialer := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", sock)

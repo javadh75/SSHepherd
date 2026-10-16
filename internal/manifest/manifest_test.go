@@ -87,6 +87,16 @@ users:
   - {name: a, keys: ["` + testkeys.Line(t, 2) + `"]}
 `,
 		"root not a mapping": "- just\n- a\n- list\n",
+		// Review-found: a second document was silently dropped by both
+		// decodes, so Encode rewrote the file without it.
+		"multiple documents": `
+users:
+  - {name: a, keys: ["` + testkeys.Line(t, 1) + `"]}
+---
+users:
+  - {name: b, keys: ["` + testkeys.Line(t, 2) + `"]}
+`,
+		"trailing empty document": "users: []\n---\n",
 		// Review-found: append rebuilds null sections without carrying
 		// anchors, so an alias elsewhere would dangle after a merge — Load
 		// rejects the whole anchor/alias class up front.

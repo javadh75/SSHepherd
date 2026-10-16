@@ -20,6 +20,16 @@ import (
 // sets no authorized_keys_file override in the manifest.
 const DefaultAuthorizedKeysPath = "~/.ssh/authorized_keys"
 
+// SecondaryAuthorizedKeysPath is the second entry of OpenSSH's compiled-in
+// AuthorizedKeysFile default (".ssh/authorized_keys .ssh/authorized_keys2"),
+// still kept by many distribution configs: keys in it log in although
+// SSHepherd neither reads nor writes it.
+const SecondaryAuthorizedKeysPath = "~/.ssh/authorized_keys2"
+
+// secondaryPresentExit is the sentinel exit status of SecondaryKeysCmd
+// meaning "exists and is non-empty" (siblings: 44 absent, sshwrite's 45).
+const secondaryPresentExit = 46
+
 // FileAbsentExit is the sentinel exit status emitted by the command that
 // AuthorizedKeysCmdFor builds, signaling "file does not exist" (vs. cat
 // failing for other reasons). sshwrite's symlink sentinel 45 is its sibling.
@@ -65,6 +75,28 @@ func PathAssign(path string) string {
 // back through this exact command.
 func AuthorizedKeysCmdFor(path string) string {
 	return PathAssign(path) + `; if [ -e "$p" ]; then cat "$p"; else exit 44; fi`
+}
+
+// SecondaryKeysCmd builds the probe for SecondaryAuthorizedKeysPath: exit
+// 46 when it exists and is non-empty, 0 otherwise. Only meaningful when the
+// managed path is the default one.
+func SecondaryKeysCmd() string {
+	return PathAssign(SecondaryAuthorizedKeysPath) + `; if [ -s "$p" ]; then exit 46; fi`
+}
+
+// FinishSecondaryProbe maps SecondaryKeysCmd's outcome: present reports a
+// non-empty authorized_keys2; any other nonzero exit is a remote error
+// (sanitized stderr embedded).
+func FinishSecondaryProbe(code int, stderr *CappedBuffer) (present bool, err error) {
+	switch code {
+	case 0:
+		return false, nil
+	case secondaryPresentExit:
+		return true, nil
+	default:
+		return false, classify(audit.ErrorKindRemote, fmt.Errorf("authorized_keys2 probe failed (exit %d): %s",
+			code, strings.TrimSpace(SanitizeRemote(stderr.String()))))
+	}
 }
 
 // interpretExit maps the remote command's exit status to read semantics.
@@ -156,10 +188,10 @@ func FinishRead(code int, stdout, stderr *CappedBuffer, addr string, log *slog.L
 	}
 	absent, err := interpretExit(code, stderr.String())
 	if err != nil {
-		return zero, fmt.Errorf("remote read on %s: %w", addr, err)
+		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: %w", addr, err))
 	}
 	if stdout.truncated {
-		return zero, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to audit a truncated authorized_keys", addr)
+		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to audit a truncated authorized_keys", addr))
 	}
 	if absent {
 		return audit.ReadResult{FileAbsent: true}, nil

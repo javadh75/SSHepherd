@@ -510,3 +510,73 @@ func TestBuildUnreadableServerSuppressesCompaction(t *testing.T) {
 		t.Errorf("UnreadableServers = %v, want [db-1]", got)
 	}
 }
+
+// A remote key whose comment the manifest would reject (tab, ESC, bidi
+// override) is still adopted — the key is what grants access — but without
+// its comment, and loudly; the generated line must pass manifest validation
+// instead of failing adopt's self-check as a "bug:".
+func TestBuildUnsafeCommentAdoptedWithoutComment(t *testing.T) {
+	for name, comment := range map[string]string{
+		"tab":  "alice\tlaptop",
+		"esc":  "alice\x1b[31m",
+		"bidi": "alice\u202e",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testCfg(t)
+			op := testkeys.Line(t, 1)
+			bare := `no-pty,command="/bin/true" ` + testkeys.Line(t, 7)
+			line := bare + " " + comment
+			r := &fakeReader{byName: map[string]audit.ReadResult{
+				"db-1":  {Content: []byte(op + "\n" + line + "\n")},
+				"web-1": {Content: []byte(op + "\n" + line + "\n")},
+				"web-2": {Content: []byte(op + "\n")},
+			}}
+			p := Build(cfg, runAudit(t, cfg, r))
+			if len(p.NewUsers) != 1 {
+				t.Fatalf("NewUsers = %+v, want one", p.NewUsers)
+			}
+			if got := p.NewUsers[0].Line; got != bare {
+				t.Errorf("Line = %q, want options + key without the comment %q", got, bare)
+			}
+			if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "adopted without its comment") ||
+				!strings.Contains(p.Warnings[0], "db-1") {
+				t.Errorf("Warnings = %v, want one adopted-without-comment warning naming db-1", p.Warnings)
+			}
+			if _, err := config.Parse([]byte(`
+users:
+  - {name: x, keys: ['` + p.NewUsers[0].Line + `']}
+`)); err != nil {
+				t.Errorf("adopted line fails manifest validation: %v", err)
+			}
+		})
+	}
+}
+
+// adopt --merge re-runs see the previous run's adopted-key-<n> users in the
+// manifest; numbering continues past them instead of stacking suffixes
+// (adopted-key-1-2).
+func TestBuildAnonymousNumberingContinuesAcrossRuns(t *testing.T) {
+	prev := testkeys.Line(t, 5)
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+  - {name: adopted-key-1, keys: ["`+prev+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: adopted-key-1, servers: [web-1]}
+`)
+	op := testkeys.Line(t, 1)
+	anonA, anonB := testkeys.Line(t, 8), testkeys.Line(t, 9)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(op + "\n" + prev + "\n" + anonA + "\n" + anonB + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	var names []string
+	for _, u := range p.NewUsers {
+		names = append(names, u.Name)
+	}
+	if want := []string{"adopted-key-2", "adopted-key-3"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}

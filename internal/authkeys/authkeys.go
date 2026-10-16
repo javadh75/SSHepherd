@@ -29,11 +29,14 @@ func ParseLine(line string) (*Key, error) {
 	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 		return nil, nil
 	}
-	// An embedded CR is a hostile line break: x/crypto parses through it,
-	// folding what looks like a second line into the comment/Raw, and any
-	// later write-out would split it back into two lines. Reject it so it
-	// hits the strict/--partial gate. (A trailing CR is trimmed above;
-	// ParseFile strips CRLF endings before calling.)
+	// An embedded CR is a hostile line break: x/crypto truncates the line
+	// at the first CR, silently discarding whatever follows it, so the
+	// hidden tail would vanish from every parsed view (Comment, and any
+	// Raw-derived output) while still sitting in the file — and a terminal
+	// or editor may show it as a second line. Reject it so the line hits
+	// the strict/--partial gate and is never silently shortened. (A
+	// trailing CR is trimmed above; ParseFile strips CRLF endings before
+	// calling.)
 	if strings.ContainsRune(trimmed, '\r') {
 		return nil, fmt.Errorf("parse authorized_keys line: embedded carriage return")
 	}
@@ -41,6 +44,16 @@ func ParseLine(line string) (*Key, error) {
 	pub, comment, options, _, err := ssh.ParseAuthorizedKey([]byte(line))
 	if err != nil {
 		return nil, fmt.Errorf("parse authorized_keys line: %w", err)
+	}
+	// OpenSSH's sshkey_read rejects a declared type token that disagrees
+	// with the blob (KEY_TYPE_MISMATCH), so sshd skips such a line.
+	// Accepting it would let audit/adopt report a key as installed that
+	// cannot actually log in. x/crypto >= v0.56 rejects most mismatches
+	// itself; this check is kept as defense in depth so the rule does not
+	// depend on the dependency version.
+	if declared := declaredType(trimmed, len(options) > 0); declared != pub.Type() {
+		return nil, fmt.Errorf("parse authorized_keys line: key type mismatch: declared %q, key material %q",
+			declared, pub.Type())
 	}
 
 	return &Key{
@@ -50,6 +63,33 @@ func ParseLine(line string) (*Key, error) {
 		Fingerprint: ssh.FingerprintSHA256(pub),
 		Raw:         strings.TrimSpace(line),
 	}, nil
+}
+
+// declaredType returns the key-type token of a trimmed line ParseLine has
+// already parsed: the first token when the line has no options, else the
+// token after the options field — scanned exactly like x/crypto's
+// ParseAuthorizedKey (commas/whitespace split options outside double
+// quotes; a backslash escapes a quote).
+func declaredType(trimmed string, hasOptions bool) string {
+	rest := trimmed
+	if hasOptions {
+		inQuote := false
+		i := 0
+		for ; i < len(rest); i++ {
+			b := rest[i]
+			if !inQuote && (b == ' ' || b == '\t') {
+				break
+			}
+			if b == '"' && (i == 0 || rest[i-1] != '\\') {
+				inQuote = !inQuote
+			}
+		}
+		rest = strings.TrimLeft(rest[i:], " \t")
+	}
+	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // ParseError describes a single unparseable line in an authorized_keys file.
@@ -78,9 +118,18 @@ func stripControl(s string) string {
 	}, s)
 }
 
+// IsUnsafeRune reports whether r must never reach a rendered line or a
+// terminal: control runes (C0, DEL, C1 — U+009B acts like ESC [), format
+// runes (Cf: bidi overrides like U+202E visually reorder text), and the
+// Unicode line/paragraph separators (Zl/Zp: U+2028/U+2029, which some
+// editors, terminals and JSON consumers render as a line break).
+func IsUnsafeRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+}
+
 // RenderTextIssue reports why s is unsafe to render into an authorized_keys
 // line and read back identically; empty means safe (and the empty string is
-// safe — it means "unset"). Control and format runes would split the
+// safe — it means "unset"). Unsafe runes (IsUnsafeRune) would split the
 // one-entry-one-line invariant or smuggle terminal escapes; edge whitespace
 // would not survive ssh.ParseAuthorizedKey's comment trimming on re-read,
 // making the written file permanently disagree with the manifest. config
@@ -88,7 +137,7 @@ func stripControl(s string) string {
 // manifest load, so hostile values die before the render path ever runs.
 func RenderTextIssue(s string) string {
 	for _, r := range s {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+		if IsUnsafeRune(r) {
 			return "contains control or format characters"
 		}
 	}

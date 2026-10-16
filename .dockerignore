@@ -1,7 +1,12 @@
-.git/
-.github/
-bin/
-*.out
-*.html
-*.test
-CLAUDE.md
+# Allowlist: the build context carries only what the Dockerfile compiles.
+# Everything else — local/ (real fleet manifests), graphify-out/, docs/,
+# coverage output, .git — never reaches the builder or a build-stage layer.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+
+# Tests and their fixtures are not needed to build the binary.
+**/*_test.go
+**/testdata/

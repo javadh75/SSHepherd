@@ -34,11 +34,13 @@ type Server struct {
 	Host        string `yaml:"host"`
 	Port        int    `yaml:"port"` // defaults to 22
 	User        string `yaml:"user"`
-	// AuthorizedKeysFile overrides the file read on this server (mirrors
-	// sshd_config's AuthorizedKeysFile directive). Unset means
+	// AuthorizedKeysFile overrides the file read on this server (the
+	// resolved value of sshd_config's AuthorizedKeysFile directive — sshd
+	// %-tokens are not expanded, so spell the real path). Unset means
 	// ~/.ssh/authorized_keys. Must be absolute ("/...") or home-relative
-	// with an explicit "~/" prefix; validated strictly because this value
-	// reaches a remote shell (quoted by sshread's shQuote).
+	// with an explicit "~/" prefix, and name a file (no trailing "/");
+	// validated strictly because this value reaches a remote shell (quoted
+	// by sshread's shQuote).
 	AuthorizedKeysFile string `yaml:"authorized_keys_file"`
 }
 
@@ -85,6 +87,13 @@ func Parse(data []byte) (*Config, error) {
 	var c Config
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
+	// A second document (a stray "---", two files concatenated) would be
+	// silently dropped — and every user it declares revoked by apply. The
+	// manifest is exactly one document.
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, errors.New("parse manifest: manifest contains multiple YAML documents")
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -163,7 +172,8 @@ func (c *Config) validateUsers() []error {
 // The inline comment is a DesiredComment fallback, so it reaches the render
 // path like name/comment do — the same RenderTextIssue predicate applies
 // (only the control/format arm can fire: the key parser already trims edge
-// whitespace off comments).
+// whitespace off comments). Options are rendered verbatim too, so each one
+// is checked by optionIssue.
 func parseUserKey(u User, i int, line string) (*authkeys.Key, error) {
 	if strings.ContainsAny(line, "\r\n") {
 		return nil, fmt.Errorf("user %q key %d: contains a line break", u.Name, i+1)
@@ -178,16 +188,92 @@ func parseUserKey(u User, i int, line string) (*authkeys.Key, error) {
 	if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
 		return nil, fmt.Errorf("user %q key %d: inline comment %s", u.Name, i+1, issue)
 	}
+	for _, opt := range k.Options {
+		if issue := optionIssue(opt); issue != "" {
+			return nil, fmt.Errorf("user %q key %d: option %q %s", u.Name, i+1, opt, issue)
+		}
+	}
 	return k, nil
+}
+
+// keyOptions is the OpenSSH authorized_keys option allow-list (sshd(8)
+// AUTHORIZED_KEYS FILE FORMAT), lower-cased; true marks options that take a
+// quoted value (name="..."). sshd rejects the whole line on any other
+// option, so a typo would make apply write — and the lockout guard count —
+// a key that can never log in.
+var keyOptions = map[string]bool{
+	"agent-forwarding":    false,
+	"cert-authority":      false,
+	"command":             true,
+	"environment":         true,
+	"expiry-time":         true,
+	"from":                true,
+	"no-agent-forwarding": false,
+	"no-port-forwarding":  false,
+	"no-pty":              false,
+	"no-touch-required":   false,
+	"no-user-rc":          false,
+	"no-x11-forwarding":   false,
+	"permitlisten":        true,
+	"permitopen":          true,
+	"port-forwarding":     false,
+	"principals":          true,
+	"pty":                 false,
+	"restrict":            false,
+	"tunnel":              true,
+	"user-rc":             false,
+	"verify-required":     false,
+	"x11-forwarding":      false,
+}
+
+// optionIssue reports why one key option is unsafe or unknown to sshd;
+// empty means acceptable. Names match case-insensitively, as sshd does.
+// Unsafe runes are rejected first: option values are rendered verbatim into
+// the file and into plan/diff output.
+func optionIssue(opt string) string {
+	if strings.ContainsFunc(opt, authkeys.IsUnsafeRune) {
+		return "contains control or format characters"
+	}
+	name, value, hasValue := strings.Cut(opt, "=")
+	wantsValue, known := keyOptions[strings.ToLower(name)]
+	switch {
+	case !known:
+		return "is not a recognized authorized_keys option"
+	case wantsValue && (!hasValue || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"'):
+		return `requires a quoted value (name="...")`
+	case !wantsValue && hasValue:
+		return "does not take a value"
+	}
+	return ""
+}
+
+// defaultAuthorizedKeysFile is the file read when a server sets no
+// authorized_keys_file override.
+const defaultAuthorizedKeysFile = "~/.ssh/authorized_keys"
+
+// target is the remote file a server entry resolves to. Two entries with
+// the same target would race on one file under parallel apply (and, once
+// their grants diverge, overwrite each other forever).
+type target struct {
+	host string // lower-cased: hostnames are case-insensitive
+	port int
+	user string
+	path string // effective authorized_keys path
 }
 
 func (c *Config) validateServers() []error {
 	var errs []error
 	seen := make(map[string]bool)
+	targets := make(map[target]string) // target -> first server name
 	for i := range c.Servers {
 		s := &c.Servers[i]
 		if s.Name == "" {
 			errs = append(errs, fmt.Errorf("servers[%d]: empty name", i))
+			continue
+		}
+		if issue := ServerFieldIssue(s.Name); issue != "" {
+			// %q escapes the hostile runes so the error itself is inert.
+			errs = append(errs, fmt.Errorf("servers[%d]: name %q %s", i, s.Name, issue))
 			continue
 		}
 		if s.Name == "*" {
@@ -199,21 +285,62 @@ func (c *Config) validateServers() []error {
 			continue
 		}
 		seen[s.Name] = true
-		if s.Host == "" {
-			errs = append(errs, fmt.Errorf("server %q: host is required", s.Name))
+		if fieldErrs := validateServerFields(s); len(fieldErrs) > 0 {
+			errs = append(errs, fieldErrs...)
+			continue // an invalid entry has no meaningful target
 		}
-		if s.User == "" {
-			errs = append(errs, fmt.Errorf("server %q: user is required", s.Name))
+		t := target{host: strings.ToLower(s.Host), port: s.Port, user: s.User, path: s.AuthorizedKeysFile}
+		if t.path == "" {
+			t.path = defaultAuthorizedKeysFile
 		}
-		if s.Port == 0 {
-			s.Port = 22
+		if first, dup := targets[t]; dup {
+			errs = append(errs, fmt.Errorf(
+				"servers %q and %q both target %s@%s:%d %s; merge them into one entry",
+				first, s.Name, s.User, s.Host, s.Port, t.path))
+			continue
 		}
-		if s.Port < 1 || s.Port > 65535 {
-			errs = append(errs, fmt.Errorf("server %q: port %d out of range", s.Name, s.Port))
-		}
-		errs = append(errs, validateAuthorizedKeysFile(s.Name, s.AuthorizedKeysFile)...)
+		targets[t] = s.Name
 	}
 	return errs
+}
+
+// validateServerFields checks one named server's host, user, port (applying
+// the default of 22) and authorized_keys_file override.
+func validateServerFields(s *Server) []error {
+	var errs []error
+	if s.Host == "" {
+		errs = append(errs, fmt.Errorf("server %q: host is required", s.Name))
+	} else if issue := ServerFieldIssue(s.Host); issue != "" {
+		errs = append(errs, fmt.Errorf("server %q: host %q %s", s.Name, s.Host, issue))
+	}
+	if s.User == "" {
+		errs = append(errs, fmt.Errorf("server %q: user is required", s.Name))
+	} else if issue := ServerFieldIssue(s.User); issue != "" {
+		errs = append(errs, fmt.Errorf("server %q: user %q %s", s.Name, s.User, issue))
+	}
+	if s.Port == 0 {
+		s.Port = 22
+	}
+	if s.Port < 1 || s.Port > 65535 {
+		errs = append(errs, fmt.Errorf("server %q: port %d out of range", s.Name, s.Port))
+	}
+	return append(errs, validateAuthorizedKeysFile(s.Name, s.AuthorizedKeysFile)...)
+}
+
+// ServerFieldIssue reports why a server name, host or user is unsafe;
+// empty means safe. Exported so generators (import) can skip such values
+// with a warning instead of emitting a manifest that fails to load. These fields are printed raw in plan and audit report
+// headers (the review surface apply's confirmation hangs on), so unsafe
+// runes (authkeys.IsUnsafeRune) are rejected; whitespace never belongs in an
+// identifier, hostname or login name either.
+func ServerFieldIssue(s string) string {
+	if strings.ContainsFunc(s, authkeys.IsUnsafeRune) {
+		return "contains control or format characters"
+	}
+	if strings.ContainsFunc(s, unicode.IsSpace) {
+		return "contains whitespace"
+	}
+	return ""
 }
 
 // maxAuthorizedKeysFileLen caps the override path length; PATH_MAX is 4096
@@ -222,12 +349,15 @@ const maxAuthorizedKeysFileLen = 4096
 
 // validateAuthorizedKeysFile checks a server's authorized_keys_file
 // override. The value reaches a remote shell (single-quoted by sshread), so
-// control and format runes are rejected outright: newline/CSI smuggling must
-// die here even if the quoting layer ever regressed. Shape: absolute or an
-// explicit "~/" prefix with a non-empty remainder — bare-relative paths are
+// unsafe runes (authkeys.IsUnsafeRune: control, format, line/paragraph
+// separators) are rejected outright: newline/CSI smuggling must die here
+// even if the quoting layer ever regressed. Shape: absolute or an explicit
+// "~/" prefix with a non-empty remainder — bare-relative paths are
 // ambiguous (home-relative per sshd vs cwd-relative per shell intuition) and
-// "~user/" expansion is unsupported. Unset means the default
-// ~/.ssh/authorized_keys.
+// "~user/" expansion is unsupported. '%' is rejected: sshd's %u/%h/%% tokens
+// are not expanded, so a copied directive would make apply maintain a file
+// sshd never reads. A trailing '/' names a directory, never a keys file.
+// Unset means the default ~/.ssh/authorized_keys.
 func validateAuthorizedKeysFile(server, path string) []error {
 	if path == "" {
 		return nil
@@ -237,11 +367,17 @@ func validateAuthorizedKeysFile(server, path string) []error {
 		errs = append(errs, fmt.Errorf("server %q: authorized_keys_file is too long (%d bytes, max %d)",
 			server, len(path), maxAuthorizedKeysFileLen))
 	}
-	for _, r := range path {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			errs = append(errs, fmt.Errorf("server %q: authorized_keys_file contains control characters", server))
-			break
-		}
+	if strings.ContainsFunc(path, authkeys.IsUnsafeRune) {
+		errs = append(errs, fmt.Errorf("server %q: authorized_keys_file contains control characters", server))
+	}
+	if strings.Contains(path, "%") {
+		errs = append(errs, fmt.Errorf(
+			"server %q: authorized_keys_file %q contains '%%': sshd tokens (%%u, %%h, %%%%) are not expanded; spell the resolved path (e.g. %%u -> the server's user)",
+			server, path))
+	}
+	if strings.HasSuffix(path, "/") {
+		errs = append(errs, fmt.Errorf(
+			"server %q: authorized_keys_file %q ends with '/': it must name a file, not a directory", server, path))
 	}
 	validPrefix := strings.HasPrefix(path, "/") ||
 		(strings.HasPrefix(path, "~/") && len(path) > 2)
@@ -300,6 +436,9 @@ func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []e
 	if !slices.Contains(a.Servers, "*") {
 		if len(a.Except) > 0 {
 			return nil, []error{fmt.Errorf(`access for %q: except requires servers ["*"]`, a.User)}
+		}
+		if len(a.Servers) == 0 {
+			return nil, []error{fmt.Errorf("access for %q: servers is empty (grants no servers)", a.User)}
 		}
 		return a.Servers, nil
 	}

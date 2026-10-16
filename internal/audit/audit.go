@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -26,6 +27,11 @@ type ReadResult struct {
 	// session logged in with") consumes it. Empty for readers that do not
 	// authenticate (fakes).
 	SessionKeyFP string
+	// AuthorizedKeys2 reports that ~/.ssh/authorized_keys2 exists and is
+	// non-empty. OpenSSH's compiled-in AuthorizedKeysFile consults it after
+	// authorized_keys, so keys in it log in although SSHepherd neither reads
+	// nor manages them. Probed only when the audited path is the default.
+	AuthorizedKeys2 bool
 }
 
 // KeyReader fetches a server's current authorized_keys. Implementations must
@@ -44,17 +50,84 @@ type ServerResult struct {
 	NoUsersGranted bool
 	ParseErrs      []authkeys.ParseError
 	Diff           authkeys.Result
+	// Duplicates lists fingerprints installed on more than one line, in
+	// first-occurrence order. Diff collapses them (first wins), but sshd
+	// keeps scanning after a line whose options refuse a login, so an
+	// unrestricted second copy defeats a restricted first one.
+	Duplicates      []Duplicate
+	AuthorizedKeys2 bool // unmanaged non-empty ~/.ssh/authorized_keys2 (see ReadResult)
+}
+
+// Duplicate is one fingerprint installed on Count (>= 2) lines; Key is its
+// first occurrence.
+type Duplicate struct {
+	Key   authkeys.Key
+	Count int
 }
 
 // Compliant reports whether this server fully matches the source of truth.
 // An unreadable (Err != nil) or partially-parsed (ParseErrs) server is never
-// compliant. A file-absent server with no desired keys is treated as
-// compliant: nothing should be there and nothing is.
+// compliant, and neither is one whose matched keys carry options other than
+// the manifest's, whose file repeats a fingerprint, or which has an
+// unmanaged authorized_keys2. A file-absent server with no desired keys is
+// treated as compliant: nothing should be there and nothing is. Comment
+// drift is cosmetic and never counts.
 func (r ServerResult) Compliant() bool {
 	return r.Err == nil &&
 		len(r.ParseErrs) == 0 &&
 		len(r.Diff.Missing) == 0 &&
-		len(r.Diff.Unauthorized) == 0
+		len(r.Diff.Unauthorized) == 0 &&
+		len(r.Duplicates) == 0 &&
+		!r.AuthorizedKeys2 &&
+		!r.anyOptionsDrift()
+}
+
+// optionsDrift compares a matched key's on-server options (Diff.Actual)
+// with the manifest's (the OK entry carries the desired form) — the same
+// comparison apply's rewrite rows make. Options are security-relevant
+// (from=, command=, restrict), so unlike comment drift this is real drift.
+func (r ServerResult) optionsDrift(k authkeys.Key) (actual, desired []string, drifted bool) {
+	actual = r.Diff.Actual[k.Fingerprint].Options
+	return actual, k.Options, !slices.Equal(actual, k.Options)
+}
+
+func (r ServerResult) anyOptionsDrift() bool {
+	for _, k := range r.Diff.OK {
+		if _, _, drifted := r.optionsDrift(k); drifted {
+			return true
+		}
+	}
+	return false
+}
+
+// duplicatesOf lists fingerprints occurring more than once in actual, in
+// first-occurrence order.
+func duplicatesOf(actual []authkeys.Key) []Duplicate {
+	counts := make(map[string]int, len(actual))
+	for _, k := range actual {
+		counts[k.Fingerprint]++
+	}
+	var dups []Duplicate
+	for _, k := range actual {
+		if n := counts[k.Fingerprint]; n > 1 {
+			dups = append(dups, Duplicate{Key: k, Count: n})
+			counts[k.Fingerprint] = 0 // report each fingerprint once
+		}
+	}
+	return dups
+}
+
+// GrantedFingerprints lists the fingerprints the manifest grants on server,
+// operators first (cfg.DesiredFor order). Connection layers offer these
+// agent keys first, so an agent holding many keys does not exhaust sshd's
+// MaxAuthTries on keys the server was never meant to accept.
+func GrantedFingerprints(cfg *config.Config, server string) []string {
+	desired := cfg.DesiredFor(server)
+	fps := make([]string, 0, len(desired))
+	for _, k := range desired {
+		fps = append(fps, k.Fingerprint)
+	}
+	return fps
 }
 
 // auditOne audits a single server. It is self-contained and shares no mutable
@@ -82,10 +155,12 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res.FileAbsent = read.FileAbsent
 	res.Content = read.Content
 	res.SessionKeyFP = read.SessionKeyFP
+	res.AuthorizedKeys2 = read.AuthorizedKeys2
 
 	actual, parseErrs := authkeys.ParseFile(read.Content)
 	res.ParseErrs = parseErrs
 	res.Diff = authkeys.Diff(desired, actual)
+	res.Duplicates = duplicatesOf(actual)
 	log.Debug("audited", "server", srv.Name, "dur", time.Since(start).Round(time.Millisecond))
 	return res
 }

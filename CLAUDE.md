@@ -168,8 +168,8 @@ bare `scratch` box. Multi-stage build, non-root, static binary.
 - **Multi-stage**: a `golang:1.26-alpine` build stage (pinned by digest) compiles the static
   binary (`CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`); the runtime stage starts from a
   minimal base and copies only the binary + certs.
-- **Base**: latest stable Alpine, pinned to its minor series (currently `alpine:3.24`; move to a
-  digest pin for full reproducibility) — tiny (~7 MB) but ships a shell + `apk`, so the
+- **Base**: latest stable Alpine, pinned by digest (currently `alpine:3.24.2@sha256:…`; the build
+  stage is `golang:1.26.9-alpine@sha256:…`) — tiny (~7 MB) but ships a shell + `apk`, so the
   essential tools below are present. (The transport decision — native `golang.org/x/crypto/ssh`,
   no `ssh` binary needed — makes the `gcr.io/distroless/static` switch viable for an even
   smaller, shell-less image; do it once `ssh-keygen`/`ssh-keyscan` are also no longer needed
@@ -267,3 +267,30 @@ with a dockerized integration matrix and the first full E2E loop
 `docs/superpowers/specs/2026-07-19-apply-slice-design.md`, planned in
 `docs/superpowers/plans/2026-07-19-apply-slice.md`. `revoke`/`rotate`
 now reduce to manifest edits + `apply`.
+A whole-repo **review-hardening pass** (53 findings, specced in
+`docs/superpowers/specs/2026-10-16-review-hardening-design.md`) then landed:
+apply's write is one guarded remote script per server (symlink/ownership
+refusal plus a StrictModes-style ancestor walk, `mkdir` lock, compare-and-swap
+against the plan snapshot via length + POSIX `cksum`, `.bak` + one-time `.orig`
+backups, length-checked upload before `mv`), followed by verify, moving a
+non-empty `~/.ssh/authorized_keys2` aside, and a fresh login probe offering only
+the surviving agent keys that must run a probe command (catching forced
+`command=`) — a failed probe restores the previous file under a fresh lock and
+compare-and-swap; the guard ignores `cert-authority`/`principals=` lines and
+re-runs after the prompt; option loosening is highlighted; Ctrl-C stops new
+writes while started ones finish, and an interrupt before any write (or during
+audit/adopt) exits 3 with nothing rendered or written.
+Audit gains options-drift, duplicate-entry and unmanaged `authorized_keys2`
+drift classes, classified `error_kind`s, and exit 2 for changed/`@revoked`
+host keys. Transport: context cancellation, `exec /bin/sh -c` for any login
+shell, host-key algorithms ordered from `known_hosts`, granted keys offered
+first, `known_hosts` parsed once, and the hermetic `internal/sshconn/sshtest`
+server. The manifest is stricter (single document, OpenSSH option allow-list,
+type/blob match, no whitespace/control runes in server fields, one entry per
+remote target, no empty grants, no `%`/trailing `/` in
+`authorized_keys_file`); import matches `ssh -G` more closely (Include context,
+trailing `#`, HostName/IdentityFile tokens, `.pub` identities, same-target
+collapse, proxy warnings) with shared naming in `internal/naming`. Tooling is
+pinned (tools, actions by SHA, images by digest), `make check` ends in the
+coverage gate, CI runs daily vuln/fuzz, and tagged releases publish a signed
+multi-arch image.

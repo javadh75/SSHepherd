@@ -77,6 +77,10 @@ func Load(data []byte) (*File, error) {
 		root = &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{
 			{Kind: yaml.MappingNode, Tag: "!!map"},
 		}}
+	} else if err := dec.Decode(&yaml.Node{}); !errors.Is(err, io.EOF) {
+		// config.Parse already refuses this; kept so Encode can never
+		// silently drop a second document even if that gate regressed.
+		return nil, errors.New("parse manifest: manifest contains multiple YAML documents")
 	}
 	if err := checkTopLevelKeys(root); err != nil {
 		return nil, err

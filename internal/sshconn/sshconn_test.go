@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -195,10 +196,24 @@ func TestDefaultCmdBehavesLikeOldConst(t *testing.T) {
 func TestHostKeyHint(t *testing.T) {
 	srv := config.Server{Name: "web-1", Host: "10.0.0.1", Port: 22, User: "deploy"}
 
-	t.Run("unknown host gets keyscan hint", func(t *testing.T) {
+	t.Run("unknown host gets a compare-first keyscan hint", func(t *testing.T) {
 		err := hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), srv, "/kh")
-		if !strings.Contains(err.Error(), "ssh-keyscan -p 22 10.0.0.1") {
-			t.Errorf("hint = %q, want exact-host keyscan command", err)
+		if !strings.Contains(err.Error(), "ssh-keyscan -t ed25519 -p 22 '10.0.0.1' | ssh-keygen -lf -") {
+			t.Errorf("hint = %q, want the quoted exact-host keyscan | ssh-keygen -lf - pipeline", err)
+		}
+		if strings.Contains(err.Error(), ">>") {
+			t.Errorf("hint = %q, must never append scan output to known_hosts blindly", err)
+		}
+		if !strings.Contains(err.Error(), "ssh_host_ed25519_key.pub") {
+			t.Errorf("hint = %q, want the on-console fingerprint command", err)
+		}
+	})
+	t.Run("hostile host is quoted in the suggested command", func(t *testing.T) {
+		evil := srv
+		evil.Host = "h; rm -rf ~"
+		err := hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), evil, "/kh")
+		if !strings.Contains(err.Error(), "'h; rm -rf ~'") {
+			t.Errorf("hint = %q, want the host ShQuote-d", err)
 		}
 	})
 	t.Run("same-type mismatch gets changed-key warning", func(t *testing.T) {
@@ -229,10 +244,29 @@ func TestHostKeyHint(t *testing.T) {
 			t.Errorf("hint = %q, want the recorded types listed", err)
 		}
 	})
-	t.Run("unrelated error passes through", func(t *testing.T) {
+	t.Run("unrelated error keeps its chain", func(t *testing.T) {
 		orig := net.ErrClosed
 		if got := hostKeyHint(orig, ed25519Key(t, 1), srv, "/kh"); !errors.Is(got, orig) {
-			t.Errorf("unrelated error was wrapped: %v", got)
+			t.Errorf("unrelated error lost its chain: %v", got)
+		}
+	})
+	t.Run("kinds", func(t *testing.T) {
+		recorded := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: ed25519Key(t, 2)}}}
+		for _, tt := range []struct {
+			name      string
+			err       error
+			presented ssh.PublicKey
+			want      audit.ErrorKind
+		}{
+			{"unknown", &knownhosts.KeyError{}, ed25519Key(t, 1), audit.ErrorKindHostKeyUnknown},
+			{"changed", recorded, ed25519Key(t, 1), audit.ErrorKindHostKeyChanged},
+			{"unrecorded type", recorded, ecdsaKey(t), audit.ErrorKindHostKeyTypeUnrecorded},
+			{"revoked", &knownhosts.RevokedError{}, ed25519Key(t, 1), audit.ErrorKindHostKeyRevoked},
+			{"other", errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), audit.ErrorKindHostKey},
+		} {
+			if got := audit.ErrorKindOf(hostKeyHint(tt.err, tt.presented, srv, "/kh")); got != tt.want {
+				t.Errorf("%s: kind = %q, want %q", tt.name, got, tt.want)
+			}
 		}
 	})
 }
@@ -361,4 +395,59 @@ func TestFinishRead(t *testing.T) {
 			t.Fatalf("err = %v, want the remote stderr embedded", err)
 		}
 	})
+}
+
+// TestSecondaryKeysCmd runs the authorized_keys2 probe through a real sh:
+// only an existing, non-empty file reports present.
+func TestSecondaryKeysCmd(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *string // nil: file absent
+		want    bool
+	}{
+		{"absent", nil, false},
+		{"empty", new(""), false},
+		{"non-empty", new("ssh-ed25519 AAAA planted\n"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if tt.content != nil {
+				if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys2"), []byte(*tt.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := exec.CommandContext(t.Context(), "sh", "-c", SecondaryKeysCmd())
+			c.Env = []string{"HOME=" + home}
+			code := 0
+			var exitErr *exec.ExitError
+			if err := c.Run(); errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			present, err := FinishSecondaryProbe(code, NewCappedBuffer(10))
+			if err != nil || present != tt.want {
+				t.Errorf("probe = (%v, %v), want (%v, nil)", present, err, tt.want)
+			}
+		})
+	}
+	t.Run("unexpected exit is a remote error", func(t *testing.T) {
+		stderr := NewCappedBuffer(100)
+		_, _ = stderr.Write([]byte("sh: boom\x1b[31m"))
+		_, err := FinishSecondaryProbe(2, stderr)
+		if audit.ErrorKindOf(err) != audit.ErrorKindRemote || strings.Contains(err.Error(), "\x1b") {
+			t.Errorf("err = %q, want a sanitized remote error", err)
+		}
+	})
+}
+
+func TestFinishReadErrorsAreRemoteKind(t *testing.T) {
+	_, err := FinishRead(1, NewCappedBuffer(10), NewCappedBuffer(10), "h:22", slog.New(slog.DiscardHandler))
+	if got := audit.ErrorKindOf(err); got != audit.ErrorKindRemote {
+		t.Errorf("kind = %q, want remote", got)
+	}
 }

@@ -2,6 +2,7 @@ package authkeys
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,10 @@ func FuzzParseLine(f *testing.F) {
 		"no-port-forwarding ssh-ed25519 AAAA",
 	}
 	if line, err := deterministicKeyLine(); err == nil {
-		seeds = append(seeds, line, line+" bob@host")
+		seeds = append(seeds, line, line+" bob@host",
+			// declared type disagrees with the blob (KEY_TYPE_MISMATCH)
+			"ssh-ed25519-cert-v01@openssh.com "+strings.Fields(line)[1],
+			`command="a \" b" ssh-rsa `+strings.Fields(line)[1])
 	}
 	for _, s := range seeds {
 		f.Add(s)

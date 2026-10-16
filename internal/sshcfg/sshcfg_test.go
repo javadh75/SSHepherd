@@ -157,6 +157,52 @@ func TestLoadResolution(t *testing.T) {
 				Identities: []string{"~/.ssh/top", "~/.ssh/mine"}}},
 		},
 		{
+			name:   "trailing comment on a Host line is not a pattern",
+			config: "Host web1 web1.example.com # prod box\n  HostName 10.0.0.5\n  User u\n",
+			want: []Host{
+				{Alias: "web1", HostName: "10.0.0.5", User: "u"},
+				{Alias: "web1.example.com", HostName: "10.0.0.5", User: "u"},
+			},
+		},
+		{
+			name:   "HostName %h expands to the alias",
+			config: "Host db.corp\n  User u\nHost *.corp\n  HostName %h.example.com\n",
+			want:   []Host{{Alias: "db.corp", HostName: "db.corp.example.com", User: "u"}},
+		},
+		{
+			name:   "HostName %% is a literal percent",
+			config: "Host a\n  User u\n  HostName x%%y-%h\n",
+			want:   []Host{{Alias: "a", HostName: "x%y-a", User: "u"}},
+		},
+		{
+			name:    "HostName with an unsupported token skips the host",
+			config:  "Host a\n  User u\n  HostName %r.example.com\nHost b\n  User v\n",
+			want:    []Host{{Alias: "b", HostName: "b", User: "v"}},
+			warning: `host "a": HostName "%r.example.com": unsupported token %r, skipped`,
+		},
+		{
+			name:    "HostName with a dangling percent skips the host",
+			config:  "Host a\n  User u\n  HostName h%\n",
+			want:    nil,
+			warning: "dangling %",
+		},
+		{
+			name: "ProxyJump recorded, first of ProxyJump/ProxyCommand wins",
+			config: "Host a\n  User u\n  ProxyJump bastion\n" +
+				"Host *\n  ProxyCommand ssh -W %h:%p gw\n",
+			want: []Host{{Alias: "a", HostName: "a", User: "u", Proxy: "ProxyJump bastion"}},
+		},
+		{
+			name:   "ProxyCommand keeps its whole command line",
+			config: "Host a\n  User u\n  ProxyCommand ssh -W %h:%p gw\n",
+			want:   []Host{{Alias: "a", HostName: "a", User: "u", Proxy: "ProxyCommand ssh -W %h:%p gw"}},
+		},
+		{
+			name:   "ProxyJump none disables a later default",
+			config: "Host a\n  User u\n  ProxyJump none\nHost *\n  ProxyJump bastion\n",
+			want:   []Host{{Alias: "a", HostName: "a", User: "u"}},
+		},
+		{
 			name:    "IdentityFile with no value warns",
 			config:  "Host a\n  User u\n  IdentityFile\n",
 			want:    []Host{{Alias: "a", HostName: "a", User: "u"}},
@@ -269,19 +315,95 @@ func TestIncludeGlobSorted(t *testing.T) {
 
 func TestIncludeInsideHostBlock(t *testing.T) {
 	// Included lines inline at position: bare settings join the enclosing
-	// block; a Host line in the included file starts a new block.
+	// block. A Host line in a file included from inside Host a only applies
+	// to aliases a matches too, so b never matches — verified against
+	// `ssh -G` (OpenSSH 10.x): b gets no User from this config.
 	dir := writeFiles(t, map[string]string{
 		"config": "Host a\n  Include extra\nHost c\n  User w\n",
 		"extra":  "  User u\nHost b\n  User v\n",
 	})
-	hosts, _ := loadDir(t, dir)
+	hosts, warnings := loadDir(t, dir)
 	want := []Host{
 		{Alias: "a", HostName: "a", User: "u"},
-		{Alias: "b", HostName: "b", User: "v"},
 		{Alias: "c", HostName: "c", User: "w"},
 	}
 	if !reflect.DeepEqual(hosts, want) {
 		t.Errorf("hosts = %+v, want %+v", hosts, want)
+	}
+	if !hasWarning(warnings, `host "b" is in a file included from a Host block that does not match it`) {
+		t.Errorf("warnings = %v, want a never-matches warning for b", warnings)
+	}
+}
+
+// TestIncludeRestoresContext pins OpenSSH's save/restore of the active state
+// around Include: lines after an Include belong to the block that was
+// current before it, not to whatever block the included file opened last,
+// and a Match ending the included file does not swallow them. Every case
+// was checked against `ssh -G` (OpenSSH 10.x).
+func TestIncludeRestoresContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		files   map[string]string
+		want    []Host
+		warning string
+	}{
+		{
+			name: "global setting after Include applies to every included host",
+			files: map[string]string{
+				"config":   "Include d/b.conf\nUser globaluser\n",
+				"d/b.conf": "Host acme-db\n  Port 2\nHost acme-web\n  Port 3\n",
+			},
+			want: []Host{
+				{Alias: "acme-db", HostName: "acme-db", Port: 2, User: "globaluser"},
+				{Alias: "acme-web", HostName: "acme-web", Port: 3, User: "globaluser"},
+			},
+		},
+		{
+			name: "Match at the end of an included file does not drop later lines",
+			files: map[string]string{
+				"config": "Include inc\nUser globaluser\n",
+				"inc":    "Host a\n  Port 2\nMatch all\n  Port 9\n",
+			},
+			want:    []Host{{Alias: "a", HostName: "a", Port: 2, User: "globaluser"}},
+			warning: "Match block skipped",
+		},
+		{
+			name: "setting after Include inside a Host block stays with that block",
+			files: map[string]string{
+				"config": "Host a\n  Include inc\n  User ua\nHost *\n  User other\n",
+				"inc":    "Host a\n  Port 7\n",
+			},
+			want:    []Host{{Alias: "a", HostName: "a", Port: 7, User: "ua"}},
+			warning: "duplicate host", // inc's Host a repeats the alias
+		},
+		{
+			name: "each globbed file starts from the enclosing context",
+			files: map[string]string{
+				"config":      "Include conf.d/*\nHost b\n  User v\n",
+				"conf.d/10-a": "Host a\n  User u\nMatch all\n",
+				"conf.d/20-g": "Port 2200\n",
+			},
+			// 20-g's bare Port is global again, not swallowed by 10-a's Match.
+			want: []Host{
+				{Alias: "a", HostName: "a", Port: 2200, User: "u"},
+				{Alias: "b", HostName: "b", Port: 2200, User: "v"},
+			},
+			warning: "Match block skipped",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hosts, warnings := loadDir(t, writeFiles(t, tt.files))
+			if !reflect.DeepEqual(hosts, tt.want) {
+				t.Errorf("hosts = %+v, want %+v", hosts, tt.want)
+			}
+			if tt.warning == "" && len(warnings) > 0 {
+				t.Errorf("unexpected warnings: %v", warnings)
+			}
+			if tt.warning != "" && !hasWarning(warnings, tt.warning) {
+				t.Errorf("warnings %v missing %q", warnings, tt.warning)
+			}
+		})
 	}
 }
 

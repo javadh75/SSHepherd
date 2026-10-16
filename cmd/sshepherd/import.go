@@ -23,6 +23,32 @@ import (
 // skip logic must agree on this predicate.
 func serverWorthy(h sshcfg.Host) bool { return h.User != "" }
 
+// dropUnsafeHosts removes hosts whose alias, HostName or User could never
+// form a valid server entry (config.ServerFieldIssue: whitespace, control or
+// format runes — e.g. a quoted `Host "web 1"`), warning for each. Filtering
+// before identity resolution and target collapse keeps such a host from
+// deriving grants or winning a same-target collapse.
+func dropUnsafeHosts(log *slog.Logger, hosts []sshcfg.Host) []sshcfg.Host {
+	kept := hosts[:0:0]
+	for _, h := range hosts {
+		bad := ""
+		for _, f := range []struct{ field, value string }{
+			{"alias", h.Alias}, {"HostName", h.HostName}, {"User", h.User},
+		} {
+			if issue := config.ServerFieldIssue(f.value); issue != "" {
+				bad = fmt.Sprintf("%s %q %s", f.field, f.value, issue)
+				break
+			}
+		}
+		if bad != "" {
+			log.Warn(fmt.Sprintf("host %q: %s, skipped (not valid in a manifest)", h.Alias, bad))
+			continue
+		}
+		kept = append(kept, h)
+	}
+	return kept
+}
+
 // generateManifest renders hosts and derived identity users as a manifest.
 // src is the config path as the user typed it (kept in the header comment;
 // the expanded form would leak the local home directory into a committed
@@ -135,6 +161,32 @@ func deriveUsers(log *slog.Logger, serversOnly bool, hosts []sshcfg.Host, operat
 	}
 	log.Info(fmt.Sprintf("derived %d users from identity files", len(users)))
 	return users, nil
+}
+
+// collapseTargets keeps one server entry per remote file (config rejects
+// two entries with one host/port/user/authorized_keys target): later
+// aliases for an already-claimed target are dropped with a warning naming
+// both, and their derived grants move onto the kept alias. It runs after
+// identity resolution so a key used only through a dropped alias still
+// reaches the machine.
+func collapseTargets(log *slog.Logger, hosts []sshcfg.Host, users []identity.User) ([]sshcfg.Host, []identity.User) {
+	hosts, users, warnings := reconcile.CollapseTargets(hosts, users)
+	for _, w := range warnings {
+		log.Warn(w)
+	}
+	return hosts, users
+}
+
+// warnProxies flags every host that will become a server but sits behind a
+// ProxyJump/ProxyCommand: SSHepherd dials servers directly, so a
+// bastion-only host would otherwise surface later as an unexplained
+// unreachable (or a misleading host-key mismatch).
+func warnProxies(log *slog.Logger, hosts []sshcfg.Host) {
+	for _, h := range hosts {
+		if serverWorthy(h) && h.Proxy != "" {
+			log.Warn(fmt.Sprintf("host %q: %s set — dialed directly; bastion hosts are not supported yet", h.Alias, h.Proxy))
+		}
+	}
 }
 
 // renderImport picks the rendering path: a comment-preserving merge append
@@ -348,10 +400,13 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			for _, w := range warnings {
 				log.Warn(w)
 			}
+			hosts = dropUnsafeHosts(log, hosts)
 			users, err := deriveUsers(log, serversOnly, hosts, operators)
 			if err != nil {
 				return err
 			}
+			hosts, users = collapseTargets(log, hosts, users)
+			warnProxies(log, hosts)
 			// The clock is read only here, so tests inject a fixed date.
 			rendered, err := renderImport(log, mf, raw, hosts, users, src, time.Now().Format("2006-01-02"))
 			if err != nil {

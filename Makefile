@@ -1,25 +1,36 @@
 BINARY       := sshepherd
 IMAGE        := sshepherd:dev
+VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COVERPROFILE := coverage.out
 COVERAGE_MIN := 80
 PKG          := ./...
 GO           := go
 
-# Pinned dev-tool versions (keep in sync with CLAUDE.md).
+# Pinned dev-tool versions (keep in sync with CLAUDE.md). Exact releases only —
+# never @latest — so a new upstream rule or a broken/compromised release can't
+# flip the gate without a change in this repo. Bump deliberately.
 GOLANGCI_VERSION := v2.12.2
-GOSEC_VERSION    := latest
-GOVULN_VERSION   := latest
-GITLEAKS_VERSION := latest
-DEADCODE_VERSION := latest
+GOSEC_VERSION    := v2.29.0
+GOVULN_VERSION   := v1.8.0
+GITLEAKS_VERSION := v8.30.1
+DEADCODE_VERSION := v0.51.0
 
-.PHONY: all check build fmt vet lint deadcode security gosec vuln secrets test coverage \
-        integration fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
+# Tools are compiled from source by the active toolchain (`go install`). A
+# linter built by an older Go than the one on PATH fails to type-check the
+# newer stdlib (e.g. math/rand/v2), so `lint` refuses a mismatched binary and
+# points at `make tools`. GOTOOLCHAIN=local keeps `go install` from silently
+# fetching a different toolchain for a tool whose go.mod asks for a newer Go.
+GO_VERSION   = $(shell $(GO) env GOVERSION)
+TOOLS_ENV   := GOTOOLCHAIN=local
+
+.PHONY: all check build fmt vet lint lint-toolchain deadcode security gosec vuln secrets test \
+        coverage integration fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
 
 ## all: default target — run the full gate
 all: check
 
-## check: full quality gate (the same command CI runs)
-check: tidy fmt vet lint deadcode security test
+## check: full quality gate (the same command CI runs) — includes the coverage minimum
+check: tidy fmt vet lint deadcode security coverage
 
 ## build: reproducible static binary into ./bin
 build:
@@ -34,8 +45,17 @@ vet:
 	$(GO) vet $(PKG)
 
 ## lint: golangci-lint (v2)
-lint:
+lint: lint-toolchain
 	golangci-lint run
+
+# lint-toolchain: fail fast (with the fix) when golangci-lint was built by a
+# different Go than the active toolchain.
+lint-toolchain:
+	@have=$$(golangci-lint version 2>/dev/null | sed -n 's/.* built with \(go[^ ]*\) .*/\1/p'); \
+	if [ "$$have" != "$(GO_VERSION)" ]; then \
+	  echo "golangci-lint was built with $${have:-an unknown Go} but the active toolchain is $(GO_VERSION);"; \
+	  echo "rebuild it with: make tools"; exit 1; \
+	fi
 
 ## deadcode: whole-program reachability — fail on functions unreachable from main
 deadcode:
@@ -53,7 +73,7 @@ vuln:
 	govulncheck ./...
 
 secrets:
-	gitleaks detect --no-git --redact
+	gitleaks dir --redact .
 
 ## test: race detector + atomic coverage profile
 test:
@@ -87,19 +107,21 @@ fuzz:
 	$(GO) test -run='^$$' -fuzz=FuzzShQuote -fuzztime=15s ./internal/sshconn
 	$(GO) test -run='^$$' -fuzz=FuzzWriteCmds -fuzztime=15s ./internal/sshwrite
 	$(GO) test -run='^$$' -fuzz=FuzzMergeRoundTrip -fuzztime=15s ./internal/manifest
+	$(GO) test -run='^$$' -fuzz=FuzzLoad -fuzztime=15s ./internal/config
 
 ## bench: run benchmarks
 bench:
 	$(GO) test -run='^$$' -bench=. -benchmem $(PKG)
 
-## tidy: ensure go.mod/go.sum are tidy and verified
+## tidy: fail if go.mod/go.sum are not tidy; verify module checksums
+## (`-diff` never rewrites the files: it prints the needed change and exits non-zero)
 tidy:
-	$(GO) mod tidy
+	@$(GO) mod tidy -diff || { echo "FAIL: go.mod/go.sum are not tidy — run 'go mod tidy'"; exit 1; }
 	$(GO) mod verify
 
 ## docker: build the container image
 docker:
-	docker build -t $(IMAGE) .
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
 
 ## docker-lint: lint the Dockerfile and the built image
 docker-lint:
@@ -112,17 +134,19 @@ docker-scan:
 	trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed $(IMAGE)
 	trivy config --exit-code 1 .
 
-## smoke: the image runs and reports its version
+## smoke: the image runs, reports its version and help, stays under the size
+## budget, and does not run as root (the same gates CI applies)
 smoke:
-	docker run --rm $(IMAGE) --version
+	IMAGE=$(IMAGE) ./scripts/docker-gates.sh
 
 ## tools: install pinned dev tooling into GOPATH/bin
+## (re-run after upgrading Go: tools are built by, and must match, the active toolchain)
 tools:
-	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
-	$(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
-	$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULN_VERSION)
-	$(GO) install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
-	$(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
+	$(TOOLS_ENV) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
+	$(TOOLS_ENV) $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	$(TOOLS_ENV) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULN_VERSION)
+	$(TOOLS_ENV) $(GO) install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
+	$(TOOLS_ENV) $(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
 
 ## hooks: install git pre-commit/pre-push hooks (lefthook)
 hooks:

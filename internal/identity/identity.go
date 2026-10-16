@@ -5,7 +5,9 @@
 // entries mirroring exactly which key the config uses where.
 //
 // Relative IdentityFile paths (no ~, %, or leading /) resolve against the
-// working directory, as in OpenSSH.
+// working directory, as in OpenSSH. An IdentityFile may name the .pub itself
+// (agent-held or hardware keys: 1Password, Secretive, YubiKey), which is
+// read directly.
 package identity
 
 import (
@@ -13,10 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
+	"github.com/javadh75/SSHepherd/internal/naming"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
@@ -26,10 +30,13 @@ type Resolver struct {
 	LocalUser string // for %u expansion and generated user names
 }
 
-// expand resolves the host-independent subset of IdentityFile syntax: a
-// leading tilde plus the %d (home), %u (local user) and %% tokens. Any other
-// token depends on the connection and cannot be resolved statically.
-func (r Resolver) expand(raw string) (string, error) {
+// expand resolves the statically known subset of IdentityFile syntax: a
+// leading tilde plus the %d (home), %u (local user) and %% tokens, and —
+// when h is non-nil (Resolve, per host) — %n (alias), %h (resolved
+// HostName), %r (remote user) and %p (port, default 22). h is nil for
+// --operator paths, which name keys independent of any host. Any other token
+// depends on the live connection and cannot be resolved statically.
+func (r Resolver) expand(raw string, h *sshcfg.Host) (string, error) {
 	if raw == "~" {
 		return r.Home, nil
 	}
@@ -49,19 +56,60 @@ func (r Resolver) expand(raw string) (string, error) {
 		if i == len(raw) {
 			return "", fmt.Errorf("dangling %% at end of value")
 		}
-		switch raw[i] {
-		case 'd':
-			b.WriteString(r.Home)
-		case 'u':
-			b.WriteString(r.LocalUser)
-		case '%':
-			b.WriteByte('%')
-		default:
+		v, ok := r.token(raw[i], h)
+		if !ok {
 			tok, _ := utf8.DecodeRuneInString(raw[i:])
+			if h == nil && strings.IndexByte(hostTokens, raw[i]) >= 0 {
+				return "", fmt.Errorf("unsupported token %%%c (host-dependent; not available here)", tok)
+			}
 			return "", fmt.Errorf("unsupported token %%%c", tok)
 		}
+		b.WriteString(v)
 	}
 	return b.String(), nil
+}
+
+// hostTokens are the IdentityFile tokens that need a resolved host.
+const hostTokens = "nhrp"
+
+// token returns the expansion of one %-token, reporting false when it is
+// unsupported (or host-dependent with no host).
+func (r Resolver) token(c byte, h *sshcfg.Host) (string, bool) {
+	switch c {
+	case 'd':
+		return r.Home, true
+	case 'u':
+		return r.LocalUser, true
+	case '%':
+		return "%", true
+	}
+	if h == nil {
+		return "", false
+	}
+	switch c {
+	case 'n':
+		return h.Alias, true
+	case 'h':
+		return h.HostName, true
+	case 'r':
+		return h.User, true
+	case 'p':
+		if h.Port == 0 {
+			return "22", true
+		}
+		return strconv.Itoa(h.Port), true
+	}
+	return "", false
+}
+
+// pubPaths maps an expanded IdentityFile value to the .pub to read and the
+// key path naming derives from: a value already ending in .pub (the
+// agent-held-key convention) is read as is, anything else gains .pub.
+func pubPaths(p string) (pubPath, keyPath string) {
+	if strings.HasSuffix(p, ".pub") {
+		return p, strings.TrimSuffix(p, ".pub")
+	}
+	return p + ".pub", p
 }
 
 // defaultIdentityNames is OpenSSH's default identity list in its try order
@@ -144,7 +192,7 @@ func (res *resolution) candidates(h sshcfg.Host) []candidate {
 	}
 	var out []candidate
 	for _, raw := range h.Identities {
-		p, err := res.r.expand(raw)
+		p, err := res.r.expand(raw, &h)
 		if err != nil {
 			res.warnf("host %q: IdentityFile %q: %v, skipped", h.Alias, raw, err)
 			continue
@@ -161,7 +209,7 @@ func (res *resolution) grant(c candidate, alias string) bool {
 	if res.failed[c.path] {
 		return false
 	}
-	pubPath := c.path + ".pub"
+	pubPath, keyPath := pubPaths(c.path)
 	data, err := os.ReadFile(pubPath) // #nosec G304 -- path comes from the user's own ssh config
 	if err != nil {
 		res.failed[c.path] = true
@@ -184,12 +232,19 @@ func (res *resolution) grant(c candidate, alias string) bool {
 		}
 		return false
 	}
+	if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
+		// The manifest rejects such an inline comment; skipping here keeps
+		// one odd .pub from failing the whole import's self-check.
+		res.failed[c.path] = true
+		res.warnf("identity %s: %s comment %s, skipped", c.source, pubPath, issue)
+		return false
+	}
 	i, ok := res.byFingerprint[k.Fingerprint]
 	if !ok {
 		i = len(res.users)
 		res.byFingerprint[k.Fingerprint] = i
 		res.users = append(res.users, User{
-			Name:    res.name(filepath.Base(c.path)),
+			Name:    res.name(filepath.Base(keyPath)),
 			Source:  c.source,
 			Default: c.isDflt,
 			Comment: k.Comment,
@@ -203,27 +258,11 @@ func (res *resolution) grant(c candidate, alias string) bool {
 	return true
 }
 
-// claimName reserves name in taken, suffixing -2, -3, … when already claimed.
-// The second return reports whether a suffix was needed.
-func claimName(taken map[string]bool, name string) (string, bool) {
-	if !taken[name] {
-		taken[name] = true
-		return name, false
-	}
-	for n := 2; ; n++ {
-		cand := fmt.Sprintf("%s-%d", name, n)
-		if !taken[cand] {
-			taken[cand] = true
-			return cand, true
-		}
-	}
-}
-
 // name assigns <LocalUser>-<base>, appending -2, -3, … when a different key
 // already claimed the name.
 func (res *resolution) name(base string) string {
 	want := res.r.LocalUser + "-" + base
-	got, collided := claimName(res.taken, want)
+	got, collided := naming.Claim(res.taken, want)
 	if collided {
 		res.warnf("user name %q already taken by another key, using %q", want, got)
 	}
@@ -258,15 +297,11 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 	}
 	seen := make(map[string]bool, len(paths))
 	for _, raw := range paths {
-		p, err := r.expand(raw)
+		p, err := r.expand(raw, nil)
 		if err != nil {
 			return nil, fmt.Errorf("operator key %q: %w", raw, err)
 		}
-		pubPath := p + ".pub"
-		if strings.HasSuffix(p, ".pub") {
-			pubPath = p
-			p = strings.TrimSuffix(p, ".pub")
-		}
+		pubPath, p := pubPaths(p)
 		data, err := os.ReadFile(pubPath) // #nosec G304 -- path is the user's own --operator flag
 		if err != nil {
 			return nil, fmt.Errorf("operator key %q: %w (only .pub files are read)", raw, err)
@@ -282,6 +317,9 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 		if k == nil {
 			return nil, fmt.Errorf("operator key %q: %s is not a valid public key", raw, pubPath)
 		}
+		if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
+			return nil, fmt.Errorf("operator key %q: %s comment %s", raw, pubPath, issue)
+		}
 		if seen[k.Fingerprint] {
 			continue
 		}
@@ -290,7 +328,7 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 			users[i].Operator = true
 			continue
 		}
-		name, _ := claimName(taken, r.LocalUser+"-"+filepath.Base(p))
+		name, _ := naming.Claim(taken, r.LocalUser+"-"+filepath.Base(p))
 		users = append(users, User{
 			Name:     name,
 			Source:   raw,

@@ -10,6 +10,7 @@ linters:
     - dupl
     - errcheck
     - errorlint
+    - forbidigo
     - gocritic
     - gocyclo
     - govet
@@ -38,6 +39,17 @@ linters:
       # error text the extraction promised to preserve.
       ignore-package-globs:
         - github.com/javadh75/SSHepherd/internal/sshconn
+    forbidigo:
+      # Machine-enforce the transport invariant: host keys are verified strictly
+      # against known_hosts (x/crypto/ssh/knownhosts) — no TOFU, no bypass.
+      analyze-types: true
+      forbid:
+        - pattern: ^ssh\.InsecureIgnoreHostKey$
+          pkg: ^golang\.org/x/crypto/ssh$
+          msg: host-key checking must stay strict (knownhosts callback only)
+        - pattern: ^ssh\.FixedHostKey$
+          pkg: ^golang\.org/x/crypto/ssh$
+          msg: host-key checking must stay strict (knownhosts callback only)
     depguard:
       rules:
         main:
@@ -47,6 +59,16 @@ linters:
               desc: weak hash; prefer crypto/sha256
             - pkg: crypto/sha1
               desc: weak hash; prefer crypto/sha256
+        # Non-test code only: tests legitimately drive the binary and ssh-keygen.
+        non-test:
+          list-mode: lax
+          files:
+            - "!$test"
+          deny:
+            - pkg: os/exec
+              desc: native golang.org/x/crypto/ssh only — never shell out to a host ssh binary
+            - pkg: math/rand
+              desc: not cryptographically secure; use crypto/rand
   exclusions:
     generated: lax
     rules:

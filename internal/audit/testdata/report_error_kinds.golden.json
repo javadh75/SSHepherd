@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 2,
+    "compliant": 0,
+    "drift": 0,
+    "critical": 0,
+    "unreachable": 2,
+    "host_key_alerts": 1,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "unreachable",
+      "error": "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch",
+      "error_kind": "host_key_changed",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "unreachable",
+      "error": "ssh deploy@10.0.0.2:22: ssh: unable to authenticate",
+      "error_kind": "auth",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    }
+  ]
+}

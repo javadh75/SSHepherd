@@ -13,6 +13,8 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/sshwrite"
 )
 
 // Class classifies one server's plan.
@@ -25,7 +27,7 @@ const (
 	// ClassChange — a write is needed and allowed.
 	ClassChange Class = "change"
 	// ClassRefused — a write would occur but must not (wipe, unparseable
-	// content, predicted lockout).
+	// content, predicted lockout, a render too large to verify).
 	ClassRefused Class = "refused"
 	// ClassUnreachable — the phase-1 read failed; nothing knowable.
 	ClassUnreachable Class = "unreachable"
@@ -36,30 +38,43 @@ type Outcome string
 
 // The four phase-2 outcomes for a ClassChange server.
 const (
-	OutcomePending Outcome = "pending" // not written: dry-run, declined, or phase 2 not run
-	OutcomeApplied Outcome = "applied" // written and byte-verified
-	OutcomeRefused Outcome = "refused" // refused at the server (symlinked target)
-	OutcomeFailed  Outcome = "failed"  // write or verify failed
+	OutcomePending Outcome = "pending" // not written: dry-run, declined, phase 2 not run, or interrupted before the write (OutcomeErr set)
+	OutcomeApplied Outcome = "applied" // written, byte-verified, and the surviving keys proved they can log in
+	OutcomeRefused Outcome = "refused" // refused at the server before any change (symlink, unsafe path, changed since plan, locked)
+	OutcomeFailed  Outcome = "failed"  // write, verify or login probe failed (a failed probe restores the previous file)
 )
 
 // RewriteRow is a matched key whose on-server form differs from the render.
 type RewriteRow struct {
-	Key            authkeys.Key // desired (manifest) form
+	Key            authkeys.Key // desired (manifest) form; Key.Options are the options written
 	ActualComment  string
 	DesiredComment string
+	ActualOptions  []string // on-server options, replaced by Key.Options
 	CommentDiffers bool
 	OptionsDiffer  bool
+	// Loosens lists restrictive on-server options (from=, command=,
+	// restrict, no-*, expiry-time=, permitopen=, permitlisten=,
+	// cert-authority, principals=) the rewrite drops — the key gains access
+	// it does not have today.
+	Loosens []string
 }
 
 // Normalize captures byte drift the per-key rows don't explain.
 type Normalize struct {
 	Reorder     bool // matched keys ordered differently than desired
 	NonKeyLines int  // current comment/blank lines (managed header excluded) the rewrite removes
-	Whitespace  bool // residual byte drift with nothing else to blame
+	// Duplicates counts repeated key lines (same fingerprint as an earlier
+	// line) the rewrite removes; DuplicateOptionsDiffer reports that at
+	// least one of them carried options other than its first copy's.
+	Duplicates             int
+	DuplicateOptionsDiffer bool
+	Whitespace             bool // residual byte drift with nothing else to blame
 }
 
 // Any reports whether a normalize row should render.
-func (n Normalize) Any() bool { return n.Reorder || n.NonKeyLines > 0 || n.Whitespace }
+func (n Normalize) Any() bool {
+	return n.Reorder || n.NonKeyLines > 0 || n.Duplicates > 0 || n.Whitespace
+}
 
 // ServerPlan is the computed plan for one server.
 type ServerPlan struct {
@@ -79,9 +94,25 @@ type ServerPlan struct {
 	Note       string // guard note: session key removed, another survives
 	Warning    string // restrictive-options warning
 	FileAbsent bool   // phase-1 diagnostic, carried into the report
+	// AuthorizedKeys2 carries the phase-1 finding that an unmanaged,
+	// non-empty ~/.ssh/authorized_keys2 exists: sshd may accept keys from it
+	// whatever apply writes, so a change plan also disables it (see
+	// DisableKeys2).
+	AuthorizedKeys2 bool
+	// Expect is the phase-1 snapshot the write is conditional on: phase 2
+	// refuses a file that changed after this plan was shown.
+	Expect sshwrite.Snapshot
 
 	Outcome    Outcome
 	OutcomeErr error
+}
+
+// DisableKeys2 reports whether the write moves a non-empty
+// ~/.ssh/authorized_keys2 aside: every change plan does when phase 1 found
+// one (only probed while the managed path is the default), because sshd
+// keeps accepting its keys — a revoked key there would survive the revoke.
+func (p ServerPlan) DisableKeys2() bool {
+	return p.Class == ClassChange && p.AuthorizedKeys2
 }
 
 // Build computes the plan for every phase-1 result. agentFPs is the set of
@@ -100,8 +131,17 @@ func Build(cfg *config.Config, results []audit.ServerResult, agentFPs []string) 
 	return plans, nil
 }
 
+// maxRender caps the rendered file at what the read path accepts back: a
+// larger file could be written but never verified or audited. A variable
+// only so tests can lower it.
+var maxRender = sshconn.MaxRemoteOutput
+
 func planOne(cfg *config.Config, r audit.ServerResult, agentFPs []string) (ServerPlan, error) {
-	p := ServerPlan{Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent}
+	p := ServerPlan{
+		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
+		AuthorizedKeys2: r.AuthorizedKeys2,
+		Expect:          sshwrite.SnapshotOf(r.FileAbsent, r.Content),
+	}
 	if r.Err != nil {
 		p.Class = ClassUnreachable
 		p.Err = r.Err
@@ -147,20 +187,31 @@ func planOne(cfg *config.Config, r audit.ServerResult, agentFPs []string) (Serve
 		return p, fmt.Errorf("render %s: %w", r.Server.Name, err)
 	}
 	p.Rendered = rendered
+	if len(rendered) > maxRender {
+		p.Class = ClassRefused
+		p.Refusal = fmt.Sprintf(
+			"rendered file is %d bytes, over the %d-byte limit the read path accepts — refusing to write a file that could never be verified or audited (split the grant across accounts)",
+			len(rendered), maxRender)
+		return p, nil
+	}
 
 	// Byte-exact convergence: a server needs a write iff its current bytes
-	// differ from the render. (A file-absent server with desired keys is
-	// never converged — the file itself is missing.)
-	if !r.FileAbsent && bytes.Equal(r.Content, rendered) {
+	// differ from the render, or a non-empty authorized_keys2 must be
+	// disabled. (A file-absent server with desired keys is never converged
+	// — the file itself is missing.)
+	same := !r.FileAbsent && bytes.Equal(r.Content, rendered)
+	if same && !r.AuthorizedKeys2 {
 		p.Class = ClassConverged
 		return p, nil
 	}
 
-	p.Add = r.Diff.Missing
-	p.Remove = r.Diff.Unauthorized
-	p.Rewrites = rewriteRows(r, entries)
-	explained := len(p.Add)+len(p.Remove)+len(p.Rewrites) > 0
-	p.Normalize = normalize(r, entries, explained)
+	if !same {
+		p.Add = r.Diff.Missing
+		p.Remove = r.Diff.Unauthorized
+		p.Rewrites = rewriteRows(r, entries)
+		explained := len(p.Add)+len(p.Remove)+len(p.Rewrites) > 0
+		p.Normalize = normalize(r, entries, explained)
+	}
 
 	v := guardCheck(cfg, r, entries, agentFPs)
 	if v.Refusal != "" {
@@ -200,8 +251,12 @@ func rewriteRows(r audit.ServerResult, entries []authkeys.RenderEntry) []Rewrite
 			Key:            e.Key,
 			ActualComment:  actual.Comment,
 			DesiredComment: e.Comment,
+			ActualOptions:  actual.Options,
 			CommentDiffers: actual.Comment != e.Comment,
 			OptionsDiffer:  !slices.Equal(actual.Options, e.Key.Options),
+		}
+		if row.OptionsDiffer {
+			row.Loosens = droppedRestrictions(actual.Options, e.Key.Options)
 		}
 		if row.CommentDiffers || row.OptionsDiffer {
 			rows = append(rows, row)
@@ -211,8 +266,9 @@ func rewriteRows(r audit.ServerResult, entries []authkeys.RenderEntry) []Rewrite
 }
 
 // normalize explains byte drift beyond the per-key rows: non-key lines the
-// full-file render removes, reordering of matched keys, or (when nothing
-// else accounts for the byte difference) residual whitespace/format drift.
+// full-file render removes, repeated key lines it collapses, reordering of
+// matched keys, or (when nothing else accounts for the byte difference)
+// residual whitespace/format drift.
 // Only called for servers whose bytes differ from the render.
 func normalize(r audit.ServerResult, entries []authkeys.RenderEntry, explained bool) Normalize {
 	var n Normalize
@@ -232,7 +288,25 @@ func normalize(r audit.ServerResult, entries []authkeys.RenderEntry, explained b
 
 	n.Reorder = matchedOrderDiffers(r, entries)
 
-	if !explained && !n.Reorder && n.NonKeyLines == 0 {
+	// Duplicates: Diff collapses them first-wins, but each is a whole key
+	// line (possibly with its own options) the rewrite deletes — a semantic
+	// change the plan must name, never "whitespace". Content re-parses
+	// cleanly here (parse errors were refused earlier).
+	keys, _ := authkeys.ParseFile(r.Content)
+	first := make(map[string]authkeys.Key, len(keys))
+	for _, k := range keys {
+		f, seen := first[k.Fingerprint]
+		if !seen {
+			first[k.Fingerprint] = k
+			continue
+		}
+		n.Duplicates++
+		if !slices.Equal(f.Options, k.Options) {
+			n.DuplicateOptionsDiffer = true
+		}
+	}
+
+	if !explained && !n.Reorder && n.NonKeyLines == 0 && n.Duplicates == 0 {
 		n.Whitespace = true
 	}
 	return n
@@ -284,37 +358,39 @@ type guardVerdict struct {
 // the very key that authenticated is allowed when another agent-held key
 // survives — that is what rotate is — with a loud per-server note.
 func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.RenderEntry, agentFPs []string) guardVerdict {
-	held := make(map[string]bool, len(agentFPs))
-	for _, fp := range agentFPs {
-		held[fp] = true
-	}
-	// Defensive fallback: no usable agent listing (agent died mid-run) —
-	// purely additive writes may proceed, anything that removes a key is
-	// refused.
+	held := heldSet(agentFPs)
+	// No agent keys means nothing could ever prove this session keeps
+	// access (and the post-write login probe would have nothing to offer):
+	// refuse. Unreachable from the CLI, whose preflight requires a
+	// non-empty agent, but phase 2 re-lists the agent after the prompt.
 	if len(held) == 0 {
-		if len(r.Diff.Unauthorized) > 0 {
-			return guardVerdict{Refusal: "agent key listing is unavailable — refusing a write that removes keys"}
-		}
-		return guardVerdict{}
+		return guardVerdict{Refusal: "the agent holds no keys — refusing to write (nothing could prove this session keeps access)"}
 	}
 
-	var surviving []authkeys.Key
-	restrictive := 0
+	keys := make([]authkeys.Key, 0, len(entries))
 	for _, e := range entries {
-		if !held[e.Key.Fingerprint] {
-			continue
-		}
-		surviving = append(surviving, e.Key)
-		if hasRestrictiveOption(e.Key.Options) {
+		keys = append(keys, e.Key)
+	}
+	surviving := Survivors(keys, held)
+	restrictive := 0
+	for _, k := range surviving {
+		if hasRestrictiveOption(k.Options) {
 			restrictive++
 		}
 	}
 	if len(surviving) == 0 {
 		// len(held), not len(agentFPs): an agent can list one key twice and
 		// the message must count distinct keys.
-		return guardVerdict{Refusal: fmt.Sprintf(
+		refusal := fmt.Sprintf(
 			"none of the %d keys in this agent would remain in %s's authorized_keys — applying would lock this session out. Add one of your keys to the manifest (or mark its user operator: true)",
-			len(held), r.Server.Name)}
+			len(held), r.Server.Name)
+		for _, k := range keys {
+			if held[k.Fingerprint] {
+				refusal += " (an agent key stays only as a cert-authority/principals= line, which accepts certificates, not the bare key)"
+				break
+			}
+		}
+		return guardVerdict{Refusal: refusal}
 	}
 
 	var v guardVerdict
@@ -328,6 +404,70 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 		v.Warning = "every remaining agent-held key carries a restrictive option (from=/command=/restrict/expiry-time=) — future sshepherd logins may be functionally blocked"
 	}
 	return v
+}
+
+// heldSet indexes an agent fingerprint listing.
+func heldSet(agentFPs []string) map[string]bool {
+	held := make(map[string]bool, len(agentFPs))
+	for _, fp := range agentFPs {
+		held[fp] = true
+	}
+	return held
+}
+
+// Survivors returns the desired keys that keep an agent-held login: held
+// by the agent, and on a line that accepts the bare key — cert-authority
+// lines accept only certificates the key signed, and principals= belongs to
+// them. These are the keys the guard counts and the post-write login probe
+// offers.
+func Survivors(desired []authkeys.Key, held map[string]bool) []authkeys.Key {
+	var out []authkeys.Key
+	for _, k := range desired {
+		if held[k.Fingerprint] && !certOnly(k.Options) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// certOnly reports whether options make the line a certificate-authority
+// entry that does not log in with the bare key.
+func certOnly(options []string) bool {
+	for _, o := range options {
+		lo := strings.ToLower(o)
+		if lo == "cert-authority" || strings.HasPrefix(lo, "principals=") {
+			return true
+		}
+	}
+	return false
+}
+
+// droppedRestrictions lists the restrictive options in actual that desired
+// does not carry verbatim (a changed from= value counts as dropped: the old
+// restriction no longer applies).
+func droppedRestrictions(actual, desired []string) []string {
+	var out []string
+	for _, o := range actual {
+		if isRestriction(o) && !slices.Contains(desired, o) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// isRestriction reports whether an authorized_keys option narrows what the
+// key may do: removing it widens access.
+func isRestriction(o string) bool {
+	lo := strings.ToLower(o)
+	if lo == "restrict" || lo == "cert-authority" || strings.HasPrefix(lo, "no-") {
+		return true
+	}
+	for _, prefix := range []string{"from=", "command=", "expiry-time=", "permitopen=", "permitlisten=", "principals="} {
+		if strings.HasPrefix(lo, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func fpInEntries(entries []authkeys.RenderEntry, fp string) bool {

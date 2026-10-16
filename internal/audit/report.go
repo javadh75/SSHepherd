@@ -14,7 +14,9 @@ import (
 // see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md):
 // 0 every server compliant (an empty fleet is trivially compliant);
 // 1 drift and/or unreachable servers — compliance not proven;
-// 2 critical drift — at least one server is missing an operator key.
+// 2 critical — at least one server is missing an operator key, or refused
+// to connect because its host key changed (or is @revoked): a possible
+// impersonation, never just a network blip.
 // Tool errors (exit 3) are the caller's domain; this function never sees them.
 func ExitCode(cfg *config.Config, results []ServerResult) int {
 	code := 0
@@ -22,7 +24,12 @@ func ExitCode(cfg *config.Config, results []ServerResult) int {
 		switch statusOf(cfg, r) {
 		case statusCritical:
 			return 2
-		case statusDrift, statusUnreachable:
+		case statusUnreachable:
+			if hostKeyAlert(ErrorKindOf(r.Err)) {
+				return 2
+			}
+			code = 1
+		case statusDrift:
 			code = 1
 		}
 	}
@@ -88,21 +95,26 @@ func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts Render
 func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, comments bool) {
 	head := fmt.Sprintf("%s (%s@%s:%d)", r.Server.Name, r.Server.User, r.Server.Host, r.Server.Port)
 	if r.Err != nil {
-		fmt.Fprintf(w, "%s  %s %s\n", head, pal.paint(codeRed, "ERROR:"), oneLine(r.Err))
+		// The kind leads so a changed host key is told apart from a timeout
+		// at a glance; unclassified errors keep the plain head.
+		tag := "ERROR:"
+		if kind := ErrorKindOf(r.Err); kind != ErrorKindUnknown {
+			tag = "ERROR [" + string(kind) + "]:"
+		}
+		code := codeRed
+		if hostKeyAlert(ErrorKindOf(r.Err)) {
+			code = codeBoldRed
+		}
+		fmt.Fprintf(w, "%s  %s %s\n", head, pal.paint(code, tag), oneLine(r.Err))
 		return
 	}
 	fmt.Fprintln(w, head)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, k := range r.Diff.OK {
-		status := "present & authorized"
-		// Plain text on purpose: no new SGR codes, so the color-stripped-
-		// equals-plain invariant keeps holding.
-		if actual, desired, drifted := commentDrift(cfg, r, k); comments && drifted {
-			status = fmt.Sprintf("present & authorized · comment differs: %q → %q", actual, desired)
-		}
+		glyph, status := okStatus(cfg, r, k, pal, comments)
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
-			pal.paint(codeGreen, "✓"), label(cfg, k), k.Fingerprint, k.Type, status)
+			glyph, label(cfg, k), k.Fingerprint, k.Type, status)
 	}
 	for _, k := range r.Diff.Missing {
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
@@ -125,6 +137,47 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 	for _, pe := range r.ParseErrs {
 		fmt.Fprintf(w, "  ⚠ line %d: unparseable entry\n", pe.Line)
 	}
+	for _, d := range r.Duplicates {
+		fmt.Fprintf(w, "  ⚠ duplicate entry: %s %s appears on %d lines — sshd tries each line, so the least restricted copy wins\n",
+			label(cfg, d.Key), d.Key.Fingerprint, d.Count)
+	}
+	if r.AuthorizedKeys2 {
+		fmt.Fprintln(w, "  ⚠ unmanaged authorized_keys2 present: ~/.ssh/authorized_keys2 is non-empty and")
+		fmt.Fprintln(w, "    sshd's default AuthorizedKeysFile accepts its keys too — this audit does not")
+		fmt.Fprintln(w, "    list them; apply moves the file aside when it writes this server")
+	}
+	renderFileNotes(w, r)
+	if r.NoUsersGranted {
+		fmt.Fprintln(w, "  note: no users granted access in the manifest")
+	}
+
+	fmt.Fprintf(w, "  → %d authorized · %d present · %d missing · %d unauthorized\n",
+		len(r.Diff.OK)+len(r.Diff.Missing), len(r.Diff.OK),
+		len(r.Diff.Missing), len(r.Diff.Unauthorized))
+}
+
+// okStatus renders a matched key's glyph and status cell.
+func okStatus(cfg *config.Config, r ServerResult, k authkeys.Key, pal palette, comments bool) (glyph, status string) {
+	glyph = pal.paint(codeGreen, "✓")
+	status = "present & authorized"
+	// Options drift is security drift (a stripped from=/command=/restrict
+	// widens the key's power), so it changes the glyph and the verdict; %q
+	// keeps hostile option text on one inert line.
+	if actual, desired, drifted := r.optionsDrift(k); drifted {
+		glyph = pal.paint(codeYellow, "⚠")
+		status = fmt.Sprintf("present but %s (server: %s · manifest: %s)",
+			pal.paint(codeYellow, "OPTIONS DIFFER"), quoteOptions(actual), quoteOptions(desired))
+	}
+	// Plain text on purpose: no new SGR codes, so the color-stripped-
+	// equals-plain invariant keeps holding.
+	if actual, desired, drifted := commentDrift(cfg, r, k); comments && drifted {
+		status += fmt.Sprintf(" · comment differs: %q → %q", actual, desired)
+	}
+	return glyph, status
+}
+
+// renderFileNotes writes the absent/empty-file paradox notes.
+func renderFileNotes(w io.Writer, r ServerResult) {
 	// The absent/empty notes are path-aware only when an override is set:
 	// the no-override wording below is pinned byte-identical by the existing
 	// goldens. With an override, the most likely cause flips from "sshd has
@@ -154,13 +207,6 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 			fmt.Fprintln(w, "        verify before dismissing")
 		}
 	}
-	if r.NoUsersGranted {
-		fmt.Fprintln(w, "  note: no users granted access in the manifest")
-	}
-
-	fmt.Fprintf(w, "  → %d authorized · %d present · %d missing · %d unauthorized\n",
-		len(r.Diff.OK)+len(r.Diff.Missing), len(r.Diff.OK),
-		len(r.Diff.Missing), len(r.Diff.Unauthorized))
 }
 
 // emptyFile reports the paradox case: connection fine, file present, zero
@@ -168,6 +214,16 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 func emptyFile(r ServerResult) bool {
 	return len(r.Diff.OK) == 0 && len(r.Diff.Unauthorized) == 0 &&
 		len(r.ParseErrs) == 0 && !r.NoUsersGranted
+}
+
+// quoteOptions renders an options list as it appears on a key line, Go-
+// quoted so hostile on-server text stays one inert token; "(none)" for an
+// unrestricted key.
+func quoteOptions(opts []string) string {
+	if len(opts) == 0 {
+		return "(none)"
+	}
+	return fmt.Sprintf("%q", strings.Join(opts, ","))
 }
 
 func label(cfg *config.Config, k authkeys.Key) string {
@@ -241,6 +297,7 @@ func statusOf(cfg *config.Config, r ServerResult) serverStatus {
 // report. A critical server counts in both drift and critical.
 type tallyCounts struct {
 	compliant, drift, critical, unreachable int
+	hostKeyAlerts                           int // unreachable servers whose host key changed or is revoked
 }
 
 func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
@@ -249,6 +306,9 @@ func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 		switch statusOf(cfg, r) {
 		case statusUnreachable:
 			c.unreachable++
+			if hostKeyAlert(ErrorKindOf(r.Err)) {
+				c.hostKeyAlerts++
+			}
 		case statusCompliant:
 			c.compliant++
 		case statusCritical:
@@ -263,6 +323,12 @@ func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 
 func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
 	c := tallyResults(cfg, results)
-	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable  → exit %d\n",
-		c.compliant, len(results), c.drift, c.critical, c.unreachable, ExitCode(cfg, results))
+	// The alert count appears only when nonzero, keeping the common summary
+	// line byte-identical to earlier releases.
+	alerts := ""
+	if c.hostKeyAlerts > 0 {
+		alerts = fmt.Sprintf(" (%d HOST KEY ALERT)", c.hostKeyAlerts)
+	}
+	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable%s  → exit %d\n",
+		c.compliant, len(results), c.drift, c.critical, c.unreachable, alerts, ExitCode(cfg, results))
 }

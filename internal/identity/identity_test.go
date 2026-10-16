@@ -22,7 +22,8 @@ func TestExpand(t *testing.T) {
 		{in: "/keys/%u/id", want: "/keys/javad/id"},
 		{in: "/k/100%%", want: "/k/100%"},
 		{in: "/abs/plain", want: "/abs/plain"},
-		{in: "%h/key", wantErr: "unsupported token %h"},
+		{in: "%h/key", wantErr: "unsupported token %h (host-dependent"},
+		{in: "%C/key", wantErr: "unsupported token %C"},
 		{in: "/key%", wantErr: "dangling %"},
 		{in: "~x/key", wantErr: "unsupported ~user"},
 		{in: "~/%u/key", want: "/home/j/javad/key"},
@@ -32,7 +33,7 @@ func TestExpand(t *testing.T) {
 		{in: "", want: ""},
 	}
 	for _, tt := range tests {
-		got, err := r.expand(tt.in)
+		got, err := r.expand(tt.in, nil)
 		if tt.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("expand(%q) err = %v, want containing %q", tt.in, err, tt.wantErr)
@@ -42,6 +43,102 @@ func TestExpand(t *testing.T) {
 		if err != nil || got != tt.want {
 			t.Errorf("expand(%q) = %q, %v; want %q", tt.in, got, err, tt.want)
 		}
+	}
+}
+
+func TestExpandHostTokens(t *testing.T) {
+	r := Resolver{Home: "/home/j", LocalUser: "javad"}
+	h := &sshcfg.Host{Alias: "web", HostName: "web.example.com", User: "deploy", Port: 2222}
+	tests := []struct {
+		host          *sshcfg.Host
+		in, want, err string
+	}{
+		{host: h, in: "~/.ssh/%n.key", want: "/home/j/.ssh/web.key"},
+		{host: h, in: "~/.ssh/keys/%r@%h", want: "/home/j/.ssh/keys/deploy@web.example.com"},
+		{host: h, in: "/k/%h-%p", want: "/k/web.example.com-2222"},
+		{host: &sshcfg.Host{Alias: "a", HostName: "a", User: "u"}, in: "/k/%p", want: "/k/22"}, // unset port is ssh's 22
+		{host: h, in: "%d/%u/%%n", want: "/home/j/javad/%n"},
+		{host: h, in: "/k/%C", err: "unsupported token %C"},
+		{host: h, in: "/k/%i", err: "unsupported token %i"},
+		{host: nil, in: "/k/%r", err: "host-dependent"},
+	}
+	for _, tt := range tests {
+		got, err := r.expand(tt.in, tt.host)
+		if tt.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tt.err) {
+				t.Errorf("expand(%q) err = %v, want containing %q", tt.in, err, tt.err)
+			}
+			continue
+		}
+		if err != nil || got != tt.want {
+			t.Errorf("expand(%q) = %q, %v; want %q", tt.in, got, err, tt.want)
+		}
+	}
+}
+
+func TestResolveHostTokenIdentity(t *testing.T) {
+	home := t.TempDir()
+	keyA := writePub(t, home, ".ssh/keys/a.example.com", 1, "")
+	keyB := writePub(t, home, ".ssh/keys/b.example.com", 2, "")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "a", HostName: "a.example.com", User: "u", Identities: []string{"~/.ssh/keys/%h"}},
+		{Alias: "b", HostName: "b.example.com", User: "u", Identities: []string{"~/.ssh/keys/%h"}},
+	})
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+	if len(users) != 2 || users[0].Key != keyA || users[1].Key != keyB ||
+		!reflect.DeepEqual(users[0].Servers, []string{"a"}) || !reflect.DeepEqual(users[1].Servers, []string{"b"}) {
+		t.Errorf("users = %+v, want one per-host key each", users)
+	}
+	if len(users) == 2 && (users[0].Name != "javad-a.example.com" || users[0].Source != "~/.ssh/keys/%h") {
+		t.Errorf("user[0] = %+v, want name from the expanded path and the raw source", users[0])
+	}
+}
+
+func TestResolvePubIdentityFile(t *testing.T) {
+	// ssh_config(5) lets IdentityFile name the public key when the private
+	// half lives in an agent (1Password, Secretive, YubiKey).
+	home := t.TempDir()
+	key := writePub(t, home, ".ssh/1password", 1, "op")
+	r := Resolver{Home: home, LocalUser: "javad"}
+	users, warnings := r.Resolve([]sshcfg.Host{
+		{Alias: "web", User: "u", Identities: []string{"~/.ssh/1password.pub"}},
+	})
+	if len(warnings) > 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+	want := []User{{Name: "javad-1password", Source: "~/.ssh/1password.pub", Comment: "op", Key: key, Servers: []string{"web"}}}
+	if !reflect.DeepEqual(users, want) {
+		t.Errorf("users = %+v, want %+v", users, want)
+	}
+}
+
+func TestResolveUnsafeCommentSkipped(t *testing.T) {
+	// A comment the manifest would reject (tab, ESC, bidi override) must
+	// warn and skip like any other bad .pub — not fail import's self-check.
+	for name, comment := range map[string]string{
+		"tab":  "alice\tlaptop",
+		"esc":  "alice\x1b[31m",
+		"bidi": "alice\u202e",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writePub(t, home, ".ssh/odd", 1, comment)
+			r := Resolver{Home: home, LocalUser: "javad"}
+			users, warnings := r.Resolve([]sshcfg.Host{{Alias: "a", User: "u", Identities: []string{"~/.ssh/odd"}}})
+			if len(users) != 0 {
+				t.Errorf("users = %+v, want none", users)
+			}
+			if !hasWarning(warnings, "comment contains control or format characters, skipped") {
+				t.Errorf("warnings = %v, want an unsafe-comment skip", warnings)
+			}
+			if _, err := r.MarkOperators(nil, []string{"~/.ssh/odd"}); err == nil ||
+				!strings.Contains(err.Error(), "comment contains control or format characters") {
+				t.Errorf("MarkOperators err = %v, want an unsafe-comment error", err)
+			}
+		})
 	}
 }
 
@@ -205,7 +302,7 @@ func TestResolveUnsupportedToken(t *testing.T) {
 	writePub(t, home, ".ssh/id_ed25519", 6, "") // must NOT be scanned: an explicit identity, even a failing one, suppresses defaults
 	r := Resolver{Home: home, LocalUser: "javad"}
 	users, warnings := r.Resolve([]sshcfg.Host{
-		{Alias: "a", User: "u", Identities: []string{"%h/key"}},
+		{Alias: "a", User: "u", Identities: []string{"%C/key"}},
 	})
 	if len(users) != 0 {
 		t.Errorf("users = %+v, want none (failing explicit identity must not fall back to defaults)", users)
@@ -444,7 +541,11 @@ func FuzzExpand(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, in string) {
 		r := Resolver{Home: "/h", LocalUser: "u"}
-		got, err := r.expand(in)
+		got, err := r.expand(in, nil)
+		if err != nil && got != "" {
+			t.Errorf("expand(%q) returned both %q and error %v", in, got, err)
+		}
+		got, err = r.expand(in, &sshcfg.Host{Alias: "a", HostName: "h", User: "r"})
 		if err != nil && got != "" {
 			t.Errorf("expand(%q) returned both %q and error %v", in, got, err)
 		}

@@ -72,15 +72,21 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				return err
 			}
 			// Preflight known_hosts once: a bad path fails with a single
-			// clear error instead of N identical per-server errors.
-			if err := sshread.PreflightKnownHosts(khPath); err != nil {
+			// clear error instead of N identical per-server errors, and the
+			// parsed snapshot is the one every server is verified against.
+			kh, err := sshread.LoadKnownHosts(khPath)
+			if err != nil {
 				return fmt.Errorf("known_hosts preflight: %w", err)
 			}
 			reader := &sshread.Client{
 				KnownHostsPath: khPath,
+				KnownHosts:     kh,
 				AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
 				DialTimeout:    dialTimeout,
-				Log:            log,
+				// Offer the keys granted on each server first, so a
+				// many-key agent cannot exhaust sshd's MaxAuthTries.
+				PreferKeys: func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) },
+				Log:        log,
 			}
 			log.Info(fmt.Sprintf("auditing %d servers (parallelism %d)…", len(cfg.Servers), parallel))
 			start := time.Now()
@@ -90,6 +96,9 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				Logger:           log,
 			})
 			logFleetReadDone(log, cfg, results, start)
+			if err := interrupted(cmd.Context()); err != nil {
+				return err
+			}
 			if err := render(results); err != nil {
 				return err
 			}

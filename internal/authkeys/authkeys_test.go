@@ -97,6 +97,44 @@ func TestParseLineGarbage(t *testing.T) {
 	}
 }
 
+// TestParseLineDeclaredTypeMismatch pins the KEY_TYPE_MISMATCH rule: sshd
+// skips a line whose type token disagrees with the blob, so ParseLine must
+// reject it rather than report a key that cannot log in. The declared token
+// is found after the options field, quotes (with embedded spaces and
+// escaped quotes) included.
+func TestParseLineDeclaredTypeMismatch(t *testing.T) {
+	blob := strings.Fields(testKeyLine(t))[1]
+	tests := []struct {
+		name, line string
+		wantErr    bool
+	}{
+		{"matching bare", "ssh-ed25519 " + blob, false},
+		{"matching with options", `no-pty,command="a b" ssh-ed25519 ` + blob + " c", false},
+		{"matching with escaped quote", `command="echo \"x y\"" ssh-ed25519 ` + blob, false},
+		{"matching tab separated", "no-pty\tssh-ed25519\t" + blob, false},
+		{"cert type over plain blob", "ssh-ed25519-cert-v01@openssh.com " + blob, true},
+		{"rsa type over ed25519 blob", "ssh-rsa " + blob + " alice", true},
+		{"mismatch after options", `from="10.0.0.0/8" ssh-rsa ` + blob, true},
+		{"arbitrary type token", "garbage " + blob, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k, err := ParseLine(tt.line)
+			if tt.wantErr {
+				// Either layer may reject (x/crypto >= v0.56 or our own
+				// declared-type check); the contract is rejection.
+				if err == nil || k != nil {
+					t.Errorf("ParseLine(%q) = (%v, %v), want a rejection", tt.line, k, err)
+				}
+				return
+			}
+			if err != nil || k == nil || k.Type != "ssh-ed25519" {
+				t.Errorf("ParseLine(%q) = (%v, %v), want an ssh-ed25519 key", tt.line, k, err)
+			}
+		})
+	}
+}
+
 func TestParseFileMixed(t *testing.T) {
 	line := testKeyLine(t)
 	data := []byte("# header comment\n\n" + line + " alice@laptop\ngarbage line here\n" + line + "\n")
@@ -392,6 +430,9 @@ func TestRenderTextIssue(t *testing.T) {
 		{"escape byte", "a\x1b[31mb", "contains control or format characters"},
 		{"C1 CSI", "a\u009bb", "contains control or format characters"},
 		{"bidi override (Cf)", "user\u202eevil", "contains control or format characters"},
+		{"line separator (Zl)", "a \u2028evil", "contains control or format characters"},
+		{"paragraph separator (Zp)", "a\u2029evil", "contains control or format characters"},
+		{"non-ASCII letters ok", "jos\u00e9@caf\u00e9", ""},
 		{"leading space", " a", "has leading or trailing whitespace"},
 		{"trailing space", "a ", "has leading or trailing whitespace"},
 		{"all whitespace", "   ", "has leading or trailing whitespace"},
@@ -428,5 +469,27 @@ func TestParseLineRaw(t *testing.T) {
 				t.Errorf("Raw = %q, want %q", k.Raw, tt.want)
 			}
 		})
+	}
+}
+
+// TestDeclaredType pins the type-token scanner behind ParseLine's
+// defense-in-depth mismatch check, independent of whether x/crypto already
+// rejected the line upstream.
+func TestDeclaredType(t *testing.T) {
+	tests := []struct {
+		line       string
+		hasOptions bool
+		want       string
+	}{
+		{"ssh-ed25519 AAAA c", false, "ssh-ed25519"},
+		{"ssh-rsa", false, "ssh-rsa"},
+		{`no-pty,command="a b" ssh-ed25519 AAAA`, true, "ssh-ed25519"},
+		{`command="echo \"x y\"" ssh-rsa AAAA`, true, "ssh-rsa"},
+		{"no-pty\tssh-ed25519\tAAAA", true, "ssh-ed25519"},
+	}
+	for _, tt := range tests {
+		if got := declaredType(tt.line, tt.hasOptions); got != tt.want {
+			t.Errorf("declaredType(%q, %v) = %q, want %q", tt.line, tt.hasOptions, got, tt.want)
+		}
 	}
 }

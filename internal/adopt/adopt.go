@@ -8,15 +8,18 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/naming"
 )
 
 // NewUser is one unknown key adopted into a generated user.
 type NewUser struct {
 	Name     string
-	Line     string   // raw authorized_keys line; first occurrence wins
+	Line     string   // authorized_keys line as found (minus an unsafe comment); first occurrence wins
 	FoundOn  []string // sorted names of servers where the key was found
 	Wildcard bool     // grant renders as ["*"]: the key covers the whole fleet
 }
@@ -85,7 +88,7 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 				continue
 			}
 			if pd, seen := byFP[k.Fingerprint]; seen {
-				if pd.line != k.Raw {
+				if pd.line != k.Raw && pd.line != stripComment(k) {
 					p.Warnings = append(p.Warnings, fmt.Sprintf(
 						"key %s on %s differs from the copy first seen on %s (options/comment); keeping the first",
 						k.Fingerprint, r.Server.Name, pd.foundOn[0]))
@@ -95,6 +98,16 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			}
 			byFP[k.Fingerprint] = &pending{line: k.Raw, comment: k.Comment, foundOn: []string{r.Server.Name}}
 			order = append(order, k.Fingerprint)
+			if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
+				// The manifest rejects such an inline comment, so one odd
+				// remote line would otherwise fail adopt's self-check.
+				// The key is what grants access; adopt it without the
+				// comment.
+				byFP[k.Fingerprint].line = stripComment(k)
+				p.Warnings = append(p.Warnings, fmt.Sprintf(
+					"key %s on %s: comment %s — adopted without its comment",
+					k.Fingerprint, r.Server.Name, issue))
+			}
 		}
 	}
 	for _, u := range cfg.Users { // manifest order keeps output deterministic
@@ -115,6 +128,17 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	return p
 }
 
+// stripComment returns k's line without its trailing comment: options (as
+// written) plus key type and material. Raw is whitespace-trimmed and the
+// parser takes the comment as the trimmed remainder after the key field, so
+// the comment is always Raw's suffix.
+func stripComment(k authkeys.Key) string {
+	if k.Comment == "" {
+		return k.Raw
+	}
+	return strings.TrimRightFunc(strings.TrimSuffix(k.Raw, k.Comment), unicode.IsSpace)
+}
+
 // UnreadableServers lists the distinct servers with issues, in result order.
 func (p Plan) UnreadableServers() []string {
 	var names []string
@@ -129,7 +153,8 @@ func (p Plan) UnreadableServers() []string {
 }
 
 // nameUsers turns accumulated unknown keys into named users, resolving
-// collisions against manifest names and each other with numeric suffixes.
+// collisions against manifest names and each other with numeric suffixes
+// (the allocator import uses too, see internal/naming).
 // A key found on every server of a 2+-server fleet compacts to a wildcard
 // grant, mirroring import's rule, with the same review warning.
 func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) ([]NewUser, []string) {
@@ -139,19 +164,17 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) ([]
 	}
 	var users []NewUser
 	var warnings []string
-	anon := 0
 	for _, fp := range order {
 		pd := byFP[fp]
-		base := sanitizeName(pd.comment)
-		if base == "" {
-			anon++
-			base = fmt.Sprintf("adopted-key-%d", anon)
+		var name string
+		if base := sanitizeName(pd.comment); base != "" {
+			name, _ = naming.Claim(taken, base)
+		} else {
+			// Continue numbering past earlier runs' adopted-key-<n>
+			// (adopt --merge) instead of restarting at 1 and stacking a
+			// suffix onto it.
+			name = naming.ClaimNumbered(taken, "adopted-key-")
 		}
-		name := base
-		for n := 2; taken[name]; n++ {
-			name = fmt.Sprintf("%s-%d", base, n)
-		}
-		taken[name] = true
 		sort.Strings(pd.foundOn)
 		nu := NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn}
 		if len(cfg.Servers) >= 2 && len(pd.foundOn) == len(cfg.Servers) {

@@ -53,7 +53,7 @@ Early development, but the core loop works end to end: **adopt → apply → aud
 | `audit`  | ✅ | Read-only drift report (text + `--json`, monitoring exit codes) |
 | `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
 | `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported) |
-| `apply`  | ✅ | The write path: plan → confirm → atomic write → verify |
+| `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe |
 | `revoke` / `rotate` | — | Not separate commands: both reduce to a manifest edit plus `apply` |
 
 ## Install
@@ -97,6 +97,16 @@ SSHepherd deliberately has a narrow, strict connection posture:
   asks for, or stores a private key.
 - **A populated `known_hosts`** (default `~/.ssh/known_hosts`). Host-key checking is
   **strict, with no TOFU**: an unknown host is an error, not a prompt.
+- **Direct reachability.** Every server is dialed directly. Hosts reachable only
+  through a bastion (`ProxyJump`/`ProxyCommand`) are not supported yet; `import`
+  warns about them, and a failed dial says so.
+- **For `apply`, a POSIX userland on each server:** `/bin/sh` plus `id`, `ls`,
+  `mkdir`, `dirname`, `cat`, `head`, `wc`, `mv`, `rm` and `cksum` (all present in
+  busybox, coreutils and BSD userlands). Every remote command runs as
+  `exec /bin/sh -c '…'`, so accounts whose login shell is fish, csh or tcsh work too.
+  Accounts that cannot run that command are not supported: a restricted shell
+  (`rbash` forbids `/` in command names), or a `ForceCommand`/`command=` wrapper that
+  only allows specific commands.
 
 ## Quick start
 
@@ -171,7 +181,9 @@ $ sshepherd apply                  # then the rest of the fleet
 
 One YAML file — by default `sshepherd.yaml` — with three sections. Unknown fields
 are **rejected**, so a typo like `commment:` fails loudly instead of being silently
-ignored.
+ignored. The file must be a **single YAML document**: a `---` separator (even a
+trailing empty one) or concatenated files fail with
+`manifest contains multiple YAML documents`.
 
 ```yaml
 users:
@@ -226,10 +238,53 @@ whose access should not need updating each time the fleet grows.
 
 ### Per-server `authorized_keys_file`
 
-Mirrors sshd's `AuthorizedKeysFile` directive for servers that do not use the
-default `~/.ssh/authorized_keys`. Must be absolute (`/...`) or home-relative with an
-explicit `~/` prefix. The value is validated strictly and POSIX-single-quote escaped
-before it reaches a remote shell.
+For servers whose sshd reads keys from somewhere other than the default
+`~/.ssh/authorized_keys`. The value is the **resolved path** of the file to manage —
+sshd's `%u`/`%h`/`%%` tokens are *not* expanded, so `%` is rejected (write
+`/etc/ssh/authorized_keys/deploy`, not `/etc/ssh/authorized_keys/%u`). It must be
+absolute (`/...`) or home-relative with an explicit `~/` prefix, must name a file
+(a trailing `/` is rejected), and may not contain control, format or line-separator
+characters. It is POSIX-single-quote escaped before it reaches a remote shell.
+
+When the effective path is the default, `audit` also checks whether
+`~/.ssh/authorized_keys2` — OpenSSH's compiled-in second `AuthorizedKeysFile` —
+exists and is non-empty, and reports it as drift. SSHepherd never reads its keys;
+`apply` moves it aside to `~/.ssh/authorized_keys2.sshepherd.disabled` whenever it
+writes that server (see [Safety model](#safety-model)), so a revoked key cannot keep
+logging in from it. Other sshd `AuthorizedKeysFile` layouts (a custom list in
+`sshd_config`, `AuthorizedKeysCommand`) are not detected — point
+`authorized_keys_file` at the file sshd actually reads.
+
+### Validation rules
+
+The loader fails the whole manifest (exit 3) on any of these:
+
+- **Key lines** must parse as `authorized_keys` entries, and the declared type token
+  must match the key material (`ssh-rsa <ed25519 blob>` is rejected — sshd ignores
+  such a line too).
+- **Key options** must be real OpenSSH options: `agent-forwarding`, `cert-authority`,
+  `command`, `environment`, `expiry-time`, `from`, `no-agent-forwarding`,
+  `no-port-forwarding`, `no-pty`, `no-touch-required`, `no-user-rc`,
+  `no-X11-forwarding`, `permitlisten`, `permitopen`, `port-forwarding`, `principals`,
+  `pty`, `restrict`, `tunnel`, `user-rc`, `verify-required`, `X11-forwarding`. Names
+  are case-insensitive. Valued options need `name="..."` (double-quoted, as sshd
+  requires); flag options must not carry a value. Errors read e.g.
+  `user "alice" key 1: option "no-ptty" is not a recognized authorized_keys option`.
+- **Server `name`, `host` and `user`** may not contain whitespace or control, format
+  or line-separator characters (U+2028/U+2029 included).
+- **One entry per remote file.** Two servers that resolve to the same host
+  (case-insensitive), port, user and effective `authorized_keys` path are an error:
+  `servers "A" and "B" both target user@host:port path; merge them into one entry`.
+  An explicit `~/.ssh/authorized_keys` counts as the same target as unset. Different
+  spellings of one machine (an IP vs. a hostname) cannot be detected. Manifests from
+  older `import` runs that emitted one server per alias of a `Host a a.example.com`
+  line now fail this check; merge those entries.
+- **Access entries** must grant something: a non-wildcard entry with `servers: []` or
+  no `servers:` key fails with `servers is empty (grants no servers)`.
+- **Names and comments** (user names, `comment:`, inline key comments) may not
+  contain control or format characters, the Unicode line/paragraph separators
+  U+2028/U+2029, or leading/trailing whitespace; option values may not contain the
+  same control, format or separator characters. Non-ASCII letters are fine.
 
 ### Comment policy
 
@@ -263,41 +318,119 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--json` | off | Machine-readable report on stdout (schema 1) |
 | `--comments` | off | Also report comment drift on present keys (informational) |
 
-`--json` emits one indented JSON document on stdout, pinned by golden fixtures.
-Field names are a public contract: additive fields keep `"schema": 1`, and only a
-breaking change bumps it — so consumers can hard-fail on an unexpected schema.
-(Fingerprints and the second server are elided below for space.)
+**Drift classes.** Besides missing, unauthorized and unparseable entries, three
+security-relevant classes make a server non-compliant (exit 1), always on:
+
+- a matched key whose **options differ** from the manifest's (e.g. the server lost a
+  `from=` or `command=` restriction);
+- a **duplicate entry** — one key on several lines, where sshd tries each line and
+  the least restricted copy wins;
+- a non-empty, unmanaged **`~/.ssh/authorized_keys2`** (checked only when the audited
+  path is the default).
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ⚠  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present but OPTIONS DIFFER (server: (none) · manifest: "restrict,command=\"/usr/local/bin/backup\",from=\"10.0.0.5\"")
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  bob    SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ⚠ duplicate entry: alice SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8 appears on 2 lines — sshd tries each line, so the least restricted copy wins
+  ⚠ unmanaged authorized_keys2 present: ~/.ssh/authorized_keys2 is non-empty and
+    sshd's default AuthorizedKeysFile accepts its keys too — this audit does not
+    list them; apply moves the file aside when it writes this server
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/2 servers compliant · 2 with drift (0 critical) · 0 unreachable  → exit 1
+```
+
+Comment drift (`--comments`) stays cosmetic and never affects the exit code.
+
+**Classified errors.** An unreachable server's line names the failure kind:
+`host_key_unknown`, `host_key_changed`, `host_key_type_unrecorded`,
+`host_key_revoked`, `host_key`, `agent`, `auth`, `dial`, `timeout`, `canceled`,
+`handshake` or `remote`. Unclassified errors keep a plain `ERROR:` head. A host key
+that **changed** or is marked `@revoked` in `known_hosts` (possible impersonation)
+counts as a host-key alert and makes the run exit `2`:
+
+```console
+web-1 (deploy@10.0.0.1:22)  ERROR [host_key_changed]: ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch
+
+web-2 (deploy@10.0.0.2:22)  ERROR [auth]: ssh deploy@10.0.0.2:22: ssh: unable to authenticate
+
+Summary: 0/2 servers compliant · 0 with drift (0 critical) · 2 unreachable (1 HOST KEY ALERT)  → exit 2
+```
+
+For an unknown host or an unrecorded key type, the hint asks you to verify the
+presented fingerprint out of band (on the console,
+`ssh-keygen -lf /etc/ssh/ssh_host_<type>_key.pub`, or the cloud console), then
+compare it with `ssh-keyscan -t <type> -p <port> '<host>' | ssh-keygen -lf -` before
+appending a matching line yourself. SSHepherd never suggests piping `ssh-keyscan`
+into `known_hosts`.
+
+**JSON.** `--json` emits one indented JSON document on stdout, pinned by golden
+fixtures. Field names are a public contract: additive fields keep `"schema": 1`, and
+only a breaking change bumps it — so consumers can hard-fail on an unexpected schema.
+The report for the classified-error example above:
 
 ```json
 {
   "schema": 1,
   "summary": {
-    "servers": 2, "compliant": 0, "drift": 1,
-    "critical": 0, "unreachable": 1, "exit_code": 1
+    "servers": 2,
+    "compliant": 0,
+    "drift": 0,
+    "critical": 0,
+    "unreachable": 2,
+    "host_key_alerts": 1,
+    "exit_code": 2
   },
   "servers": [
     {
-      "name": "web-1", "host": "10.0.0.1", "port": 22, "user": "deploy",
-      "status": "drift", "error": null,
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "unreachable",
+      "error": "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch",
+      "error_kind": "host_key_changed",
       "keys": {
-        "present": [
-          { "owner": "alice", "fingerprint": "SHA256:fe85Jk…", "type": "ssh-ed25519" }
-        ],
-        "missing": [
-          { "owner": "bob", "fingerprint": "SHA256:4A9jyZ…", "type": "ssh-ed25519" }
-        ],
-        "unauthorized": [
-          { "owner": null, "comment": "who@is-this",
-            "fingerprint": "SHA256:doxiAS…", "type": "ssh-ed25519" }
-        ]
+        "present": [],
+        "missing": [],
+        "unauthorized": []
       },
-      "parse_errors": [{ "line": 3, "error": "line 3: parse authorized_keys line: …" }],
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "unreachable",
+      "error": "ssh deploy@10.0.0.2:22: ssh: unable to authenticate",
+      "error_kind": "auth",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
       "file_absent": false,
       "no_users_granted": false
     }
   ]
 }
 ```
+
+Optional fields, present only when they apply: `servers[].error_kind` (exactly when
+`error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`
+(omitted when 0), `keys.present[].options_drift` (`{"actual": [...], "desired": [...]}`),
+`keys.present[].comment_drift` (with `--comments`), `servers[].duplicates`
+(`[{"owner", "fingerprint", "count"}]`) and `servers[].authorized_keys2_present`.
+See `internal/audit/testdata/*.golden.json` for every shape.
 
 ### `sshepherd import [ssh-config-path]`
 
@@ -317,6 +450,44 @@ are never read. Run it where you actually `ssh` from.
 `--merge` is strictly additive: only genuinely new entries are appended, the
 existing manifest wins every conflict (with a loud warning), and re-running with no
 new input is a byte-identical no-op.
+
+How the ssh config is read — matching OpenSSH (`ssh -G`):
+
+- A trailing `# comment` after arguments (`Host web1 # prod`) is ignored.
+- `Include` keeps the enclosing context: settings after an `Include` belong to the
+  block that was current before it, a `Match` at the end of an included file does
+  not swallow later lines, and `Host` blocks inside a file included from a `Host`
+  block apply only to aliases that block also matches (others are skipped with a
+  warning).
+- `HostName` expands `%h` (the alias) and `%%`; any other token skips the host with
+  a warning.
+- `IdentityFile` expands `%d`, `%u`, `%%`, `%n` (alias), `%h` (resolved HostName),
+  `%r` (remote user) and `%p` (port, default 22); `--operator` paths support only
+  `%d`, `%u` and `%%`. An `IdentityFile` may name the `.pub` itself (agent-held keys
+  such as 1Password, Secretive or a YubiKey); the user name drops the `.pub`.
+
+What gets skipped or merged, always with a warning on stderr:
+
+- A host whose alias, HostName or User contains whitespace or control characters
+  (e.g. a quoted `Host "web 1"`) — it could never be a valid server entry.
+- A `.pub` whose comment has tabs or control/format characters (an error for
+  `--operator`).
+- **One entry per remote file.** When several aliases resolve to the same host
+  (case-insensitive), port, user and `authorized_keys` file — e.g.
+  `Host web1 web1.example.com` — the first in config order is kept and the rest are
+  skipped; access derived through a skipped alias is granted on the kept one. Under
+  `--merge`, an alias whose target is already a manifest server is skipped the same
+  way, its access goes to that server, and it counts toward "conflicts skipped".
+- Hosts with `ProxyJump`/`ProxyCommand` are still imported, with
+  `host "X": ProxyJump <v> set — dialed directly; bastion hosts are not supported yet`.
+
+**Output files** (`-o`, shared with `adopt`): written mode `0600`, fsynced, and
+published without ever clobbering an existing file unless `--force` is given.
+`--force` refuses a symlinked output path
+(`<path> is a symlink; refusing to replace it — pass the link's target path instead`).
+On filesystems without hard links (exFAT, some SMB/FUSE mounts) the no-`--force`
+write falls back to an exclusive create: it still refuses an existing file, but is
+not atomic for readers.
 
 ### `sshepherd adopt`
 
@@ -339,6 +510,14 @@ they were found. The input file is never modified.
 Any unreadable server aborts the run unless `--partial` is set — adopting a
 half-read fleet would silently drop real access.
 
+An on-server key whose comment has tabs or control/format characters is adopted
+**without** its comment (options + type + key are kept), with the warning
+`key <fp> on <server>: comment contains control or format characters — adopted without its comment`.
+Comment-less keys are named `adopted-key-<n>` from the first free `n`, so
+`adopt --merge` re-runs continue the numbering (`adopted-key-2`, not
+`adopted-key-1-2`). A line whose type token does not match its key material counts
+as unparseable.
+
 ### `sshepherd apply`
 
 The write path. Makes each targeted server's `authorized_keys` equal the manifest's
@@ -355,16 +534,48 @@ rendered desired state.
 
 `--dry-run` and `--yes` are mutually exclusive.
 
+Rewrite rows show what changes on a key line, and a rewrite that **drops a
+restrictive option** (`from=`, `command=`, `restrict`, `no-*`, `expiry-time=`,
+`permitopen=`, `permitlisten=`, `cert-authority`, `principals=`) is painted red and
+followed by a warning — highlighted, not refused:
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ~  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite options: "from=\"10.0.0.5\",command=\"/usr/bin/pg_dump-wrapper\"" → (none)
+  ~  (formatting)                                                                         normalize: removing 1 duplicate key lines (some carry options different from the first copy)
+  -  (authorized_keys2)                                                                   disable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2.sshepherd.disabled (unmanaged; sshd would keep accepting its keys)
+  warning: the rewrite of alice (alice@work)'s key drops restrictive option(s) "from=\"10.0.0.5\"", "command=\"/usr/bin/pg_dump-wrapper\"" — the manifest line grants more than the server does today
+  → 3 keys desired · 0 add · 0 remove · 1 rewrite
+```
+
+After the writes, a summary reports each server's outcome:
+
+```console
+a: applied · verified
+b: NOT STARTED: interrupted before the write started
+c: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving agent keys failed: ssh: unable to authenticate)
+Summary: 1/3 servers converged (1 applied) · 1 pending · 1 failed  → exit 1
+```
+
+**Ctrl-C / SIGTERM** during the writes stops new servers from starting; servers
+already being written finish their write, verify and login probe (bounded by a
+2-minute session budget). Unstarted servers show `NOT STARTED` and count as pending
+(exit 1). A second Ctrl-C kills the process immediately. An interrupt before any
+write starts — during `apply`'s planning or at its `[y/N]` prompt — writes nothing
+and exits `3`. In `audit` and `adopt`, an interrupt at any point closes in-flight
+sessions and exits `3` without rendering a report or writing a manifest (servers cut
+short are never passed off as unreachable).
+
 ## Exit codes
 
-Monitoring-style, shared by `audit` and `apply`:
+Monitoring-style, shared by `audit` and `apply` (code `2` is `audit`-only):
 
 | Code | Meaning |
 | ---- | ------- |
 | `0` | Compliant / converged — nothing to do |
 | `1` | Drift, unreachable servers, or pending changes — compliance not proven |
-| `2` | **Critical** drift — a server is missing an operator key |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight |
+| `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply` never returns `2` |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, interrupted `audit`/`adopt`, `apply` interrupted before any write |
 
 ## Safety model
 
@@ -382,22 +593,74 @@ plan, you confirm once (interactive prompt on a TTY, or `--yes`), and only then 
 it write — and only to the servers that actually drifted.
 
 **Self-lockout guard.** Any write that would leave a server without a key held by
-your agent is refused. If the agent's key listing is unavailable at all, every
-removal is refused.
+your agent is refused. Lines with `cert-authority` or `principals=` do not count as
+surviving logins (they accept certificates, not the bare key), and an empty agent
+listing refuses every write. The guard runs again **after** the confirmation prompt
+against a fresh agent listing, so keys that expired or were removed while the prompt
+waited fail that server instead of locking you out.
 
-**Refusals, not guesses.** A server is skipped — loudly, with a `REFUSED:` line —
-when the manifest grants nobody but keys are installed (refusing to wipe), when the
-file contains unparseable lines (refusing to rewrite a file it could not fully
-read), or when the target is a symlink.
+**Refusals, not guesses.** A server is skipped — loudly, with a `REFUSED:` line, and
+nothing changed — when:
 
-**Atomic writes with a backup.** The new content goes to a remote temp file under
-`umask 077` with noclobber, a `.sshepherd.bak` backup is taken first, and the temp
-file is `rename`d into place — readers never see a half-written file. The file is
-then **re-read in the same session** to verify the write landed byte-exactly.
+- the manifest grants nobody but keys are installed (refusing to wipe);
+- the file contains unparseable lines (refusing to rewrite a file it could not fully
+  read);
+- the rendered file would exceed the 1 MiB the read path accepts
+  (`rendered file is N bytes, over the 1048576-byte limit the read path accepts — refusing to write a file that could never be verified or audited`);
+- the target is a symlink, its directory is a symlink, or the file or directory is
+  not owned by the login user (log in as the owning user — managing another user's
+  file as `root` is refused);
+- an ancestor directory — walked both as written and with symlinks resolved, up to
+  the login user's home (or `/` for a path outside it), like sshd's `StrictModes` —
+  is owned by anyone but the login user or root, or is group/other-writable;
+- the file **changed since the plan was read**
+  (`… changed since the plan was read — refusing to overwrite unreviewed content; re-run apply`);
+- another apply holds the file's lock
+  (`another apply is in progress on <path> (lock directory <path>.sshepherd.lock; remove it only if no apply is running)`).
+  A lock left behind by a killed remote shell must be removed by hand; two applies
+  racing for the lock never leave one behind.
+
+**One guarded write per server.** Each write is a single remote script in one
+session, which in order: refuses an unsafe path; takes the per-file lock
+`<path>.sshepherd.lock`; compares the file with the plan's snapshot (byte length plus
+POSIX `cksum`, or absent vs. present) so *what you reviewed is what gets replaced*;
+takes the backups; uploads to `<path>.sshepherd.tmp` under `umask 077`; checks the
+received byte count; and only then `mv`s it into place. Readers never see a
+half-written file, and a dropped connection leaves the original untouched
+(`upload incomplete … original left untouched`).
+
+**Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced on
+every apply. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written
+once, the first time an unmanaged file is replaced, and never overwritten — use it to
+undo the first apply. A symlink planted at either name is never written through.
+
+**`authorized_keys2`.** When phase 1 found a non-empty `~/.ssh/authorized_keys2`
+(default path only), the plan shows
+`disable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2.sshepherd.disabled` and the
+write moves it aside after the verify and before the login probe — even when
+`authorized_keys` itself already matches. A server apply does not write (refused,
+or no grants) keeps a hand-removal warning instead. If the move fails, the server is
+reported `FAILED` (its `authorized_keys` was still written and verified).
+
+**Verify, then prove you can still log in.** After the rename the file is re-read in
+the same session and compared byte-exactly. Then SSHepherd opens a **fresh
+connection offering only the surviving agent keys** (unrestricted ones first) and
+runs a probe command over it, so a surviving key whose line forces a `command=` fails
+the probe just like a refused login. If the probe fails, the previous file (and a
+disabled `authorized_keys2`) is restored over the still-open session and the server
+is reported `FAILED: lockout prevented — restored previous file (…)`. The restore
+takes the lock again and refuses to replace a file that changed since this apply
+wrote it (a concurrent apply); if the restore fails or is refused, the message says
+so and names the `.bak` path.
 
 **Connection posture.** Agent-only authentication, strict `known_hosts` with no
 TOFU, per-server and dial timeouts, and bounded fan-out (`--parallel`, default 32,
-tuned from the fan-out benchmarks).
+tuned from the fan-out benchmarks). `known_hosts` is parsed once per run. Host-key
+algorithms are negotiated in the order `known_hosts` implies, so a host with an sshd
+`HostCertificate` still works when its plain key is pinned; certificate algorithms
+are offered only when a matching `@cert-authority` line exists. Agent keys granted
+on the server (operators first) are offered first, to avoid sshd `MaxAuthTries`
+lockouts with many-key agents. Remote commands always run under `/bin/sh`.
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.
@@ -407,19 +670,38 @@ newlines collapsed, so a hostile server cannot forge report rows or a summary li
 Everything below runs the same commands CI runs.
 
 ```console
-$ make check        # the full gate: tidy, fmt, vet, lint, deadcode, security, test
+$ make check        # the full gate: tidy, fmt, vet, lint, deadcode, security, coverage (≥80%)
 $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 80% line coverage
 $ make integration  # dockerized sshd + build-tagged integration tests
 $ make fuzz         # short fuzz run of every parser
 $ make bench        # fan-out benchmarks
 $ make hooks        # install the lefthook pre-commit/pre-push hooks
-$ make tools        # install pinned dev tooling (golangci-lint, gosec, …)
+$ make tools        # install pinned dev tooling (exact versions, no @latest)
 ```
+
+`make tidy` (part of the gate) uses `go mod tidy -diff`: it fails and prints the
+needed change when `go.mod`/`go.sum` are not tidy, and never rewrites them. Re-run
+`make tools` after upgrading Go — `make lint` refuses a `golangci-lint` built by a
+different Go toolchain.
 
 The gate includes `gofmt`, `go vet`, `golangci-lint`, whole-program `deadcode`,
 `gosec`, `govulncheck`, and `gitleaks`. Container work has its own targets:
-`make docker`, `docker-lint` (hadolint + dockle), `docker-scan` (Trivy), `smoke`.
+`make docker` (passes `--build-arg VERSION=$(git describe --tags --always --dirty)`,
+overridable with `VERSION=`), `docker-lint` (hadolint + dockle), `docker-scan`
+(Trivy), and `smoke` — `scripts/docker-gates.sh`: `--version` and `--help`, an image
+size budget under 30 MB (`SIZE_BUDGET_MB`), and a non-root user check. CI also runs
+`govulncheck` and every fuzz target daily.
+
+**Releases.** Pushing a `v*` tag runs `.github/workflows/release.yml`, which
+publishes a `linux/amd64` + `linux/arm64` image to `ghcr.io/javadh75/sshepherd` with
+semver tags, a BuildKit SBOM and provenance, and a keyless cosign signature:
+
+```console
+$ cosign verify ghcr.io/javadh75/sshepherd@<digest> \
+    --certificate-identity-regexp '^https://github.com/javadh75/SSHepherd/' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
 
 Test kinds in the repo: unit (table-driven), integration (real `sshd` in Docker,
 build-tagged), end-to-end (the CLI binary through adopt → apply → audit), fuzz
@@ -435,14 +717,18 @@ internal/authkeys/   authorized_keys parser and renderer
 internal/audit/      fan-out, diffing, text/JSON reports, exit codes
 internal/adopt/      pure fleet-discovery plan
 internal/apply/      pure plan computation, self-lockout guard, plan report
-internal/sshconn/    shared connection glue (dial, agent auth, host keys)
+internal/sshconn/    shared connection glue (dial, agent auth, host keys, error kinds)
+internal/sshconn/sshtest/  in-process SSH server + agent for hermetic tests
 internal/sshread/    remote read protocol
-internal/sshwrite/   remote write protocol (backup, temp+rename, verify)
+internal/sshwrite/   remote write protocol (guarded script, CAS, lock, verify, probe)
 internal/sshcfg/     OpenSSH client-config parser
 internal/identity/   IdentityFile → .pub resolution
 internal/manifest/   comment-preserving manifest editing
-internal/reconcile/  pure import-merge reconciliation
+internal/reconcile/  pure import-merge reconciliation, same-target collapse
+internal/naming/     collision-free user-name allocator (import, merge, adopt)
 internal/clog/       leveled, colorized logging and output sanitization
+scripts/             integration runner, Docker image gates
+.github/             CI, release and Dependabot workflows
 ```
 
 ### Design docs
@@ -451,7 +737,9 @@ Each slice was specced and planned before it was built; the documents live in
 `docs/superpowers/specs/` and `docs/superpowers/plans/` and remain the reference for
 *why* things work the way they do — notably the audit slice, operator users and
 wildcard access, JSON output and exit codes, the comment-policy memo, the merge
-designs, and the apply slice.
+designs, and the apply slice. The review-hardening pass that added the guarded write,
+login probe, new drift classes and stricter validation is described in
+[`docs/superpowers/specs/2026-10-16-review-hardening-design.md`](docs/superpowers/specs/2026-10-16-review-hardening-design.md).
 
 ## License
 

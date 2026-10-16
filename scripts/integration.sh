@@ -25,7 +25,7 @@ docker run -d --name "$CONTAINER" \
   -p "127.0.0.1:$PORT:22" \
   -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
   -v "$WORKDIR/stale.pub:/seed/stale.pub:ro" \
-  alpine:3.24 sh -c '
+  alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 sh -c '
     set -e
     apk add --no-cache openssh >/dev/null
     ssh-keygen -A
@@ -41,11 +41,17 @@ docker run -d --name "$CONTAINER" \
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse; do
       adduser -D -s /bin/sh "$u"
       sed -i "s|^$u:!|$u:*|" /etc/shadow   # unlock for pubkey login
       mkdir -p "/home/$u/.ssh"
     done
+    # cas/locked/verifyfail/drop/lockout: the agent key alone (write-path
+    # refusal and failure cases); unparse: plus a line apply cannot parse.
+    for u in cas locked verifyfail drop lockout; do
+      cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
+    done
+    { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
     # writer + e2e: drifted seed (agent key + a stale key apply must remove).
     cat /seed/key.pub /seed/stale.pub > /home/writer/.ssh/authorized_keys
     cat /seed/key.pub /seed/stale.pub > /home/e2e/.ssh/authorized_keys
@@ -56,7 +62,7 @@ docker run -d --name "$CONTAINER" \
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true

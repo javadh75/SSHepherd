@@ -1,8 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ------------------------------------------------------------
-FROM golang:1.26-alpine AS build
+# Base images are pinned by digest (tag kept for readability); Dependabot bumps both.
+FROM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
 WORKDIR /src
+
+# Build with the pinned image's Go — never silently download another toolchain
+# because go.mod asks for a newer patch release; fail loudly instead.
+ENV GOTOOLCHAIN=local
 
 # Download modules first so this layer caches independently of source changes.
 COPY go.mod go.sum ./
@@ -17,7 +22,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -o /out/sshepherd ./cmd/sshepherd
 
 # ---- runtime stage ----------------------------------------------------------
-FROM alpine:3.24
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 # Essential tools only — TLS roots, the OpenSSH client family (ssh, ssh-keygen,
 # ssh-keyscan), and tini as PID 1 for correct signal handling. Add nothing else.

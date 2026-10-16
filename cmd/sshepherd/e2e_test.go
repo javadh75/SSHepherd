@@ -3,13 +3,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -157,4 +162,51 @@ access:
 			t.Fatalf("post-refusal audit exit = %d, want 0 (the refused write must not have touched the file) (stderr: %s)\n%s", code, stderr, out)
 		}
 	})
+}
+
+// e2eRemoteCat reads user's ~/.ssh/authorized_keys over a real connection —
+// the assertion channel for "the file was left untouched".
+func e2eRemoteCat(t *testing.T, host, port, kh, user string) string {
+	t.Helper()
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	d := &sshconn.Dialer{KnownHostsPath: kh, AgentSock: os.Getenv("SSH_AUTH_SOCK"), DialTimeout: 10 * time.Second}
+	conn, err := d.Connect(ctx, config.Server{Name: user, Host: host, Port: p, User: user})
+	if err != nil {
+		t.Fatalf("connect %s: %v", user, err)
+	}
+	defer func() { _ = conn.Close() }()
+	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, `cat "$HOME/.ssh/authorized_keys"`, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("cat: code %d, err %v, stderr %q", code, err, stderr.String())
+	}
+	return stdout.String()
+}
+
+// TestE2EApplyRefusesUnparseable: a server whose file holds a line apply
+// cannot parse is refused (a full-file rewrite would destroy it), exit 1,
+// and the file is byte-identical afterwards.
+func TestE2EApplyRefusesUnparseable(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	before := e2eRemoteCat(t, host, port, kh, "unparse")
+	m := writeE2EManifest(t, t.TempDir(), "m.yaml", `
+users:
+  - {name: op, operator: true, keys: ["`+pub+`"]}
+servers:
+  - {name: unparse, host: `+host+`, port: `+port+`, user: unparse}
+`)
+	code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh)
+	if code != 1 {
+		t.Fatalf("apply exit = %d, want 1 (stderr: %s)\n%s", code, stderr, out)
+	}
+	if !strings.Contains(out, "REFUSED:") || !strings.Contains(out, "unparseable line") {
+		t.Errorf("output lacks the unparseable refusal:\n%s", out)
+	}
+	if after := e2eRemoteCat(t, host, port, kh, "unparse"); after != before {
+		t.Errorf("file = %q, want it untouched (%q)", after, before)
+	}
 }

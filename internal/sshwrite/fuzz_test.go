@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// FuzzWriteCmds asserts both builders always produce syntactically valid
+// FuzzWriteCmds asserts every builder always produce syntactically valid
 // POSIX shell for any path: `sh -n` parses without executing anything. A
 // parse failure would mean the path escaped its ShQuote token — the class of
 // defect sshconn's FuzzShQuote hunts, re-checked here against the write
@@ -33,8 +33,10 @@ func FuzzWriteCmds(f *testing.F) {
 			t.Skip("NUL cannot survive execve; config validation rejects control characters")
 		}
 		for name, cmd := range map[string]string{
-			"precheck": precheckCmdFor(path),
-			"write":    writeCmdFor(path),
+			"write absent":   writeCmdFor(path, Snapshot{Absent: true}, 42),
+			"write present":  writeCmdFor(path, SnapshotOf(false, []byte("x\n")), 42),
+			"restore":        restoreCmdFor(path, false, SnapshotOf(false, []byte("x\n"))),
+			"restore absent": restoreCmdFor(path, true, SnapshotOf(false, []byte("x\n"))),
 		} {
 			c := exec.CommandContext(t.Context(), "sh", "-n", "-c", cmd)
 			var stderr bytes.Buffer

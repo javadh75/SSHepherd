@@ -347,3 +347,34 @@ func TestImportMergeInvalidManifest(t *testing.T) {
 		t.Errorf("stdout = %q, want empty on a load failure", out.String())
 	}
 }
+
+// TestImportMergeSameTargetAsManifestServer: an ssh alias whose name is new
+// but whose target is an existing manifest server's would be a duplicate
+// target the loader rejects — it is skipped with a warning naming both, and
+// the identity used through it is granted on the manifest server.
+func TestImportMergeSameTargetAsManifestServer(t *testing.T) {
+	home := hermeticHome(t)
+	keyPath := filepath.Join(home, "work")
+	if err := os.WriteFile(keyPath+".pub", []byte(testkeys.Line(t, 7)+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	m := writeMergeManifest(t)
+	cfg := writeSSHConfig(t, "Host web1.example.com\n  HostName 10.0.0.1\n  User deploy\n  IdentityFile "+keyPath+"\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--merge", m}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	c, err := config.Parse(out.Bytes())
+	if err != nil {
+		t.Fatalf("stdout is not a valid manifest: %v\n%s", err, out.String())
+	}
+	if len(c.Servers) != 1 {
+		t.Errorf("servers = %+v, want only the manifest's web-1", c.Servers)
+	}
+	if n := len(c.DesiredFor("web-1")); n != 2 {
+		t.Errorf("DesiredFor(web-1) = %d keys, want alice + the redirected new key", n)
+	}
+	if !strings.Contains(errBuf.String(), `server "web1.example.com" in the ssh config targets the same host, port, user and authorized_keys file as manifest server "web-1"`) {
+		t.Errorf("stderr = %q, want a same-target warning naming both", errBuf.String())
+	}
+}

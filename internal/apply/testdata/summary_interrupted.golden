@@ -1,0 +1,4 @@
+a: applied · verified
+b: NOT STARTED: interrupted before the write started
+c: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving agent keys failed: ssh: unable to authenticate)
+Summary: 1/3 servers converged (1 applied) · 1 pending · 1 failed  → exit 1

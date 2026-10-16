@@ -2,7 +2,8 @@
 // import a fleet: Host blocks (with pattern matching and Include expansion)
 // resolved to per-alias HostName/Port/User values using OpenSSH's
 // first-obtained-wins rule, plus IdentityFile values, which ssh accumulates
-// across matching blocks instead. It is a converter's reader, not a full
+// across matching blocks instead, and ProxyJump/ProxyCommand so callers can
+// flag bastion-only hosts. It is a converter's reader, not a full
 // ssh_config implementation: Match blocks are skipped with a warning and
 // every other keyword is ignored.
 package sshcfg
@@ -31,7 +32,10 @@ func parseLine(s string) (key string, args []string, ok bool) {
 }
 
 // splitArgs splits on whitespace, honoring double quotes. An unterminated
-// quote swallows the rest of the line as one argument.
+// quote swallows the rest of the line as one argument. An unquoted '#' that
+// starts an argument begins a trailing comment and ends the line, as in
+// OpenSSH's argv_split(terminate_on_comment) — otherwise `Host a # prod`
+// would turn the comment words into host patterns.
 func splitArgs(s string) []string {
 	var args []string
 	var cur strings.Builder
@@ -44,6 +48,8 @@ func splitArgs(s string) []string {
 	}
 	for _, r := range s {
 		switch {
+		case r == '#' && !inQuote && cur.Len() == 0:
+			return args
 		case r == '"':
 			inQuote = !inQuote
 		case unicode.IsSpace(r) && !inQuote:

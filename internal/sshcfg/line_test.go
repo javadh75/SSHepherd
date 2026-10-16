@@ -25,6 +25,13 @@ func TestParseLine(t *testing.T) {
 		{"IdentityFile ~/.ssh/id_ed25519", "identityfile", []string{"~/.ssh/id_ed25519"}, true},
 		{"Host", "host", nil, true},                       // keyword with no args: caller warns
 		{"Host web-1\r", "host", []string{"web-1"}, true}, // CRLF input
+		// A '#' starting an unquoted argument is a trailing comment.
+		{"Host a # prod box", "host", []string{"a"}, true},
+		{"Host a b #c", "host", []string{"a", "b"}, true},
+		{"Include x #y", "include", []string{"x"}, true},
+		{"Host # all comment", "host", nil, true},
+		{"HostName=h#1", "hostname", []string{"h#1"}, true}, // mid-token '#' is literal
+		{"User \"a # b\"", "user", []string{"a # b"}, true}, // quoted '#' is literal
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {

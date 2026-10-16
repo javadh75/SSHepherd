@@ -4,87 +4,151 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Daily: catch CVEs disclosed against pinned deps (govulncheck) and let the
+  # fuzzer explore new inputs, even when the repo is quiet.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Every third-party action is pinned to a full commit SHA (version in the
+# trailing comment); every container image by digest. Dependabot bumps both.
+
 jobs:
   go:
     name: Go checks
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           cache: true
-
-      - name: Verify go.mod is tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
 
       - name: Install pinned tools
         run: |
           make tools
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      # The single gate local and CI share: tidy (fails on a go.mod/go.sum
+      # diff), fmt, vet, lint, deadcode, security, and the race suite with the
+      # coverage minimum. The suite runs exactly once.
       - name: Quality gate
         run: make check
 
-      - name: Coverage report
-        run: make coverage
-
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
+          if-no-files-found: warn
           path: |
             coverage.out
             coverage.html
 
   docker:
     name: Docker image
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    env:
+      IMAGE: sshepherd:ci
+      TRIVY_IMAGE: aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
+      DOCKLE_IMAGE: goodwithtech/dockle:v0.4.15@sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Lint Dockerfile (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: Dockerfile
 
+      - name: Lint Dockerfile config (Trivy)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY_IMAGE" \
+            config --exit-code 1 .
+
       - name: Build image
-        run: docker build -t sshepherd:ci .
+        run: docker build --build-arg "VERSION=${GITHUB_SHA::12}" -t "$IMAGE" .
 
       - name: Scan image for CVEs (Trivy)
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.72.0 image \
-              --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed sshepherd:ci
+            "$TRIVY_IMAGE" image \
+              --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
 
       - name: Lint image (dockle)
         # CIS-DI-0006 (HEALTHCHECK) waived: sshepherd is a CLI, not a service.
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            goodwithtech/dockle:v0.4.15 --exit-code 1 -i CIS-DI-0006 sshepherd:ci
+            "$DOCKLE_IMAGE" --exit-code 1 -i CIS-DI-0006 "$IMAGE"
 
-      - name: Smoke test
-        run: docker run --rm sshepherd:ci --version
+      # --version / --help smoke, < 30 MB size budget, non-root user — the
+      # same script `make smoke` runs locally.
+      - name: Smoke, size and user gates
+        run: ./scripts/docker-gates.sh
 
   integration:
     name: Integration (sshd container)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           cache: true
 
       - name: Run integration tests
         run: make integration
+
+  scheduled:
+    name: Scheduled (govulncheck + fuzz)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Install pinned tools
+        run: |
+          make tools
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Vulnerability scan (govulncheck)
+        run: make vuln
+
+      # -k: run every fuzz target even after one fails, so a single run
+      # surfaces all crashers.
+      - name: Fuzz all parsers
+        run: make -k fuzz
+
+      # A failing fuzz target writes its minimized input to the package's
+      # testdata/fuzz/<Target>/ — collect only the new (untracked) ones.
+      - name: Collect new fuzz crashers
+        if: failure()
+        run: |
+          mkdir -p fuzz-crashers
+          git ls-files --others --exclude-standard -- '*/testdata/fuzz/*' |
+            while read -r f; do
+              mkdir -p "fuzz-crashers/$(dirname "$f")"
+              cp "$f" "fuzz-crashers/$f"
+            done
+
+      - name: Upload fuzz crashers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashers
+          path: fuzz-crashers/
+          if-no-files-found: ignore

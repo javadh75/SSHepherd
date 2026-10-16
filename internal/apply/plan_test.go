@@ -9,6 +9,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -172,6 +173,9 @@ func TestPlanRewriteOptions(t *testing.T) {
 	if len(p.Rewrites) != 1 || !p.Rewrites[0].OptionsDiffer || p.Rewrites[0].CommentDiffers {
 		t.Fatalf("Rewrites = %+v, want exactly one options-only rewrite", p.Rewrites)
 	}
+	if rw := p.Rewrites[0]; strings.Join(rw.ActualOptions, ",") != "no-pty" || len(rw.Loosens) != 1 || rw.Loosens[0] != "no-pty" {
+		t.Errorf("rewrite = %+v, want the on-server options kept and no-pty flagged as a dropped restriction", rw)
+	}
 }
 
 func TestPlanFileAbsentIsAdditiveChange(t *testing.T) {
@@ -313,24 +317,128 @@ func TestGuardNoNoteWhenSessionKeySurvives(t *testing.T) {
 	}
 }
 
-func TestGuardEmptyAgentFallback(t *testing.T) {
+func TestGuardEmptyAgentRefuses(t *testing.T) {
+	// No agent keys: nothing could prove access survives (and the login
+	// probe would have nothing to offer), so even an additive write is
+	// refused — the old "additive writes may proceed" fallback is gone.
 	cfg := planCfg(t)
-	t.Run("additive-only write proceeds", func(t *testing.T) {
-		r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
-		p := planFor(t, buildPlans(t, cfg, r, nil), "web-1")
-		if p.Class != ClassChange {
-			t.Fatalf("Class = %s, want change (nothing removed)", p.Class)
-		}
-	})
-	t.Run("removal is refused", func(t *testing.T) {
-		r := &fakeReader{byName: map[string]audit.ReadResult{
-			"web-1": {Content: []byte(testkeys.Line(t, 9) + "\n")},
-		}}
-		p := planFor(t, buildPlans(t, cfg, r, nil), "web-1")
-		if p.Class != ClassRefused || !strings.Contains(p.Refusal, "agent key listing is unavailable") {
-			t.Fatalf("plan = %+v, want the empty-listing refusal", p)
-		}
-	})
+	for name, read := range map[string]audit.ReadResult{
+		"additive-only": {FileAbsent: true},
+		"removes a key": {Content: []byte(testkeys.Line(t, 9) + "\n")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": read}}
+			p := planFor(t, buildPlans(t, cfg, r, nil), "web-1")
+			if p.Class != ClassRefused || !strings.Contains(p.Refusal, "the agent holds no keys") {
+				t.Fatalf("plan = %s/%q, want the empty-agent refusal", p.Class, p.Refusal)
+			}
+		})
+	}
+}
+
+func TestGuardCertAuthorityIsNotASurvivor(t *testing.T) {
+	// The operator's only agent-held key is granted as a cert-authority
+	// line: sshd accepts certificates it signed, never the bare key, so
+	// this write would lock the session out.
+	y := `
+users:
+  - {name: op, operator: true, keys: ["cert-authority,principals=\"ops\" ` + testkeys.Line(t, 1) + `"]}
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
+	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "cert-authority") {
+		t.Fatalf("plan = %s/%q, want a lockout refusal naming the cert-authority line", p.Class, p.Refusal)
+	}
+	if got := Survivors(p.Desired, heldSet([]string{fp(t, 1), fp(t, 2)})); len(got) != 1 || got[0].Fingerprint != fp(t, 2) {
+		t.Errorf("Survivors = %v, want only alice's bare key", got)
+	}
+}
+
+func TestPlanRefusesUnverifiableRenderSize(t *testing.T) {
+	cfg := planCfg(t)
+	saved := maxRender
+	maxRender = 100 // the real cap is sshconn.MaxRemoteOutput (1 MiB)
+	t.Cleanup(func() { maxRender = saved })
+	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
+	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "could never be verified") {
+		t.Fatalf("plan = %s/%q, want the size refusal", p.Class, p.Refusal)
+	}
+}
+
+func TestPlanCarriesSnapshotAndKeys2(t *testing.T) {
+	cfg := planCfg(t)
+	content := []byte(testkeys.Line(t, 1) + "\n")
+	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: content, AuthorizedKeys2: true}}}
+	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
+	if p.Expect != sshwrite.SnapshotOf(false, content) {
+		t.Errorf("Expect = %+v, want the snapshot of the phase-1 bytes", p.Expect)
+	}
+	if !p.AuthorizedKeys2 {
+		t.Error("AuthorizedKeys2 must carry the phase-1 finding into the plan")
+	}
+	r = &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	if p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1"); !p.Expect.Absent {
+		t.Errorf("Expect = %+v, want absent for a file-absent server", p.Expect)
+	}
+}
+
+func TestPlanDuplicatesAreNamed(t *testing.T) {
+	cfg := planCfg(t)
+	base := string(renderedFor(t, cfg, "web-1"))
+	tests := []struct {
+		name        string
+		extra       string
+		wantDiffers bool
+	}{
+		{"identical copy", testkeys.Line(t, 3) + " bob\n", false},
+		{"copy with its own options", `command="/bin/sh" ` + testkeys.Line(t, 3) + " bob\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(base + tt.extra)}}}
+			p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
+			if p.Class != ClassChange {
+				t.Fatalf("Class = %s, want change", p.Class)
+			}
+			if p.Normalize.Duplicates != 1 || p.Normalize.DuplicateOptionsDiffer != tt.wantDiffers {
+				t.Errorf("Normalize = %+v, want 1 duplicate (options differ: %v)", p.Normalize, tt.wantDiffers)
+			}
+			if p.Normalize.Whitespace {
+				t.Error("a removed duplicate key line must not be reported as whitespace/format")
+			}
+		})
+	}
+}
+
+func TestDroppedRestrictions(t *testing.T) {
+	tests := []struct {
+		name            string
+		actual, desired []string
+		want            []string
+	}{
+		{"none on server", nil, []string{"no-pty"}, nil},
+		{"all dropped", []string{`from="10.0.0.5"`, `command="/x"`, "no-pty", "tty"}, nil, []string{`from="10.0.0.5"`, `command="/x"`, "no-pty"}},
+		{"kept verbatim", []string{"restrict", `expiry-time="20270101"`}, []string{"restrict", `expiry-time="20270101"`}, nil},
+		{"changed value counts", []string{`from="10.0.0.5"`}, []string{`from="0.0.0.0/0"`}, []string{`from="10.0.0.5"`}},
+		{"forwarding and ca", []string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}, nil, []string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := droppedRestrictions(tt.actual, tt.desired); strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Errorf("droppedRestrictions = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestGuardRestrictiveOptionsWarning(t *testing.T) {

@@ -2,13 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -165,6 +171,62 @@ access:
 	}
 }
 
+// TestApplyHermetic drives the real apply wiring end to end against an
+// in-process server running every command through the local /bin/sh:
+// guarded write, verify, post-write login probe, backups, and a byte-stable
+// re-run.
+func TestApplyHermetic(t *testing.T) {
+	home := shortHome(t)
+	srv, hostKey, cfg := hermeticFleet(t, home)
+	target := filepath.Join(home, ".ssh", "authorized_keys")
+	orig, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys2"), []byte("ssh-ed25519 AAAA planted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kh := sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"apply", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	for _, want := range []string{"web-1: applied · verified", "disable ~/.ssh/authorized_keys2"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
+	}
+	k2 := filepath.Join(home, ".ssh", "authorized_keys2")
+	if _, err := os.Lstat(k2); !os.IsNotExist(err) {
+		t.Error("authorized_keys2 still in place: a revoked key there keeps logging in")
+	}
+	if b, err := os.ReadFile(k2 + ".sshepherd.disabled"); err != nil || string(b) != "ssh-ed25519 AAAA planted\n" {
+		t.Errorf("disabled copy = (%q, %v), want the moved authorized_keys2", b, err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil || !strings.HasPrefix(string(got), authkeys.ManagedHeader+"\n") {
+		t.Fatalf("file = (%q, %v), want the managed render", got, err)
+	}
+	for _, suffix := range []string{".sshepherd.bak", ".sshepherd.orig"} {
+		if b, err := os.ReadFile(target + suffix); err != nil || !bytes.Equal(b, orig) {
+			t.Errorf("%s = (%q, %v), want the pre-apply bytes", suffix, b, err)
+		}
+	}
+	if _, err := os.Stat(target + ".sshepherd.lock"); !os.IsNotExist(err) {
+		t.Error("lock directory left behind")
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"apply", "--dry-run", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("re-run exit = %d, want 0 (converged)\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "converged (no changes)") {
+		t.Errorf("re-run is not byte-stable:\n%s", out.String())
+	}
+}
+
 func TestConfirm(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -187,7 +249,7 @@ func TestConfirm(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var errBuf bytes.Buffer
-			ok, err := confirm(strings.NewReader(tt.in), &errBuf, tt.tty, tt.yes, 3, 12)
+			ok, err := confirm(context.Background(), strings.NewReader(tt.in), &errBuf, tt.tty, tt.yes, 3, 12)
 			if ok != tt.wantOK || (err != nil) != tt.wantErr {
 				t.Fatalf("confirm = (%v, %v), want (%v, err=%v)", ok, err, tt.wantOK, tt.wantErr)
 			}
@@ -199,6 +261,33 @@ func TestConfirm(t *testing.T) {
 				t.Errorf("wrote %q to stderr without a TTY prompt", errBuf.String())
 			}
 		})
+	}
+}
+
+// TestConfirmInterrupted: Ctrl-C at the [y/N] prompt cancels ctx; the
+// prompt must return at once (declining, with the cancellation) instead of
+// swallowing the signal while still blocked on stdin.
+func TestConfirmInterrupted(t *testing.T) {
+	pr, pw := io.Pipe() // stdin that never answers
+	t.Cleanup(func() { _ = pw.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	type res struct {
+		ok  bool
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		ok, err := confirm(ctx, pr, io.Discard, true, false, 1, 1)
+		done <- res{ok, err}
+	}()
+	cancel()
+	select {
+	case r := <-done:
+		if r.ok || !errors.Is(r.err, context.Canceled) {
+			t.Fatalf("confirm = (%v, %v), want (false, context.Canceled)", r.ok, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("confirm kept blocking on stdin after ctx was canceled")
 	}
 }
 

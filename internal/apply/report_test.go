@@ -216,3 +216,107 @@ func TestRenderGuardNoteAndWarning(t *testing.T) {
 		t.Errorf("report lacks the restrictive-options warning:\n%s", buf.String())
 	}
 }
+
+// securityPlans: web-1 where the manifest would strip alice's restrictive
+// options, bob's key is installed twice (the copy with its own options),
+// and an unmanaged authorized_keys2 is present.
+func securityPlans(t *testing.T) (*config.Config, []ServerPlan) {
+	t.Helper()
+	cfg := planCfg(t)
+	content := testkeys.Line(t, 1) + " op@sshepherd\n" +
+		`from="10.0.0.5",command="/usr/bin/pg_dump-wrapper" ` + testkeys.Line(t, 2) + " alice@work\n" +
+		testkeys.Line(t, 3) + " bob\n" +
+		"no-pty " + testkeys.Line(t, 3) + " bob\n"
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(content), AuthorizedKeys2: true},
+	}}
+	return cfg, buildPlans(t, cfg, r, []string{fp(t, 1)})
+}
+
+func TestRenderPlanSecurityGolden(t *testing.T) {
+	cfg, plans := securityPlans(t)
+	var buf bytes.Buffer
+	Render(&buf, cfg, plans, RenderOptions{})
+	out := buf.String()
+	for _, want := range []string{
+		`rewrite options: "from=\"10.0.0.5\",command=\"/usr/bin/pg_dump-wrapper\"" → (none)`,
+		`warning: the rewrite of alice (alice@work)'s key drops restrictive option(s) "from=\"10.0.0.5\"", "command=\"/usr/bin/pg_dump-wrapper\""`,
+		"removing 1 duplicate key lines (some carry options different from the first copy",
+		"disable ~/.ssh/authorized_keys2",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report lacks %q:\n%s", want, out)
+		}
+	}
+	checkGolden(t, "plan_security.golden", buf.Bytes())
+
+	buf.Reset()
+	Render(&buf, cfg, plans, RenderOptions{Color: true})
+	if !strings.Contains(buf.String(), "\x1b[1;31mrewrite options:") {
+		t.Errorf("a loosening rewrite must be painted red:\n%q", buf.String())
+	}
+	checkGolden(t, "plan_security_color.golden", buf.Bytes())
+}
+
+// TestPlanKeys2ForcesDisable: a server whose authorized_keys already
+// matches the render is not converged while a non-empty authorized_keys2
+// (which sshd also reads) exists — a revoked key there still logs in. The
+// plan is a change whose only row disables the file.
+func TestPlanKeys2ForcesDisable(t *testing.T) {
+	cfg := planCfg(t)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: renderedFor(t, cfg, "web-1"), AuthorizedKeys2: true},
+	}}
+	plans := buildPlans(t, cfg, r, []string{fp(t, 1)})
+	p := planFor(t, plans, "web-1")
+	if p.Class != ClassChange || !p.DisableKeys2() {
+		t.Fatalf("plan = %s (disable=%v), want a change that disables authorized_keys2", p.Class, p.DisableKeys2())
+	}
+	if len(p.Add)+len(p.Remove)+len(p.Rewrites) != 0 || p.Normalize.Any() {
+		t.Errorf("plan = %+v, want no key or formatting rows (the bytes already match)", p)
+	}
+	var buf bytes.Buffer
+	Render(&buf, cfg, plans, RenderOptions{})
+	if !strings.Contains(buf.String(), "disable ~/.ssh/authorized_keys2") || strings.Contains(buf.String(), "warning: ~/.ssh/authorized_keys2") {
+		t.Errorf("report = %q, want the disable row instead of the hand-removal warning", buf.String())
+	}
+}
+
+// TestRenderKeys2WarningOnRefused: a server apply will not write keeps the
+// hand-removal warning — nothing disables the file there.
+func TestRenderKeys2WarningOnRefused(t *testing.T) {
+	cfg := planCfg(t)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\ngarbage line\n"), AuthorizedKeys2: true},
+	}}
+	plans := buildPlans(t, cfg, r, []string{fp(t, 1)})
+	if p := planFor(t, plans, "web-1"); p.Class != ClassRefused || p.DisableKeys2() {
+		t.Fatalf("plan = %s (disable=%v), want refused without a disable", p.Class, p.DisableKeys2())
+	}
+	var buf bytes.Buffer
+	Render(&buf, cfg, plans, RenderOptions{})
+	if !strings.Contains(buf.String(), "warning: ~/.ssh/authorized_keys2 exists and is non-empty") {
+		t.Errorf("report = %q, want the authorized_keys2 warning", buf.String())
+	}
+}
+
+func TestRenderSummaryInterruptedGolden(t *testing.T) {
+	plans := []ServerPlan{
+		{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeApplied},
+		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomePending, OutcomeErr: errInterrupted},
+		{Server: config.Server{Name: "c"}, Class: ClassChange, Outcome: OutcomeFailed,
+			OutcomeErr: errors.New("lockout prevented — restored previous file (post-write login offering only the surviving agent keys failed: ssh: unable to authenticate)")},
+	}
+	var buf bytes.Buffer
+	RenderSummary(&buf, plans, RenderOptions{})
+	for _, want := range []string{
+		"b: NOT STARTED: interrupted before the write started",
+		"c: FAILED: lockout prevented — restored previous file",
+		"Summary: 1/3 servers converged (1 applied) · 1 pending · 1 failed  → exit 1",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, buf.String())
+		}
+	}
+	checkGolden(t, "summary_interrupted.golden", buf.Bytes())
+}

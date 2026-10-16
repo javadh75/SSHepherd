@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -116,5 +117,73 @@ func TestWriteFileNoClobberTempFileHygiene(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Errorf("directory contains %v, want only out.yaml (no temp leftovers)", names)
+	}
+}
+
+// --force must never replace a symlinked manifest with a regular file (nor
+// silently write through it): it refuses, leaving link and target intact.
+func TestWriteFileNoClobberForceRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.yaml")
+	if err := os.WriteFile(target, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	err := writeFileNoClobber(link, []byte("replacement\n"), true)
+	if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("writeFileNoClobber(symlink, force) = %v, want a symlink refusal", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("link replaced: Lstat = %v, %v", fi, err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "original\n" {
+		t.Errorf("target = %q, want untouched", got)
+	}
+	// Without --force a symlink is an existing name: the usual refusal.
+	if err := writeFileNoClobber(link, []byte("x\n"), false); err == nil || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("no-force write over symlink = %v, want already-exists refusal", err)
+	}
+}
+
+// On filesystems without hard links (Link fails EPERM/ENOTSUP) the
+// no-clobber write falls back to an O_EXCL create instead of failing — and
+// still refuses an existing file.
+func TestWriteFileNoClobberLinkUnsupportedFallsBack(t *testing.T) {
+	for name, linkErr := range map[string]error{
+		"EPERM":   syscall.EPERM,
+		"ENOTSUP": syscall.ENOTSUP,
+	} {
+		t.Run(name, func(t *testing.T) {
+			orig := linkFile
+			linkFile = func(oldname, newname string) error {
+				return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: linkErr}
+			}
+			t.Cleanup(func() { linkFile = orig })
+			dir := t.TempDir()
+			dest := filepath.Join(dir, "out.yaml")
+			if err := writeFileNoClobber(dest, []byte("first\n"), false); err != nil {
+				t.Fatalf("fallback write: %v", err)
+			}
+			got, err := os.ReadFile(dest)
+			if err != nil || string(got) != "first\n" {
+				t.Fatalf("content = %q, %v; want first", got, err)
+			}
+			if info, err := os.Stat(dest); err != nil || info.Mode().Perm() != 0o600 {
+				t.Errorf("mode = %v, %v; want 600", info, err)
+			}
+			err = writeFileNoClobber(dest, []byte("second\n"), false)
+			if err == nil || !strings.Contains(err.Error(), "--force") {
+				t.Errorf("fallback over existing file = %v, want refusal mentioning --force", err)
+			}
+			if got, _ := os.ReadFile(dest); string(got) != "first\n" {
+				t.Errorf("content = %q after refused fallback, want first", got)
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+				t.Errorf("directory has %d entries, want only out.yaml", len(entries))
+			}
+		})
 	}
 }

@@ -236,6 +236,137 @@ servers:
 servers:
   - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\u202ex"}
 `, "control characters"},
+		{"authorized_keys_file line separator (Zl)", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\u2028x"}
+`, "control characters"},
+		{"authorized_keys_file paragraph separator (Zp)", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys\u2029x"}
+`, "control characters"},
+		{"authorized_keys_file sshd %u token", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/ssh/authorized_keys/%u"}
+`, "sshd tokens (%u, %h, %%) are not expanded"},
+		{"authorized_keys_file literal %%", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "~/keys%%1"}
+`, "contains '%'"},
+		{"authorized_keys_file trailing slash", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/etc/keys/"}
+`, "must name a file, not a directory"},
+		{"authorized_keys_file bare root", `
+servers:
+  - {name: s, host: h, user: u, authorized_keys_file: "/"}
+`, "must name a file, not a directory"},
+		{"multiple YAML documents", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+---
+users:
+  - {name: bob, keys: ["KEYB"]}
+`, "manifest contains multiple YAML documents"},
+		{"trailing empty document", "users: []\n---\n", "manifest contains multiple YAML documents"},
+		{"access empty servers", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+servers:
+  - {name: s1, host: h, user: u}
+access:
+  - {user: alice, servers: []}
+`, `access for "alice": servers is empty`},
+		{"access missing servers", `
+users:
+  - {name: alice, keys: ["KEYA"]}
+servers:
+  - {name: s1, host: h, user: u}
+access:
+  - {user: alice}
+`, `access for "alice": servers is empty`},
+		{"duplicate target", `
+servers:
+  - {name: web1, host: web1.example.com, user: deploy}
+  - {name: web1-alias, host: WEB1.example.com, port: 22, user: deploy}
+`, `servers "web1" and "web1-alias" both target deploy@WEB1.example.com:22 ~/.ssh/authorized_keys`},
+		{"duplicate target explicit default path", `
+servers:
+  - {name: a, host: h, user: u}
+  - {name: b, host: h, user: u, authorized_keys_file: "~/.ssh/authorized_keys"}
+`, `servers "a" and "b" both target`},
+		{"duplicate target custom path", `
+servers:
+  - {name: a, host: h, user: u, port: 2222, authorized_keys_file: /etc/k}
+  - {name: b, host: h, user: u, port: 2222, authorized_keys_file: /etc/k}
+`, `servers "a" and "b" both target u@h:2222 /etc/k`},
+		{"unknown key option", `
+users:
+  - {name: alice, keys: ["no-port-forwardin KEYA"]}
+`, "is not a recognized authorized_keys option"},
+		{"made-up key option", `
+users:
+  - {name: alice, keys: ["opt KEYA"]}
+`, "is not a recognized authorized_keys option"},
+		{"key option with escape byte", `
+users:
+  - {name: alice, keys: ["opt\u001b[31m KEYA"]}
+`, "contains control or format characters"},
+		{"key option value with escape byte", `
+users:
+  - {name: alice, keys: ["from=\"1.2.3.4\u001b[2J\" KEYA"]}
+`, "contains control or format characters"},
+		{"key option value with bidi override", `
+users:
+  - {name: alice, keys: ["command=\"echo \u202ex\" KEYA"]}
+`, "contains control or format characters"},
+		{"valued option without value", `
+users:
+  - {name: alice, keys: ["command KEYA"]}
+`, "requires a quoted value"},
+		{"valued option unquoted", `
+users:
+  - {name: alice, keys: ["from=10.0.0.1 KEYA"]}
+`, "requires a quoted value"},
+		{"flag option with value", `
+users:
+  - {name: alice, keys: ["no-pty=\"yes\" KEYA"]}
+`, "does not take a value"},
+		{"key type mismatch", `
+users:
+  - {name: alice, keys: ["ssh-rsa BLOBA"]}
+`, "key type mismatch"},
+		{"server name with escape", `
+servers:
+  - {name: "db-1\u001b[1A\u001b[2K", host: h, user: u}
+`, "name \"db-1\\x1b[1A\\x1b[2K\" contains control or format characters"},
+		{"server name with newline", `
+servers:
+  - {name: "db-1\nok", host: h, user: u}
+`, "contains control or format characters"},
+		{"server name with bidi override", `
+servers:
+  - {name: "db\u202e1", host: h, user: u}
+`, "contains control or format characters"},
+		{"server name with space", `
+servers:
+  - {name: "db 1", host: h, user: u}
+`, "contains whitespace"},
+		{"server host with CSI", `
+servers:
+  - {name: s, host: "h\u009b2J", user: u}
+`, `host "h\u009b2J" contains control or format characters`},
+		{"server host with space", `
+servers:
+  - {name: s, host: "h h", user: u}
+`, "host \"h h\" contains whitespace"},
+		{"server user with newline", `
+servers:
+  - {name: s, host: h, user: "u\nx"}
+`, "user \"u\\nx\" contains control or format characters"},
+		{"server user with line separator", `
+servers:
+  - {name: s, host: h, user: "u\u2028x"}
+`, "contains control or format characters"},
 		{"authorized_keys_file too long", `
 servers:
   - {name: s, host: h, user: u, authorized_keys_file: "/` + strings.Repeat("a", 4096) + `"}
@@ -245,6 +376,7 @@ servers:
 		t.Run(tt.name, func(t *testing.T) {
 			y := strings.ReplaceAll(tt.yaml, "KEYA", kA(t))
 			y = strings.ReplaceAll(y, "KEYB", testkeys.Line(t, 2))
+			y = strings.ReplaceAll(y, "BLOBA", strings.Fields(kA(t))[1])
 			_, err := Parse([]byte(y))
 			if err == nil {
 				t.Fatal("Parse succeeded, want error")
@@ -271,7 +403,7 @@ func TestAuthorizedKeysFileAccepted(t *testing.T) {
 		{"spaces", "/etc/ssh keys/deploy"},
 		{"single quote", "/etc/o'brien/keys"},
 		{"tilde-double-slash allowed, resolves to $HOME/x (POSIX collapses //)", "~//x"},
-		{"trailing slash allowed, fails at runtime", "/etc/keys/"},
+		{"percent-free tilde path", "~/.ssh/authorized_keys2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -290,6 +422,52 @@ servers:
 				t.Errorf("AuthorizedKeysFile = %q, want %q", got, tt.path)
 			}
 		})
+	}
+}
+
+// TestKeyOptionsAccepted pins the accept side of option validation: every
+// allow-listed OpenSSH option passes, names match case-insensitively (as in
+// sshd), and quoted values may carry spaces and commas.
+func TestKeyOptionsAccepted(t *testing.T) {
+	tests := []struct{ name, opts string }{
+		{"flags", "no-port-forwarding,no-agent-forwarding,no-pty,no-user-rc,no-X11-forwarding,no-touch-required"},
+		{"restrict with re-enables", "restrict,agent-forwarding,port-forwarding,pty,user-rc,X11-forwarding"},
+		{"cert-authority and verify-required", "cert-authority,verify-required"},
+		{"upper-case name", "NO-PTY,Restrict"},
+		{"valued", `command="echo a,b c",environment="A=1",expiry-time="20300101",from="10.0.0.0/8,!10.0.0.1"`},
+		{"more valued", `permitlisten="localhost:8080",permitopen="host:22",principals="a,b",tunnel="0"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			y := "users:\n  - name: alice\n    keys:\n      - '" + tt.opts + " " + testkeys.Line(t, 1) + "'\n"
+			cfg, err := Parse([]byte(y))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := cfg.keysByUser["alice"][0].Options; len(got) == 0 {
+				t.Errorf("options not parsed for %q", tt.opts)
+			}
+		})
+	}
+}
+
+// TestDistinctTargetsAccepted pins that the duplicate-target rule keys on
+// the whole (host, port, user, path) tuple: sharing any three is fine.
+func TestDistinctTargetsAccepted(t *testing.T) {
+	y := `
+servers:
+  - {name: a, host: h, user: u}
+  - {name: b, host: h, user: u2}
+  - {name: c, host: h, user: u, port: 2222}
+  - {name: d, host: h, user: u, authorized_keys_file: /etc/k}
+  - {name: e, host: h2, user: u}
+`
+	cfg, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Servers) != 5 {
+		t.Errorf("servers = %d, want 5", len(cfg.Servers))
 	}
 }
 

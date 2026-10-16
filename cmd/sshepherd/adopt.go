@@ -127,22 +127,44 @@ func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownH
 	if err != nil {
 		return nil, err
 	}
-	// Preflight known_hosts once: a bad path fails with a single clear
-	// error instead of N identical per-server errors.
-	if err := sshread.PreflightKnownHosts(khPath); err != nil {
+	// Load known_hosts once: a bad path fails with a single clear error
+	// instead of N identical per-server errors, and the parsed snapshot is
+	// shared across the fan-out.
+	kh, err := sshread.LoadKnownHosts(khPath)
+	if err != nil {
 		return nil, fmt.Errorf("known_hosts preflight: %w", err)
 	}
 	reader := &sshread.Client{
 		KnownHostsPath: khPath,
+		KnownHosts:     kh,
 		AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
 		DialTimeout:    dialTimeout,
 		Log:            log,
+		// Offer granted keys (operators first) before the rest of the
+		// agent, so many-key agents do not trip sshd's MaxAuthTries.
+		PreferKeys: func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) },
 	}
-	return audit.Run(ctx, cfg, reader, audit.Options{
+	results := audit.Run(ctx, cfg, reader, audit.Options{
 		Parallel:         parallel,
 		PerServerTimeout: perServerTimeout,
 		Logger:           log,
-	}), nil
+	})
+	if err := interrupted(ctx); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// interrupted reports a canceled run (Ctrl-C/SIGTERM) as a tool error.
+// Read-only commands check it after their fan-out: servers the interrupt
+// cut short come back as read errors, and treating them as unreachable
+// would render a report (or, under adopt --partial, write a manifest)
+// that misdescribes the fleet.
+func interrupted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("interrupted: %w — no report or manifest produced", err)
+	}
+	return nil
 }
 
 // reportUnreadable logs each unreadable-server issue (warn under --partial,

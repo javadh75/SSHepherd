@@ -9,12 +9,12 @@ package reconcile
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/identity"
+	"github.com/javadh75/SSHepherd/internal/naming"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
@@ -85,6 +85,7 @@ type builder struct {
 	cfg        *config.Config
 	plan       Plan
 	conflicted map[string]bool            // aliases dropped by the server-conflict rule
+	aliasOf    map[string]string          // incoming alias -> manifest server with the same target
 	fleet      map[string]bool            // merged fleet: manifest ∪ appended server names
 	taken      map[string]bool            // claimed user names, seeded with every manifest name
 	extSeen    map[string]map[string]bool // owner -> servers already recorded as extensions
@@ -102,6 +103,7 @@ func Build(cfg *config.Config, hosts []sshcfg.Host, users []identity.User) (Plan
 	b := &builder{
 		cfg:        cfg,
 		conflicted: map[string]bool{},
+		aliasOf:    map[string]string{},
 		fleet:      map[string]bool{},
 		taken:      map[string]bool{},
 		extSeen:    map[string]map[string]bool{},
@@ -125,14 +127,30 @@ func Build(cfg *config.Config, hosts []sshcfg.Host, users []identity.User) (Plan
 // (the idempotent-re-run common case must not accumulate noise), any
 // host/port/user difference drops the incoming entry — manifest wins, a
 // silent overwrite could redirect a future apply at a different machine.
+// An absent name whose target (host, port, user, authorized_keys file) a
+// manifest or already-appended server owns is skipped too — config rejects
+// two entries for one remote file — and its grants are redirected onto that
+// server, which is the same machine.
 func (b *builder) servers(hosts []sshcfg.Host) {
 	byName := make(map[string]config.Server, len(b.cfg.Servers))
+	targets := make(map[target]string, len(b.cfg.Servers))
 	for _, s := range b.cfg.Servers {
 		byName[s.Name] = s
+		if t := targetOf(s.Host, s.Port, s.User, s.AuthorizedKeysFile); targets[t] == "" {
+			targets[t] = s.Name
+		}
 	}
 	for _, h := range hosts {
 		s, exists := byName[h.Alias]
 		if !exists {
+			t := targetOf(h.HostName, h.Port, h.User, "")
+			if owner, dup := targets[t]; dup {
+				b.aliasOf[h.Alias] = owner
+				b.plan.conflicts++
+				b.plan.Warnings = append(b.plan.Warnings, sameTarget(h.Alias, owner, "manifest server"))
+				continue
+			}
+			targets[t] = h.Alias
 			port := h.Port
 			if port == 22 {
 				port = 0 // effective default, omitted on render
@@ -199,7 +217,7 @@ func (b *builder) knownKey(u identity.User, owner config.User, fp string) error 
 		return nil // owner already an operator: idempotent --operator re-run, silent no-op
 	}
 	extended := false
-	for _, srv := range u.Servers {
+	for _, srv := range b.redirect(u.Servers) {
 		switch {
 		case b.conflicted[srv]:
 			b.plan.conflicts++
@@ -259,7 +277,7 @@ func (b *builder) newUser(u identity.User) {
 		return // fleet-wide grant is implied; no access entry
 	}
 	var surviving, dropped []string
-	for _, srv := range u.Servers {
+	for _, srv := range b.redirect(u.Servers) {
 		if b.conflicted[srv] {
 			dropped = append(dropped, srv)
 			continue
@@ -294,6 +312,12 @@ func (b *builder) newUser(u identity.User) {
 	b.plan.NewGrants = append(b.plan.NewGrants, Grant{User: name, Servers: servers})
 }
 
+// redirect maps grants on target-duplicate aliases onto the server that
+// owns the target, deduplicating while keeping first-touch order.
+func (b *builder) redirect(servers []string) []string {
+	return remap(servers, b.aliasOf)
+}
+
 // notAdded words the grantless-user skip warning.
 func notAdded(name string, dropped []string) string {
 	if len(dropped) == 1 {
@@ -305,40 +329,19 @@ func notAdded(name string, dropped []string) string {
 
 // claim reserves a free name for an appended user, warning when the incoming
 // name had to be suffixed — the key is never appended to the existing
-// same-named user (loud over-splitting beats quiet identity merging).
+// same-named user (loud over-splitting beats quiet identity merging). The
+// suffix continues any existing -<n> numbering instead of stacking: the
+// taken set is seeded with every manifest name up front and incoming users
+// claim sequentially in input order, so manifest x plus incoming x, x-2
+// resolves to x-2, x-3 (not x-2-2) with no transient collision — the pinned
+// rename bookkeeping, shared with import and adopt via internal/naming.
 func (b *builder) claim(want string) string {
-	name, renamed := claimName(b.taken, want)
+	name, renamed := naming.Claim(b.taken, want)
 	if renamed {
 		b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
 			"user name %q already taken, using %q for the incoming key", want, name))
 	}
 	return name
-}
-
-// claimName reserves want in taken, suffixing -2, -3, … on collision. The
-// suffix continues any existing -<n> numbering instead of stacking: the
-// taken set is seeded with every manifest name up front and incoming users
-// claim sequentially in input order, so manifest x plus incoming x, x-2
-// resolves to x-2, x-3 (not x-2-2) with no transient collision — the pinned
-// rename bookkeeping.
-func claimName(taken map[string]bool, want string) (string, bool) {
-	if !taken[want] {
-		taken[want] = true
-		return want, false
-	}
-	stem, n := want, 2
-	if i := strings.LastIndex(want, "-"); i > 0 {
-		if v, err := strconv.Atoi(want[i+1:]); err == nil && v >= 2 {
-			stem, n = want[:i], v+1
-		}
-	}
-	for ; ; n++ {
-		cand := stem + "-" + strconv.Itoa(n)
-		if !taken[cand] {
-			taken[cand] = true
-			return cand, true
-		}
-	}
 }
 
 // coversFleet reports whether servers covers the entire merged fleet
@@ -383,4 +386,95 @@ func describe(u identity.User) string {
 		desc += " (default identity)"
 	}
 	return desc
+}
+
+// defaultAuthorizedKeysFile is the path an entry without
+// authorized_keys_file targets; it must equal config's default so target
+// equality matches config validation.
+const defaultAuthorizedKeysFile = "~/.ssh/authorized_keys"
+
+// target is the remote file a server entry writes — the key config
+// validation rejects duplicates of: host lower-cased (hostnames are
+// case-insensitive), port defaulted to 22, path defaulted.
+type target struct {
+	host string
+	port int
+	user string
+	path string
+}
+
+func targetOf(host string, port int, user, path string) target {
+	if port == 0 {
+		port = 22
+	}
+	if path == "" {
+		path = defaultAuthorizedKeysFile
+	}
+	return target{host: strings.ToLower(host), port: port, user: user, path: path}
+}
+
+// sameTarget words the skipped-duplicate warning, naming both aliases.
+func sameTarget(alias, owner, ownerKind string) string {
+	return fmt.Sprintf(
+		"server %q in the ssh config targets the same host, port, user and authorized_keys file as %s %q — skipped (one entry per remote file); its access is granted on %q",
+		alias, ownerKind, owner, owner)
+}
+
+// remap rewrites servers through aliasOf, dropping repeats in first-touch
+// order. The input is never modified.
+func remap(servers []string, aliasOf map[string]string) []string {
+	if len(aliasOf) == 0 || len(servers) == 0 {
+		return servers
+	}
+	out := make([]string, 0, len(servers))
+	seen := make(map[string]bool, len(servers))
+	for _, s := range servers {
+		if to, ok := aliasOf[s]; ok {
+			s = to
+		}
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// CollapseTargets enforces one server entry per remote file among freshly
+// converted hosts, for both import modes: config validation rejects two
+// entries with the same (host, port, user, authorized_keys file), and
+// `Host web1 web1.example.com` routinely yields two aliases for one machine.
+// The first host (input order) keeps the target; every later one is dropped
+// with a warning naming both aliases, and users' grants on it are
+// redirected onto the kept alias — the same machine. Hosts with no User
+// pass through untouched (they never become servers). Inputs are not
+// modified; users is nil under --servers-only.
+func CollapseTargets(hosts []sshcfg.Host, users []identity.User) ([]sshcfg.Host, []identity.User, []string) {
+	var warnings []string
+	owner := make(map[target]string, len(hosts))
+	aliasOf := make(map[string]string)
+	kept := make([]sshcfg.Host, 0, len(hosts))
+	for _, h := range hosts {
+		if h.User == "" {
+			kept = append(kept, h)
+			continue
+		}
+		t := targetOf(h.HostName, h.Port, h.User, "")
+		if first, dup := owner[t]; dup {
+			aliasOf[h.Alias] = first
+			warnings = append(warnings, sameTarget(h.Alias, first, "host"))
+			continue
+		}
+		owner[t] = h.Alias
+		kept = append(kept, h)
+	}
+	if len(aliasOf) == 0 {
+		return kept, users, warnings
+	}
+	out := make([]identity.User, len(users))
+	for i, u := range users {
+		u.Servers = remap(u.Servers, aliasOf)
+		out[i] = u
+	}
+	return kept, out, warnings
 }

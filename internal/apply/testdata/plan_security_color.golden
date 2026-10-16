@@ -1,0 +1,7 @@
+web-1 (deploy@10.0.0.1:22)
+  [0;33m~[0m  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  [1;31mrewrite options: "from=\"10.0.0.5\",command=\"/usr/bin/pg_dump-wrapper\"" → (none)[0m
+  [0;33m~[0m  (formatting)                                                                         normalize: removing 1 duplicate key lines (some carry options different from the first copy)
+  [0;31m-[0m  (authorized_keys2)                                                                   disable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2.sshepherd.disabled (unmanaged; sshd would keep accepting its keys)
+  [1;31mwarning:[0m the rewrite of alice (alice@work)'s key drops restrictive option(s) "from=\"10.0.0.5\"", "command=\"/usr/bin/pg_dump-wrapper\"" — the manifest line grants more than the server does today
+  → 3 keys desired · 0 add · 0 remove · 1 rewrite
+

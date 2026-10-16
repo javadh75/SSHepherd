@@ -1,0 +1,29 @@
+version: 2
+
+# Keep every pin fresh: Go modules, the SHA-pinned GitHub Actions (Dependabot
+# updates the SHA and its version comment together), and the digest-pinned
+# Dockerfile base images. Grouped so each ecosystem is one weekly PR.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      docker-images:
+        patterns: ["*"]

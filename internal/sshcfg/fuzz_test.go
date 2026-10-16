@@ -16,6 +16,8 @@ func FuzzParse(f *testing.F) {
 		"HostName=x\nPort = 22\nUser \"a b\"\n",
 		"Host a a a\nPort 99999\nPort notanum\nHost\n\r\n# c\n",
 		"Host a\n  User u\n  IdentityFile ~/.ssh/k\nHost *\n  IdentityFile %d/k2\nIdentityFile\n",
+		"Host a b # c d\n  HostName %h.x%%\n  ProxyJump j\nHost *\n  HostName %q\n  ProxyCommand nc %h %p\n",
+		"Include x #y\nHost a\n  Include inc\n  User u\n",
 	}
 	for _, s := range seeds {
 		f.Add(s)

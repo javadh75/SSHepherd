@@ -441,3 +441,106 @@ func TestImportPhaseLogs(t *testing.T) {
 		t.Errorf("stderr = %q, want a parsed-hosts phase line", errBuf.String())
 	}
 }
+
+// TestImportCollapsesSameTargetAliases: `Host web1 web1.example.com` is two
+// aliases for one remote file, which the manifest rejects as duplicate
+// targets. The first alias is kept, the second dropped loudly, and a key
+// used only through the dropped alias is granted on the kept one.
+func TestImportCollapsesSameTargetAliases(t *testing.T) {
+	home := hermeticHome(t)
+	keyPath := filepath.Join(home, "only-via-fqdn")
+	if err := os.WriteFile(keyPath+".pub", []byte(testkeys.Line(t, 7)+"\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	path := writeSSHConfig(t, "Host web1 web1.example.com\n  HostName 10.0.0.5\n  User deploy\n"+
+		"Host web1.example.com\n  IdentityFile "+keyPath+"\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	c, err := config.Parse(out.Bytes())
+	if err != nil {
+		t.Fatalf("stdout is not a valid manifest: %v\n%s", err, out.String())
+	}
+	if len(c.Servers) != 1 || c.Servers[0].Name != "web1" {
+		t.Errorf("servers = %+v, want only web1", c.Servers)
+	}
+	if n := len(c.DesiredFor("web1")); n != 1 {
+		t.Errorf("DesiredFor(web1) = %d keys, want the key used via web1.example.com", n)
+	}
+	if !strings.Contains(errBuf.String(), `server "web1.example.com" in the ssh config targets the same host, port, user and authorized_keys file as host "web1"`) {
+		t.Errorf("stderr = %q, want a same-target warning naming both aliases", errBuf.String())
+	}
+}
+
+// TestImportWarnsProxyHosts: bastion-only hosts are imported but flagged,
+// since SSHepherd dials every server directly.
+func TestImportWarnsProxyHosts(t *testing.T) {
+	hermeticHome(t)
+	path := writeSSHConfig(t, "Host inner\n  HostName 10.1.0.5\n  User u\n  ProxyJump bastion\n"+
+		"Host cmd\n  User u\n  ProxyCommand ssh -W %h:%p gw\nHost direct\n  User u\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path, "--servers-only"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	for _, want := range []string{
+		`host "inner": ProxyJump bastion set — dialed directly; bastion hosts are not supported yet`,
+		`host "cmd": ProxyCommand ssh -W %h:%p gw set — dialed directly`,
+	} {
+		if !strings.Contains(errBuf.String(), want) {
+			t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+		}
+	}
+	if strings.Contains(errBuf.String(), `"direct"`) {
+		t.Errorf("stderr = %q, direct host must not be flagged", errBuf.String())
+	}
+}
+
+// TestImportSkipsUnsafeHostFields: a quoted alias with a space, or a
+// HostName/User the manifest would reject, is skipped with a warning; the
+// import succeeds instead of failing its self-check as a "bug:", and the
+// skipped alias does not win a same-target collapse over a valid one.
+func TestImportSkipsUnsafeHostFields(t *testing.T) {
+	hermeticHome(t)
+	path := writeSSHConfig(t, "Host \"web 1\" web1\n  HostName 10.0.0.1\n  User deploy\n"+
+		"Host badhost\n  HostName \"a b\"\n  User u\n"+
+		"Host baduser\n  User \"x y\"\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path, "--servers-only"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	for _, want := range []string{
+		`host "web 1": alias "web 1" contains whitespace, skipped`,
+		`host "badhost": HostName "a b" contains whitespace, skipped`,
+		`host "baduser": User "x y" contains whitespace, skipped`,
+	} {
+		if !strings.Contains(errBuf.String(), want) {
+			t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+		}
+	}
+	if !strings.Contains(out.String(), "name: web1") {
+		t.Errorf("manifest = %q, want the valid alias web1 kept", out.String())
+	}
+	if strings.Contains(out.String(), "badhost") || strings.Contains(out.String(), "baduser") {
+		t.Errorf("manifest = %q, want unsafe hosts left out", out.String())
+	}
+}
+
+// TestImportUnsafePubCommentWarns: a .pub whose comment the manifest would
+// reject (here a tab) is skipped with a warning; the import still succeeds
+// instead of failing its self-check as a "bug:".
+func TestImportUnsafePubCommentWarns(t *testing.T) {
+	home := hermeticHome(t)
+	keyPath := filepath.Join(home, "odd")
+	if err := os.WriteFile(keyPath+".pub", []byte(testkeys.Line(t, 7)+" alice\tlaptop\n"), 0o600); err != nil {
+		t.Fatalf("write pub: %v", err)
+	}
+	path := writeSSHConfig(t, "Host a\n  User u\n  IdentityFile "+keyPath+"\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "bug:") || !strings.Contains(errBuf.String(), "comment contains control or format characters, skipped") {
+		t.Errorf("stderr = %q, want an unsafe-comment skip warning and no bug error", errBuf.String())
+	}
+}

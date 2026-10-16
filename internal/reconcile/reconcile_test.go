@@ -169,6 +169,106 @@ func TestBuildConflictedServerGrantDropped(t *testing.T) {
 	}
 }
 
+// An alias absent from the manifest by name but pointing at a manifest
+// server's target (host, port, user, default authorized_keys file) is the
+// same remote file: config rejects the pair, so it is skipped loudly and
+// its grants land on the manifest server. Host comparison folds case.
+func TestBuildSameTargetAsManifestServer(t *testing.T) {
+	hosts := []sshcfg.Host{
+		{Alias: "web1.example.com", HostName: "10.0.0.1", User: "deploy"},      // = web-1
+		{Alias: "DB", HostName: "10.0.0.3", Port: 2222, User: "deploy"},        // = db-1
+		{Alias: "web-1-root", HostName: "10.0.0.1", User: "root"},              // other user: distinct file
+		{Alias: "web-1-alt", HostName: "10.0.0.1", Port: 2200, User: "deploy"}, // other port
+	}
+	users := []identity.User{
+		{Name: "dave", Source: "~/.ssh/dave", Key: testkeys.Line(t, 9), Servers: []string{"web1.example.com", "DB"}},
+		{Name: "carol-alias", Source: "~/.ssh/carol", Key: testkeys.Line(t, 5), Servers: []string{"web1.example.com"}},
+	}
+	p := mustBuild(t, baseCfg(t), hosts, users)
+	var names []string
+	for _, s := range p.NewServers {
+		names = append(names, s.Name)
+	}
+	if want := []string{"web-1-root", "web-1-alt"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("NewServers = %v, want %v", names, want)
+	}
+	wantGrants := []Grant{{User: "dave", Servers: []string{"web-1", "db-1"}}}
+	if !reflect.DeepEqual(p.NewGrants, wantGrants) {
+		t.Errorf("NewGrants = %+v, want %+v (redirected onto the manifest servers)", p.NewGrants, wantGrants)
+	}
+	wantExt := []Extension{{User: "carol", Servers: []string{"web-1"}}}
+	if !reflect.DeepEqual(p.Extensions, wantExt) {
+		t.Errorf("Extensions = %+v, want %+v", p.Extensions, wantExt)
+	}
+	wantContains(t, "Warnings", p.Warnings,
+		`server "web1.example.com" in the ssh config targets the same host, port, user and authorized_keys file as manifest server "web-1"`,
+		`server "DB" in the ssh config targets the same host, port, user and authorized_keys file as manifest server "db-1"`,
+		`belongs to manifest user "carol" — extending their access`)
+	if p.ConflictsSkipped() != 2 {
+		t.Errorf("ConflictsSkipped() = %d, want 2 (the two skipped aliases)", p.ConflictsSkipped())
+	}
+}
+
+// A manifest server with an authorized_keys_file override is a different
+// remote file than the default an incoming alias targets.
+func TestBuildSameHostDifferentAuthorizedKeysFile(t *testing.T) {
+	cfg := parseCfg(t, `
+users: []
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy, authorized_keys_file: /etc/ssh/keys/deploy}
+access: []
+`)
+	p := mustBuild(t, cfg, []sshcfg.Host{{Alias: "web", HostName: "10.0.0.1", User: "deploy"}}, nil)
+	if len(p.NewServers) != 1 || len(p.Warnings) != 0 {
+		t.Errorf("plan = %+v, want web appended without warnings", p)
+	}
+}
+
+func TestCollapseTargets(t *testing.T) {
+	hosts := []sshcfg.Host{
+		{Alias: "web1", HostName: "box.example.com", User: "u"},
+		{Alias: "web1.example.com", HostName: "box.example.com", Port: 22, User: "u"}, // port 22 = unset
+		{Alias: "nouser", HostName: "box.example.com"},                                // never a server: passes through
+		{Alias: "WEB1-upper", HostName: "BOX.example.com", User: "u"},                 // hostnames fold case
+		{Alias: "other", HostName: "10.0.0.6", User: "u"},
+	}
+	users := []identity.User{
+		{Name: "a", Servers: []string{"web1.example.com", "other"}},
+		{Name: "b", Servers: []string{"web1", "web1.example.com", "WEB1-upper"}},
+		{Name: "op", Operator: true},
+	}
+	origB := append([]string(nil), users[1].Servers...)
+	kept, gotUsers, warnings := CollapseTargets(hosts, users)
+	var names []string
+	for _, h := range kept {
+		names = append(names, h.Alias)
+	}
+	if want := []string{"web1", "nouser", "other"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("kept = %v, want %v", names, want)
+	}
+	wantServers := [][]string{{"web1", "other"}, {"web1"}, nil}
+	for i, u := range gotUsers {
+		if !reflect.DeepEqual(u.Servers, wantServers[i]) {
+			t.Errorf("user %s servers = %v, want %v", u.Name, u.Servers, wantServers[i])
+		}
+	}
+	if !reflect.DeepEqual(users[1].Servers, origB) {
+		t.Errorf("input users mutated: %v", users[1].Servers)
+	}
+	wantContains(t, "warnings", warnings,
+		`server "web1.example.com" in the ssh config targets the same host, port, user and authorized_keys file as host "web1" — skipped`,
+		`server "WEB1-upper" in the ssh config targets the same host, port, user and authorized_keys file as host "web1"`)
+}
+
+func TestCollapseTargetsNoDuplicates(t *testing.T) {
+	hosts := []sshcfg.Host{{Alias: "a", HostName: "h", User: "u"}, {Alias: "b", HostName: "h", User: "v"}}
+	users := []identity.User{{Name: "x", Servers: []string{"a", "b"}}}
+	kept, gotUsers, warnings := CollapseTargets(hosts, users)
+	if !reflect.DeepEqual(kept, hosts) || !reflect.DeepEqual(gotUsers, users) || len(warnings) != 0 {
+		t.Errorf("CollapseTargets = %v, %v, %v; want inputs unchanged, no warnings", kept, gotUsers, warnings)
+	}
+}
+
 // --- Users ---
 
 // Same fingerprint, same name, covered grant: the clean idempotent no-op.

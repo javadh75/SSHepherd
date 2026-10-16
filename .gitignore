@@ -8,3 +8,6 @@ graphify-out/
 
 # Local test manifests and scratch files (real fleet data — never committed)
 /local/
+
+# Stray `go build ./cmd/sshepherd` output at the repo root
+/sshepherd

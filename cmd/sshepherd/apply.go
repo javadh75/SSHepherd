@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -39,10 +40,15 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			"are DELETED by the rewrite; the plan shows a normalize row with the count\n" +
 			"before anything is written. Flow: read the whole fleet, show one plan,\n" +
 			"confirm once (interactive prompt, or --yes), then write only drifted\n" +
-			"servers — atomically (temp file + rename), with a .sshepherd.bak backup\n" +
-			"and a read-back verify. A self-lockout guard refuses any write that would\n" +
-			"remove every agent-held key from a server. --dry-run previews the plan\n" +
-			"and never writes.",
+			"servers — atomically (length-checked temp file + rename, under a\n" +
+			"per-file lock), with a .sshepherd.bak backup of the previous version, a\n" +
+			"one-time .sshepherd.orig of the pre-SSHepherd file, and a read-back\n" +
+			"verify. A server whose file changed after the plan was read is refused\n" +
+			"(re-run apply). A self-lockout guard refuses any write that would leave\n" +
+			"no agent-held key on a server; after each write a fresh login offering\n" +
+			"only the surviving keys must succeed, or the previous file is restored.\n" +
+			"Ctrl-C stops new writes; started ones finish. --dry-run previews the\n" +
+			"plan and never writes.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if parallel < 1 {
@@ -68,16 +74,22 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				return nil
 			}
 
-			khPath, agentFPs, err := applyPreflight(cmd.Context(), knownHosts)
+			pre, err := applyPreflight(cmd.Context(), knownHosts)
 			if err != nil {
 				return err
 			}
+			// Offer each server's granted keys first (operators first), so a
+			// many-key agent cannot exhaust sshd's MaxAuthTries before the
+			// key that matters is tried.
+			preferKeys := func(s config.Server) []string { return audit.GrantedFingerprints(cfg, s.Name) }
 
 			// Phase 1: read + plan (audit's pipeline over the targeted subset).
 			reader := &sshread.Client{
-				KnownHostsPath: khPath,
+				KnownHostsPath: pre.khPath,
+				KnownHosts:     pre.kh,
 				AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
 				DialTimeout:    dialTimeout,
+				PreferKeys:     preferKeys,
 				Log:            log,
 			}
 			log.Info(fmt.Sprintf("planning %d servers (parallelism %d)…", len(targets), parallel))
@@ -89,7 +101,10 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				Logger:           log,
 			})
 			logFleetReadDone(log, cfg, results, start)
-			plans, err := apply.Build(cfg, results, agentFPs)
+			if err := interrupted(cmd.Context()); err != nil {
+				return err // nothing written: phase 2 never started
+			}
+			plans, err := apply.Build(cfg, results, pre.agentFPs)
 			if err != nil {
 				return fmt.Errorf("plan: %w", err) // wrapcheck: wrap at package boundary
 			}
@@ -112,11 +127,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				return finish()
 			}
 
-			// Confirmation gate: prompt on stderr, answer from stdin, so
-			// `apply > plan.txt` captures exactly the report.
-			in := cmd.InOrStdin()
-			errW := cmd.ErrOrStderr()
-			ok, err := confirm(in, errW, stdioIsTTY(in, errW), yes, toApply, len(plans))
+			ok, err := confirmGate(cmd, yes, toApply, len(plans))
 			if err != nil {
 				return err
 			}
@@ -125,23 +136,8 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				return finish() // pending changes → exit 1
 			}
 
-			// Phase 2: write drifted servers only.
-			writer := &sshwrite.FleetWriter{
-				Dialer: &sshconn.Dialer{
-					KnownHostsPath: khPath,
-					AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
-					DialTimeout:    dialTimeout,
-					Log:            log,
-				},
-				Log: log,
-			}
 			log.Info(fmt.Sprintf("applying %d servers (parallelism %d)…", toApply, parallel))
-			apply.Execute(cmd.Context(), plans, writer, apply.ExecOptions{
-				Parallel:         parallel,
-				PerServerTimeout: perServerTimeout,
-				AgentFPs:         agentFPs,
-				Logger:           log,
-			})
+			writePhase(cmd.Context(), log, pre, preferKeys, plans, parallel)
 			return finish()
 		},
 	}
@@ -155,25 +151,67 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 	return cmd
 }
 
+// writePhase runs phase 2 over the drifted servers. The prompt can wait
+// indefinitely: keys may expire (ssh-add -t) or be removed meanwhile, so the
+// agent is re-listed first and the per-server guard re-check and the
+// post-write login probe use what it holds now. A failed listing leaves it
+// empty, which fails every write through the guard rather than guessing.
+func writePhase(ctx context.Context, log *slog.Logger, pre preflight, preferKeys func(config.Server) []string, plans []apply.ServerPlan, parallel int) {
+	freshFPs, err := sshconn.AgentFingerprints(ctx, os.Getenv("SSH_AUTH_SOCK"))
+	if err != nil {
+		log.Error(fmt.Sprintf("re-listing agent keys after confirmation: %v — no server will be written", err))
+		freshFPs = nil
+	}
+	writer := &sshwrite.FleetWriter{
+		Dialer: &sshconn.Dialer{
+			KnownHostsPath: pre.khPath,
+			KnownHosts:     pre.kh,
+			AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
+			DialTimeout:    dialTimeout,
+			PreferKeys:     preferKeys,
+			Log:            log,
+		},
+		Log: log,
+	}
+	apply.Execute(ctx, plans, writer, apply.ExecOptions{
+		Parallel:         parallel,
+		PerServerTimeout: perServerTimeout,
+		AgentFPs:         freshFPs,
+		Logger:           log,
+	})
+	if n := apply.Interrupted(plans); n > 0 {
+		log.Error(fmt.Sprintf("interrupted: %d servers not started (nothing written there); started writes finished", n))
+	}
+}
+
+// preflight is what apply's pre-dial checks hand to both phases.
+type preflight struct {
+	khPath   string
+	kh       *sshconn.KnownHosts // parsed once, shared by the reader and the writer
+	agentFPs []string            // the plan-time guard's ground truth
+}
+
 // applyPreflight runs apply's pre-dial checks: audit's agent and
 // known_hosts preflights, plus the agent-fingerprint capture that is the
-// self-lockout guard's ground truth.
-func applyPreflight(ctx context.Context, knownHosts string) (khPath string, agentFPs []string, err error) {
+// self-lockout guard's ground truth. known_hosts is parsed exactly once per
+// run; both phases share the snapshot.
+func applyPreflight(ctx context.Context, knownHosts string) (preflight, error) {
+	var pre preflight
 	if err := sshread.CheckAgent(ctx, os.Getenv("SSH_AUTH_SOCK")); err != nil {
-		return "", nil, fmt.Errorf("agent preflight: %w", err)
+		return pre, fmt.Errorf("agent preflight: %w", err)
 	}
-	agentFPs, err = sshconn.AgentFingerprints(ctx, os.Getenv("SSH_AUTH_SOCK"))
+	fps, err := sshconn.AgentFingerprints(ctx, os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
-		return "", nil, fmt.Errorf("agent preflight: %w", err)
+		return pre, fmt.Errorf("agent preflight: %w", err)
 	}
-	khPath, err = expandHome(knownHosts)
-	if err != nil {
-		return "", nil, err
+	pre.agentFPs = fps
+	if pre.khPath, err = expandHome(knownHosts); err != nil {
+		return pre, err
 	}
-	if err := sshread.PreflightKnownHosts(khPath); err != nil {
-		return "", nil, fmt.Errorf("known_hosts preflight: %w", err)
+	if pre.kh, err = sshread.LoadKnownHosts(pre.khPath); err != nil {
+		return pre, fmt.Errorf("known_hosts preflight: %w", err)
 	}
-	return khPath, agentFPs, nil
+	return pre, nil
 }
 
 // countChanges tallies the servers phase 2 would write.
@@ -215,10 +253,28 @@ func selectServers(cfg *config.Config, names []string) ([]config.Server, error) 
 	return targets, nil
 }
 
+// confirmGate runs confirm on the command's streams: the prompt goes to
+// stderr and the answer comes from stdin, so `apply > plan.txt` captures
+// exactly the report. Ctrl-C at the prompt is an interrupted run (exit 3,
+// nothing written).
+func confirmGate(cmd *cobra.Command, yes bool, n, total int) (bool, error) {
+	in := cmd.InOrStdin()
+	errW := cmd.ErrOrStderr()
+	ok, err := confirm(cmd.Context(), in, errW, stdioIsTTY(in, errW), yes, n, total)
+	if errors.Is(err, context.Canceled) {
+		fmt.Fprintln(errW)
+		return false, interrupted(cmd.Context())
+	}
+	return ok, err
+}
+
 // confirm gates phase 2. --yes short-circuits; otherwise a TTY prompts once
 // on stderr, defaulting to no; non-TTY without --yes is a usage error —
-// automation must opt in explicitly, never by accident of a pipe.
-func confirm(in io.Reader, errW io.Writer, tty, yes bool, n, total int) (bool, error) {
+// automation must opt in explicitly, never by accident of a pipe. Ctrl-C at
+// the prompt cancels ctx and returns ctx's error at once: the stdin read
+// runs in a goroutine, so the signal is not swallowed while it blocks (the
+// abandoned read ends when the process exits).
+func confirm(ctx context.Context, in io.Reader, errW io.Writer, tty, yes bool, n, total int) (bool, error) {
 	if yes {
 		return true, nil
 	}
@@ -226,11 +282,22 @@ func confirm(in io.Reader, errW io.Writer, tty, yes bool, n, total int) (bool, e
 		return false, errors.New("confirmation required: re-run with --yes (or --dry-run to preview) — stdin/stderr is not a terminal")
 	}
 	fmt.Fprintf(errW, "apply %d of %d servers? [y/N] ", n, total)
-	sc := bufio.NewScanner(in)
-	if !sc.Scan() {
-		return false, nil // EOF (Ctrl-D) declines
+	answer := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(in)
+		if !sc.Scan() {
+			close(answer) // EOF (Ctrl-D) declines
+			return
+		}
+		answer <- sc.Text()
+	}()
+	var text string
+	select {
+	case <-ctx.Done():
+		return false, fmt.Errorf("confirmation: %w", ctx.Err())
+	case text = <-answer:
 	}
-	switch strings.ToLower(strings.TrimSpace(sc.Text())) {
+	switch strings.ToLower(strings.TrimSpace(text)) {
 	case "y", "yes":
 		return true, nil
 	}

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -82,16 +86,30 @@ func logFleetReadDone(log *slog.Logger, cfg *config.Config, results []audit.Serv
 		fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
 }
 
-// run is the testable entrypoint: it builds the Cobra tree, executes it
-// against the provided streams, and maps errors to process exit codes.
+// run is the process entrypoint: SIGINT/SIGTERM cancel the command's
+// context instead of killing the process, so in-flight work unwinds through
+// ctx (sessions close, apply reports what it finished) and run still maps
+// the outcome to an exit code. The first signal cancels; signal handling is
+// then released, so a second Ctrl-C kills the process the default way.
 func run(args []string, stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	release := context.AfterFunc(ctx, stop)
+	defer release()
+	return runContext(ctx, args, stdout, stderr)
+}
+
+// runContext is the testable entrypoint: it builds the Cobra tree, executes
+// it under ctx against the provided streams, and maps errors to process
+// exit codes.
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	a := &app{}
-	root := newRootCmd(a, stdout, stderr)
+	root := newRootCmd(a, stdout, stderr) //nolint:contextcheck // the tree receives ctx through ExecuteContext below
 	if args == nil {
 		args = []string{} // SetArgs(nil) would fall back to os.Args[1:]
 	}
 	root.SetArgs(args)
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	code := exitCodeFor(err)
 	if code == 3 {
 		a.log(stderr).Error(err.Error())

@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 2,
+    "compliant": 0,
+    "drift": 2,
+    "critical": 0,
+    "unreachable": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "drift",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "options_drift": {
+              "actual": [],
+              "desired": [
+                "restrict",
+                "command=\"/usr/local/bin/backup\"",
+                "from=\"10.0.0.5\""
+              ]
+            }
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "drift",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false,
+      "duplicates": [
+        {
+          "owner": "alice",
+          "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+          "count": 2
+        }
+      ],
+      "authorized_keys2_present": true
+    }
+  ]
+}
