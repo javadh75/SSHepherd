@@ -32,6 +32,18 @@ SSHepherd centralizes and automates this.
   host `ssh` binary; host-key verification via `x/crypto/ssh/knownhosts`, strict (no TOFU).
 - **Config format / CLI:** YAML source of truth (`gopkg.in/yaml.v3`); Cobra for subcommands.
 
+## How to work (agents)
+
+**Use workflows and subagents whenever the task fits them** — this is standing
+opt-in from the owner; don't ask first. Fits: whole-repo reviews, research
+across several packages, multi-package fixes/slices with disjoint file
+ownership, and adversarial verification of findings or specs. Shape that has
+worked here: scout inline → fan out by package (disjoint files, no commits
+from agents) → one integrator runs `make check` + `make integration` and
+updates README/spec/Status → an independent verifier → a repair pass. Stay
+solo for conversational turns, single-file edits, and owner-decision points
+(brainstorm questions, spec approval), which are never delegated.
+
 ## README (always keep it current)
 
 `README.md` is the project's user-facing front door. **Always keep it updated** —
