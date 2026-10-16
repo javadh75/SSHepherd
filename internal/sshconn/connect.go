@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -28,15 +27,18 @@ type Dialer struct {
 	// KnownHosts is an optional pre-parsed snapshot (typically the
 	// preflight's). Nil loads KnownHostsPath once, on first Connect, and
 	// reuses that snapshot for every later connection through this Dialer.
-	KnownHosts  *KnownHosts
-	AgentSock   string
+	KnownHosts *KnownHosts
+	// Creds is the run's credential source (key files + agent), shared
+	// with every other Dialer and the read client of the run. Nil offers
+	// nothing: every connect fails with ErrorKindAgent.
+	Creds       *Credentials
 	DialTimeout time.Duration
-	// PreferKeys optionally returns the agent-key fingerprints to offer
-	// first when connecting to srv — the keys the manifest grants there,
-	// operators first (audit.GrantedFingerprints). Remaining agent keys
-	// follow in agent order. Without it an agent holding many keys offers
-	// them in agent order, and sshd's MaxAuthTries (default 6) can
-	// disconnect before the granted key is tried.
+	// PreferKeys optionally returns the fingerprints to offer first when
+	// connecting to srv — the keys the manifest grants there, operators
+	// first (audit.GrantedFingerprints). Remaining keys follow in
+	// Credentials.Signers order (key files, then the agent). Without it a
+	// many-key union is offered in that order, and sshd's MaxAuthTries
+	// (default 6) can disconnect before the granted key is tried.
 	PreferKeys func(srv config.Server) []string
 	Log        *slog.Logger // optional stage-level telemetry; nil discards
 
@@ -45,16 +47,16 @@ type Dialer struct {
 	khErr  error
 }
 
-// ConnectOptions tunes one connection's agent-key offering.
+// ConnectOptions tunes one connection's key offering.
 type ConnectOptions struct {
 	// Prefer lists fingerprints to offer first, in order; nil falls back to
 	// Dialer.PreferKeys(srv).
 	Prefer []string
-	// Only, when non-empty, offers exactly the agent keys with these
-	// fingerprints (in this order) and nothing else — the IdentitiesOnly
-	// posture. A login that succeeds therefore proves the server accepts
-	// one of them (apply's post-write login probe); none held by the agent
-	// is an auth failure, never a fallback to other keys.
+	// Only, when non-empty, offers exactly the held keys (key files or
+	// agent) with these fingerprints (in this order) and nothing else — the
+	// IdentitiesOnly posture. A login that succeeds therefore proves the
+	// server accepts one of them (apply's post-write login probe); none
+	// held is an auth failure, never a fallback to other keys.
 	Only []string
 }
 
@@ -65,6 +67,15 @@ func (d *Dialer) log() *slog.Logger {
 		return d.Log
 	}
 	return slog.New(slog.DiscardHandler)
+}
+
+// credentials returns Creds, or an empty source (no key files, no agent)
+// when none is set.
+func (d *Dialer) credentials() *Credentials {
+	if d.Creds != nil {
+		return d.Creds
+	}
+	return &Credentials{Log: d.Log}
 }
 
 // knownHosts returns the run's single known_hosts snapshot.
@@ -85,8 +96,8 @@ type Conn struct {
 	session *sessionKey
 }
 
-// SessionKeyFP returns the SHA256 fingerprint of the agent key whose
-// signature completed this connection's handshake — the key this session
+// SessionKeyFP returns the SHA256 fingerprint of the key (file or agent)
+// whose signature completed this connection's handshake — the key this session
 // logged in with. Empty when unknown (test fakes, or nothing signed).
 func (c *Conn) SessionKeyFP() string {
 	if c.session == nil {
@@ -111,16 +122,18 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 	return d.ConnectWith(ctx, srv, ConnectOptions{})
 }
 
-// ConnectWith dials srv and completes an agent-authenticated handshake
-// under strict known_hosts verification (agent-only auth, no TOFU), with
-// host-key algorithms ordered from what known_hosts records for srv. The
-// ctx deadline bounds agent I/O, dial, and handshake, and is installed as
-// the socket deadline, so it keeps bounding whatever sessions the caller
-// runs on the returned connection; ctx cancellation aborts the handshake.
-// Callers without a ctx deadline get a hard floor: 3×DialTimeout (30s when
-// DialTimeout is zero). The agent connection lives only until ConnectWith
-// returns — signing happens during auth, never after. Every error is an
-// *Error carrying its audit.ErrorKind.
+// ConnectWith dials srv and completes a public-key handshake under strict
+// known_hosts verification (no TOFU), offering the Credentials' signers
+// (key files, then agent), with host-key algorithms ordered from what
+// known_hosts records for srv. The signers are fetched BEFORE the TCP dial,
+// so an agent problem fails (or, with key files, degrades) without touching
+// the server. The ctx deadline bounds agent I/O, dial, and handshake, and
+// is installed as the socket deadline, so it keeps bounding whatever
+// sessions the caller runs on the returned connection; ctx cancellation
+// aborts the handshake. Callers without a ctx deadline get a hard floor:
+// 3×DialTimeout (30s when DialTimeout is zero). The agent connection lives
+// only until ConnectWith returns — signing happens during auth, never
+// after. Every error is an *Error carrying its audit.ErrorKind.
 func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts ConnectOptions) (*Conn, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		fallback := 3 * d.DialTimeout
@@ -134,14 +147,11 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	dl, _ := ctx.Deadline() // always present: the floor above guarantees it
 	log := d.log()
 
-	agentDialer := net.Dialer{}
-	agentConn, err := agentDialer.DialContext(ctx, "unix", d.AgentSock)
+	signers, release, err := d.credentials().Signers(ctx)
 	if err != nil {
-		return nil, classify(audit.ErrorKindAgent, fmt.Errorf("connect ssh-agent: %w", err))
+		return nil, err // already classified (ErrorKindAgent)
 	}
-	defer func() { _ = agentConn.Close() }() // errcheck: auth is complete (or failed) by return; close error uninteresting
-	_ = agentConn.SetDeadline(dl)            // ag.Signers does I/O mid-handshake; a wedged agent must not hang a worker
-	ag := agent.NewClient(agentConn)
+	defer release() // agent signers sign mid-handshake; release once auth is over
 
 	kh, err := d.knownHosts()
 	if err != nil {
@@ -174,13 +184,8 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 		prefer = d.PreferKeys(srv)
 	}
 	rec := &sessionKey{}
-	auth := ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
-		signers, err := ag.Signers()
-		if err != nil {
-			return nil, fmt.Errorf("agent signers: %w", err)
-		}
-		return wrapSigners(orderSigners(signers, prefer, only), rec), nil
-	})
+	offered := wrapSigners(orderSigners(signers, prefer, only), rec)
+	auth := ssh.PublicKeysCallback(func() ([]ssh.Signer, error) { return offered, nil })
 
 	dialer := net.Dialer{Timeout: d.DialTimeout}
 	log.Debug("dialing", "server", srv.Name, "addr", addr)
@@ -230,8 +235,8 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 
 // orderSigners applies the per-connection key offering: with only set,
 // exactly those keys in that order; otherwise prefer's keys first (in
-// prefer order), then every other agent key in agent order. Fingerprints the
-// agent does not hold are skipped.
+// prefer order), then every other key in Signers order (key files before
+// agent keys). Fingerprints nobody holds are skipped.
 func orderSigners(signers []ssh.Signer, prefer, only []string) []ssh.Signer {
 	byFP := make(map[string]ssh.Signer, len(signers))
 	for _, s := range signers {

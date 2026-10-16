@@ -205,14 +205,14 @@ func TestRenderGuardNoteAndWarning(t *testing.T) {
 		Server: config.Server{Name: "w", User: "u", Host: "h", Port: 22},
 		Class:  ClassChange, Outcome: OutcomePending,
 		Note:    "removes the key this session logged in with; op remains",
-		Warning: "every remaining agent-held key carries a restrictive option (from=/command=/restrict/expiry-time=) — future sshepherd logins may be functionally blocked",
+		Warning: "every remaining key you hold carries a restrictive option (from=/command=/restrict/expiry-time=) — future sshepherd logins may be functionally blocked",
 	}}
 	var buf bytes.Buffer
 	Render(&buf, mixedCfg(t), plans, RenderOptions{})
 	if !strings.Contains(buf.String(), "note: removes the key this session logged in with") {
 		t.Errorf("report lacks the rotate note:\n%s", buf.String())
 	}
-	if !strings.Contains(buf.String(), "warning: every remaining agent-held key") {
+	if !strings.Contains(buf.String(), "warning: every remaining key you hold") {
 		t.Errorf("report lacks the restrictive-options warning:\n%s", buf.String())
 	}
 }
@@ -305,7 +305,7 @@ func TestRenderSummaryInterruptedGolden(t *testing.T) {
 		{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeApplied},
 		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomePending, OutcomeErr: errInterrupted},
 		{Server: config.Server{Name: "c"}, Class: ClassChange, Outcome: OutcomeFailed,
-			OutcomeErr: errors.New("lockout prevented — restored previous file (post-write login offering only the surviving agent keys failed: ssh: unable to authenticate)")},
+			OutcomeErr: errors.New("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate)")},
 	}
 	var buf bytes.Buffer
 	RenderSummary(&buf, plans, RenderOptions{})

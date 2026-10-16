@@ -88,8 +88,9 @@ func SnapshotOf(absent bool, content []byte) Snapshot {
 }
 
 // Request is one server's write: the rendered bytes, the phase-1 snapshot
-// they replace, and the SHA256 fingerprints of the agent keys that must
-// still log in afterwards (the post-write probe offers exactly these).
+// they replace, and the SHA256 fingerprints of the held keys (key files or
+// agent) that must still log in afterwards (the post-write probe offers
+// exactly these, in this order).
 type Request struct {
 	Content   []byte
 	Expect    Snapshot
@@ -291,9 +292,9 @@ func (e *LockedError) Error() string {
 	return fmt.Sprintf("another apply is in progress on %s (lock directory %s%s; remove it only if no apply is running)", e.Path, e.Path, lockSuffix)
 }
 
-// LockoutError reports a write that verified but whose surviving agent keys
-// could not log in on a fresh connection; the previous file was restored
-// unless Restore says otherwise.
+// LockoutError reports a write that verified but whose surviving held keys
+// (key files or agent) could not log in on a fresh connection; the
+// previous file was restored unless Restore says otherwise.
 type LockoutError struct {
 	Path    string
 	Probe   error // why the post-write login failed
@@ -302,9 +303,9 @@ type LockoutError struct {
 
 func (e *LockoutError) Error() string {
 	if e.Restore == nil {
-		return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving agent keys failed: %v)", e.Probe)
+		return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v)", e.Probe)
 	}
-	return fmt.Sprintf("post-write login offering only the surviving agent keys failed (%v) AND restoring the previous file failed (%v) — the previous version is at %s%s; repair it over a session that is still open", e.Probe, e.Restore, e.Path, bakSuffix)
+	return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) AND restoring the previous file failed (%v) — the previous version is at %s%s; repair it over a session that is still open", e.Probe, e.Restore, e.Path, bakSuffix)
 }
 
 func (e *LockoutError) Unwrap() []error { return []error{e.Probe, e.Restore} }
@@ -365,7 +366,7 @@ func (w *FleetWriter) log() *slog.Logger {
 // sanitized-error path: remote text never reaches a terminal raw.
 func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request) error {
 	if len(req.Survivors) == 0 {
-		return fmt.Errorf("write on %s: no surviving agent key to prove the post-write login with — refusing to write", srv.Name)
+		return fmt.Errorf("write on %s: no surviving key you hold to prove the post-write login with — refusing to write", srv.Name)
 	}
 	conn, err := w.connectForWrite(ctx, srv)
 	if err != nil {
@@ -410,7 +411,7 @@ func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request)
 	}
 
 	// Stage 3: prove the lockout guard's prediction — a fresh login offering
-	// only the surviving agent keys, running probeCmd. Every write is probed,
+	// only the surviving held keys (key files first), running probeCmd. Every write is probed,
 	// not only those that drop the session key: an options rewrite on the
 	// survivor (from= fails the handshake, command= the probe command), or
 	// sshd rejecting the survivor's algorithm, locks out just as surely, and

@@ -3,6 +3,7 @@
 - **Date:** 2026-07-06 (updated 2026-07-09: auth/host-key/concurrency decisions; full review fixes — remote-read semantics, example corrections)
 - **Status:** Implemented (2026-07-09) — see `docs/superpowers/plans/2026-07-09-audit-slice.md` (all tasks executed; per-batch spec+quality reviews and a final whole-slice review passed)
 - **Scope:** First real vertical slice of SSHepherd — a read-only drift audit.
+- **Amended by:** [`--identity` key-file auth](2026-10-16-identity-keyfile-auth-design.md) (2026-10-16) — the planned `--identity` follow-up and its passphrase policy.
 
 ## Context & goal
 

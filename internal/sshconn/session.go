@@ -1,18 +1,13 @@
 package sshconn
 
 import (
-	"context"
-	"fmt"
 	"io"
-	"net"
 	"sync"
-	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 )
 
-// sessionKey records which agent key completed the handshake. Mutex-guarded:
+// sessionKey records which key (file or agent) completed the handshake. Mutex-guarded:
 // the transport may try several signers; the last successful Sign is the one
 // the server accepted.
 type sessionKey struct {
@@ -79,28 +74,4 @@ func wrapSigners(signers []ssh.Signer, rec *sessionKey) []ssh.Signer {
 		out[i] = rs
 	}
 	return out
-}
-
-// AgentFingerprints lists the SHA256 fingerprints of every key the agent at
-// sock holds — captured once at apply's preflight as the self-lockout
-// guard's ground truth. An empty agent yields an empty list, not an error:
-// CheckAgent owns that verdict, and apply's guard refuses every write when
-// the listing is empty.
-func AgentFingerprints(ctx context.Context, sock string) ([]string, error) {
-	dialer := net.Dialer{Timeout: 3 * time.Second}
-	conn, err := dialer.DialContext(ctx, "unix", sock)
-	if err != nil {
-		return nil, fmt.Errorf("SSH agent unreachable at %s: %w", sock, err)
-	}
-	defer func() { _ = conn.Close() }()                   // errcheck: close error is uninteresting on a preflight
-	_ = conn.SetDeadline(time.Now().Add(3 * time.Second)) // a wedged agent must not hang the preflight
-	keys, err := agent.NewClient(conn).List()
-	if err != nil {
-		return nil, fmt.Errorf("list SSH agent keys at %s: %w", sock, err)
-	}
-	fps := make([]string, 0, len(keys))
-	for _, k := range keys {
-		fps = append(fps, ssh.FingerprintSHA256(k))
-	}
-	return fps, nil
 }

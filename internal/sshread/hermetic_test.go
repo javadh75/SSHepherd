@@ -11,6 +11,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/keyfile"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 )
 
@@ -28,7 +30,7 @@ func hermeticClient(t *testing.T, home string) (*Client, *sshtest.Server, config
 	})
 	c := &Client{
 		KnownHostsPath: sshtest.KnownHostsFile(t, srv.KnownHostsLine(host.PublicKey())),
-		AgentSock:      sshtest.Agent(t, sshtest.Key(2), user),
+		Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, sshtest.Key(2), user)},
 		DialTimeout:    5 * time.Second,
 	}
 	return c, srv, config.Server{Name: "web-1", Host: srv.Host, Port: srv.Port, User: "deploy"}
@@ -117,5 +119,23 @@ func TestClientSharesOneSnapshotAndPrefersGrantedKeys(t *testing.T) {
 	}
 	if got := fake.Attempts(); len(got) != 2 || got[0] != granted || got[1] != granted {
 		t.Errorf("auth attempts = %v, want only the granted key, once per read", got)
+	}
+}
+
+// TestReadWithKeyFileNoAgent: the Client's Creds carry an --identity key
+// and no agent at all — the headless read path.
+func TestReadWithKeyFileNoAgent(t *testing.T) {
+	home := shortTempDir(t)
+	writeHomeFile(t, home, ".ssh/authorized_keys", "key-line\n")
+	c, _, srv := hermeticClient(t, home)
+	c.Creds = &sshconn.Credentials{Files: []keyfile.Identity{sshtest.Identity(t, "/keys/ci", sshtest.Key(1))}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := c.ReadAuthorizedKeys(ctx, srv)
+	if err != nil {
+		t.Fatalf("ReadAuthorizedKeys with a key file and no agent: %v", err)
+	}
+	if res.SessionKeyFP != sshtest.Fingerprint(t, sshtest.Key(1)) {
+		t.Errorf("SessionKeyFP = %q, want the key file's fingerprint", res.SessionKeyFP)
 	}
 }

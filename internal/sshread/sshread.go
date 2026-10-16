@@ -1,5 +1,6 @@
 // Package sshread is the real KeyReader: it connects to a server over SSH
-// (agent auth, strict known_hosts) and reads the remote authorized_keys.
+// (key files and/or agent, strict known_hosts) and reads the remote
+// authorized_keys.
 // The connection glue lives in internal/sshconn (shared with the write
 // path); this package keeps the read decision logic and its public API.
 package sshread
@@ -29,12 +30,48 @@ func LoadKnownHosts(path string) (*sshconn.KnownHosts, error) {
 	return sshconn.LoadKnownHosts(path) // sshconn labels the error with the path (wrapcheck-exempt package)
 }
 
-// CheckAgent verifies a usable SSH agent — reachable and holding at least
+// CheckCredentials verifies, before any server is dialed, that the run has
+// something to authenticate with, so a missing or empty agent fails once
+// with a clear message instead of once per server with a cryptic "no
+// supported methods remain". With no key files the agent is required and
+// the messages are checkAgent's, verbatim. needHeld (apply) additionally
+// requires a non-empty held set — plain keys, since certificates never
+// count toward the self-lockout guard — so a certificate-only operator is
+// refused with a certificate-specific message; audit/adopt (needHeld
+// false) count signers, so a certificate-only agent passes, as before.
+func CheckCredentials(ctx context.Context, creds *sshconn.Credentials, needHeld bool) error {
+	if len(creds.Files) == 0 {
+		if err := checkAgent(ctx, creds.AgentSock); err != nil {
+			return err
+		}
+	}
+	if !needHeld {
+		signers, release, err := creds.Signers(ctx)
+		if err != nil {
+			return err
+		}
+		release()
+		if len(signers) == 0 {
+			return errors.New("no keys to authenticate with")
+		}
+		return nil
+	}
+	held, err := creds.Held(ctx)
+	if err != nil {
+		return err
+	}
+	if len(held) == 0 {
+		return errors.New("the keys you hold (identity files + agent) are all certificates — certificates never count toward apply's self-lockout guard, so no write could be proven safe (ssh-add a plain key, or pass --identity PATH)")
+	}
+	return nil
+}
+
+// checkAgent verifies a usable SSH agent — reachable and holding at least
 // one key — before any server is dialed, so a missing or empty agent fails
 // once with a clear message instead of once per server with a cryptic
 // "no supported methods remain" auth error. ctx cancellation aborts the
 // dial; the 3s timeout still bounds a wedged agent on its own.
-func CheckAgent(ctx context.Context, sock string) error {
+func checkAgent(ctx context.Context, sock string) error {
 	if sock == "" {
 		return errors.New("no SSH agent: SSH_AUTH_SOCK is not set (start ssh-agent and ssh-add a key)")
 	}
@@ -62,11 +99,13 @@ type Client struct {
 	KnownHostsPath string
 	// KnownHosts optionally supplies the preflight's parsed snapshot
 	// (LoadKnownHosts); nil parses KnownHostsPath once, on first read.
-	KnownHosts  *sshconn.KnownHosts
-	AgentSock   string
+	KnownHosts *sshconn.KnownHosts
+	// Creds is the run's credential source (key files + agent); one per
+	// run, shared with the writer and the probe.
+	Creds       *sshconn.Credentials
 	DialTimeout time.Duration
-	// PreferKeys optionally names the agent keys to offer first per server
-	// (see sshconn.Dialer.PreferKeys) — typically audit.GrantedFingerprints.
+	// PreferKeys optionally names the keys to offer first per server (see
+	// sshconn.Dialer.PreferKeys) — typically audit.GrantedFingerprints.
 	PreferKeys func(srv config.Server) []string
 	Log        *slog.Logger // optional stage-level telemetry; nil discards
 
@@ -103,7 +142,7 @@ func (c *Client) getDialer() *sshconn.Dialer {
 		c.dialer = &sshconn.Dialer{
 			KnownHostsPath: c.KnownHostsPath,
 			KnownHosts:     c.KnownHosts,
-			AgentSock:      c.AgentSock,
+			Creds:          c.Creds,
 			DialTimeout:    c.DialTimeout,
 			PreferKeys:     c.PreferKeys,
 			Log:            c.Log,

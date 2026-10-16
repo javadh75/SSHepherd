@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,14 +33,16 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 		parallel   int
 		jsonOut    bool
 		comments   bool
+		idf        identityFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Report drift between the manifest and each server's authorized_keys (read-only)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if parallel < 1 {
-				return fmt.Errorf("--parallel must be >= 1 (got %d)", parallel)
+			ids, err := validateFlags(parallel, &idf)
+			if err != nil {
+				return err
 			}
 			log := a.logger
 			cfg, err := config.Load(cfgPath)
@@ -64,9 +65,6 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 			if len(cfg.Servers) == 0 {
 				return render(nil)
 			}
-			if err := sshread.CheckAgent(cmd.Context(), os.Getenv("SSH_AUTH_SOCK")); err != nil {
-				return fmt.Errorf("agent preflight: %w", err)
-			}
 			khPath, err := expandHome(knownHosts)
 			if err != nil {
 				return err
@@ -78,13 +76,20 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("known_hosts preflight: %w", err)
 			}
+			creds, err := ids.credentials(cmd.Context(), log)
+			if err != nil {
+				return err
+			}
+			if err := checkCredentials(cmd.Context(), creds, false); err != nil {
+				return err
+			}
 			reader := &sshread.Client{
 				KnownHostsPath: khPath,
 				KnownHosts:     kh,
-				AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
+				Creds:          creds,
 				DialTimeout:    dialTimeout,
-				// Offer the keys granted on each server first, so a
-				// many-key agent cannot exhaust sshd's MaxAuthTries.
+				// Offer the keys granted on each server first, so many held
+				// keys cannot exhaust sshd's MaxAuthTries.
 				PreferKeys: func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) },
 				Log:        log,
 			}
@@ -111,6 +116,7 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the report as machine-readable JSON on stdout")
 	cmd.Flags().BoolVar(&comments, "comments", false,
 		"also report comment drift on present keys (informational; never affects the exit code)")
+	idf.register(cmd)
 	return cmd
 }
 

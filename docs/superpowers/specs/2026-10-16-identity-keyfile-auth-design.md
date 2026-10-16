@@ -1,9 +1,11 @@
 # Design: `--identity` key-file authentication
 
 - **Date:** 2026-10-16
-- **Status:** Approved design (brainstorm 2026-10-16), revised after an
+- **Status:** Implemented 2026-10-16 (plan
+  `docs/superpowers/plans/2026-10-16-identity-keyfile-auth.md`), no design
+  deviations. Approved design (brainstorm 2026-10-16), revised after an
   adversarial three-lens critique (security, feasibility against the code,
-  operator UX); not yet implemented.
+  operator UX).
 - **Amends:**
   [audit slice](2026-07-06-audit-slice-design.md) (fulfils the planned
   `--identity` follow-up and settles the passphrase policy it deferred),
@@ -102,6 +104,13 @@ Flag validation (exit 3, before anything else):
 A manifest typo or bad `--known-hosts` therefore fails before the operator
 types a passphrase.
 
+This order applies to agent-only runs too, which moves the `known_hosts`
+preflight ahead of the agent check compared with before this slice: a run
+with no agent **and** a missing `known_hosts` now reports the
+`known_hosts preflight` error first instead of the agent one. Both are
+exit 3 before any server is contacted; only which of two preflight errors
+is shown first changes (accepted, 2026-10-16 verification).
+
 ## Loading (`internal/keyfile`, new)
 
 ```go
@@ -140,7 +149,11 @@ opened once, checked on the descriptor, and read from the same descriptor
 - **Unreadable** (`EACCES`) → targeted error: "cannot read FILE as uid N
   (owner M, mode 0600) — see README 'Container usage'".
 - **Bounded reads**: key files are capped at 64 KiB, passphrase files at
-  4 KiB; larger → error (protects against `/dev/zero` and mistakes).
+  4 KiB; larger → error (protects against `/dev/zero` and mistakes). Each
+  read lands in **one** buffer of cap+1 bytes allocated up front (never
+  `io.ReadAll`'s regrowth), and the `/dev/tty` line reader likewise
+  allocates its line once at full capacity, so no stale partial copy of a
+  secret is left behind for the wipe to miss.
 
 ### Passphrase files
 
@@ -149,8 +162,10 @@ opened and read **exactly once per run, before any key is tried**, and
 cached in memory for the duration of `Load` (a pipe can only be read once).
 Exactly one trailing `\n` or `\r\n` is stripped. A file that is empty after
 stripping → exit 3 naming the file (never tried silently as an empty
-passphrase). Cached bytes are `clear()`ed when `Load` returns — best effort
-only: Go cannot guarantee no copies, and bcrypt intermediates are not
+passphrase). Cached bytes (the full capacity, stripped newline included)
+are `clear()`ed when `Load` returns, on success and refusal alike (a test
+captures the cache through a seam and asserts every byte is zero) — best
+effort only: Go cannot guarantee no copies, and bcrypt intermediates are not
 zeroed. Documented as such.
 
 ### Per key, in flag order
@@ -250,8 +265,11 @@ type HeldKey struct{ Fingerprint, Source string } // Source: KEY path or "agent"
   the agent (applying the ctx deadline to the socket) and the returned
   closer is `defer`red until `ConnectWith` returns. The
   `PublicKeysCallback` only returns the pre-fetched, ordered, wrapped list.
-  Order: file signers (flag order), then agent signers (agent order, plain
-  keys before certificates). De-duplicated by fingerprint, keeping the file
+  Order: file signers (flag order), then agent signers in the agent's own
+  order, certificates included where the agent lists them — decision 1's
+  "exactly today's" offer. (An earlier draft put agent certificates after
+  plain keys; that changed the agent-only offer, and with it which key
+  signs and how much of `MaxAuthTries` is spent, so it was dropped.) De-duplicated by fingerprint, keeping the file
   signer. Agent failure: with file keys present → continue with file keys
   and warn once per run (`sync.Once` shared with `Held`); with no file
   keys → today's `classify(ErrorKindAgent, …)`, unchanged.
@@ -271,12 +289,25 @@ type HeldKey struct{ Fingerprint, Source string } // Source: KEY path or "agent"
   *signers* — a cert-only agent passes, as today. For `apply`
   (`needHeld=true`) it requires a non-empty held set; a cert-only operator
   is refused with a certificate-specific message. With no `--identity`, the
-  agent messages are today's verbatim.
+  agent messages are today's verbatim. **Visible change:** a cert-only
+  agent with no `--identity` on `apply` now exits 3 at preflight (the keys
+  you hold are all certificates) where it previously reached per-server
+  guard refusals and exit 1 — intended by decision 4, documented in the
+  README.
 - **`AgentFingerprints`** is replaced by `Credentials.Held` at every call
-  site.
+  site. Agent-only error wording is preserved: a failed agent dial reads
+  `SSH agent unreachable at SOCK: …` from `Held` (as `AgentFingerprints`
+  did) and `connect ssh-agent: …` from `Signers` (as `ConnectWith` did);
+  the post-confirmation re-list prefix stays `re-listing agent keys after
+  confirmation` without `--identity` and becomes `re-listing the keys you
+  hold after confirmation` with it.
 - **Error kinds:** no new JSON `error_kind`; key-file problems are exit 3
   before any server is contacted; `ErrorKindAgent` and `ErrorKindAuth`
-  keep their meaning.
+  keep their meaning. Because `Signers` runs before the dial, an
+  `ag.Signers()` failure (agent reachable, listing fails) is now
+  `ErrorKindAgent` before any TCP connection, where it used to surface
+  mid-handshake inside the `PublicKeysCallback` and be classified with the
+  handshake — rare, and the new kind names the real culprit.
 - **`sshtest`** gains a way to authorize a file key with no agent.
 
 Each command builds **one** `Credentials` per run and shares it with the

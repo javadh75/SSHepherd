@@ -61,7 +61,7 @@ Update the README whenever any of these change:
 - **Exit codes** and their meanings.
 - **Behavior a user must be able to predict before running a write** — the full-file
   rewrite contract, refusal classes, the self-lockout guard, backup/atomicity/verify,
-  the confirmation gate, connection posture (agent-only auth, strict `known_hosts`).
+  the confirmation gate, connection posture (agent and/or `--identity` key-file auth, strict `known_hosts`).
 - **Status** — the implemented-slice table, when a slice lands.
 - **Make targets, install paths, container usage, repo layout.**
 
@@ -268,7 +268,7 @@ of each server's `authorized_keys` from the manifest (comment policy via
 `config.DesiredComment`, managed header, operators first), two-phase
 plan → confirm (TTY prompt / `--yes` / `--dry-run`) → write, byte-exact
 convergence, and a self-lockout guard that refuses any write leaving no
-agent-held key on a server. Writes are atomic (remote temp + rename,
+held key (agent or `--identity`) on a server. Writes are atomic (remote temp + rename,
 `umask 077`, noclobber), preceded by a `.sshepherd.bak` backup and
 followed by an in-session verify re-read; symlinked targets and
 unparseable files are refused. Built on the extracted `internal/sshconn`
@@ -286,7 +286,7 @@ refusal plus a StrictModes-style ancestor walk, `mkdir` lock, compare-and-swap
 against the plan snapshot via length + POSIX `cksum`, `.bak` + one-time `.orig`
 backups, length-checked upload before `mv`), followed by verify, moving a
 non-empty `~/.ssh/authorized_keys2` aside, and a fresh login probe offering only
-the surviving agent keys that must run a probe command (catching forced
+the surviving held keys that must run a probe command (catching forced
 `command=`) — a failed probe restores the previous file under a fresh lock and
 compare-and-swap; the guard ignores `cert-authority`/`principals=` lines and
 re-runs after the prompt; option loosening is highlighted; Ctrl-C stops new
@@ -306,3 +306,20 @@ collapse, proxy warnings) with shared naming in `internal/naming`. Tooling is
 pinned (tools, actions by SHA, images by digest), `make check` ends in the
 coverage gate, CI runs daily vuln/fuzz, and tagged releases publish a signed
 multi-arch image.
+**Key-file authentication** (specced in
+`docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md`, planned in
+`docs/superpowers/plans/2026-10-16-identity-keyfile-auth.md`): `audit`,
+`adopt` and `apply` take repeatable `--identity PATH` plus
+`--identity-passphrase-file FILE` / `--identity-passphrase KEY=FILE`
+(TTY prompt as the last resort; no passphrase env var or flag value), in union
+with the agent (agent optional once a key file is given). The new
+`internal/keyfile` does the OpenSSH permission rule on the opened descriptor
+(pipes exempt), container classification before any prompt, read-once
+passphrase files and a foreground-only `/dev/tty` prompter; `sshconn.Credentials`
+is the run's one credential source (`Signers` before the dial, `Held` with
+sources, certificates offered but never held); `sshread.CheckCredentials`
+replaces the agent preflight. apply's guard, survivor order (key files before
+agent keys) and probe reason over every held key, refusals list each key with
+its source, and an agent-only-survivor warning flags a stray agent satisfying
+the guard for a headless run. Headless rotation (old + new `--identity`) is
+covered end to end by the integration suite.

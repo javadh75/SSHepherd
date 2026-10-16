@@ -137,7 +137,7 @@ access:
   - {user: alice, servers: [web-1]}
 `)
 	var out, errBuf bytes.Buffer
-	code := run([]string{"audit", "--config", path}, &out, &errBuf)
+	code := run([]string{"audit", "--config", path, "--known-hosts", emptyKnownHosts(t)}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3", code)
 	}

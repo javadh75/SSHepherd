@@ -36,7 +36,7 @@ func itDialer(t *testing.T) (*sshconn.Dialer, string, int) {
 	}
 	return &sshconn.Dialer{
 		KnownHostsPath: os.Getenv("SSHEPHERD_IT_KNOWN_HOSTS"),
-		AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
+		Creds:          &sshconn.Credentials{AgentSock: os.Getenv("SSH_AUTH_SOCK")},
 		DialTimeout:    10 * time.Second,
 	}, host, port
 }
@@ -89,7 +89,7 @@ func itRendered(t *testing.T) []byte {
 	return []byte(authkeys.ManagedHeader + "\n" + itPub(t) + "\n")
 }
 
-// itSurvivors lists the agent key's fingerprint — the key the post-write
+// itSurvivors lists the harness key's fingerprint — the key the post-write
 // login probe offers.
 func itSurvivors(t *testing.T) []string {
 	t.Helper()

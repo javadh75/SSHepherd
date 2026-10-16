@@ -18,6 +18,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 )
@@ -756,7 +757,7 @@ func TestApplyRequiresSurvivors(t *testing.T) {
 	r := req("x\n")
 	r.Survivors = nil
 	err := seamedWriter(s, c).Apply(context.Background(), config.Server{Name: "w"}, r)
-	if err == nil || !strings.Contains(err.Error(), "no surviving agent key") {
+	if err == nil || !strings.Contains(err.Error(), "no surviving key you hold") {
 		t.Fatalf("err = %v, want the no-survivor refusal", err)
 	}
 	if len(c.opts) != 0 {
@@ -855,7 +856,7 @@ func hermetic(t *testing.T, home string, authorized []any, agentKeys ...any) (*F
 	})
 	d := &sshconn.Dialer{
 		KnownHostsPath: sshtest.KnownHostsFile(t, s.KnownHostsLine(hostKey.PublicKey())),
-		AgentSock:      sshtest.Agent(t, agentKeys...),
+		Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, agentKeys...)},
 		DialTimeout:    5 * time.Second,
 	}
 	return &FleetWriter{Dialer: d}, config.Server{Name: "h1", Host: s.Host, Port: s.Port, User: "deploy"}
@@ -907,6 +908,24 @@ func TestApplyHermeticRealConnection(t *testing.T) {
 			t.Errorf("file = %q, want the previous version restored", got)
 		}
 		assertNoResidue(t, target)
+	})
+	t.Run("a key-file survivor is proven with no agent at all", func(t *testing.T) {
+		home := t.TempDir()
+		// The server accepts op (the write login) and ci (the survivor);
+		// the run holds both as key files and has no agent.
+		ci := sshtest.Key(3)
+		w, srv := hermetic(t, home, []any{op, ci})
+		w.Dialer.Creds = &sshconn.Credentials{Files: []keyfile.Identity{
+			sshtest.Identity(t, "/k/op", op), sshtest.Identity(t, "/k/ci", ci),
+		}}
+		target := filepath.Join(home, ".ssh", "authorized_keys")
+		r := Request{Content: []byte(managed), Expect: Snapshot{Absent: true}, Survivors: []string{sshtest.Fingerprint(t, ci)}}
+		if err := w.Apply(ctxTimeout(t), srv, r); err != nil {
+			t.Fatalf("Apply with key files only: %v", err)
+		}
+		if got := readFile(t, target); got != managed {
+			t.Errorf("file = %q, want the render", got)
+		}
 	})
 	t.Run("changed since plan is refused over the wire", func(t *testing.T) {
 		home := t.TempDir()

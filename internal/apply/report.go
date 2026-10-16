@@ -126,6 +126,9 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette) {
 	if p.Warning != "" {
 		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), p.Warning)
 	}
+	if p.AgentOnly != "" {
+		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), p.AgentOnly)
+	}
 	for _, rw := range p.Rewrites {
 		if len(rw.Loosens) == 0 {
 			continue

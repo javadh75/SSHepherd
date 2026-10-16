@@ -37,6 +37,7 @@
     which apply reuses.
   - `cmd/sshepherd/manifest_out.go` `writeFileNoClobber` — the local
     temp-file+rename atomicity pattern, mirrored remotely.
+- **Amended by:** [`--identity` key-file auth](2026-10-16-identity-keyfile-auth-design.md) (2026-10-16) — the guard's "held keys" are no longer agent-only.
 
 ## Context & goal
 

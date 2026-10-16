@@ -326,7 +326,7 @@ servers:
   - {name: web-1, host: 10.0.0.1, user: deploy}
 `)
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"adopt", "--config", path}, &out, &errBuf); code != 3 {
+	if code := run([]string{"adopt", "--config", path, "--known-hosts", emptyKnownHosts(t)}, &out, &errBuf); code != 3 {
 		t.Fatalf("exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "SSH_AUTH_SOCK") {

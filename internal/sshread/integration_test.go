@@ -13,6 +13,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
 // itClient builds a Client from the environment exported by
@@ -29,7 +30,7 @@ func itClient(t *testing.T) (*Client, string, int) {
 	}
 	return &Client{
 		KnownHostsPath: os.Getenv("SSHEPHERD_IT_KNOWN_HOSTS"),
-		AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
+		Creds:          &sshconn.Credentials{AgentSock: os.Getenv("SSH_AUTH_SOCK")},
 		DialTimeout:    10 * time.Second,
 	}, host, port
 }

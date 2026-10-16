@@ -1,13 +1,16 @@
 // Package sshtest runs hermetic, in-process SSH peers for unit tests: an
-// x/crypto/ssh server on 127.0.0.1 and an agent.NewKeyring served on a unix
-// socket. Every goroutine they start is torn down by tb.Cleanup, so the
+// x/crypto/ssh server on 127.0.0.1, an agent.NewKeyring served on a unix
+// socket, and file-key helpers (Identity, WriteKeyFile) for auth with no
+// agent at all. Every goroutine they start is torn down by tb.Cleanup, so the
 // goleak TestMain in each consuming package stays green.
 package sshtest
 
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net"
@@ -21,6 +24,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"github.com/javadh75/SSHepherd/internal/keyfile"
 )
 
 // Key returns a deterministic ed25519 private key derived from seed.
@@ -109,9 +114,20 @@ func (t *tracker) serve(fn func(net.Conn)) {
 // Agent serves an in-memory keyring holding keys and returns its socket.
 func Agent(tb testing.TB, keys ...any) string {
 	tb.Helper()
+	added := make([]agent.AddedKey, 0, len(keys))
+	for _, k := range keys {
+		added = append(added, agent.AddedKey{PrivateKey: k})
+	}
+	return AgentKeys(tb, added...)
+}
+
+// AgentKeys serves an in-memory keyring holding exactly keys (certificates
+// included, via AddedKey.Certificate) and returns its socket.
+func AgentKeys(tb testing.TB, keys ...agent.AddedKey) string {
+	tb.Helper()
 	keyring := agent.NewKeyring()
 	for _, k := range keys {
-		if err := keyring.Add(agent.AddedKey{PrivateKey: k}); err != nil {
+		if err := keyring.Add(k); err != nil {
 			tb.Fatalf("sshtest: keyring add: %v", err)
 		}
 	}
@@ -127,6 +143,59 @@ func Agent(tb testing.TB, keys ...any) string {
 		_ = c.Close()
 	})
 	return sock
+}
+
+// UserCert returns a user certificate for priv's public key, signed by ca,
+// valid for principal — an agent-held certificate for tests (servers
+// accept it by listing the certificate itself in ServerConfig.Authorized).
+func UserCert(tb testing.TB, priv, ca any, principal string) *ssh.Certificate {
+	tb.Helper()
+	cert := &ssh.Certificate{
+		Key:             Signer(tb, priv).PublicKey(),
+		CertType:        ssh.UserCert,
+		KeyId:           "sshtest",
+		ValidPrincipals: []string{principal},
+		ValidBefore:     ssh.CertTimeInfinity,
+	}
+	if err := cert.SignCert(rand.Reader, Signer(tb, ca)); err != nil {
+		tb.Fatalf("sshtest: sign cert: %v", err)
+	}
+	return cert
+}
+
+// Identity returns priv as a loaded --identity key named path — file-key
+// auth with no agent and no disk.
+func Identity(tb testing.TB, path string, priv any) keyfile.Identity {
+	tb.Helper()
+	s := Signer(tb, priv)
+	return keyfile.Identity{Path: path, Fingerprint: ssh.FingerprintSHA256(s.PublicKey()), Signer: s}
+}
+
+// WriteKeyFile writes priv as an OpenSSH private key file (mode 0600)
+// named name in dir — encrypted with passphrase unless it is nil — plus its
+// .pub, and returns the key's path.
+func WriteKeyFile(tb testing.TB, dir, name string, priv any, passphrase []byte) string {
+	tb.Helper()
+	var (
+		block *pem.Block
+		err   error
+	)
+	if passphrase == nil {
+		block, err = ssh.MarshalPrivateKey(priv, "sshtest")
+	} else {
+		block, err = ssh.MarshalPrivateKeyWithPassphrase(priv, "sshtest", passphrase)
+	}
+	if err != nil {
+		tb.Fatalf("sshtest: marshal key: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+		tb.Fatalf("sshtest: write key: %v", err)
+	}
+	if err := os.WriteFile(path+".pub", ssh.MarshalAuthorizedKey(Signer(tb, priv).PublicKey()), 0o600); err != nil {
+		tb.Fatalf("sshtest: write pub: %v", err)
+	}
+	return path
 }
 
 // Handler runs one exec request: cmd is the raw command string the client

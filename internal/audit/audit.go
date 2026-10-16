@@ -22,7 +22,8 @@ import (
 type ReadResult struct {
 	Content    []byte
 	FileAbsent bool
-	// SessionKeyFP is the SHA256 fingerprint of the agent key that completed
+	// SessionKeyFP is the SHA256 fingerprint of the key (--identity file or
+	// agent) that completed
 	// this read's SSH handshake — apply's guard note ("removes the key this
 	// session logged in with") consumes it. Empty for readers that do not
 	// authenticate (fakes).
@@ -46,7 +47,7 @@ type ServerResult struct {
 	Err            error // connection/auth/host-key/read failure: server unauditable
 	FileAbsent     bool
 	Content        []byte // raw file bytes as read; apply's byte-exact convergence input
-	SessionKeyFP   string // agent key that completed the phase-1 handshake
+	SessionKeyFP   string // key (file or agent) that completed the phase-1 handshake
 	NoUsersGranted bool
 	ParseErrs      []authkeys.ParseError
 	Diff           authkeys.Result
@@ -119,8 +120,8 @@ func duplicatesOf(actual []authkeys.Key) []Duplicate {
 
 // GrantedFingerprints lists the fingerprints the manifest grants on server,
 // operators first (cfg.DesiredFor order). Connection layers offer these
-// agent keys first, so an agent holding many keys does not exhaust sshd's
-// MaxAuthTries on keys the server was never meant to accept.
+// keys (from --identity files or the agent) first, so a run holding many
+// keys does not exhaust sshd's MaxAuthTries on keys the server was never meant to accept.
 func GrantedFingerprints(cfg *config.Config, server string) []string {
 	desired := cfg.DesiredFor(server)
 	fps := make([]string, 0, len(desired))

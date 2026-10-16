@@ -14,6 +14,8 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/keyfile"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -72,7 +74,7 @@ func TestApplyNoAgent(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	path := writeConfig(t, applyFleetYAML(t, "host: 10.0.0.1"))
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"apply", "--config", path}, &out, &errBuf); code != 3 {
+	if code := run([]string{"apply", "--config", path, "--known-hosts", emptyKnownHosts(t)}, &out, &errBuf); code != 3 {
 		t.Fatalf("exit = %d, want 3", code)
 	}
 	if !strings.Contains(errBuf.String(), "SSH_AUTH_SOCK") {
@@ -345,3 +347,16 @@ func writeEmptyKnownHosts(t *testing.T) string {
 }
 
 func strconvItoa(n int) string { return strconv.Itoa(n) }
+
+// TestRelistPrefix pins the post-confirmation re-list error prefix: the
+// pre---identity wording for an agent-only run, a key-neutral one with
+// --identity.
+func TestRelistPrefix(t *testing.T) {
+	if got := relistPrefix(&sshconn.Credentials{AgentSock: "/s"}); got != "re-listing agent keys after confirmation" {
+		t.Errorf("agent-only prefix = %q", got)
+	}
+	withFile := &sshconn.Credentials{Files: []keyfile.Identity{{Path: "/k"}}}
+	if got := relistPrefix(withFile); got != "re-listing the keys you hold after confirmation" {
+		t.Errorf("--identity prefix = %q", got)
+	}
+}

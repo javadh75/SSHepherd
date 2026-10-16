@@ -91,9 +91,13 @@ type ServerPlan struct {
 	Rewrites  []RewriteRow
 	Normalize Normalize
 
-	Note       string // guard note: session key removed, another survives
-	Warning    string // restrictive-options warning
-	FileAbsent bool   // phase-1 diagnostic, carried into the report
+	Note    string // guard note: session key removed, another survives
+	Warning string // restrictive-options warning
+	// AgentOnly warns that --identity keys were given but only agent keys
+	// survive here: a later run without this agent (the next headless CI
+	// job) would be locked out. Not a refusal — union semantics.
+	AgentOnly  string
+	FileAbsent bool // phase-1 diagnostic, carried into the report
 	// AuthorizedKeys2 carries the phase-1 finding that an unmanaged,
 	// non-empty ~/.ssh/authorized_keys2 exists: sshd may accept keys from it
 	// whatever apply writes, so a change plan also disables it (see
@@ -115,14 +119,15 @@ func (p ServerPlan) DisableKeys2() bool {
 	return p.Class == ClassChange && p.AuthorizedKeys2
 }
 
-// Build computes the plan for every phase-1 result. agentFPs is the set of
-// SHA256 fingerprints the operator's agent held at preflight — the
-// self-lockout guard's ground truth. Pure; the only possible error is a
-// render failure, impossible for a validated manifest (a tool bug, exit 3).
-func Build(cfg *config.Config, results []audit.ServerResult, agentFPs []string) ([]ServerPlan, error) {
+// Build computes the plan for every phase-1 result. held is what the run
+// could authenticate with at preflight (sshconn.Credentials.Held: key files
+// and plain agent keys, with their sources) — the self-lockout guard's
+// ground truth. Pure; the only possible error is a render failure,
+// impossible for a validated manifest (a tool bug, exit 3).
+func Build(cfg *config.Config, results []audit.ServerResult, held []sshconn.HeldKey) ([]ServerPlan, error) {
 	plans := make([]ServerPlan, 0, len(results))
 	for _, r := range results {
-		p, err := planOne(cfg, r, agentFPs)
+		p, err := planOne(cfg, r, held)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +141,7 @@ func Build(cfg *config.Config, results []audit.ServerResult, agentFPs []string) 
 // only so tests can lower it.
 var maxRender = sshconn.MaxRemoteOutput
 
-func planOne(cfg *config.Config, r audit.ServerResult, agentFPs []string) (ServerPlan, error) {
+func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (ServerPlan, error) {
 	p := ServerPlan{
 		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
 		AuthorizedKeys2: r.AuthorizedKeys2,
@@ -213,13 +218,13 @@ func planOne(cfg *config.Config, r audit.ServerResult, agentFPs []string) (Serve
 		p.Normalize = normalize(r, entries, explained)
 	}
 
-	v := guardCheck(cfg, r, entries, agentFPs)
+	v := guardCheck(cfg, r, entries, held)
 	if v.Refusal != "" {
 		p.Class = ClassRefused
 		p.Refusal = v.Refusal
 		return p, nil
 	}
-	p.Note, p.Warning = v.Note, v.Warning
+	p.Note, p.Warning, p.AgentOnly = v.Note, v.Warning, v.AgentOnly
 	p.Class = ClassChange
 	return p, nil
 }
@@ -344,53 +349,38 @@ func matchedOrderDiffers(r audit.ServerResult, entries []authkeys.RenderEntry) b
 
 // guardVerdict is the self-lockout guard's decision for one server.
 type guardVerdict struct {
-	Refusal string
-	Note    string
-	Warning string
+	Refusal   string
+	Note      string
+	Warning   string
+	AgentOnly string
 }
 
 // guardCheck enforces the invariant "after the write, this operator can
-// still log in": the rendered desired set must intersect the agent-held
-// keys. Deliberately not the operator spec's literal "never remove the
-// session key" — which key signs a handshake is an accident of agent order
-// and server choice, and the literal rule would randomly block rotate (see
-// the 2026-07-19 spec's guard section; owner-approved refinement). Removing
-// the very key that authenticated is allowed when another agent-held key
-// survives — that is what rotate is — with a loud per-server note.
-func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.RenderEntry, agentFPs []string) guardVerdict {
-	held := heldSet(agentFPs)
-	// No agent keys means nothing could ever prove this session keeps
+// still log in": the rendered desired set must intersect the keys the run
+// holds (key files + plain agent keys; certificates never count).
+// Deliberately not the operator spec's literal "never remove the session
+// key" — which key signs a handshake is an accident of key order and server
+// choice, and the literal rule would randomly block rotate (see the
+// 2026-07-19 spec's guard section; owner-approved refinement). Removing the
+// very key that authenticated is allowed when another held key survives —
+// that is what rotate is — with a loud per-server note.
+func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.RenderEntry, held []sshconn.HeldKey) guardVerdict {
+	set := heldSet(held)
+	// Nothing held means nothing could ever prove this session keeps
 	// access (and the post-write login probe would have nothing to offer):
 	// refuse. Unreachable from the CLI, whose preflight requires a
-	// non-empty agent, but phase 2 re-lists the agent after the prompt.
-	if len(held) == 0 {
-		return guardVerdict{Refusal: "the agent holds no keys — refusing to write (nothing could prove this session keeps access)"}
+	// non-empty held set, but phase 2 re-lists after the prompt.
+	if len(set) == 0 {
+		return guardVerdict{Refusal: "you hold no plain keys (identity files + agent; certificates do not count) — refusing to write (nothing could prove this session keeps access)"}
 	}
 
 	keys := make([]authkeys.Key, 0, len(entries))
 	for _, e := range entries {
 		keys = append(keys, e.Key)
 	}
-	surviving := Survivors(keys, held)
-	restrictive := 0
-	for _, k := range surviving {
-		if hasRestrictiveOption(k.Options) {
-			restrictive++
-		}
-	}
+	surviving := Survivors(keys, set)
 	if len(surviving) == 0 {
-		// len(held), not len(agentFPs): an agent can list one key twice and
-		// the message must count distinct keys.
-		refusal := fmt.Sprintf(
-			"none of the %d keys in this agent would remain in %s's authorized_keys — applying would lock this session out. Add one of your keys to the manifest (or mark its user operator: true)",
-			len(held), r.Server.Name)
-		for _, k := range keys {
-			if held[k.Fingerprint] {
-				refusal += " (an agent key stays only as a cert-authority/principals= line, which accepts certificates, not the bare key)"
-				break
-			}
-		}
-		return guardVerdict{Refusal: refusal}
+		return guardVerdict{Refusal: lockoutRefusal(r.Server.Name, keys, held, set)}
 	}
 
 	var v guardVerdict
@@ -400,23 +390,102 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 				survivorLabel(cfg, surviving[0]))
 		}
 	}
-	if restrictive == len(surviving) {
-		v.Warning = "every remaining agent-held key carries a restrictive option (from=/command=/restrict/expiry-time=) — future sshepherd logins may be functionally blocked"
+	restrictive := 0
+	for _, k := range surviving {
+		if hasRestrictiveOption(k.Options) {
+			restrictive++
+		}
 	}
+	if restrictive == len(surviving) {
+		v.Warning = "every remaining key you hold carries a restrictive option (from=/command=/restrict/expiry-time=) — future sshepherd logins may be functionally blocked"
+	}
+	v.AgentOnly = agentOnlyWarning(surviving, held)
 	return v
 }
 
-// heldSet indexes an agent fingerprint listing.
-func heldSet(agentFPs []string) map[string]bool {
-	held := make(map[string]bool, len(agentFPs))
-	for _, fp := range agentFPs {
-		held[fp] = true
+// lockoutRefusal explains a predicted lockout, listing every held key with
+// its source so a mismatch (the wrong --identity, a stray agent) is
+// visible at a glance.
+func lockoutRefusal(server string, keys []authkeys.Key, held []sshconn.HeldKey, set map[string]bool) string {
+	// len(set), not len(held): one key can be held twice (an --identity
+	// file the agent also holds), and the message counts distinct keys.
+	refusal := fmt.Sprintf(
+		"none of the %d keys you hold (identity files + agent) would remain in %s's authorized_keys — applying would lock this session out (held: %s). Add one of your keys to the manifest (or mark its user operator: true)",
+		len(set), server, heldList(held))
+	for _, k := range keys {
+		if set[k.Fingerprint] {
+			refusal += " (a key you hold stays only as a cert-authority/principals= line, which accepts certificates, not the bare key)"
+			break
+		}
 	}
-	return held
+	if slices.ContainsFunc(held, isFileKey) {
+		refusal += "; rotating an --identity key? pass the new key with another --identity, so the guard and the post-write login probe can use it"
+	}
+	return refusal
 }
 
-// Survivors returns the desired keys that keep an agent-held login: held
-// by the agent, and on a line that accepts the bare key — cert-authority
+// agentOnlyWarning is set when --identity keys were given (some held key
+// is a file) but every survivor here is an agent key: the guard passes on
+// a credential the next run without this agent will not have.
+func agentOnlyWarning(surviving []authkeys.Key, held []sshconn.HeldKey) string {
+	if !slices.ContainsFunc(held, isFileKey) {
+		return ""
+	}
+	src := sourceMap(held)
+	labels := make([]string, 0, len(surviving))
+	for _, k := range surviving {
+		if src[k.Fingerprint] != sshconn.SourceAgent {
+			return ""
+		}
+		labels = append(labels, k.Fingerprint+" ("+sshconn.SourceAgent+")")
+	}
+	verb := "keeps"
+	if len(labels) > 1 {
+		verb = "keep"
+	}
+	return fmt.Sprintf("only %s %s access; none of your --identity keys survives — a run without this agent will be locked out",
+		strings.Join(labels, ", "), verb)
+}
+
+// isFileKey reports whether k came from an --identity file.
+func isFileKey(k sshconn.HeldKey) bool { return k.Source != sshconn.SourceAgent }
+
+// heldSet indexes the held keys' fingerprints.
+func heldSet(held []sshconn.HeldKey) map[string]bool {
+	set := make(map[string]bool, len(held))
+	for _, k := range held {
+		set[k.Fingerprint] = true
+	}
+	return set
+}
+
+// sourceMap maps each held fingerprint to its first source.
+func sourceMap(held []sshconn.HeldKey) map[string]string {
+	src := make(map[string]string, len(held))
+	for _, k := range held {
+		if _, ok := src[k.Fingerprint]; !ok {
+			src[k.Fingerprint] = k.Source
+		}
+	}
+	return src
+}
+
+// heldList renders the held keys, distinct, in listing order:
+// "SHA256:… (/path), SHA256:… (agent)".
+func heldList(held []sshconn.HeldKey) string {
+	seen := make(map[string]bool, len(held))
+	parts := make([]string, 0, len(held))
+	for _, k := range held {
+		if !seen[k.Fingerprint] {
+			seen[k.Fingerprint] = true
+			parts = append(parts, k.Label())
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Survivors returns the desired keys that keep a login this run can make:
+// held (key file or agent), and on a line that accepts the bare key — cert-authority
 // lines accept only certificates the key signed, and principals= belongs to
 // them. These are the keys the guard counts and the post-write login probe
 // offers.
@@ -479,7 +548,7 @@ func fpInEntries(entries []authkeys.RenderEntry, fp string) bool {
 	return false
 }
 
-// survivorLabel names the agent-held key that keeps this session's access:
+// survivorLabel names the held key that keeps this session's access:
 // the owning user, or the fingerprint for a key the manifest cannot name
 // (unreachable in practice — surviving keys are desired, hence owned).
 func survivorLabel(cfg *config.Config, k authkeys.Key) string {

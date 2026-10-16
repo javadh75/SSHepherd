@@ -113,15 +113,13 @@ func renderMergedManifest(mf *manifest.File, raw []byte, plan adopt.Plan, unread
 	return out, nil
 }
 
-// readFleet runs the agent/known_hosts preflights and reads every server's
-// authorized_keys via the same SSH path as audit. An empty fleet needs no
-// agent and returns nil results.
-func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownHosts string, parallel int) ([]audit.ServerResult, error) {
+// readFleet runs the known_hosts and credentials preflights and reads every
+// server's authorized_keys via the same SSH path as audit. An empty fleet
+// needs no credentials (never reads a key, never prompts) and returns nil
+// results.
+func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownHosts string, parallel int, ids identities) ([]audit.ServerResult, error) {
 	if len(cfg.Servers) == 0 {
 		return nil, nil
-	}
-	if err := sshread.CheckAgent(ctx, os.Getenv("SSH_AUTH_SOCK")); err != nil {
-		return nil, fmt.Errorf("agent preflight: %w", err)
 	}
 	khPath, err := expandHome(knownHosts)
 	if err != nil {
@@ -134,14 +132,21 @@ func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownH
 	if err != nil {
 		return nil, fmt.Errorf("known_hosts preflight: %w", err)
 	}
+	creds, err := ids.credentials(ctx, log)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkCredentials(ctx, creds, false); err != nil {
+		return nil, err
+	}
 	reader := &sshread.Client{
 		KnownHostsPath: khPath,
 		KnownHosts:     kh,
-		AgentSock:      os.Getenv("SSH_AUTH_SOCK"),
+		Creds:          creds,
 		DialTimeout:    dialTimeout,
 		Log:            log,
-		// Offer granted keys (operators first) before the rest of the
-		// agent, so many-key agents do not trip sshd's MaxAuthTries.
+		// Offer granted keys (operators first) before the rest, so many
+		// held keys do not trip sshd's MaxAuthTries.
 		PreferKeys: func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) },
 	}
 	results := audit.Run(ctx, cfg, reader, audit.Options{
@@ -226,6 +231,7 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 		force      bool
 		partial    bool
 		merge      bool
+		idf        identityFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt",
@@ -239,8 +245,9 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			"manifest. Any unreadable server aborts the run unless --partial is set.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if parallel < 1 {
-				return fmt.Errorf("--parallel must be >= 1 (got %d)", parallel)
+			ids, err := validateFlags(parallel, &idf)
+			if err != nil {
+				return err
 			}
 			log := a.logger
 			var (
@@ -251,7 +258,6 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			if merge {
 				// --merge needs the original bytes: they are the output when
 				// there is nothing to adopt, and the append base otherwise.
-				var err error
 				raw, err = os.ReadFile(cfgPath) // #nosec G304 -- path is the user's own --config flag
 				if err != nil {
 					return fmt.Errorf("load manifest: %w", err)
@@ -262,7 +268,6 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 				}
 				cfg = mf.Config()
 			} else {
-				var err error
 				cfg, err = config.Load(cfgPath)
 				if err != nil {
 					return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
@@ -276,7 +281,7 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 				log.Info(fmt.Sprintf("reading %d servers (parallelism %d)…", len(cfg.Servers), parallel))
 			}
 			start := time.Now()
-			results, err := readFleet(cmd.Context(), log, cfg, knownHosts, parallel)
+			results, err := readFleet(cmd.Context(), log, cfg, knownHosts, parallel, ids)
 			if err != nil {
 				return err
 			}
@@ -316,5 +321,6 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
 	cmd.Flags().BoolVar(&partial, "partial", false, "proceed even if some servers cannot be read (their access will be missing from the output)")
 	cmd.Flags().BoolVar(&merge, "merge", false, "preserve the manifest text (comments intact) and append the additions instead of regenerating")
+	idf.register(cmd)
 	return cmd
 }

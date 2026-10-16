@@ -74,7 +74,7 @@ func TestExecuteOutcomes(t *testing.T) {
 		"locked":  &sshwrite.LockedError{Path: "~/.ssh/authorized_keys"},
 		"lockout": &sshwrite.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errors.New("auth failed")},
 	}}
-	Execute(context.Background(), plans, w, ExecOptions{Parallel: 2, AgentFPs: []string{held.Fingerprint}})
+	Execute(context.Background(), plans, w, ExecOptions{Parallel: 2, Held: agentHeld(held.Fingerprint)})
 
 	if got := planFor(t, plans, "ok-1"); got.Outcome != OutcomeApplied {
 		t.Errorf("ok-1 Outcome = %s, want applied", got.Outcome)
@@ -87,7 +87,7 @@ func TestExecuteOutcomes(t *testing.T) {
 		t.Errorf("writer Expect = %+v, want the plan's phase-1 snapshot (compare-and-swap)", r.Expect)
 	}
 	if len(r.Survivors) != 1 || r.Survivors[0] != held.Fingerprint {
-		t.Errorf("writer Survivors = %v, want the agent-held desired key for the login probe", r.Survivors)
+		t.Errorf("writer Survivors = %v, want the held desired key for the login probe", r.Survivors)
 	}
 	if got := planFor(t, plans, "boom"); got.Outcome != OutcomeFailed || got.OutcomeErr == nil {
 		t.Errorf("boom = %s/%v, want failed with the error retained", got.Outcome, got.OutcomeErr)
@@ -130,7 +130,7 @@ func TestExecuteGuardRecheck(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plans := []ServerPlan{changePlan("s", tt.desired...)}
 			w := &fakeWriter{}
-			Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, AgentFPs: tt.fresh})
+			Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: agentHeld(tt.fresh...)})
 			if tt.wantFail {
 				if plans[0].Outcome != OutcomeFailed || len(w.calls) != 0 {
 					t.Fatalf("outcome = %s, calls = %d — the re-check must block the write", plans[0].Outcome, len(w.calls))
@@ -157,7 +157,7 @@ func TestExecuteInterrupted(t *testing.T) {
 		cancel()
 		plans := []ServerPlan{changePlan("a", held), changePlan("b", held)}
 		w := &fakeWriter{}
-		Execute(ctx, plans, w, ExecOptions{Parallel: 2, AgentFPs: []string{held.Fingerprint}})
+		Execute(ctx, plans, w, ExecOptions{Parallel: 2, Held: agentHeld(held.Fingerprint)})
 		if len(w.calls) != 0 {
 			t.Fatalf("wrote %d servers after cancellation, want 0", len(w.calls))
 		}
@@ -175,7 +175,7 @@ func TestExecuteInterrupted(t *testing.T) {
 		defer cancel()
 		plans := []ServerPlan{changePlan("a", held), changePlan("b", held), changePlan("c", held)}
 		w := &fakeWriter{onCall: func(string) { cancel() }} // Ctrl-C during the first write
-		Execute(ctx, plans, w, ExecOptions{Parallel: 1, AgentFPs: []string{held.Fingerprint}})
+		Execute(ctx, plans, w, ExecOptions{Parallel: 1, Held: agentHeld(held.Fingerprint)})
 		if len(w.calls) != 1 {
 			t.Fatalf("wrote %d servers, want exactly the one already in flight", len(w.calls))
 		}
@@ -192,7 +192,7 @@ func TestExecuteInterrupted(t *testing.T) {
 	t.Run("writer reporting not-started stays pending", func(t *testing.T) {
 		plans := []ServerPlan{changePlan("a", held)}
 		w := &fakeWriter{errs: map[string]error{"a": fmt.Errorf("a: %w", sshwrite.ErrNotStarted)}}
-		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, AgentFPs: []string{held.Fingerprint}})
+		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: agentHeld(held.Fingerprint)})
 		if plans[0].Outcome != OutcomePending || Interrupted(plans) != 1 {
 			t.Errorf("outcome = %s, want pending + interrupted", plans[0].Outcome)
 		}
@@ -209,7 +209,7 @@ func TestExecuteProbesUnrestrictedSurvivorsFirst(t *testing.T) {
 	plain := testKey(t, 2)
 	plans := []ServerPlan{changePlan("s", restricted, plain)}
 	w := &fakeWriter{}
-	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, AgentFPs: []string{restricted.Fingerprint, plain.Fingerprint}})
+	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: agentHeld(restricted.Fingerprint, plain.Fingerprint)})
 	got := w.calls["s"].Survivors
 	if fmt.Sprint(got) != fmt.Sprint([]string{plain.Fingerprint, restricted.Fingerprint}) {
 		t.Errorf("Survivors = %v, want the unrestricted key first", got)
@@ -225,7 +225,7 @@ func TestExecuteRequestsKeys2Disable(t *testing.T) {
 	k2.AuthorizedKeys2 = true
 	plans := []ServerPlan{plain, k2}
 	w := &fakeWriter{}
-	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, AgentFPs: []string{held.Fingerprint}})
+	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: agentHeld(held.Fingerprint)})
 	if w.calls["plain"].DisableKeys2 || !w.calls["k2"].DisableKeys2 {
 		t.Errorf("DisableKeys2 = plain:%v k2:%v, want false/true", w.calls["plain"].DisableKeys2, w.calls["k2"].DisableKeys2)
 	}

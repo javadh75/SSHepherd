@@ -60,7 +60,7 @@ func newFixture(t *testing.T, sc sshtest.ServerConfig, agentKeys ...any) fixture
 }
 
 func (f fixture) dialer(kh string) *Dialer {
-	return &Dialer{KnownHostsPath: kh, AgentSock: f.agent, DialTimeout: 5 * time.Second}
+	return &Dialer{KnownHostsPath: kh, Creds: &Credentials{AgentSock: f.agent}, DialTimeout: 5 * time.Second}
 }
 
 func ctxTimeout(t *testing.T, d time.Duration) context.Context {
@@ -277,7 +277,7 @@ func TestConnectDialRefusedMentionsBastion(t *testing.T) {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close() // nothing listens there now
-	d := &Dialer{KnownHostsPath: sshtest.KnownHostsFile(t), AgentSock: sshtest.Agent(t, sshtest.Key(1)), DialTimeout: time.Second}
+	d := &Dialer{KnownHostsPath: sshtest.KnownHostsFile(t), Creds: &Credentials{AgentSock: sshtest.Agent(t, sshtest.Key(1))}, DialTimeout: time.Second}
 	_, err = d.Connect(ctxTimeout(t, 5*time.Second), config.Server{Name: "x", Host: "127.0.0.1", Port: port, User: "u"})
 	if err == nil {
 		t.Fatal("dial to a closed port succeeded")
@@ -408,7 +408,7 @@ func TestDialerParsesKnownHostsOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		d := &Dialer{KnownHostsPath: "/nonexistent", KnownHosts: snap, AgentSock: f.agent, DialTimeout: time.Second}
+		d := &Dialer{KnownHostsPath: "/nonexistent", KnownHosts: snap, Creds: &Credentials{AgentSock: f.agent}, DialTimeout: time.Second}
 		conn, err := d.Connect(ctxTimeout(t, 10*time.Second), f.cfgSrv)
 		if err != nil {
 			t.Fatalf("Connect with preloaded snapshot: %v", err)

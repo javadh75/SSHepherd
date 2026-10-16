@@ -174,7 +174,7 @@ func e2eRemoteCat(t *testing.T, host, port, kh, user string) string {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	d := &sshconn.Dialer{KnownHostsPath: kh, AgentSock: os.Getenv("SSH_AUTH_SOCK"), DialTimeout: 10 * time.Second}
+	d := &sshconn.Dialer{KnownHostsPath: kh, Creds: &sshconn.Credentials{AgentSock: os.Getenv("SSH_AUTH_SOCK")}, DialTimeout: 10 * time.Second}
 	conn, err := d.Connect(ctx, config.Server{Name: user, Host: host, Port: p, User: user})
 	if err != nil {
 		t.Fatalf("connect %s: %v", user, err)

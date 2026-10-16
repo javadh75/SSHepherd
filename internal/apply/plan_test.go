@@ -9,6 +9,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -27,15 +28,36 @@ func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (a
 }
 
 // buildPlans runs the real pipeline (audit.Run + Build) over a fake fleet —
-// exactly what the command does, minus SSH.
+// exactly what the command does, minus SSH — with agentFPs held by the
+// agent.
 func buildPlans(t *testing.T, cfg *config.Config, r audit.KeyReader, agentFPs []string) []ServerPlan {
 	t.Helper()
+	return buildPlansHeld(t, cfg, r, agentHeld(agentFPs...))
+}
+
+// buildPlansHeld is buildPlans with an explicit held set (any sources).
+func buildPlansHeld(t *testing.T, cfg *config.Config, r audit.KeyReader, held []sshconn.HeldKey) []ServerPlan {
+	t.Helper()
 	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 4})
-	plans, err := Build(cfg, results, agentFPs)
+	plans, err := Build(cfg, results, held)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	return plans
+}
+
+// agentHeld labels fingerprints as agent-held keys.
+func agentHeld(fps ...string) []sshconn.HeldKey {
+	held := make([]sshconn.HeldKey, 0, len(fps))
+	for _, fp := range fps {
+		held = append(held, sshconn.HeldKey{Fingerprint: fp, Source: sshconn.SourceAgent})
+	}
+	return held
+}
+
+// fileHeld labels a fingerprint as held through an --identity file.
+func fileHeld(fp, path string) sshconn.HeldKey {
+	return sshconn.HeldKey{Fingerprint: fp, Source: path}
 }
 
 // planFor pulls one server's plan out by name.
@@ -269,7 +291,7 @@ func TestGuardRefusesLockout(t *testing.T) {
 	if p.Class != ClassRefused {
 		t.Fatalf("Class = %s, want refused (predicted lockout)", p.Class)
 	}
-	for _, want := range []string{"none of the 2 keys in this agent", "lock this session out", "operator: true"} {
+	for _, want := range []string{"none of the 2 keys you hold (identity files + agent)", "lock this session out", "operator: true"} {
 		if !strings.Contains(p.Refusal, want) {
 			t.Errorf("Refusal = %q, want it to contain %q", p.Refusal, want)
 		}
@@ -329,7 +351,7 @@ func TestGuardEmptyAgentRefuses(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": read}}
 			p := planFor(t, buildPlans(t, cfg, r, nil), "web-1")
-			if p.Class != ClassRefused || !strings.Contains(p.Refusal, "the agent holds no keys") {
+			if p.Class != ClassRefused || !strings.Contains(p.Refusal, "you hold no plain keys") {
 				t.Fatalf("plan = %s/%q, want the empty-agent refusal", p.Class, p.Refusal)
 			}
 		})
@@ -358,7 +380,7 @@ access:
 	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "cert-authority") {
 		t.Fatalf("plan = %s/%q, want a lockout refusal naming the cert-authority line", p.Class, p.Refusal)
 	}
-	if got := Survivors(p.Desired, heldSet([]string{fp(t, 1), fp(t, 2)})); len(got) != 1 || got[0].Fingerprint != fp(t, 2) {
+	if got := Survivors(p.Desired, heldSet(agentHeld(fp(t, 1), fp(t, 2)))); len(got) != 1 || got[0].Fingerprint != fp(t, 2) {
 		t.Errorf("Survivors = %v, want only alice's bare key", got)
 	}
 }

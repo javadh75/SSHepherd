@@ -1,17 +1,12 @@
 package sshconn
 
 import (
-	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"io"
-	"net"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 )
 
 // seededSigner builds a deterministic ed25519 ssh.Signer.
@@ -88,74 +83,6 @@ func TestWrapSignersPreservesAlgorithmSigner(t *testing.T) {
 	if _, ok := w.(ssh.AlgorithmSigner); ok {
 		t.Error("bare signer wrapper must not claim AlgorithmSigner")
 	}
-}
-
-// agentSocket serves a real in-memory agent holding the given private keys.
-func agentSocket(t *testing.T, keys ...ed25519.PrivateKey) string {
-	t.Helper()
-	keyring := agent.NewKeyring()
-	for _, k := range keys {
-		if err := keyring.Add(agent.AddedKey{PrivateKey: k}); err != nil {
-			t.Fatalf("keyring add: %v", err)
-		}
-	}
-	dir, err := os.MkdirTemp("", "ag") // short path: unix sun_path is ~104 bytes on macOS
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "agent.sock")
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = l.Close() })
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				_ = agent.ServeAgent(keyring, c) // returns on client close (EOF)
-				_ = c.Close()
-			}()
-		}
-	}()
-	return sock
-}
-
-func TestAgentFingerprints(t *testing.T) {
-	raw := make([]byte, ed25519.SeedSize)
-	raw[0] = 7
-	priv := ed25519.NewKeyFromSeed(raw)
-	pub, err := ssh.NewPublicKey(priv.Public())
-	if err != nil {
-		t.Fatalf("public key: %v", err)
-	}
-
-	t.Run("lists held keys", func(t *testing.T) {
-		got, err := AgentFingerprints(context.Background(), agentSocket(t, priv))
-		if err != nil {
-			t.Fatalf("AgentFingerprints: %v", err)
-		}
-		if len(got) != 1 || got[0] != ssh.FingerprintSHA256(pub) {
-			t.Errorf("fingerprints = %v, want [%s]", got, ssh.FingerprintSHA256(pub))
-		}
-	})
-	t.Run("empty agent is empty, not an error", func(t *testing.T) {
-		// CheckAgent owns the empty-agent verdict; the guard has its own
-		// empty-listing fallback and needs the distinction.
-		got, err := AgentFingerprints(context.Background(), agentSocket(t))
-		if err != nil || len(got) != 0 {
-			t.Errorf("got (%v, %v), want ([], nil)", got, err)
-		}
-	})
-	t.Run("dead socket errors", func(t *testing.T) {
-		if _, err := AgentFingerprints(context.Background(), filepath.Join(t.TempDir(), "nope.sock")); err == nil {
-			t.Error("dead socket produced no error")
-		}
-	})
 }
 
 func TestConnSessionKeyFPNilSafe(t *testing.T) {

@@ -16,30 +16,31 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
 func TestCheckAgent(t *testing.T) {
 	t.Run("unset", func(t *testing.T) {
-		if err := CheckAgent(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
-			t.Errorf("CheckAgent(\"\") = %v, want SSH_AUTH_SOCK error", err)
+		if err := checkAgent(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+			t.Errorf("checkAgent(\"\") = %v, want SSH_AUTH_SOCK error", err)
 		}
 	})
 	t.Run("dead socket", func(t *testing.T) {
-		if err := CheckAgent(context.Background(), filepath.Join(t.TempDir(), "nope.sock")); err == nil {
-			t.Error("CheckAgent(dead) = nil, want error")
+		if err := checkAgent(context.Background(), filepath.Join(t.TempDir(), "nope.sock")); err == nil {
+			t.Error("checkAgent(dead) = nil, want error")
 		}
 	})
 	t.Run("agent with keys", func(t *testing.T) {
-		if err := CheckAgent(context.Background(), serveAgent(t, true)); err != nil {
-			t.Errorf("CheckAgent(agent with keys) = %v, want nil", err)
+		if err := checkAgent(context.Background(), serveAgent(t, true)); err != nil {
+			t.Errorf("checkAgent(agent with keys) = %v, want nil", err)
 		}
 	})
 	t.Run("empty agent", func(t *testing.T) {
 		// The socket answers the agent protocol but holds zero keys: every
 		// later per-server auth would fail. The preflight must say so once.
-		err := CheckAgent(context.Background(), serveAgent(t, false))
+		err := checkAgent(context.Background(), serveAgent(t, false))
 		if err == nil || !strings.Contains(err.Error(), "no keys") {
-			t.Errorf("CheckAgent(empty agent) = %v, want a no-keys error", err)
+			t.Errorf("checkAgent(empty agent) = %v, want a no-keys error", err)
 		}
 		if err != nil && !strings.Contains(err.Error(), "ssh-add") {
 			t.Errorf("err %q should tell the operator to run ssh-add", err)
@@ -50,9 +51,9 @@ func TestCheckAgent(t *testing.T) {
 		// context flows into DialContext instead of being dropped.
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		err := CheckAgent(ctx, serveAgent(t, true))
+		err := checkAgent(ctx, serveAgent(t, true))
 		if !errors.Is(err, context.Canceled) {
-			t.Errorf("CheckAgent(canceled ctx) = %v, want context.Canceled", err)
+			t.Errorf("checkAgent(canceled ctx) = %v, want context.Canceled", err)
 		}
 	})
 	t.Run("unresponsive socket", func(t *testing.T) {
@@ -72,8 +73,8 @@ func TestCheckAgent(t *testing.T) {
 				c.Close()
 			}
 		}()
-		if err := CheckAgent(context.Background(), sock); err == nil {
-			t.Error("CheckAgent(unresponsive) = nil, want error")
+		if err := checkAgent(context.Background(), sock); err == nil {
+			t.Error("checkAgent(unresponsive) = nil, want error")
 		}
 	})
 }
@@ -128,7 +129,7 @@ func serveAgent(t *testing.T, withKey bool) string {
 
 func TestClientBadAgentSock(t *testing.T) {
 	c := &Client{
-		AgentSock:      filepath.Join(t.TempDir(), "nope.sock"),
+		Creds:          &sshconn.Credentials{AgentSock: filepath.Join(t.TempDir(), "nope.sock")},
 		KnownHostsPath: filepath.Join(t.TempDir(), "kh"),
 		DialTimeout:    time.Second,
 	}
@@ -140,28 +141,15 @@ func TestClientBadAgentSock(t *testing.T) {
 }
 
 func TestClientBadKnownHostsPath(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "agent.sock")
-	l, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sock)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer l.Close()
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			c.Close()
-		}
-	}()
+	// The signers are fetched before anything else (a working agent), so
+	// the first failure is the known_hosts load.
 	c := &Client{
-		AgentSock:      sock,
+		Creds:          &sshconn.Credentials{AgentSock: serveAgent(t, true)},
 		KnownHostsPath: filepath.Join(t.TempDir(), "does-not-exist"),
 		DialTimeout:    time.Second,
 	}
 	srv := config.Server{Name: "s", Host: "127.0.0.1", Port: 1, User: "u"}
-	_, err = c.ReadAuthorizedKeys(context.Background(), srv)
+	_, err := c.ReadAuthorizedKeys(context.Background(), srv)
 	if err == nil || !strings.Contains(err.Error(), "known_hosts") {
 		t.Errorf("err = %v, want known_hosts load error", err)
 	}
@@ -236,7 +224,7 @@ func TestClientDeadline(t *testing.T) {
 	}
 
 	t.Run("ctx deadline bounds the handshake", func(t *testing.T) {
-		c := &Client{AgentSock: agentSock, KnownHostsPath: kh, DialTimeout: 5 * time.Second}
+		c := &Client{Creds: &sshconn.Credentials{AgentSock: agentSock}, KnownHostsPath: kh, DialTimeout: 5 * time.Second}
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		start := time.Now()
@@ -251,7 +239,7 @@ func TestClientDeadline(t *testing.T) {
 	})
 
 	t.Run("deadline floor kicks in without a ctx deadline", func(t *testing.T) {
-		c := &Client{AgentSock: agentSock, KnownHostsPath: kh, DialTimeout: 100 * time.Millisecond}
+		c := &Client{Creds: &sshconn.Credentials{AgentSock: agentSock}, KnownHostsPath: kh, DialTimeout: 100 * time.Millisecond}
 		start := time.Now()
 		_, err := c.ReadAuthorizedKeys(context.Background(), srv) // no deadline: floor = 300ms
 		elapsed := time.Since(start)

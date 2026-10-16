@@ -56,6 +56,10 @@ Early development, but the core loop works end to end: **adopt → apply → aud
 | `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe |
 | `revoke` / `rotate` | — | Not separate commands: both reduce to a manifest edit plus `apply` |
 
+`audit`, `adopt` and `apply` authenticate with the SSH agent, `--identity` key
+files, or both — so they also run headless in CI, cron and containers (see
+[Authentication](#authentication)).
+
 ## Install
 
 **From source** (Go 1.26+):
@@ -78,7 +82,8 @@ $ docker run --rm sshepherd:dev --version
 ```
 
 To run against a fleet from the container, mount your manifest and `known_hosts`
-and forward your SSH agent:
+and forward your SSH agent (or mount a key file and use `--identity` — see
+[Container usage](#container-usage)):
 
 ```console
 $ docker run --rm \
@@ -92,9 +97,10 @@ $ docker run --rm \
 
 SSHepherd deliberately has a narrow, strict connection posture:
 
-- **A running SSH agent** holding the key(s) that log into the fleet
-  (`SSH_AUTH_SOCK` must be set). Agent-only authentication — SSHepherd never reads,
-  asks for, or stores a private key.
+- **Credentials:** an SSH agent (`SSH_AUTH_SOCK`) holding the key(s) that log into
+  the fleet, and/or private key files passed with `--identity` (headless runs: CI,
+  cron, containers). Without `--identity` the agent is required, exactly as before;
+  see [Authentication](#authentication).
 - **A populated `known_hosts`** (default `~/.ssh/known_hosts`). Host-key checking is
   **strict, with no TOFU**: an unknown host is an error, not a prompt.
 - **Direct reachability.** Every server is dialed directly. Hosts reachable only
@@ -317,6 +323,9 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--parallel` | `32` | Max concurrent server audits |
 | `--json` | off | Machine-readable report on stdout (schema 1) |
 | `--comments` | off | Also report comment drift on present keys (informational) |
+| `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
+| `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
+| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 **Drift classes.** Besides missing, unauthorized and unparseable entries, three
 security-relevant classes make a server non-compliant (exit 1), always on:
@@ -506,6 +515,9 @@ they were found. The input file is never modified.
 | `--force` | off | Allow `--output` to overwrite an existing file |
 | `--partial` | off | Proceed even if some servers cannot be read |
 | `--merge` | off | Append discoveries to the existing manifest, comments intact |
+| `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
+| `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
+| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 Any unreadable server aborts the run unless `--partial` is set — adopting a
 half-read fleet would silently drop real access.
@@ -531,8 +543,13 @@ rendered desired state.
 | `--server` | all | Restrict the run to this server (repeatable; canary rollout) |
 | `--dry-run` | off | Plan and report only; never write |
 | `--yes` | off | Skip the confirmation prompt (automation) |
+| `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
+| `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
+| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
-`--dry-run` and `--yes` are mutually exclusive.
+`--dry-run` and `--yes` are mutually exclusive. `--yes` skips only the `[y/N]`
+confirmation: an encrypted `--identity` key may still prompt for its passphrase on
+the terminal (see [Authentication](#authentication)).
 
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
 restrictive option** (`from=`, `command=`, `restrict`, `no-*`, `expiry-time=`,
@@ -553,7 +570,7 @@ After the writes, a summary reports each server's outcome:
 ```console
 a: applied · verified
 b: NOT STARTED: interrupted before the write started
-c: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving agent keys failed: ssh: unable to authenticate)
+c: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate)
 Summary: 1/3 servers converged (1 applied) · 1 pending · 1 failed  → exit 1
 ```
 
@@ -566,6 +583,191 @@ and exits `3`. In `audit` and `adopt`, an interrupt at any point closes in-fligh
 sessions and exits `3` without rendering a report or writing a manifest (servers cut
 short are never passed off as unreachable).
 
+## Authentication
+
+`audit`, `adopt` and `apply` authenticate with the union of two sources, like
+`ssh -i`:
+
+1. **`--identity` key files**, offered first, in flag order;
+2. **the SSH agent** at `SSH_AUTH_SOCK`, in the agent's own order (certificates
+   included).
+
+A key in both is offered once. With at least one `--identity`, a missing, empty or
+broken agent is not an error (a set-but-broken `SSH_AUTH_SOCK` logs one warning and
+the run continues with the key files). With no `--identity`, the agent is required
+and behaves as before — except that `apply` with only agent certificates is now
+refused up front (below). Each loaded key is logged once:
+`identity loaded path=KEY fp=SHA256:…`.
+
+**Certificates are offered, never counted.** Agent-held certificates still log in,
+but they never count as a key you hold for `apply`'s self-lockout guard or its
+post-write login probe (a certificate logs in through a `cert-authority` line the
+guard cannot prove survives). A `KEY-cert.pub` next to an `--identity` key is not
+loaded (`certificate KEY-cert.pub not used; authenticating with the plain key`).
+`apply` with only certificates is refused before anything is read.
+
+**Passphrases.** An encrypted key is unlocked by the first source that applies:
+
+1. its `--identity-passphrase KEY=FILE` mapping — a wrong passphrase there is an
+   error (exit 3), never a fall-through;
+2. `--identity-passphrase-file FILE` — a shared default: if it does not unlock this
+   key, resolution continues;
+3. a prompt on the controlling terminal (`/dev/tty`, three attempts, like `ssh`);
+4. otherwise exit 3: `KEY is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase KEY=FILE)`.
+
+There is **no passphrase environment variable and no passphrase flag value** (both
+leak through `/proc/<pid>/environ`, `ps`, shell history or core dumps). Files, secret
+mounts, `/dev/fd/N` and `<(...)` work. Every passphrase file is read exactly once per
+run (a pipe can be read only once), exactly one trailing newline (`\n` or `\r\n`) is
+stripped, and a file that is then empty is an error, never an empty passphrase.
+Passphrases, passphrase-file contents and key bytes never appear in a log line, an
+error or a report. They are wiped from memory when loading finishes — best effort
+only: Go cannot guarantee no copies remain, and bcrypt intermediates are not zeroed.
+
+**Prompting and headless runs.** A prompt is shown only when `/dev/tty` opens,
+stdin is a terminal, and SSHepherd is the terminal's foreground process. Anything
+else — `docker run -t`, a pty-allocating CI executor, `sshepherd … &` — is headless
+and fails fast with the no-passphrase-source error instead of hanging. The prompt
+and its `waiting for passphrase for KEY on the terminal` line go to the terminal,
+never stdout (`audit --json` stays clean), and appear even under `-q`. `--yes` does
+not disable prompting. Ctrl-C at the prompt restores the terminal and exits `3`
+without connecting anywhere.
+
+**Order of operations.** Flags are validated first, then the manifest; an empty
+fleet (or no targeted server) returns before any key file is read; then
+`known_hosts` is loaded; only then are key files read (and maybe prompted for). A
+manifest typo or a bad `--known-hosts` therefore never costs you a passphrase.
+
+**Key-file rules.**
+
+- **Permissions**, as OpenSSH checks them: a regular file you own must not be
+  readable by group or others — `permissions 0644 for FILE are too open (chmod 600 FILE)`.
+  A regular file owned by another user (e.g. a root-owned secret mount) is accepted.
+  Pipes, sockets and character devices (`/dev/fd/N`, `<(...)`, `/dev/stdin`) are
+  exempt: their mode bits do not describe a file at rest. The same rule applies to
+  passphrase files.
+- **Unreadable** files name the mismatch:
+  `cannot read key file FILE as uid N (owner M, mode 0600) — see README 'Container usage'`.
+- **Size caps:** key files 64 KiB, passphrase files 4 KiB.
+- **Paths are matched lexically:** `~/` expands from `$HOME`, relative paths resolve
+  against the working directory, then `filepath.Clean` — no symlink resolution, case
+  sensitive. An `--identity-passphrase` KEY must name an `--identity` exactly as
+  cleaned (the error lists the cleaned paths); the same KEY twice is an error; a
+  path given twice to `--identity` is used once. Two paths holding the same key keep
+  the first (an info line names the dropped one).
+- **The fingerprint is always the decrypted key's.** A sibling `KEY.pub` (legacy PEM)
+  or the embedded public key (OpenSSH format) only labels the prompt; if it
+  disagrees with the private key, the key is refused.
+
+**Supported formats.** OpenSSH (`-----BEGIN OPENSSH PRIVATE KEY-----`), unencrypted
+or `aes256-ctr`/`aes256-cbc` with bcrypt (at most 2048 rounds), and legacy PEM RSA /
+EC (optionally encrypted) and unencrypted PKCS#8. Refused before any prompt, with a
+conversion hint:
+
+| Format | Hint |
+| ------ | ---- |
+| PuTTY `.ppk` | `puttygen KEY -O private-openssh -o NEWFILE` |
+| encrypted PKCS#8, other ciphers (e.g. `chacha20-poly1305`, `aes256-gcm`), multi-key files | `ssh-keygen -p -f KEY` |
+| bcrypt rounds above 2048 | `ssh-keygen -p -a 100 -f KEY` |
+| DSA (`ssh-dss`) | generate a new key (`ssh-dss` is disabled by default in OpenSSH) |
+| hardware keys (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-…`) | use them through `ssh-agent` |
+
+**The agent-only-survivor warning.** With `--identity` given, a server whose
+surviving keys are all agent keys gets a plan warning — the run passes the guard on
+a credential the next agent-less run will not have:
+
+```console
+web-2 (deploy@10.0.0.2:22)
+  +  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  add (authorized, missing)
+  note: the audited file is absent yet login succeeded — sshd may consult
+        another key source; creating the file is purely additive
+  warning: only SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent) keeps access; none of your --identity keys survives — a run without this agent will be locked out
+  → 1 keys desired · 1 add · 0 remove · 0 rewrite
+```
+
+Guard refusals list every key you hold with its source:
+
+```console
+web-1 (deploy@10.0.0.1:22)  REFUSED: none of the 2 keys you hold (identity files + agent) would remain in web-1's authorized_keys — applying would lock this session out (held: SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o (/home/ci/.ssh/ci_old), SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent)). Add one of your keys to the manifest (or mark its user operator: true); rotating an --identity key? pass the new key with another --identity, so the guard and the post-write login probe can use it
+```
+
+**Headless key rotation.** Replace `ci_old` with `ci_new` in the manifest, then run
+with both keys: the write logs in with the old key, the guard sees the new key
+survive, and the post-write probe (which offers surviving key files first) proves
+the new key logs in. A later run needs only the new key.
+
+```console
+$ sshepherd apply --yes --identity ~/.ssh/ci_old --identity ~/.ssh/ci_new
+```
+
+### CI recipes
+
+The shell recipes unset `SSH_AUTH_SOCK` and the container recipes mount no agent, so
+a stray or forwarded agent can never satisfy the guard for a credential CI lacks.
+
+**GitHub Actions** (bash — `<(...)` needs bash or zsh, not POSIX `sh`; `env -u PW`
+keeps the secret out of SSHepherd's own environment):
+
+```yaml
+- name: apply
+  shell: bash
+  env:
+    PW: ${{ secrets.SSHEPHERD_KEY_PASSPHRASE }}
+  run: |
+    unset SSH_AUTH_SOCK
+    env -u PW sshepherd apply --yes --identity "$HOME/.ssh/ci" \
+      --identity-passphrase-file <(printf %s "$PW")
+```
+
+**GitLab CI** — a `type: file` variable is a path to a file holding the secret:
+
+```yaml
+apply:
+  script:
+    - unset SSH_AUTH_SOCK
+    - sshepherd apply --yes --identity "$SSHEPHERD_KEY" --identity-passphrase-file "$SSHEPHERD_KEY_PASSPHRASE"
+```
+
+**Kubernetes CronJob** — key and passphrase from a secret volume:
+
+```yaml
+containers:
+  - name: sshepherd
+    image: ghcr.io/javadh75/sshepherd:latest
+    args: ["apply", "--yes", "--identity", "/secrets/ci",
+           "--identity-passphrase-file", "/secrets/ci.pass",
+           "--config", "/config/sshepherd.yaml", "--known-hosts", "/config/known_hosts"]
+    volumeMounts:
+      - {name: secrets, mountPath: /secrets, readOnly: true}
+securityContext:
+  fsGroup: 65532
+volumes:
+  - name: secrets
+    secret: {secretName: sshepherd-ci, defaultMode: 0440}
+```
+
+**`docker run`** — bind-mount the files (or use a tmpfs); a host-side `<(...)` file
+descriptor is not passed into the container:
+
+```console
+$ docker run --rm --user "$(id -u)" \
+    -v "$PWD/sshepherd.yaml:/work/sshepherd.yaml:ro" \
+    -v "$HOME/.ssh/known_hosts:/work/known_hosts:ro" \
+    -v "$HOME/.ssh/ci:/work/ci:ro" -v "$HOME/.ssh/ci.pass:/work/ci.pass:ro" \
+    -w /work sshepherd:dev apply --yes --known-hosts /work/known_hosts \
+    --identity /work/ci --identity-passphrase-file /work/ci.pass
+```
+
+### Container usage
+
+The image runs as uid 65532. A mounted key (or passphrase file) must be either
+**owned by the container's uid with mode 0600** — run with `--user` matching the
+file's owner, or set Kubernetes `runAsUser` to it — or **owned by root and readable
+through group or other bits** — Kubernetes `fsGroup: 65532` with a secret
+`defaultMode: 0440`. A file owned by the container uid but group/other-readable is
+refused (`permissions … are too open`); a file the uid cannot read at all fails with
+`cannot read key file FILE as uid 65532 (owner M, mode …)`.
+
 ## Exit codes
 
 Monitoring-style, shared by `audit` and `apply` (code `2` is `audit`-only):
@@ -575,7 +777,7 @@ Monitoring-style, shared by `audit` and `apply` (code `2` is `audit`-only):
 | `0` | Compliant / converged — nothing to do |
 | `1` | Drift, unreachable servers, or pending changes — compliance not proven |
 | `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply` never returns `2` |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, interrupted `audit`/`adopt`, `apply` interrupted before any write |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write |
 
 ## Safety model
 
@@ -592,12 +794,14 @@ Output is deterministic, so a repeated `apply` is a byte-for-byte no-op.
 plan, you confirm once (interactive prompt on a TTY, or `--yes`), and only then does
 it write — and only to the servers that actually drifted.
 
-**Self-lockout guard.** Any write that would leave a server without a key held by
-your agent is refused. Lines with `cert-authority` or `principals=` do not count as
-surviving logins (they accept certificates, not the bare key), and an empty agent
-listing refuses every write. The guard runs again **after** the confirmation prompt
-against a fresh agent listing, so keys that expired or were removed while the prompt
-waited fail that server instead of locking you out.
+**Self-lockout guard.** Any write that would leave a server without a key you hold
+(identity files + agent) is refused; the refusal lists every held key with its
+source. Certificates never count as held, lines with `cert-authority` or
+`principals=` do not count as surviving logins (they accept certificates, not the
+bare key), and an empty held set refuses every write. The guard runs again **after**
+the confirmation prompt against a fresh listing, so agent keys that expired or were
+removed while the prompt waited fail that server instead of locking you out (a
+vanished agent simply stops counting; your key files still do).
 
 **Refusals, not guesses.** A server is skipped — loudly, with a `REFUSED:` line, and
 nothing changed — when:
@@ -644,8 +848,9 @@ reported `FAILED` (its `authorized_keys` was still written and verified).
 
 **Verify, then prove you can still log in.** After the rename the file is re-read in
 the same session and compared byte-exactly. Then SSHepherd opens a **fresh
-connection offering only the surviving agent keys** (unrestricted ones first) and
-runs a probe command over it, so a surviving key whose line forces a `command=` fails
+connection offering only the surviving keys you hold** (unrestricted ones first,
+then key files before agent keys, so a surviving `--identity` key is the one
+proven) and runs a probe command over it, so a surviving key whose line forces a `command=` fails
 the probe just like a refused login. If the probe fails, the previous file (and a
 disabled `authorized_keys2`) is restored over the still-open session and the server
 is reported `FAILED: lockout prevented — restored previous file (…)`. The restore
@@ -653,14 +858,14 @@ takes the lock again and refuses to replace a file that changed since this apply
 wrote it (a concurrent apply); if the restore fails or is refused, the message says
 so and names the `.bak` path.
 
-**Connection posture.** Agent-only authentication, strict `known_hosts` with no
-TOFU, per-server and dial timeouts, and bounded fan-out (`--parallel`, default 32,
+**Connection posture.** Key files and/or agent (see
+[Authentication](#authentication)), strict `known_hosts` with no TOFU, per-server and dial timeouts, and bounded fan-out (`--parallel`, default 32,
 tuned from the fan-out benchmarks). `known_hosts` is parsed once per run. Host-key
 algorithms are negotiated in the order `known_hosts` implies, so a host with an sshd
 `HostCertificate` still works when its plain key is pinned; certificate algorithms
-are offered only when a matching `@cert-authority` line exists. Agent keys granted
-on the server (operators first) are offered first, to avoid sshd `MaxAuthTries`
-lockouts with many-key agents. Remote commands always run under `/bin/sh`.
+are offered only when a matching `@cert-authority` line exists. Keys granted on the
+server (operators first) are offered first, to avoid sshd `MaxAuthTries` lockouts
+with many held keys. Remote commands always run under `/bin/sh`.
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.
@@ -717,8 +922,9 @@ internal/authkeys/   authorized_keys parser and renderer
 internal/audit/      fan-out, diffing, text/JSON reports, exit codes
 internal/adopt/      pure fleet-discovery plan
 internal/apply/      pure plan computation, self-lockout guard, plan report
-internal/sshconn/    shared connection glue (dial, agent auth, host keys, error kinds)
-internal/sshconn/sshtest/  in-process SSH server + agent for hermetic tests
+internal/sshconn/    shared connection glue (dial, credentials: key files + agent, host keys, error kinds)
+internal/sshconn/sshtest/  in-process SSH server + agent + key-file helpers for hermetic tests
+internal/keyfile/    --identity key files: permission rule, format checks, passphrases, /dev/tty prompt
 internal/sshread/    remote read protocol
 internal/sshwrite/   remote write protocol (guarded script, CAS, lock, verify, probe)
 internal/sshcfg/     OpenSSH client-config parser
@@ -739,7 +945,10 @@ Each slice was specced and planned before it was built; the documents live in
 wildcard access, JSON output and exit codes, the comment-policy memo, the merge
 designs, and the apply slice. The review-hardening pass that added the guarded write,
 login probe, new drift classes and stricter validation is described in
-[`docs/superpowers/specs/2026-10-16-review-hardening-design.md`](docs/superpowers/specs/2026-10-16-review-hardening-design.md).
+[`docs/superpowers/specs/2026-10-16-review-hardening-design.md`](docs/superpowers/specs/2026-10-16-review-hardening-design.md). Key-file
+authentication (`--identity`, passphrase sources, certificates and the guard) is
+specced in
+[`docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md`](docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md).
 
 ## License
 
