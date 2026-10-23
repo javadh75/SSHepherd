@@ -278,7 +278,7 @@ with a dockerized integration matrix and the first full E2E loop
 (adopt → apply → audit) — specced in
 `docs/superpowers/specs/2026-07-19-apply-slice-design.md`, planned in
 `docs/superpowers/plans/2026-07-19-apply-slice.md`. `revoke`/`rotate`
-now reduce to manifest edits + `apply`.
+then landed as their own commands on top of it (below).
 A whole-repo **review-hardening pass** (53 findings, specced in
 `docs/superpowers/specs/2026-10-16-review-hardening-design.md`) then landed:
 apply's write is one guarded remote script per server (symlink/ownership
@@ -323,3 +323,20 @@ agent keys) and probe reason over every held key, refusals list each key with
 its source, and an agent-only-survivor warning flags a stray agent satisfying
 the guard for a headless run. Headless rotation (old + new `--identity`) is
 covered end to end by the integration suite.
+**`revoke` and `rotate`** (specced in
+`docs/superpowers/specs/2026-10-23-revoke-rotate-design.md`, planned in
+`docs/superpowers/plans/2026-10-23-revoke-rotate.md`): `revoke USER...`,
+`revoke --key KEY...` and `rotate USER --old KEY --new KEY` edit the manifest
+comment-preservingly (`internal/manifest` gains `RemoveUser`/`RemoveKey`/
+`ReplaceKey`/`SetOperator`) and push the edit through apply's pipeline over the
+affected servers only (`apply.Affected`, a rendered-bytes diff; sole-grantee
+servers are warned, never emptied). KEY is a SHA256 fingerprint, a key line or a
+`.pub` path (MD5, certificates and private keys refused; errors never quote file
+contents). Operator targets need `--operator`. The edit is always confirmed and
+saved once — after the prompt, before the first write — under a flock sidecar
+with a compare-and-swap and an atomic rename keeping mode and owner; `--dry-run`
+saves nothing, `--no-apply` saves without connecting. Apply's run body is now
+`runApply(applyRun)`, and plain `apply` re-checks the manifest before writing
+(skipped for a piped `--config`, which edits refuse).
+Report count strings are pluralized. The E2E loop is adopt → apply → revoke
+--key → audit → rotate → audit, plus a headless `rotate`.

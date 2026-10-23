@@ -2,6 +2,7 @@
 
 - **Date:** 2026-07-16
 - **Status:** Implemented (2026-07-16)
+- **Amended by:** [`revoke` / `rotate`](2026-10-23-revoke-rotate-design.md) (2026-10-23) — `internal/manifest` also removes and replaces entries; Load's rejection texts are command-neutral.
 - **Prior art:** `docs/superpowers/specs/2026-07-16-manifest-merge-memo.md`
   (the decided memo this slice executes),
   `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md`

@@ -47,7 +47,7 @@ func helpFlagCell(f *pflag.Flag) string {
 	return "`" + cell + "`"
 }
 
-// TestHelpMatchesREADMETables: every local flag of audit/adopt/apply
+// TestHelpMatchesREADMETables: every local flag of audit/adopt/apply/revoke/rotate
 // appears in its README table spelled as --help renders it (varnames
 // included), and the tables list nothing --help does not.
 func TestHelpMatchesREADMETables(t *testing.T) {
@@ -57,7 +57,7 @@ func TestHelpMatchesREADMETables(t *testing.T) {
 	}
 	var out, errBuf bytes.Buffer
 	root := newRootCmd(&app{}, &out, &errBuf)
-	for _, name := range []string{"audit", "adopt", "apply"} {
+	for _, name := range []string{"audit", "adopt", "apply", "revoke", "rotate"} {
 		t.Run(name, func(t *testing.T) {
 			var cmd *cobra.Command
 			for _, c := range root.Commands() {
@@ -86,7 +86,7 @@ func TestHelpMatchesREADMETables(t *testing.T) {
 
 // TestHelpShowsIdentityVarnames pins the rendered --help lines.
 func TestHelpShowsIdentityVarnames(t *testing.T) {
-	for _, name := range []string{"audit", "adopt", "apply"} {
+	for _, name := range []string{"audit", "adopt", "apply", "revoke", "rotate"} {
 		var out, errBuf bytes.Buffer
 		if code := run([]string{name, "--help"}, &out, &errBuf); code != 0 {
 			t.Fatalf("%s --help exit = %d", name, code)

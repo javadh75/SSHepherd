@@ -1,0 +1,25 @@
+# fleet manifest — hand-maintained
+# owner: platform team
+users:
+  # --- contractors ---
+  - name: alice # contractor until 2026-12
+    keys:
+      # alice laptop
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG56HN0psLeP0Tr0xVmP7/TvKpcWbjym8uT7/M2AUFvx alice@new
+  # --- staff ---
+  - name: ops
+    # break-glass account
+    operator: true # vault-held
+    keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c ops@vault
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: db-1, host: 10.0.0.9, user: deploy}
+access:
+  # alice: web only
+  - user: alice
+    servers: [web-1]
+  # alice db access (temporary)
+  - user: alice
+    servers: [db-1]
+# reviewed 2026-10-01

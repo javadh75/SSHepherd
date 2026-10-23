@@ -52,7 +52,7 @@ docker run -d --name "$CONTAINER" \
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd; do
       adduser -D -s /bin/sh "$u"
       sed -i "s|^$u:!|$u:*|" /etc/shadow   # unlock for pubkey login
       mkdir -p "/home/$u/.ssh"
@@ -67,6 +67,7 @@ docker run -d --name "$CONTAINER" \
     cp /seed/ci_old.pub /home/idaudit/.ssh/authorized_keys
     cp /seed/enc.pub /home/idenc/.ssh/authorized_keys
     cp /seed/ci_old.pub /home/rotate/.ssh/authorized_keys
+    cp /seed/ci_old.pub /home/rotatecmd/.ssh/authorized_keys
     cat /seed/ci_old.pub /seed/stale.pub > /home/e2eh/.ssh/authorized_keys
     # writer + e2e: drifted seed (agent key + a stale key apply must remove).
     cat /seed/key.pub /seed/stale.pub > /home/writer/.ssh/authorized_keys
@@ -78,7 +79,7 @@ docker run -d --name "$CONTAINER" \
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true

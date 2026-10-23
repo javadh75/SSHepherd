@@ -5,5 +5,5 @@ web-2 (deploy@10.0.0.2:22)
   note: the audited file is absent yet login succeeded — sshd may consult
         another key source; creating the file is purely additive
   warning: only SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent) keeps access; none of your --identity keys survives — a run without this agent will be locked out
-  → 1 keys desired · 1 add · 0 remove · 0 rewrite
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
 

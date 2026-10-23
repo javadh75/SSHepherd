@@ -107,6 +107,8 @@ fuzz:
 	$(GO) test -run='^$$' -fuzz=FuzzShQuote -fuzztime=15s ./internal/sshconn
 	$(GO) test -run='^$$' -fuzz=FuzzWriteCmds -fuzztime=15s ./internal/sshwrite
 	$(GO) test -run='^$$' -fuzz=FuzzMergeRoundTrip -fuzztime=15s ./internal/manifest
+	$(GO) test -run='^$$' -fuzz=FuzzManifestEdit -fuzztime=15s ./internal/manifest
+	$(GO) test -run='^$$' -fuzz=FuzzKeyArg -fuzztime=15s ./cmd/sshepherd
 	$(GO) test -run='^$$' -fuzz=FuzzLoad -fuzztime=15s ./internal/config
 	$(GO) test -run='^$$' -fuzz=FuzzClassify -fuzztime=15s ./internal/keyfile
 	$(GO) test -run='^$$' -fuzz=FuzzDecrypt -fuzztime=15s ./internal/keyfile

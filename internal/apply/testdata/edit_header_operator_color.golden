@@ -1,0 +1,3 @@
+manifest edit: remove user ops-bot (2 keys, 0 access grants) — 4 servers affected
+[1;31mOPERATOR:[0m ops-bot is an operator (fleet-wide, protected); --operator given
+[0;33mwarning:[0m db-1 would have no granted keys — apply never empties a server, so ops-bot's keys stay installed there; grant another user (or an operator) on db-1 first, or remove the key by hand

@@ -182,5 +182,7 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(newImportCmd(a, stdout))
 	root.AddCommand(newAdoptCmd(a, stdout))
 	root.AddCommand(newApplyCmd(a, stdout))
+	root.AddCommand(newRevokeCmd(a, stdout))
+	root.AddCommand(newRotateCmd(a, stdout))
 	return root
 }

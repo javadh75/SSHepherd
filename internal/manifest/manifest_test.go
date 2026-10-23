@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -409,5 +410,46 @@ func TestAppendNothingIsANoop(t *testing.T) {
 	}
 	if strings.Contains(string(got), "merged by sshepherd") {
 		t.Errorf("empty append still left a merge marker:\n%s", got)
+	}
+}
+
+// TestLoadUnsupportedIsTyped: a structurally uneditable (but valid)
+// manifest is an *UnsupportedError with command-neutral text; a manifest
+// config.Parse rejects is not.
+func TestLoadUnsupportedIsTyped(t *testing.T) {
+	_, err := Load([]byte("users: &u []\nservers: []\naccess: []\n"))
+	var ue *UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("err = %v, want *UnsupportedError", err)
+	}
+	if strings.Contains(ue.Error(), "merge") || !strings.Contains(ue.Error(), "anchor or alias (line 1)") {
+		t.Errorf("reason = %q, want command-neutral anchor text", ue.Error())
+	}
+	if _, err := Load([]byte("userz: []")); errors.As(err, &ue) {
+		t.Errorf("a config.Parse rejection must not be an UnsupportedError: %v", err)
+	}
+}
+
+// TestLoadFlowNullValuesRoundTrip (fuzz-found): an implicit null inside a
+// flow mapping must re-encode as null, not as an empty string the reparse
+// refuses for a bool, a list or a port.
+func TestLoadFlowNullValuesRoundTrip(t *testing.T) {
+	for _, in := range []string{
+		`users: [{name: a, operator, keys: ["` + testkeys.Line(t, 1) + `"]}]`,
+		`users: [{name: a, operator: , keys: ["` + testkeys.Line(t, 1) + `"]}]`,
+		"servers: [{name: w, host: h, port, user: u}]",
+		"users: [{name: a, keys}]",
+	} {
+		f, err := Load([]byte(in))
+		if err != nil {
+			t.Fatalf("Load(%q): %v", in, err)
+		}
+		out, err := f.Encode()
+		if err != nil {
+			t.Fatalf("Encode(%q): %v", in, err)
+		}
+		if _, err := config.Parse(out); err != nil {
+			t.Errorf("re-encoded %q rejected: %v\n%s", in, err, out)
+		}
 	}
 }

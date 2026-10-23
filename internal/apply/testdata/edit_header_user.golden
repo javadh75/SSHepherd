@@ -1,0 +1,2 @@
+manifest edit: remove user alice (2 keys, 3 access grants) — 3 servers affected
+warning: db-1 would have no granted keys — apply never empties a server, so alice's key stays installed there; grant another user (or an operator) on db-1 first, or remove the key by hand

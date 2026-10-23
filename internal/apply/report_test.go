@@ -87,10 +87,10 @@ func TestRenderPlanMixedGolden(t *testing.T) {
 		"add (authorized, missing)",
 		"remove (unauthorized)",
 		`rewrite comment: "alice@old" → "alice@work"`,
-		"normalize: removing 1 non-key lines (comments/blank)",
+		"normalize: removing 1 non-key line (comments/blank)",
 		"→ 2 keys desired · 1 add · 1 remove · 1 rewrite",
 		"web-2 (deploy@10.0.0.2:22)  converged (no changes)",
-		"db-1 (deploy@10.0.0.9:22)  REFUSED: 1 keys installed but manifest grants none — refusing to wipe",
+		"db-1 (deploy@10.0.0.9:22)  REFUSED: 1 key installed but manifest grants none — refusing to wipe",
 		"web-3 (deploy@10.0.0.3:22)  ERROR:",
 	} {
 		if !strings.Contains(out, want) {
@@ -241,7 +241,7 @@ func TestRenderPlanSecurityGolden(t *testing.T) {
 	for _, want := range []string{
 		`rewrite options: "from=\"10.0.0.5\",command=\"/usr/bin/pg_dump-wrapper\"" → (none)`,
 		`warning: the rewrite of alice (alice@work)'s key drops restrictive option(s) "from=\"10.0.0.5\"", "command=\"/usr/bin/pg_dump-wrapper\""`,
-		"removing 1 duplicate key lines (some carry options different from the first copy",
+		"removing 1 duplicate key line (some carry options different from the first copy",
 		"disable ~/.ssh/authorized_keys2",
 	} {
 		if !strings.Contains(out, want) {

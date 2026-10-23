@@ -1,0 +1,6 @@
+manifest edit: remove key SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8 from ops-bot
+manifest edit: remove user alice (1 key, 1 access grant)
+manifest edit: 2 changes — 1 server affected
+note: ops-bot has no keys left, so its operator flag is cleared — 'sshepherd revoke ops-bot' removes the user
+OPERATOR: ops-bot is an operator (fleet-wide, protected); --operator given
+warning: db-1 would have no granted keys — apply never empties a server, so the keys of alice, ops-bot stay installed there; grant another user (or an operator) on db-1 first, or remove the key by hand

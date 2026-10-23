@@ -2,6 +2,7 @@
 
 - **Date:** 2026-07-10
 - **Status:** Implemented (2026-07-10) — see docs/superpowers/plans/2026-07-10-operator-users-wildcard-access.md
+- **Amended by:** [`revoke` / `rotate`](2026-10-23-revoke-rotate-design.md) (2026-10-23) — implements the protection contract: operator targets need `--operator`.
 - **Scope:** Extends the manifest schema (`internal/config`), the audit report
   (`internal/audit`), and the import command (`cmd/sshepherd`). Three features
   land together because they share one motivation: first-class support for the

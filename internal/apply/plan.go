@@ -141,6 +141,15 @@ func Build(cfg *config.Config, results []audit.ServerResult, held []sshconn.Held
 // only so tests can lower it.
 var maxRender = sshconn.MaxRemoteOutput
 
+// theLines words the unparseable-line refusal's fix ("the line" / "the
+// lines"); a helper so planOne stays under the gocyclo cap.
+func theLines(n int) string {
+	if n == 1 {
+		return "the line"
+	}
+	return "the lines"
+}
+
 func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (ServerPlan, error) {
 	p := ServerPlan{
 		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
@@ -167,12 +176,12 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (
 			return p, nil
 		}
 		p.Class = ClassRefused
-		p.Refusal = fmt.Sprintf("%d keys installed but manifest grants none — refusing to wipe",
-			len(r.Diff.Unauthorized))
+		p.Refusal = fmt.Sprintf("%s installed but manifest grants none — refusing to wipe",
+			Plural(len(r.Diff.Unauthorized), "key", "keys"))
 		if n := len(r.ParseErrs); n > 0 {
 			p.Refusal = fmt.Sprintf(
-				"%d keys and %d unparseable lines installed but manifest grants none — refusing to wipe",
-				len(r.Diff.Unauthorized), n)
+				"%s and %s installed but manifest grants none — refusing to wipe",
+				Plural(len(r.Diff.Unauthorized), "key", "keys"), Plural(n, "unparseable line", "unparseable lines"))
 		}
 		return p, nil
 	}
@@ -183,7 +192,8 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (
 	if n := len(r.ParseErrs); n > 0 {
 		p.Class = ClassRefused
 		p.Refusal = fmt.Sprintf(
-			"%d unparseable line(s) — refusing to rewrite a file that could not be fully read (fix the line(s) or correct authorized_keys_file)", n)
+			"%s — refusing to rewrite a file that could not be fully read (fix %s or correct authorized_keys_file)",
+			Plural(n, "unparseable line", "unparseable lines"), theLines(n))
 		return p, nil
 	}
 
@@ -409,9 +419,13 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 func lockoutRefusal(server string, keys []authkeys.Key, held []sshconn.HeldKey, set map[string]bool) string {
 	// len(set), not len(held): one key can be held twice (an --identity
 	// file the agent also holds), and the message counts distinct keys.
+	held1 := fmt.Sprintf("none of the %d keys you hold (identity files + agent) would remain", len(set))
+	if len(set) == 1 {
+		held1 = "the 1 key you hold (identity files + agent) would not remain"
+	}
 	refusal := fmt.Sprintf(
-		"none of the %d keys you hold (identity files + agent) would remain in %s's authorized_keys — applying would lock this session out (held: %s). Add one of your keys to the manifest (or mark its user operator: true)",
-		len(set), server, heldList(held))
+		"%s in %s's authorized_keys — applying would lock this session out (held: %s). Add one of your keys to the manifest (or mark its user operator: true)",
+		held1, server, heldList(held))
 	for _, k := range keys {
 		if set[k.Fingerprint] {
 			refusal += " (a key you hold stays only as a cert-authority/principals= line, which accepts certificates, not the bare key)"

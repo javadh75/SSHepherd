@@ -63,7 +63,7 @@ func TestHeadlessRotationPlan(t *testing.T) {
 			t.Fatalf("Class = %s, want refused", p.Class)
 		}
 		for _, want := range []string{
-			"none of the 1 keys you hold (identity files + agent) would remain in web-1's authorized_keys",
+			"the 1 key you hold (identity files + agent) would not remain in web-1's authorized_keys",
 			"(held: " + fp(t, 4) + " (/k/ci_old))",
 			"rotating an --identity key? pass the new key with another --identity",
 		} {

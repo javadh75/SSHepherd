@@ -1,0 +1,2 @@
+manifest edit: remove key SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY from bob — 2 servers affected
+note: bob has no keys left — 'sshepherd revoke bob' removes the user

@@ -9,8 +9,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -162,7 +165,7 @@ access:
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (stderr: %s)", code, errBuf.String())
 	}
-	if !strings.Contains(out.String(), "(1 servers skipped by --server)") {
+	if !strings.Contains(out.String(), "(1 server skipped by --server)") {
 		t.Errorf("stdout = %q, want the skipped-by-server note", out.String())
 	}
 	if strings.Contains(out.String(), "web-2") {
@@ -251,7 +254,7 @@ func TestConfirm(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var errBuf bytes.Buffer
-			ok, err := confirm(context.Background(), strings.NewReader(tt.in), &errBuf, tt.tty, tt.yes, 3, 12)
+			ok, err := confirm(context.Background(), strings.NewReader(tt.in), &errBuf, tt.tty, tt.yes, "apply 3 of 12 servers?")
 			if ok != tt.wantOK || (err != nil) != tt.wantErr {
 				t.Fatalf("confirm = (%v, %v), want (%v, err=%v)", ok, err, tt.wantOK, tt.wantErr)
 			}
@@ -279,7 +282,7 @@ func TestConfirmInterrupted(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		ok, err := confirm(ctx, pr, io.Discard, true, false, 1, 1)
+		ok, err := confirm(ctx, pr, io.Discard, true, false, "apply 1 of 1 servers?")
 		done <- res{ok, err}
 	}()
 	cancel()
@@ -358,5 +361,95 @@ func TestRelistPrefix(t *testing.T) {
 	withFile := &sshconn.Credentials{Files: []keyfile.Identity{{Path: "/k"}}}
 	if got := relistPrefix(withFile); got != "re-listing the keys you hold after confirmation" {
 		t.Errorf("--identity prefix = %q", got)
+	}
+}
+
+// usePromptStreams makes the confirmation prompt read in and write out as
+// if both were a terminal.
+func usePromptStreams(t *testing.T, in io.Reader, out io.Writer) {
+	t.Helper()
+	saved := promptStreams
+	promptStreams = func(*cobra.Command) (io.Reader, io.Writer, bool) { return in, out, true }
+	t.Cleanup(func() { promptStreams = saved })
+}
+
+// actionReader runs act once, on its first Read, then reads from r: a
+// prompt answer that does something "while the prompt waits".
+type actionReader struct {
+	once sync.Once
+	act  func()
+	r    io.Reader
+}
+
+func (a *actionReader) Read(p []byte) (int, error) {
+	a.once.Do(a.act)
+	return a.r.Read(p)
+}
+
+// TestApplyRefusesChangedManifest: a manifest replaced while apply waited
+// at its prompt (a concurrent revoke) is never planned-against-and-written:
+// exit 3, the server untouched.
+func TestApplyRefusesChangedManifest(t *testing.T) {
+	home := shortHome(t)
+	srv, hostKey, cfg := hermeticFleet(t, home)
+	kh := sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+	target := filepath.Join(home, ".ssh", "authorized_keys")
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prompt bytes.Buffer
+	usePromptStreams(t, &actionReader{
+		act: func() {
+			raw, err := os.ReadFile(cfg)
+			if err != nil {
+				t.Error(err)
+			}
+			if err := os.WriteFile(cfg, append(raw, "# edited by a concurrent run\n"...), 0o600); err != nil {
+				t.Error(err)
+			}
+		},
+		r: strings.NewReader("y\n"),
+	}, &prompt)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"apply", "--config", cfg, "--known-hosts", kh}, &out, &errBuf)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "manifest "+cfg+" changed since it was read; re-run") {
+		t.Errorf("stderr = %q, want the changed-manifest refusal", errBuf.String())
+	}
+	if !strings.Contains(prompt.String(), "apply 1 of 1 servers? [y/N]") {
+		t.Errorf("prompt = %q", prompt.String())
+	}
+	if after, _ := os.ReadFile(target); !bytes.Equal(after, before) {
+		t.Errorf("authorized_keys written despite the refusal:\n%s", after)
+	}
+}
+
+// TestApplyDeclinedPrompt: "n" at the prompt writes nothing, logs the
+// abort and exits 1 (pending changes) — plain apply's long-standing
+// behavior, now through the shared run body; no edit header or manifest
+// save line ever appears for plain apply.
+func TestApplyDeclinedPrompt(t *testing.T) {
+	home := shortHome(t)
+	srv, hostKey, cfg := hermeticFleet(t, home)
+	kh := sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+	usePromptStreams(t, strings.NewReader("n\n"), io.Discard)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"apply", "--config", cfg, "--known-hosts", kh}, &out, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "aborted; no changes made") {
+		t.Errorf("stderr = %q, want the abort line", errBuf.String())
+	}
+	if !strings.Contains(out.String(), "1 pending  → exit 1") {
+		t.Errorf("stdout = %q, want the pending summary", out.String())
+	}
+	for _, never := range []string{"manifest edit:", "updated — commit and push"} {
+		if strings.Contains(out.String(), never) {
+			t.Errorf("plain apply printed %q:\n%s", never, out.String())
+		}
 	}
 }

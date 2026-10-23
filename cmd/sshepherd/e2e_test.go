@@ -69,15 +69,17 @@ func writeE2EManifest(t *testing.T, dir, name, body string) string {
 	return path
 }
 
-// TestE2EApplyLoop drives the built binary through the spec's full write
-// loop against the docker fleet: adopt → apply --yes (first write,
-// normalizes everything) → apply --dry-run (no-op, byte-stable) → revoke by
-// manifest edit → apply --dry-run (plan) → apply --yes → audit exits 0 —
-// then the lockout guard trips on a manifest holding none of the agent's
-// keys, and a final audit proves the file was untouched. Ordered subtests:
-// each stage's on-server state is the next stage's input.
+// TestE2EApplyLoop drives the built binary through the testing policy's
+// distribute → audit → revoke → rotate flow against the docker fleet:
+// adopt → apply --yes (first write, normalizes everything) → apply
+// --dry-run (no-op, byte-stable) → revoke --key --dry-run (plan, manifest
+// untouched) → revoke --key --yes → audit exits 0 → the lockout guard trips
+// on a manifest holding none of the agent's keys (file untouched) → rotate
+// the operator's agent key to a key-file key → audit exits 0. Ordered
+// subtests: each stage's on-server state is the next stage's input.
 func TestE2EApplyLoop(t *testing.T) {
 	bin, host, port, kh, pub := itE2E(t)
+	keys := itKeys(t)
 	dir := t.TempDir()
 
 	// m0: the operator's key (held by the harness agent) on server e2e.
@@ -122,22 +124,45 @@ servers:
 		}
 	})
 
-	t.Run("revoking the stale grant plans a remove", func(t *testing.T) {
-		code, out, _ := runBin(t, bin, "apply", "--dry-run", "--config", m0, "--known-hosts", kh)
-		if code != 1 {
-			t.Fatalf("dry-run exit = %d, want 1 (pending change)\n%s", code, out)
+	stalePub := filepath.Join(keys, "stale.pub")
+
+	t.Run("revoke --key --dry-run plans the remove and saves nothing", func(t *testing.T) {
+		before, err := os.ReadFile(adopted)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(out, "remove (unauthorized)") {
-			t.Errorf("plan lacks the remove row:\n%s", out)
+		code, out, stderr := runBin(t, bin, "revoke", "--key", stalePub, "--dry-run", "--config", adopted, "--known-hosts", kh)
+		if code != 1 {
+			t.Fatalf("dry-run exit = %d, want 1 (pending change) (stderr: %s)\n%s", code, stderr, out)
+		}
+		for _, want := range []string{"manifest edit: remove key ", "(revoked)", "remove (unauthorized)"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("plan lacks %q:\n%s", want, out)
+			}
+		}
+		if after, _ := os.ReadFile(adopted); string(after) != string(before) {
+			t.Error("--dry-run changed the manifest")
 		}
 	})
 
-	t.Run("apply the revoke and audit clean", func(t *testing.T) {
-		if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m0, "--known-hosts", kh); code != 0 {
-			t.Fatalf("apply exit = %d (stderr: %s)\n%s", code, stderr, out)
+	t.Run("revoke --key saves the manifest and converges", func(t *testing.T) {
+		code, out, stderr := runBin(t, bin, "revoke", "--key", stalePub, "--yes", "--config", adopted, "--known-hosts", kh)
+		if code != 0 {
+			t.Fatalf("revoke exit = %d (stderr: %s)\n%s", code, stderr, out)
+		}
+		for _, want := range []string{"has no keys left", "updated — commit and push it", "applied · verified", "scope: only servers whose grants changed were contacted (1 of 1)"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("revoke output lacks %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("audit is clean after the revoke", func(t *testing.T) {
+		if code, out, stderr := runBin(t, bin, "audit", "--config", adopted, "--known-hosts", kh); code != 0 {
+			t.Fatalf("audit exit = %d, want 0 — the revoke loop must close (stderr: %s)\n%s", code, stderr, out)
 		}
 		if code, out, stderr := runBin(t, bin, "audit", "--config", m0, "--known-hosts", kh); code != 0 {
-			t.Fatalf("audit exit = %d, want 0 — the distribute→audit loop must close (stderr: %s)\n%s", code, stderr, out)
+			t.Fatalf("audit (m0) exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
 		}
 	})
 
@@ -160,6 +185,32 @@ access:
 		// The file is untouched: the m0 audit still passes byte-for-byte.
 		if code, out, stderr := runBin(t, bin, "audit", "--config", m0, "--known-hosts", kh); code != 0 {
 			t.Fatalf("post-refusal audit exit = %d, want 0 (the refused write must not have touched the file) (stderr: %s)\n%s", code, stderr, out)
+		}
+	})
+
+	ciOld := filepath.Join(keys, "ci_old")
+
+	t.Run("rotate swaps the operator key for a key-file key", func(t *testing.T) {
+		code, out, stderr := runBin(t, bin, "rotate", "op", "--old", os.Getenv("SSHEPHERD_IT_PUB"), "--new", ciOld+".pub",
+			"--operator", "--yes", "--config", adopted, "--known-hosts", kh, "--identity", ciOld)
+		if code != 0 {
+			t.Fatalf("rotate exit = %d (stderr: %s)\n%s", code, stderr, out)
+		}
+		for _, want := range []string{"OPERATOR: op is an operator", "op (rotated out)", "removes the key this session logged in with", "applied · verified"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("rotate output lacks %q:\n%s", want, out)
+			}
+		}
+		b, err := os.ReadFile(adopted)
+		if err != nil || !strings.Contains(string(b), strings.Fields(itPubLine(t, keys, "ci_old"))[1]) ||
+			strings.Contains(string(b), strings.Fields(pub)[1]) {
+			t.Errorf("manifest after rotate must hold ci_old and not the agent key (%v):\n%s", err, b)
+		}
+	})
+
+	t.Run("audit is clean after the rotation", func(t *testing.T) {
+		if code, out, stderr := runBin(t, bin, "audit", "--config", adopted, "--known-hosts", kh, "--identity", ciOld); code != 0 {
+			t.Fatalf("audit exit = %d, want 0 — the rotate loop must close (stderr: %s)\n%s", code, stderr, out)
 		}
 	})
 }

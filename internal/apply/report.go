@@ -14,6 +14,21 @@ import (
 // RenderOptions tunes report presentation.
 type RenderOptions struct {
 	Color bool // ANSI-color glyphs and key words; off = byte-identical to plain
+	// Former is the as-loaded config before a revoke/rotate edit; nil for
+	// plain apply. A key the rendered config no longer owns is labeled with
+	// its former owner ("alice (revoked)") instead of "(unknown)".
+	Former *config.Config
+	// FormerNote is the parenthesized note on such a label: "revoked" when
+	// empty, "rotated out" for rotate.
+	FormerNote string
+}
+
+// Plural renders a count with its noun: "1 key", "2 keys", "0 keys".
+func Plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // SGR codes, four characters each — the same tabwriter-safe discipline as
@@ -42,10 +57,21 @@ func oneLine(err error) string {
 }
 
 // label mirrors audit's row label: the owning user (with their comment:
-// when set), or "(unknown)" for a key the manifest does not know.
-func label(cfg *config.Config, k authkeys.Key) string {
+// when set); for a key only opts.Former owns, its former owner and the
+// edit's note ("alice (revoked)", "deploy (rotated out)"); else
+// "(unknown)" for a key the manifest does not know.
+func label(cfg *config.Config, opts RenderOptions, k authkeys.Key) string {
 	u, ok := cfg.OwnerOf(k.Fingerprint)
 	if !ok {
+		if opts.Former != nil {
+			if fu, fok := opts.Former.OwnerOf(k.Fingerprint); fok {
+				note := opts.FormerNote
+				if note == "" {
+					note = "revoked"
+				}
+				return fmt.Sprintf("%s (%s)", fu.Name, note)
+			}
+		}
 		return "(unknown)"
 	}
 	if u.Comment != "" {
@@ -78,21 +104,21 @@ func Render(w io.Writer, cfg *config.Config, plans []ServerPlan, opts RenderOpti
 			fmt.Fprintln(w)
 		default:
 			fmt.Fprintln(w, head)
-			renderChange(w, cfg, p, pal)
+			renderChange(w, cfg, p, pal, opts)
 			fmt.Fprintln(w)
 		}
 	}
 }
 
-func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette) {
+func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, opts RenderOptions) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, k := range p.Add {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tadd (authorized, missing)\n",
-			pal.paint(codeGreen, "+"), label(cfg, k), k.Fingerprint, k.Type)
+			pal.paint(codeGreen, "+"), label(cfg, opts, k), k.Fingerprint, k.Type)
 	}
 	for _, k := range p.Remove {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tremove (unauthorized)\n",
-			pal.paint(codeRed, "-"), label(cfg, k), k.Fingerprint, k.Type)
+			pal.paint(codeRed, "-"), label(cfg, opts, k), k.Fingerprint, k.Type)
 	}
 	for _, rw := range p.Rewrites {
 		// The detail is the row's last cell, which tabwriter never pads, so
@@ -102,7 +128,7 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette) {
 			detail = pal.paint(codeBoldRed, detail)
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
-			pal.paint(codeYellow, "~"), label(cfg, rw.Key), rw.Key.Fingerprint, rw.Key.Type, detail)
+			pal.paint(codeYellow, "~"), label(cfg, opts, rw.Key), rw.Key.Fingerprint, rw.Key.Type, detail)
 	}
 	if p.Normalize.Any() {
 		fmt.Fprintf(tw, "  %s\t(formatting)\t\t\tnormalize: %s\n",
@@ -138,10 +164,10 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette) {
 			quoted = append(quoted, fmt.Sprintf("%q", o))
 		}
 		fmt.Fprintf(w, "  %s the rewrite of %s's key drops restrictive option(s) %s — the manifest line grants more than the server does today\n",
-			pal.paint(codeBoldRed, "warning:"), label(cfg, rw.Key), strings.Join(quoted, ", "))
+			pal.paint(codeBoldRed, "warning:"), label(cfg, opts, rw.Key), strings.Join(quoted, ", "))
 	}
-	fmt.Fprintf(w, "  → %d keys desired · %d add · %d remove · %d rewrite\n",
-		len(p.Desired), len(p.Add), len(p.Remove), len(p.Rewrites))
+	fmt.Fprintf(w, "  → %s desired · %d add · %d remove · %d rewrite\n",
+		Plural(len(p.Desired), "key", "keys"), len(p.Add), len(p.Remove), len(p.Rewrites))
 }
 
 // renderKeys2Warning prints the phase-1 authorized_keys2 finding on a
@@ -186,10 +212,10 @@ func normalizeDetail(n Normalize) string {
 		parts = append(parts, "reordering")
 	}
 	if n.NonKeyLines > 0 {
-		parts = append(parts, fmt.Sprintf("removing %d non-key lines (comments/blank)", n.NonKeyLines))
+		parts = append(parts, fmt.Sprintf("removing %s (comments/blank)", Plural(n.NonKeyLines, "non-key line", "non-key lines")))
 	}
 	if n.Duplicates > 0 {
-		d := fmt.Sprintf("removing %d duplicate key lines", n.Duplicates)
+		d := "removing " + Plural(n.Duplicates, "duplicate key line", "duplicate key lines")
 		if n.DuplicateOptionsDiffer {
 			d += " (some carry options different from the first copy)"
 		}

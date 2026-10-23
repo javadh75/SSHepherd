@@ -1,11 +1,23 @@
-// Package manifest provides comment-preserving appends to an existing
+// Package manifest provides comment-preserving edits to an existing
 // SSHepherd manifest: the file is decoded into a yaml.v3 node tree (comments
-// intact) alongside the validated config, new user/server/access entries are
-// appended surgically to their section sequences, and the whole document is
-// re-encoded. Nothing existing is reordered, rewritten, or removed.
+// intact) alongside the validated config, edited surgically, and the whole
+// document is re-encoded. The edits are exactly these:
 //
-// Fidelity contract: comments are preserved; blank lines and quote styles
-// may normalize.
+//   - Append adds users, servers and access entries at the end of their
+//     sections (adopt --merge, import --merge);
+//   - RemoveUser deletes a users: entry and every access: entry naming it;
+//   - RemoveKey deletes one keys: line, found by fingerprint;
+//   - ReplaceKey replaces one keys: line in place (same index);
+//   - SetOperator sets or removes a user's operator: flag.
+//
+// Nothing else is reordered, rewritten, or removed. The edit methods change
+// only the node tree — none validates, and Config stays the as-loaded
+// config; Encode's config.Parse self-check is the one validation.
+//
+// Fidelity contract: comments are preserved (a removed users:/access:
+// entry's head comment moves to the next entry or the section's footer; a
+// removed key line's head comment goes with it); blank lines and quote
+// styles may normalize.
 package manifest
 
 import (
@@ -57,6 +69,16 @@ type AccessEntry struct {
 	Servers []string
 }
 
+// UnsupportedError reports a manifest config.Parse accepts but this package
+// cannot edit faithfully (anchors/aliases, null list entries, exotic keys).
+// Callers tell it apart from a validation failure with errors.As: the
+// manifest is valid, only the comment-preserving edit is impossible.
+type UnsupportedError struct {
+	Reason string
+}
+
+func (e *UnsupportedError) Error() string { return e.Reason }
+
 // Load parses data twice: config.Parse for validation (Load rejects exactly
 // what config.Parse rejects) and a yaml node decode for later
 // comment-preserving edits.
@@ -88,7 +110,25 @@ func Load(data []byte) (*File, error) {
 	if err := checkNodeShapes(root); err != nil {
 		return nil, err
 	}
+	explicitFlowNulls(root, false)
 	return &File{root: root, cfg: cfg}, nil
+}
+
+// explicitFlowNulls spells every implicit null inside a flow collection as
+// `null` (fuzz-found): `{name: a, operator, keys: [...]}` decodes operator
+// as an empty null, which the encoder writes back in flow context as an
+// empty quoted string — which the reparse refuses for a bool (or a list,
+// or a port). Block-context nulls re-encode faithfully and are left alone.
+func explicitFlowNulls(n *yaml.Node, inFlow bool) {
+	if n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode {
+		inFlow = inFlow || n.Style&yaml.FlowStyle != 0
+	}
+	if inFlow && n.Kind == yaml.ScalarNode && n.Tag == "!!null" && n.Value == "" {
+		n.Value = "null"
+	}
+	for _, c := range n.Content {
+		explicitFlowNulls(c, inFlow)
+	}
 }
 
 // checkTopLevelKeys rejects manifests whose top-level mapping keys are not
@@ -108,7 +148,7 @@ func checkTopLevelKeys(root *yaml.Node) error {
 		k := m.Content[i]
 		if k.Kind != yaml.ScalarNode ||
 			(k.Value != "users" && k.Value != "servers" && k.Value != "access") {
-			return fmt.Errorf("manifest contains an unsupported top-level key %q", k.Value)
+			return &UnsupportedError{Reason: fmt.Sprintf("manifest contains an unsupported top-level key %q", k.Value)}
 		}
 	}
 	return nil
@@ -127,20 +167,20 @@ func checkTopLevelKeys(root *yaml.Node) error {
 // config.Parse already accepted, so nesting depth is schema-bounded.
 func checkNodeShapes(n *yaml.Node) error {
 	if n.Anchor != "" || n.Kind == yaml.AliasNode {
-		return fmt.Errorf("manifest contains a YAML anchor or alias (line %d); merge does not support them", n.Line)
+		return &UnsupportedError{Reason: fmt.Sprintf("manifest contains a YAML anchor or alias (line %d); comment-preserving edits do not support them", n.Line)}
 	}
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k := n.Content[i]
 			if k.Kind != yaml.ScalarNode || k.Tag == "!!null" || k.Value == "" {
-				return fmt.Errorf("manifest contains an unsupported mapping key (line %d)", k.Line)
+				return &UnsupportedError{Reason: fmt.Sprintf("manifest contains an unsupported mapping key (line %d)", k.Line)}
 			}
 		}
 	case yaml.SequenceNode:
 		for _, item := range n.Content {
 			if item.Kind == yaml.ScalarNode && item.Tag == "!!null" {
-				return fmt.Errorf("manifest contains a null list entry (line %d)", item.Line)
+				return &UnsupportedError{Reason: fmt.Sprintf("manifest contains a null list entry (line %d)", item.Line)}
 			}
 		}
 	}
@@ -209,7 +249,7 @@ func (f *File) Encode() ([]byte, error) {
 	}
 	out := buf.Bytes()
 	if _, err := config.Parse(out); err != nil {
-		return nil, fmt.Errorf("bug: merged manifest fails validation: %w", err)
+		return nil, fmt.Errorf("bug: edited manifest fails validation: %w", err)
 	}
 	return out, nil
 }

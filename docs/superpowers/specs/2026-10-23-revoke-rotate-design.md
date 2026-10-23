@@ -1,9 +1,15 @@
 # Design: `revoke` and `rotate`
 
 - **Date:** 2026-10-23
-- **Status:** Approved design (brainstorm 2026-10-23), revised after an
-  adversarial three-lens critique (safety, feasibility against the code,
-  operator UX); pending owner review of the written spec.
+- **Status:** Implemented (2026-10-23) — see
+  `docs/superpowers/plans/2026-10-23-revoke-rotate.md`. Approved design
+  (brainstorm 2026-10-23), revised after an adversarial three-lens critique
+  (safety, feasibility against the code, operator UX), owner-approved.
+  Deviations: none from this design. Found and fixed along the way:
+  `manifest.Load` accepted an implicit null inside a flow mapping
+  (`{name: a, operator, keys: [...]}`) that `Encode`'s self-check then
+  rejected; such nulls now re-encode as `null` (also fixes `adopt`/`import
+  --merge`).
 - **Amends:**
   [apply slice](2026-07-19-apply-slice-design.md) (fulfils the deferred
   "`revoke` / `rotate` UX"; apply's run becomes reusable; plain `apply`
@@ -107,7 +113,9 @@ contents**:
 ### Usage rules
 
 All exit 3, before the manifest is read: users and `--key` together; no
-target; `rotate` without exactly one USER, one `--old` and one `--new`;
+target; `rotate` without exactly one USER, one `--old` and one `--new`
+(a repeated `--old`/`--new` is refused — `rotate takes exactly one --old
+(got 2)` — never resolved to the last value);
 `--new` given as a fingerprint; `--dry-run` with `--yes` (mutually
 exclusive, as in apply); `--no-apply` with `--identity*`, `--known-hosts`
 or `--parallel` (they would be silently unused). `--dry-run --no-apply`
@@ -181,8 +189,11 @@ before step 7.
 
 1. **Flags** — usage rules; KEY arguments classified and `.pub` files read.
 2. **Load** with `manifest.Load`; keep the exact bytes read and the
-   resolved path (`filepath.EvalSymlinks`). A manifest `manifest.Load`
-   cannot edit (anchors/aliases, null entries, unsupported shapes) → exit 3:
+   resolved path (`filepath.EvalSymlinks`). A manifest that is not a
+   regular file (a pipe: `--config /dev/stdin`, `<(...)`) cannot be saved in
+   place → exit 3: `cannot edit PATH: not a regular file — revoke and
+   rotate save the manifest in place; pass the manifest file's path`. A
+   manifest `manifest.Load` cannot edit (anchors/aliases, null entries, unsupported shapes) → exit 3:
    `cannot edit PATH: REASON — edit the manifest by hand and run
    'sshepherd apply'`.
 3. **Edit in memory.** Resolve every target once against the as-loaded
@@ -307,7 +318,12 @@ a concurrent `revoke` has since replaced, and reinstall the revoked key.
 `beforeWrite` re-reads the manifest: if it changed, exit 3 `manifest PATH
 changed since it was read; re-run`, nothing written. (A residual window
 between that check and the writes remains; the remote CAS bounds what a
-stale write can overwrite.)
+stale write can overwrite.) A manifest piped in (`--config /dev/stdin`,
+`<(...)`) is still accepted, as `audit` accepts it: its type comes from the
+opened descriptor (on Linux `/dev/fd/N` links to an unresolvable
+`pipe:[N]`, so the path is never resolved), and the re-check is skipped —
+a drained pipe cannot be re-read, and nothing can replace it under the
+run.
 
 ### Edit header
 

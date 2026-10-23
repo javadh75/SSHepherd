@@ -37,7 +37,7 @@
     which apply reuses.
   - `cmd/sshepherd/manifest_out.go` `writeFileNoClobber` — the local
     temp-file+rename atomicity pattern, mirrored remotely.
-- **Amended by:** [`--identity` key-file auth](2026-10-16-identity-keyfile-auth-design.md) (2026-10-16) — the guard's "held keys" are no longer agent-only.
+- **Amended by:** [`--identity` key-file auth](2026-10-16-identity-keyfile-auth-design.md) (2026-10-16) — the guard's "held keys" are no longer agent-only; [`revoke` / `rotate`](2026-10-23-revoke-rotate-design.md) (2026-10-23) — the deferred verbs, apply's run reusable as `runApply`, plain `apply` re-checks the manifest before writing.
 
 ## Context & goal
 

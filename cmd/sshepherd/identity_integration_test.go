@@ -172,3 +172,37 @@ servers:
 		t.Errorf("adopted manifest lacks the stale key (%v):\n%s", err, b)
 	}
 }
+
+// TestIntegrationHeadlessRotateCommand: 'rotate' with no agent — the old
+// key logs in, the new key (encrypted, passphrase file) survives the guard
+// and is what the post-write probe proves; the manifest now holds the new
+// key and a headless audit with only the new key is clean.
+func TestIntegrationHeadlessRotateCommand(t *testing.T) {
+	bin, host, port, kh, _ := itE2E(t)
+	keys := itKeys(t)
+	m := writeE2EManifest(t, t.TempDir(), "m.yaml", `
+users:
+  - {name: ci, operator: true, keys: ["`+itPubLine(t, keys, "ci_old")+`"]}
+servers:
+  - {name: rotatecmd, host: `+host+`, port: `+port+`, user: rotatecmd}
+`)
+	ciOld, ciNew := filepath.Join(keys, "ci_old"), filepath.Join(keys, "ci_new")
+	code, out, stderr := runHeadless(t, bin, "rotate", "ci", "--old", ciOld+".pub", "--new", ciNew+".pub",
+		"--operator", "--yes", "--config", m, "--known-hosts", kh,
+		"--identity", ciOld, "--identity", ciNew, "--identity-passphrase", ciNew+"="+ciNew+".pass")
+	if code != 0 || !strings.Contains(out, "applied · verified") {
+		t.Fatalf("headless rotate exit = %d, want 0 + applied (stderr: %s)\n%s", code, stderr, out)
+	}
+	b, err := os.ReadFile(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newFields := strings.Fields(itPubLine(t, keys, "ci_new"))
+	if !strings.Contains(string(b), newFields[1]) || strings.Contains(string(b), strings.Fields(itPubLine(t, keys, "ci_old"))[1]) {
+		t.Errorf("manifest does not hold exactly the new key:\n%s", b)
+	}
+	if code, out, stderr := runHeadless(t, bin, "audit", "--config", m, "--known-hosts", kh,
+		"--identity", ciNew, "--identity-passphrase", ciNew+"="+ciNew+".pass"); code != 0 {
+		t.Fatalf("headless audit with the new key exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+}
