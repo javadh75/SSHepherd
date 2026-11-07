@@ -6,6 +6,7 @@
 package sshtest
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,8 +17,10 @@ import (
 	"net"
 	"os"
 	"os/exec" //nolint:depguard // test-support package, never linked into the binary: ShellHandler stands in for sshd running the command
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -228,6 +231,14 @@ type ServerConfig struct {
 	Authorized []ssh.PublicKey // keys accepted for login; others are refused
 	Handle     Handler         // exec handler; nil exits 0 with no output
 	Stall      bool            // accept TCP but never speak SSH
+
+	// AuthorizedKeysFile, when set, replaces Authorized. Every login
+	// re-reads this file, as sshd does, so tests see exactly what a write
+	// left there. It honors the options the login probe depends on:
+	// command= forces the command, and from= must match the client address
+	// (comma-separated globs, "!" negates). restrict and every other option
+	// are accepted and ignored.
+	AuthorizedKeysFile string
 }
 
 // Server is a running in-process SSH server.
@@ -270,11 +281,14 @@ func NewServer(tb testing.TB, cfg ServerConfig) *Server {
 	tb.Cleanup(tr.close)
 
 	sc := &ssh.ServerConfig{
-		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) { // #nosec G408 -- test server: the attempt log only observes; the verdict depends on the key alone
+		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) { // #nosec G408 -- test server: the attempt log only observes; the verdict depends on the key alone
 			fp := ssh.FingerprintSHA256(key)
 			s.mu.Lock()
 			s.attempts = append(s.attempts, fp)
 			s.mu.Unlock()
+			if cfg.AuthorizedKeysFile != "" {
+				return authorizeFromFile(cfg.AuthorizedKeysFile, meta.RemoteAddr(), key)
+			}
 			for _, k := range cfg.Authorized {
 				if ssh.FingerprintSHA256(k) == fp {
 					return &ssh.Permissions{}, nil
@@ -302,6 +316,61 @@ func (refusedError) Error() string { return "sshtest: key refused" }
 
 var errRefused = refusedError{}
 
+// authorizeFromFile returns the permissions of the first line in file that
+// holds key and whose from= admits remote. Forced commands travel in
+// CriticalOptions["force-command"].
+func authorizeFromFile(file string, remote net.Addr, key ssh.PublicKey) (*ssh.Permissions, error) {
+	data, err := os.ReadFile(file) // #nosec G304 -- test server reads the file the test configured
+	if err != nil {
+		return nil, errRefused
+	}
+	host, _, _ := net.SplitHostPort(remote.String())
+	want := key.Marshal()
+	for len(data) > 0 {
+		pub, _, opts, rest, err := ssh.ParseAuthorizedKey(data)
+		if err != nil {
+			break // no further key lines
+		}
+		data = rest
+		if !bytes.Equal(pub.Marshal(), want) {
+			continue
+		}
+		perms, ok := &ssh.Permissions{CriticalOptions: map[string]string{}}, true
+		for _, o := range opts {
+			name, val, _ := strings.Cut(o, "=")
+			if u, err := strconv.Unquote(val); err == nil {
+				val = u
+			}
+			switch strings.ToLower(name) {
+			case "command":
+				perms.CriticalOptions["force-command"] = val
+			case "from":
+				ok = ok && fromMatches(val, host)
+			}
+		}
+		if ok {
+			return perms, nil
+		}
+	}
+	return nil, errRefused
+}
+
+// fromMatches applies an OpenSSH from= pattern list to host: any negated
+// match refuses, otherwise at least one plain pattern must match.
+func fromMatches(list, host string) bool {
+	matched := false
+	for _, p := range strings.Split(list, ",") {
+		neg := strings.HasPrefix(p, "!")
+		if ok, _ := path.Match(strings.TrimPrefix(p, "!"), host); ok {
+			if neg {
+				return false
+			}
+			matched = true
+		}
+	}
+	return matched
+}
+
 func (s *Server) serveConn(c net.Conn, sc *ssh.ServerConfig, h Handler, wg *sync.WaitGroup) {
 	sconn, chans, reqs, err := ssh.NewServerConn(c, sc)
 	if err != nil {
@@ -309,6 +378,10 @@ func (s *Server) serveConn(c net.Conn, sc *ssh.ServerConfig, h Handler, wg *sync
 		return
 	}
 	defer func() { _ = sconn.Close() }()
+	forced := ""
+	if sconn.Permissions != nil {
+		forced = sconn.Permissions.CriticalOptions["force-command"]
+	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -326,12 +399,12 @@ func (s *Server) serveConn(c net.Conn, sc *ssh.ServerConfig, h Handler, wg *sync
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.serveSession(ch, creqs, h, wg)
+			s.serveSession(ch, creqs, h, forced, wg)
 		}()
 	}
 }
 
-func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request, h Handler, wg *sync.WaitGroup) {
+func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request, h Handler, forced string, wg *sync.WaitGroup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	defer func() { _ = ch.Close() }()
@@ -350,12 +423,16 @@ func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request, h Handle
 		s.commands = append(s.commands, cmd)
 		s.mu.Unlock()
 		_ = req.Reply(true, nil)
+		run := cmd // sshd runs a forced command in place of the client's
+		if forced != "" {
+			run = forced
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			code := 0
 			if h != nil {
-				code = h(ctx, cmd, ch, ch, ch.Stderr())
+				code = h(ctx, run, ch, ch, ch.Stderr())
 			}
 			status := make([]byte, 4)
 			binary.BigEndian.PutUint32(status, uint32(code)) // #nosec G115 -- exit codes are 0..255

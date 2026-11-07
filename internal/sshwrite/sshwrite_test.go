@@ -133,6 +133,133 @@ func forEachShell(t *testing.T, fn func(t *testing.T, sh []string)) {
 	}
 }
 
+// foreignUID is the owner the ls stub reports for a path the test wants to
+// look foreign. Tests that report uid 0 skip when the suite runs as root.
+const foreignUID = "4242"
+
+// lsStub installs a PATH stub for ls that reports uid as the owner of the
+// exact path foreign (the string the script passes) and delegates every
+// other call to the real ls. called reports whether the stub ran at all
+// (busybox-static runs ls as an applet and ignores PATH). fired reports
+// whether it rewrote foreign.
+func lsStub(t *testing.T, foreign, uid string) (env []string, called, fired func() bool) {
+	t.Helper()
+	stub := t.TempDir()
+	lsBin, err := exec.LookPath("ls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(stub, "ls"), "#!/bin/sh\n"+
+		": > \"$SSHEPHERD_STUB_DIR/called\"\n"+
+		"out=$("+lsBin+" \"$@\") || exit $?\n"+
+		"if [ \"$2\" = \"$SSHEPHERD_FOREIGN\" ]; then\n"+
+		"  : > \"$SSHEPHERD_STUB_DIR/fired\"; set -f; set -- $out; m=$1 n=$2; shift 3\n"+
+		"  printf '%s %s %s %s\\n' \"$m\" \"$n\" \"$SSHEPHERD_FOREIGN_UID\" \"$*\"\n"+
+		"else printf '%s\\n' \"$out\"; fi\n")
+	if err := os.Chmod(filepath.Join(stub, "ls"), 0o700); err != nil { // #nosec G302 -- test stub must be executable
+		t.Fatal(err)
+	}
+	exists := func(n string) func() bool {
+		return func() bool { _, err := os.Stat(filepath.Join(stub, n)); return err == nil }
+	}
+	return []string{"PATH=" + stub + ":" + os.Getenv("PATH"), "SSHEPHERD_STUB_DIR=" + stub,
+		"SSHEPHERD_FOREIGN=" + foreign, "SSHEPHERD_FOREIGN_UID=" + uid}, exists("called"), exists("fired")
+}
+
+// ownerCase is one owner-check refusal in the write script. mutant names
+// the single check (ownerMutants) whose removal must flip this row to a
+// successful write ("" when more than one check catches it).
+type ownerCase struct {
+	name   string
+	uid    string
+	mutant string
+	setup  func(t *testing.T, home string) (target, foreign string, expect Snapshot)
+}
+
+func dotSSHWithFile(t *testing.T, home string) (string, string) {
+	t.Helper()
+	d := filepath.Join(home, "dot-ssh")
+	if err := os.Mkdir(d, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(d, "auth")
+	writeFile(t, target, "k\n")
+	return d, target
+}
+
+// linkedAncestor makes home/sub a symlink (owned by the login user) to the
+// safe directory home/real, and returns the target under the link.
+func linkedAncestor(t *testing.T, home string) (link, realDir, target string) {
+	t.Helper()
+	realDir = filepath.Join(home, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link = filepath.Join(home, "sub")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	return link, realDir, filepath.Join(link, "dot-ssh", "auth")
+}
+
+var ownerCases = []ownerCase{
+	{name: "target dir owned by root (non-root login)", uid: "0", mutant: "dir", // sshwrite.go:199 only: the walks accept root
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			d, target := dotSSHWithFile(t, home)
+			return target, d, SnapshotOf(false, []byte("k\n"))
+		}},
+	{name: "target dir owned by another user", uid: foreignUID, // :199 and the as-written walk both catch it
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			d, target := dotSSHWithFile(t, home)
+			return target, d, SnapshotOf(false, []byte("k\n"))
+		}},
+	{name: "target file owned by another user", uid: foreignUID, mutant: "file", // :202 only
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			_, target := dotSSHWithFile(t, home)
+			return target, target, SnapshotOf(false, []byte("k\n"))
+		}},
+	{name: "target file owned by root (non-root login)", uid: "0", mutant: "file", // :202 has no root exemption
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			_, target := dotSSHWithFile(t, home)
+			return target, target, SnapshotOf(false, []byte("k\n"))
+		}},
+	{name: "symlinked ancestor owned by another user", uid: foreignUID, mutant: "ancestor-written", // :160 only
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			link, _, target := linkedAncestor(t, home)
+			return target, link, Snapshot{Absent: true}
+		}},
+	{name: "resolved ancestor owned by another user", uid: foreignUID, mutant: "ancestor-resolved", // :161 only
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			_, realDir, target := linkedAncestor(t, home)
+			phys, err := filepath.EvalSymlinks(realDir) // what pwd -P prints (macOS: /private/var/…)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return target, phys, Snapshot{Absent: true}
+		}},
+}
+
+// runOwnerCase runs c's write script (after mutate) under sh with the ls
+// stub. It returns the exit code and target, and skips when the shell
+// ignores PATH or the uid cannot look foreign.
+func runOwnerCase(t *testing.T, sh []string, c ownerCase, mutate func(string) string) (code int, target string, expect Snapshot) {
+	t.Helper()
+	if c.uid == strconv.Itoa(os.Getuid()) {
+		t.Skipf("running as uid %s: the stubbed owner is not foreign", c.uid)
+	}
+	home := t.TempDir()
+	target, foreign, expect := c.setup(t, home)
+	env, called, fired := lsStub(t, foreign, c.uid)
+	code = runShEnv(t, sh, mutate(writeCmdFor(target, expect, len(managed))), home, []byte(managed), env...)
+	if !called() {
+		t.Skipf("%v runs ls as a built-in applet; a PATH stub cannot fake an owner", sh)
+	}
+	if !fired() {
+		t.Fatalf("the script never listed %s — the case no longer reaches its check", foreign)
+	}
+	return code, target, expect
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -390,6 +517,41 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 			}
 		})
 
+		t.Run("owner checks refuse foreign-owned paths", func(t *testing.T) {
+			for _, c := range ownerCases {
+				t.Run(c.name, func(t *testing.T) {
+					code, target, expect := runOwnerCase(t, sh, c, func(s string) string { return s })
+					if code != unsafePathExit {
+						t.Fatalf("exit = %d, want the %d unsafe-path sentinel", code, unsafePathExit)
+					}
+					if expect.Absent {
+						assertAbsent(t, target, "nothing may be written through a foreign-owned path")
+					} else if got := readFile(t, target); got != "k\n" {
+						t.Errorf("file = %q, want it untouched", got)
+					}
+					assertAbsent(t, target+bakSuffix, "a refused write takes no backup")
+					assertNoResidue(t, target)
+				})
+			}
+		})
+
+		t.Run("root-owned ancestor is accepted (StrictModes allows root)", func(t *testing.T) {
+			home := t.TempDir()
+			_, realDir, _ := linkedAncestor(t, home)
+			target := filepath.Join(realDir, "dot-ssh", "auth") // as written: home/real is a plain ancestor
+			env, called, fired := lsStub(t, realDir, "0")
+			code := runShEnv(t, sh, writeCmdFor(target, Snapshot{Absent: true}, len(managed)), home, []byte(managed), env...)
+			if !called() {
+				t.Skipf("%v runs ls as a built-in applet", sh)
+			}
+			if !fired() || code != 0 {
+				t.Fatalf("exit = %d (stub fired %v), want 0: a root-owned ancestor is safe", code, fired())
+			}
+			if got := readFile(t, target); got != managed {
+				t.Errorf("file = %q, want the render", got)
+			}
+		})
+
 		t.Run("planted backup symlinks are never written through", func(t *testing.T) {
 			home := t.TempDir()
 			target := filepath.Join(home, "auth")
@@ -525,6 +687,79 @@ func TestRestoreCmdThroughRealSh(t *testing.T) {
 				t.Fatalf("exit = %d, want %d", code, lockedExit)
 			}
 		})
+		t.Run("foreign-owned ancestor refuses before touching the file", func(t *testing.T) {
+			home := t.TempDir()
+			link, realDir, target := linkedAncestor(t, home)
+			if err := os.Mkdir(filepath.Join(realDir, "dot-ssh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, target, managed)
+			writeFile(t, target+bakSuffix, "previous\n")
+			env, called, _ := lsStub(t, link, foreignUID)
+			code := runShEnv(t, sh, restoreCmdFor(target, false, SnapshotOf(false, []byte(managed))), home, nil, env...)
+			if !called() {
+				t.Skipf("%v runs ls as a built-in applet", sh)
+			}
+			if code != unsafePathExit {
+				t.Fatalf("exit = %d, want %d", code, unsafePathExit)
+			}
+			if readFile(t, target) != managed || readFile(t, target+bakSuffix) != "previous\n" {
+				t.Error("a refused restore must leave the file and its backup alone")
+			}
+		})
+	})
+}
+
+const (
+	dirFileOwnerCheck  = `if [ "$3" != "$u" ]; then exit 48; fi`                  // sshwrite.go:199 (1st), :202 (2nd)
+	ancestorOwnerCheck = `if [ "$3" != "$u" ] && [ "$3" != 0 ]; then exit 48; fi` // :160 (1st), :161 (2nd)
+)
+
+// replaceNth replaces the n-th (1-based) occurrence of old in s. It fails
+// when there are fewer, so a rewrite of the script text breaks this test
+// loudly instead of passing without checking anything.
+func replaceNth(t *testing.T, s, old string, n int, repl string) string {
+	t.Helper()
+	idx := 0
+	for i := 1; ; i++ {
+		j := strings.Index(s[idx:], old)
+		if j < 0 {
+			t.Fatalf("occurrence %d of %q not found in the write script — update ownerMutants", n, old)
+		}
+		if i == n {
+			return s[:idx+j] + repl + s[idx+j+len(old):]
+		}
+		idx += j + len(old)
+	}
+}
+
+// TestOwnerChecksBite removes one owner check at a time and requires the
+// row that targets it to stop refusing. This proves the ownerCases rows
+// cover each check alone, not only all of them together.
+func TestOwnerChecksBite(t *testing.T) {
+	mutants := map[string]struct {
+		needle string
+		n      int
+	}{
+		"dir": {dirFileOwnerCheck, 1}, "file": {dirFileOwnerCheck, 2},
+		"ancestor-written": {ancestorOwnerCheck, 1}, "ancestor-resolved": {ancestorOwnerCheck, 2},
+	}
+	if got := strings.Count(writeCmdFor("/x/y", Snapshot{Absent: true}, 1), dirFileOwnerCheck); got != 2 {
+		t.Fatalf("dir/file owner checks = %d, want 2 — update the mutation table", got)
+	}
+	forEachShell(t, func(t *testing.T, sh []string) {
+		for _, c := range ownerCases {
+			if c.mutant == "" {
+				continue
+			}
+			m := mutants[c.mutant]
+			t.Run(c.name, func(t *testing.T) {
+				code, _, _ := runOwnerCase(t, sh, c, func(s string) string { return replaceNth(t, s, m.needle, m.n, ":") })
+				if code == unsafePathExit {
+					t.Fatalf("with the %s owner check removed the script still exits 48 — the row does not isolate that check", c.mutant)
+				}
+			})
+		}
 	})
 }
 
@@ -869,6 +1104,25 @@ func hermetic(t *testing.T, home string, authorized []any, agentKeys ...any) (*F
 	return &FleetWriter{Dialer: d}, config.Server{Name: "h1", Host: s.Host, Port: s.Port, User: "deploy"}
 }
 
+// hermeticFromFile is hermetic with a server that authorizes from
+// home/.ssh/authorized_keys, so the post-write probe sees the bytes the
+// write just installed.
+func hermeticFromFile(t *testing.T, home string, agentKeys ...any) (*FleetWriter, config.Server) {
+	t.Helper()
+	hostKey := sshtest.Signer(t, sshtest.Key(200))
+	s := sshtest.NewServer(t, sshtest.ServerConfig{
+		HostKeys:           []ssh.Signer{hostKey},
+		AuthorizedKeysFile: filepath.Join(home, ".ssh", "authorized_keys"),
+		Handle:             sshtest.ShellHandler(home),
+	})
+	d := &sshconn.Dialer{
+		KnownHostsPath: sshtest.KnownHostsFile(t, s.KnownHostsLine(hostKey.PublicKey())),
+		Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, agentKeys...)},
+		DialTimeout:    5 * time.Second,
+	}
+	return &FleetWriter{Dialer: d}, config.Server{Name: "h1", Host: s.Host, Port: s.Port, User: "deploy"}
+}
+
 func ctxTimeout(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -952,6 +1206,59 @@ func TestApplyHermeticRealConnection(t *testing.T) {
 			t.Errorf("file = %q, want the teammate's edit preserved", got)
 		}
 	})
+}
+
+func TestApplyHermeticProbeReadsWrittenFile(t *testing.T) {
+	op := sshtest.Key(1)
+	opLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshtest.Signer(t, op).PublicKey())))
+	tests := []struct {
+		name, survivor string
+		lockout        bool
+		kind           audit.ErrorKind // "" = not asserted
+		probeIn        string
+	}{
+		{"forced command= on the survivor fails the probe", `command="echo forced" ` + opLine, true, "", "forced command="},
+		{"from= the client cannot match fails the login", `from="10.255.255.1" ` + opLine, true, audit.ErrorKindAuth, ""},
+		{"restrict alone passes the probe (negative control)", `restrict ` + opLine, false, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.Mkdir(filepath.Join(home, ".ssh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(home, ".ssh", "authorized_keys")
+			previous := opLine + "\n"
+			writeFile(t, target, previous)
+			w, srv := hermeticFromFile(t, home, op)
+			content := authkeys.ManagedHeader + "\n" + tt.survivor + "\n"
+			r := Request{Content: []byte(content), Expect: SnapshotOf(false, []byte(previous)), Survivors: []string{sshtest.Fingerprint(t, op)}}
+			err := w.Apply(ctxTimeout(t), srv, r)
+			if !tt.lockout {
+				if err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+				if got := readFile(t, target); got != content {
+					t.Errorf("file = %q, want the render", got)
+				}
+				return
+			}
+			var lo *LockoutError
+			if !errors.As(err, &lo) || lo.Restore != nil {
+				t.Fatalf("err = %v, want a restored *LockoutError", err)
+			}
+			if tt.kind != "" && audit.ErrorKindOf(lo.Probe) != tt.kind {
+				t.Errorf("probe error kind = %q, want %q", audit.ErrorKindOf(lo.Probe), tt.kind)
+			}
+			if tt.probeIn != "" && !strings.Contains(lo.Probe.Error(), tt.probeIn) {
+				t.Errorf("probe error = %q, want it to mention %q", lo.Probe, tt.probeIn)
+			}
+			if got := readFile(t, target); got != previous {
+				t.Errorf("file = %q, want the pre-write bytes %q restored", got, previous)
+			}
+			assertNoResidue(t, target)
+		})
+	}
 }
 
 func TestKeys2CmdsThroughRealSh(t *testing.T) {

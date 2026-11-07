@@ -374,7 +374,14 @@ writing into another user's file), and the login probe is proven against real ss
 (forced `command=`, unmatched `from=`, and a `restrict` negative control); the
 sshwrite integration package runs shuffled and twice with each test reseeding its own
 user, and the throwaway sshd sets `PerSourcePenalties no` because those tests fail
-logins on purpose (review remediation P03 lane B, TST-1).
+logins on purpose (review remediation P03 lane B, TST-1). Below that, a unit
+matrix pins each of the write script's exit-48 owner checks with one row, run under
+sh/dash/bash --posix/busybox through a PATH-stubbed `ls`, plus a committed mutation
+self-test (`TestOwnerChecksBite`; a script rewrite updates its `ownerMutants` table,
+never deletes the test); `sshtest.ServerConfig.AuthorizedKeysFile` makes the hermetic
+server authorize from the written file (re-read per login, honoring `command=` and
+`from=`), so the post-write login probe is proven against the bytes a write
+installed (review remediation P03 lane A, TST-1/TST-3).
 `--help` is snapshot-tested (`cmd/sshepherd/testdata/help/*.golden`); bool flags
 render without pflag v1.1.0's `[=true|false]` via `cmd/sshepherd/usage.go`, and the
 README flag tables (global flags included) are checked against `--help`, defaults
