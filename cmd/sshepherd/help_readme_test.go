@@ -2,12 +2,12 @@ package main
 
 import (
 	"bytes"
-	"cmp"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -69,9 +69,32 @@ func defaultMatches(f *pflag.Flag, cell string) bool {
 	}
 }
 
+// flagSet picks which of a command's flags a README table documents.
+type flagSet int
+
+const (
+	localFlags      flagSet = iota // every flag the command's --help lists under Flags
+	persistentFlags                // the root's flags that every command inherits
+	rootOnlyFlags                  // the root's flags no subcommand accepts (--version)
+)
+
+func (s flagSet) of(cmd *cobra.Command) *pflag.FlagSet {
+	switch s {
+	case persistentFlags:
+		return cmd.PersistentFlags()
+	case rootOnlyFlags:
+		return cmd.LocalNonPersistentFlags()
+	default:
+		return cmd.LocalFlags()
+	}
+}
+
 // TestHelpMatchesREADMETables: for the root and every command, the README
 // table lists exactly the flags --help shows (varnames included), and each
-// row's default matches the flag's --help default (TST-4).
+// row's default matches the flag's --help default (TST-4). The root's flags
+// split in two: "Global flags" (persistent, accepted by every command) and
+// "Top-level flags" (root-only, e.g. --version), so the README never calls
+// a root-only flag global.
 func TestHelpMatchesREADMETables(t *testing.T) {
 	raw, err := os.ReadFile("../../README.md")
 	if err != nil {
@@ -81,17 +104,21 @@ func TestHelpMatchesREADMETables(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	root := newRootCmd(&app{}, &out, &errBuf)
 	root.InitDefaultVersionFlag() // cobra adds --version lazily at Execute
-	tables := []struct{ name, heading string }{
-		{"", "### Global flags"},
-		{"audit", "### `sshepherd audit`"},
-		{"import", "### `sshepherd import [ssh-config-path]`"},
-		{"adopt", "### `sshepherd adopt`"},
-		{"apply", "### `sshepherd apply`"},
-		{"revoke", "### `sshepherd revoke`"},
-		{"rotate", "### `sshepherd rotate`"},
+	tables := []struct {
+		name, heading string
+		set           flagSet
+	}{
+		{"", "### Global flags", persistentFlags},
+		{"", "### Top-level flags", rootOnlyFlags},
+		{"audit", "### `sshepherd audit`", localFlags},
+		{"import", "### `sshepherd import [ssh-config-path]`", localFlags},
+		{"adopt", "### `sshepherd adopt`", localFlags},
+		{"apply", "### `sshepherd apply`", localFlags},
+		{"revoke", "### `sshepherd revoke`", localFlags},
+		{"rotate", "### `sshepherd rotate`", localFlags},
 	}
 	for _, tc := range tables {
-		t.Run(cmp.Or(tc.name, "root"), func(t *testing.T) {
+		t.Run(tc.heading, func(t *testing.T) {
 			cmd := root
 			if tc.name != "" {
 				cmd = nil
@@ -112,7 +139,7 @@ func TestHelpMatchesREADMETables(t *testing.T) {
 				defaults[r.flag] = r.def
 			}
 			var want []string
-			cmd.LocalFlags().VisitAll(func(f *pflag.Flag) {
+			tc.set.of(cmd).VisitAll(func(f *pflag.Flag) {
 				if f.Name == "help" || f.Hidden {
 					return
 				}
@@ -125,7 +152,7 @@ func TestHelpMatchesREADMETables(t *testing.T) {
 			slices.Sort(want)
 			slices.Sort(got)
 			if !slices.Equal(got, want) {
-				t.Errorf("README table for %s = %v\n--help flags        = %v", cmp.Or(tc.name, "root"), got, want)
+				t.Errorf("README table %s = %v\n--help flags = %v", tc.heading, got, want)
 			}
 		})
 	}

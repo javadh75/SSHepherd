@@ -329,6 +329,14 @@ These work on every command.
 | `-v, --verbose` | off | Debug logging (per-SSH-stage detail); cannot be combined with `--quiet` |
 | `-q, --quiet` | off | Log errors only |
 | `--color` | `auto` | Colorize output: `auto`, `always`, or `never` |
+
+### Top-level flags
+
+These work only on `sshepherd` itself, before any command name (`sshepherd --version`,
+not `sshepherd audit --version`).
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
 | `--version` | off | Print the version and exit |
 
 ### `sshepherd audit`
