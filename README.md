@@ -1514,18 +1514,48 @@ binary's ELF architecture matches the image platform, an image size budget under
 30 MB (`SIZE_BUDGET_MB`), a non-root user check, and the PID-1 SIGTERM gate.
 `scripts/docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]` checks one variant of
 any local or registry image. The Dockerfile cross-compiles on the build host's
-platform, so a multi-arch `docker buildx` build never runs the compiler under QEMU. CI also runs
-`govulncheck` and every fuzz target daily.
+platform, so a multi-arch `docker buildx` build never runs the compiler under QEMU. CI builds
+and gates the image natively on amd64 and arm64. CI also runs `govulncheck` and every fuzz
+target daily, and Trivy-scans the published `latest` image for both architectures (job
+`published-image-scan`, "Published image CVEs").
 
-**Releases.** Pushing a `v*` tag runs `.github/workflows/release.yml`, which
-publishes a `linux/amd64` + `linux/arm64` image to `ghcr.io/javadh75/sshepherd` with
-semver tags, a BuildKit SBOM and provenance, and a keyless cosign signature:
+**Releases.** Pushing a `vMAJOR.MINOR.PATCH` tag runs `.github/workflows/release.yml`.
+It refuses a tag whose commit is not on `master`, then runs `make check` (including
+`govulncheck` on the exact Go the image ships) and `make integration`. It builds the
+`linux/amd64` + `linux/arm64` image once (arm64 is cross-compiled) and pushes it by
+digest only. Then it gates that exact digest on native amd64 and arm64 runners with
+hadolint, Trivy (fails on HIGH/CRITICAL), dockle and `scripts/docker-gates.sh`. Only
+when every job passes does it tag the digest with semver tags (`latest` last, and only
+for the newest release), sign it keyless with cosign, attach signed build provenance,
+and verify that signature with the command below. A manual `workflow_dispatch` run is
+a dry run: every job except the publishing one. Verify an image before you run it
+(requires cosign v3.1.4 or newer, the `COSIGN_VERSION` in release.yml; older cosign v2
+may report "no signatures found"):
 
 ```console
 $ cosign verify ghcr.io/javadh75/sshepherd@<digest> \
-    --certificate-identity-regexp '^https://github.com/javadh75/SSHepherd/' \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    --certificate-identity-regexp '^https://github\.com/javadh75/SSHepherd/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-github-workflow-trigger push \
+    --certificate-github-workflow-repository javadh75/SSHepherd
 ```
+
+This accepts only signatures made by `release.yml` running on a release tag. Use the
+same identity in an admission policy. Check the provenance with
+`gh attestation verify oci://ghcr.io/javadh75/sshepherd@<digest> --repo javadh75/SSHepherd`.
+The latest release is scanned for CVEs daily and gets patch releases; older tags are
+not re-scanned.
+
+Release recovery:
+
+1. **A gate or check flakes:** `gh run rerun <run-id> --failed`. Successful jobs keep
+   their outputs, so the same digest is gated and published.
+2. **release.yml itself is wrong:** fix it on master and tag `vX.Y.Z+1`. Never re-tag:
+   the `v*` tag ruleset forbids moving or deleting a tag, and a re-run always uses the
+   tagged commit's workflow.
+3. **A published release is bad:** move `latest` back to the previous signed digest
+   with `docker buildx imagetools create --tag ghcr.io/javadh75/sshepherd:latest ghcr.io/javadh75/sshepherd@<previous signed digest>`,
+   then run the `cosign verify` above against it, then cut a fixed `vX.Y.Z+1`.
 
 Test kinds in the repo: unit (table-driven), integration (real `sshd` in Docker,
 build-tagged), end-to-end (the CLI binary through adopt → apply → audit), fuzz

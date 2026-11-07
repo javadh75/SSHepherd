@@ -132,9 +132,11 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
 - `go build ./...`, plus a reproducible static single binary for releases:
   `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`.
 - Tests and coverage are mandatory and have their own policy — see **Testing** below.
-- **Toolchain lockstep** — go.mod's `go` line, the Dockerfile build stage tag and the Makefile's
-  `GO_PIN` name the same Go patch release. Go bump procedure: bump go.mod, the Dockerfile and
-  `GO_PIN` together in one commit (on the Dependabot `golang` PR's branch, or by hand).
+- **Toolchain lockstep** — go.mod's `go` line, the Dockerfile build stage tag, the Makefile's
+  `GO_PIN` and CI's `setup-go` (`go-version-file: go.mod`) name the same Go patch release; CI
+  and release fail otherwise (the "Go toolchain matches the image build stage" step in ci.yml
+  `go` and release.yml `check`). Go bump procedure: bump go.mod, the Dockerfile and `GO_PIN`
+  together in one commit (on the Dependabot `golang` PR's branch, or by hand).
 
 ### CI
 - One `make check` (or `Taskfile`) target running all of the above; CI invokes the same target.
@@ -142,6 +144,11 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
 - Local hooks run the fast subset before code leaves the machine (see `lefthook.yml`, installed
   via `make hooks`): pre-commit runs `gofmt` + `gitleaks --staged`; pre-push runs `go vet`,
   `golangci-lint`, and `go test -race`. The full suite still runs in CI.
+- Required checks, if ever added, name only `ci-ok` (it needs `go`, `docker` and `integration`).
+- release.yml publishes only a `vX.Y.Z` tag on master after `check`, `integration`, `image` and
+  `gate` pass. Dependabot has a 7-day cooldown (security updates are immediate); its docker
+  groups are `golang` (red until go.mod and `GO_PIN` are bumped on the same PR) and
+  `runtime-and-ci-images`.
 
 ## Testing
 
@@ -198,7 +205,7 @@ the earlier Alpine + openssh-client + tini image was replaced.)
 - **Multi-arch**: build `linux/amd64` + `linux/arm64` once with `docker buildx`; gate each variant
   with `scripts/docker-gates.sh --platform OS/ARCH`.
 
-### Docker checks (all in CI)
+### Docker checks (CI on both arches, and on every release's pushed digest before it is tagged and signed)
 - **hadolint** — lint the `Dockerfile` for best-practice violations.
 - **Trivy** — `trivy image` scans the built image for OS + Go-dependency CVEs (fail on
   HIGH/CRITICAL); `trivy config` lints the `Dockerfile` for misconfiguration.
@@ -209,7 +216,8 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   not run as root.
 - **PID-1 signal gate** — two SIGTERMs to a blocked container must stop it with exit 143.
 - **Provenance** — generate an image SBOM (`syft <image>` or `buildx --sbom`), attach build
-  provenance/attestations, and sign the image with `cosign`. Keep base images fresh via
+  provenance/attestations, and sign the image with `cosign`; the verify identity is pinned to
+  `release.yml@refs/tags/vX.Y.Z` with trigger `push`. Keep base images fresh via
   Dependabot/Renovate.
 
 ## License
@@ -390,6 +398,13 @@ The image build cross-compiles on `$BUILDPLATFORM` (no QEMU at build time), and
 `scripts/docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]` gates one variant of
 any local or registry image, starting with an ELF-architecture check (review
 remediation P02 lane A, OPS-4).
+Releases are gated (tag on master, `make check`, `make integration`, one
+cross-compiled multi-arch build gated per arch by digest, then tag/sign/verify, with
+signed build provenance), CI checks the shipped Go, gates the image natively on amd64
+and arm64 and scans the published image daily, and Dependabot waits 7 days (review
+remediation P02 lane B, SEC-6/OPS-1/OPS-2/OPS-3/OPS-4/OPS-6). Every release tag must
+point at a commit at or after the release-gating commit (W0 integration of P02 lane B);
+older commits carry the ungated release.yml.
 Revocation memory (tombstones, manifest serial, opt-in post-revoke sweep, no adopt
 wildcard) is specced, awaiting owner decisions, in
 `docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation

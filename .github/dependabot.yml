@@ -3,11 +3,14 @@ version: 2
 # Keep every pin fresh: Go modules, the SHA-pinned GitHub Actions (Dependabot
 # updates the SHA and its version comment together), and the digest-pinned
 # Dockerfile base images. Grouped so each ecosystem is one weekly PR.
+# Cooldown: a new upstream release is proposed only after it has been public 7 days (time for a compromised release to be caught). Dependabot security updates ignore the cooldown and still open at once.
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       go-modules:
         patterns: ["*"]
@@ -16,6 +19,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns: ["*"]
@@ -24,6 +29,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
-      docker-images:
+      golang:                      # red until go.mod + Makefile GO_PIN are bumped on the same PR (see CLAUDE.md)
+        patterns: ["golang"]
+      runtime-and-ci-images:       # distroless, scanners, sshd test images: never blocked by a Go bump
         patterns: ["*"]
+        exclude-patterns: ["golang"]

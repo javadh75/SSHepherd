@@ -1,61 +1,154 @@
 name: Release image
 
-# Tag-triggered: build the multi-arch image, gate it, push it to GHCR with an
-# SBOM + build provenance attached, and sign it keyless with cosign (Sigstore
-# OIDC — no long-lived signing key exists anywhere).
+# A release is built once and published only after every gate passes:
+#   verify-ref   the tag is vMAJOR.MINOR.PATCH and its commit is on master
+#   check        make check: lint, gosec, govulncheck, gitleaks, race + coverage
+#   integration  make integration: real sshd containers
+#   image        hadolint + Trivy config, then ONE multi-arch build (arm64 is
+#                cross-compiled) pushed to GHCR by digest only, with no tag
+#   gate         per arch on a native runner: docker-gates.sh, Trivy, dockle
+#                against that exact digest
+#   publish      tags the gated digest, signs it keyless with cosign, and runs
+#                the README's `cosign verify` against it
+# workflow_dispatch is a dry run: everything except publish. It leaves one
+# untagged, unsigned digest in GHCR.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# One release at a time, never cancelled: two tags pushed close together
+# cannot race each other for `latest`.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: ghcr.io/javadh75/sshepherd # lowercase, as GHCR requires
+  # Exact cosign release; README's verify command names it as the minimum.
+  # The `cosign-release` default in cosign-installer v4.1.3's action.yml (the
+  # SHA pinned below); bump the two together.
+  COSIGN_VERSION: v3.1.4
+  TRIVY_IMAGE: aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
+  DOCKLE_IMAGE: goodwithtech/dockle:v0.4.15@sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9
+
 # Every third-party action is pinned to a full commit SHA (version in the
-# trailing comment). Dependabot bumps them.
+# trailing comment); every container image by digest. Dependabot bumps both.
 
 jobs:
-  image:
-    name: Build, attest and sign
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write # push to ghcr.io
-      id-token: write # cosign keyless signing (Sigstore OIDC)
-    env:
-      VERSION: ${{ github.ref_name }}
+  verify-ref:
+    name: Tag is vX.Y.Z on master
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.ref.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # all branches, so origin/master exists
+
+      # A tag push runs release.yml from the tagged commit, so requiring that
+      # commit to be on master means the workflow and its gates are reviewed
+      # master content; a tag on a stripped-down side commit is refused.
+      - name: Refuse a tag that is not vX.Y.Z on master
+        id: ref
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
+          else
+            version="dryrun-${sha::12}"
+          fi
+          if ! git merge-base --is-ancestor "$sha" origin/master; then
+            echo "::error::$sha is not on master; only commits that landed on master are released"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: Go checks (make check)
+    needs: verify-ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
 
+      - name: Go toolchain matches the image build stage
+        run: |
+          mod=$(sed -n 's/^go \([0-9.]*\)$/\1/p' go.mod)
+          img=$(sed -n 's/^FROM .*golang:\([0-9.]*\)-alpine@.*/\1/p' Dockerfile)
+          pin=$(sed -n 's/^GO_PIN *:= *go//p' Makefile)
+          act=$(go env GOVERSION)
+          if [ -z "$mod" ] || [ "$mod" != "$img" ] || [ "$mod" != "$pin" ] || [ "go$mod" != "$act" ]; then
+            echo "::error::go.mod says go $mod, Dockerfile builds with golang:$img, Makefile GO_PIN is go$pin, CI runs $act; bump all of them together"
+            exit 1
+          fi
+
+      - name: Install pinned tools
+        run: |
+          make tools
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Same gate as CI: tidy, fmt, vet, lint, deadcode, gosec, govulncheck
+      # (against the exact Go the image ships), gitleaks, race + coverage.
+      - name: Quality gate
+        run: make check
+
+  integration:
+    name: Integration (sshd container)
+    needs: verify-ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run integration tests
+        run: make integration
+
+  # Least privilege: `image` can push but holds no OIDC token, `gate` is
+  # read-only, and only `publish`, after every gate, can sign.
+  image:
+    name: Build once, push by digest
+    needs: verify-ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push the untagged digest; tags come only from publish
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+
+      - name: Lint Dockerfile config (Trivy)
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY_IMAGE" \
+            config --exit-code 1 .
+
+      # No QEMU: the build stage cross-compiles and the runtime stage has no RUN.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-
-      # Gate the exact Dockerfile before anything is pushed: native-arch build,
-      # then the same --version/--help, size and non-root checks CI runs.
-      - name: Build gate image (native arch)
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          load: true
-          tags: sshepherd:release-gate
-          build-args: VERSION=${{ env.VERSION }}
-
-      - name: Smoke, size and user gates
-        env:
-          IMAGE: sshepherd:release-gate
-        run: ./scripts/docker-gates.sh
-
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          # metadata-action lowercases the name, as GHCR requires.
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
 
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
@@ -63,26 +156,177 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push (linux/amd64, linux/arm64)
-        id: push
+      - name: Build linux/amd64 + linux/arm64, push by digest
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ env.VERSION }}
-          # BuildKit SBOM + max-mode provenance attestations attached to the image.
+          build-args: VERSION=${{ needs.verify-ref.outputs.version }}
+          outputs: type=image,name=${{ env.IMAGE_REPO }},push-by-digest=true,name-canonical=true,push=true
+          # BuildKit SBOM + max-mode provenance attestations ride in the index,
+          # so tagging the digest later keeps them.
           sbom: true
           provenance: mode=max
 
-      - name: Sign image (cosign keyless)
+      - name: The index carries both platforms
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          plats=$(docker buildx imagetools inspect --raw "$IMAGE_REPO@$DIGEST" |
+            jq -r '.manifests[] | select(.platform.os == "linux") | "linux/\(.platform.architecture)"' | sort | tr '\n' ' ')
+          if [ "$plats" != "linux/amd64 linux/arm64 " ]; then
+            echo "::error::$IMAGE_REPO@$DIGEST has platforms '$plats', want linux/amd64 linux/arm64"
+            exit 1
+          fi
+
+  gate:
+    name: Gate image (${{ matrix.arch }})
+    needs: image
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm } # native: no QEMU timing
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DIGEST: ${{ needs.image.outputs.digest }}
+      PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ELF arch, --version/--help, size, non-root, PID-1 SIGTERM on the exact
+      # pushed digest, the same script `make smoke` and CI run.
+      - name: Smoke, arch, size, user and signal gates
+        run: ./scripts/docker-gates.sh --pull --platform "$PLATFORM" "$IMAGE_REPO@$DIGEST"
+
+      - name: Scan image for CVEs (Trivy)
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD "$TRIVY_IMAGE" image \
+            --image-src remote --platform "$PLATFORM" \
+            --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE_REPO@$DIGEST"
+
+      # The gate step pulled this runner's native variant, so the daemon's copy
+      # of the ref is unambiguous here.
+      - name: Lint image (dockle)
+        # CIS-DI-0006 (HEALTHCHECK) waived: sshepherd is a CLI, not a service.
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            "$DOCKLE_IMAGE" --exit-code 1 -i CIS-DI-0006 "$IMAGE_REPO@$DIGEST"
+
+  # The only job that can sign, and it never runs on a dispatch (dry run).
+  publish:
+    name: Tag, sign and verify
+    needs: [verify-ref, check, integration, image, gate]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write     # tag the gated digest
+      id-token: write     # cosign keyless signing (Sigstore OIDC)
+      attestations: write # signed build provenance for the digest
+    env:
+      DIGEST: ${{ needs.image.outputs.digest }}
+    steps:
+      # Full tag list, to decide whether this release may move `latest`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # `latest` moves only for the newest v* tag, so an older patch release
+      # can never move it backwards.
+      - name: Is this the newest release?
+        id: newest
+        run: |
+          newest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          if [ "$newest" = "$GITHUB_REF_NAME" ]; then echo "latest=true" >> "$GITHUB_OUTPUT"; else echo "latest=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_REPO }}
+          # `latest` is pushed separately, last, and only by the newest release.
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      # Check BEFORE any tag moves: the manifest imagetools would push must
+      # hash to the gated digest. Then tag the semver tags, prove each
+      # resolves to the digest, and move `latest` last.
+      - name: Tag the gated digest
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          NEWEST: ${{ steps.newest.outputs.latest }}
         run: |
-          # Sign by digest — never by a mutable tag. One repository, so every
-          # tag resolves to the same name@digest.
-          ref="$(printf '%s\n' "$TAGS" | head -n1)"
-          cosign sign --yes "${ref%:*}@${DIGEST}"
+          set -euo pipefail
+          planned="sha256:$(docker buildx imagetools create --dry-run "$IMAGE_REPO@$DIGEST" | sha256sum | cut -d' ' -f1)"
+          if [ "$planned" != "$DIGEST" ]; then
+            echo "::error::imagetools would push $planned, not the gated $DIGEST; no tag was moved"
+            exit 1
+          fi
+          verify() {
+            got="sha256:$(docker buildx imagetools inspect --raw "$1" | sha256sum | cut -d' ' -f1)"
+            if [ "$got" != "$DIGEST" ]; then echo "::error::$1 resolves to $got, not the gated $DIGEST"; exit 1; fi
+          }
+          args=()
+          while IFS= read -r t; do
+            if [ -n "$t" ]; then args+=(--tag "$t"); fi
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "$IMAGE_REPO@$DIGEST"
+          while IFS= read -r t; do
+            if [ -n "$t" ]; then verify "$t"; fi
+          done <<< "$TAGS"
+          if [ "$NEWEST" = true ]; then
+            docker buildx imagetools create --tag "$IMAGE_REPO:latest" "$IMAGE_REPO@$DIGEST"
+            verify "$IMAGE_REPO:latest"
+          fi
+
+      # Signed provenance users can check (BuildKit's attestations in the
+      # index are unsigned).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_REPO }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+
+      - name: Sign the digest (cosign keyless)
+        run: cosign sign --yes "$IMAGE_REPO@$DIGEST"
+
+      # Keep this command byte-identical to README.md "Releases".
+      - name: Verify the signature the way users do
+        run: |
+          cosign verify "$IMAGE_REPO@$DIGEST" \
+            --certificate-identity-regexp '^https://github\.com/javadh75/SSHepherd/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-trigger push \
+            --certificate-github-workflow-repository javadh75/SSHepherd >/dev/null
