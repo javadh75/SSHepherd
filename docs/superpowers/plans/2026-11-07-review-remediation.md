@@ -83,6 +83,55 @@ Agents: these are final — implement the recommended option for each; do not re
 
 Still open: Block 1 (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a, D4c, D1d, D1e) — needed before the W4 plan; D9 onward at their spec approvals.
 
+**Answered 2026-11-07 (second sitting):**
+
+| ID | Answer |
+|---|---|
+| D28 | Recommended: exit 2 = "a human must act now on security" for every command; one README exit-code table. |
+| D1 | (1) `revoked:` list in the manifest. |
+| D29 | Recommended: audit loads and reports policy conflicts as critical; apply skips the servers involved; validate/saving commands refuse. |
+| D2 | Yes: a revoked key still installed is critical (exit 2). |
+| D3 | (2) Post-revoke fleet check only with `--sweep`; otherwise print the exact audit command. |
+| D4 | (1) Manifest serial; apply refuses servers written by a newer serial (removal-only writes never blocked). |
+| D4b | Yes: a confirmed apply that removes keys bumps the serial and saves the manifest. |
+| D5 | No wildcard: adopt always lists servers by name. |
+| D1a | Yes: per-server revokes are remembered. |
+| D1b | Yes: `revoke --key` of an unowned key records it. |
+| D1c | Yes: re-running a revoke is idempotent (exit 0 + apply hint). |
+| D2a | Yes: adopt skips a revoked key with a loud warning. |
+| D4a | Yes: audit from an older copy reports drift (exit 1). |
+| D9 | (1) Retry; if still unreachable keep the new file, report UNPROVEN (exit 1); post-login failures still undo. |
+| D9b | Yes: warn-only `--identity` probe. |
+| D10 | Yes: failed undo exits 2; retry the undo on a busy lock. |
+| D14 | Yes: audit checks permissions/owners; world-writable is exit 2. |
+| D15 | Yes: an operator key that cannot log in is critical. |
+| D16 | Yes: a host-key type change is treated as a possible attack (exit 2). |
+| D17 | Yes: offer only granted (+operator) keys; fallback to all with a warning; `--offer-all-keys`. |
+| D18 | Yes: narrow the README "who can log in" claim now. |
+| D19 | (1) Built-in key rules (DSA, RSA < 2048 = policy problem per D29; passed expiry-time warns). |
+| D25 | Yes: `validate` and `audit --server` now, `grant` later. |
+| D25a | **B (owner override): `validate --json` from day one.** |
+| D25b | Yes to all three later ideas (maintenance flag, `grant`, "what changed" view), each with its own spec. |
+| D23 | Yes: bastion/ProxyJump with strict host keys on both hops. |
+| D24 | Yes: per-server `preserve:` rule (never writes a no-grant server). |
+| D24a | Yes: comment matching allowed, with a README warning. |
+| D26 | Yes: rename confusing flags before the first release (no aliases). |
+| D21 | Yes: "protected" separate from "every server". |
+| D21a | Yes: trim protected non-operators with `--operator`; operators stay refused. |
+| D20 | Yes: server tags (`@prod`). |
+| D20a | Yes: warn when `["*"]` reaches a root account. |
+| D20b | Yes: user groups, after tags. |
+| D22 | **B (owner override after discussion): optional per-grant restrictions; two grants giving one key different restrictions on the same server are refused with an explanation.** |
+
+**New owner rule (2026-11-07): every command offers `--json`.** `validate` from day one (D25a); `import` and `adopt` get a JSON report too (new item, needs a short design: likely a discovery/warnings report, since their normal output is YAML) — schedule it as its own slice after W1.
+
+Still open: D4c, D1d, D1e (added by the W0 repair to the P04 spec) — ask next.
+
+**W0 verifier follow-ups (unconfirmed single-lens, triaged by the main session):**
+- P04 spec line ~275 (`S < M, or no serial | equal | Converged`): an affected, already-converged server keeps an old/absent serial, so a stale copy can still re-grant there (PRD-2 hole). Fix in the spec before the W4 plan: on an affected server, an older serial with an equal body gets a header-only write carrying M when the run bumped the serial; drop `TestPlanConvergedOnOlderSerialSameBody` as written.
+- P04 spec: D4a/D1a question cells and a missing safe-default column (wording only).
+- P03 `TestOwnerChecksBite` (sshwrite_test.go:758): mutants should require code 0 and the rendered file, not just "not 48"; and the comments/CLAUDE.md name `ownerMutants`, but the table is the local `mutants` map — W1 integrator fixes both (P03-owned test file, no other wave touches it before P07).
+
 Rules: ask **one decision at a time**, in the order below, in short plain English, with the recommendation. Decisions are never delegated to agents. A decision that is not answered never blocks a fix wave: each package names its safe default (usually today's behavior). The quick questions that unblock W0–W2 come first; the revocation block (Block 1) is asked while W1–W3 run, because only the W4 plan needs it. Technical sub-choices that do not change what a user sees are decided by the spec author with a stated default and shown to the owner at spec approval; they are listed in the table so nothing is hidden.
 
 | Order | ID | Needed by | Blocks | Safe default if unanswered |
