@@ -27,7 +27,7 @@ SSHepherd centralizes and automates this.
 
 - Single-binary CLI, agentless where possible (manage the SSH keys that already exist;
   don't require installing a daemon on every box).
-- **Language:** Go (decided — `go.mod` targets Go 1.26).
+- **Language:** Go (decided — `go.mod` targets Go 1.27.3; moved from 1.26 on 2026-11-07 for the crypto/x509 CVE fix and the longer support window).
 - **SSH transport:** native `golang.org/x/crypto/ssh` (decided 2026-07) — no dependency on a
   host `ssh` binary; host-key verification via `x/crypto/ssh/knownhosts`, strict (no TOFU).
 - **Config format / CLI:** YAML source of truth (`gopkg.in/yaml.v3`); Cobra for subcommands.

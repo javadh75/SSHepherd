@@ -2,7 +2,7 @@
 
 # ---- build stage ------------------------------------------------------------
 # Base images are pinned by digest (tag kept for readability); Dependabot bumps both.
-FROM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
+FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
 WORKDIR /src
 
 # Build with the pinned image's Go — never silently download another toolchain

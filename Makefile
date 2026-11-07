@@ -9,7 +9,7 @@ GO           := go
 # Pinned dev-tool versions (keep in sync with CLAUDE.md). Exact releases only —
 # never @latest — so a new upstream rule or a broken/compromised release can't
 # flip the gate without a change in this repo. Bump deliberately.
-GOLANGCI_VERSION := v2.12.2
+GOLANGCI_VERSION := v2.15.0
 GOSEC_VERSION    := v2.29.0
 GOVULN_VERSION   := v1.8.0
 GITLEAKS_VERSION := v8.30.1
@@ -24,10 +24,10 @@ DEADCODE_VERSION := v0.51.0
 # Supported Go line. The pinned linters cannot read a newer Go's export data
 # ("unsupported export data version"), so when the go on PATH is from another
 # minor line (e.g. Homebrew's newest), every target runs under GO_PIN instead —
-# the go command downloads it once — and local runs match CI (Go 1.26). An
+# the go command downloads it once — and local runs match CI (Go 1.27). An
 # explicit GOTOOLCHAIN (environment or `make GOTOOLCHAIN=…`) always wins.
-GO_LINE := go1.26
-GO_PIN  := go1.26.9
+GO_LINE := go1.27
+GO_PIN  := go1.27.3
 ifeq ($(origin GOTOOLCHAIN),undefined)
   ifneq ($(GO_LINE),$(shell $(GO) env GOVERSION | cut -d. -f1-2))
     export GOTOOLCHAIN := $(GO_PIN)
