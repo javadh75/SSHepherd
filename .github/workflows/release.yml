@@ -225,13 +225,17 @@ jobs:
             --image-src remote --platform "$PLATFORM" \
             --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE_REPO@$DIGEST"
 
-      # The gate step pulled this runner's native variant, so the daemon's copy
-      # of the ref is unambiguous here.
+      # The gate step pulled this runner's native variant. dockle must not be
+      # handed the multi-arch index digest: it resolves the platform manifest
+      # and then fails "Manifest does not match provided manifest digest".
+      # Lint the pulled native image through the daemon under a local tag,
+      # exactly as ci.yml does.
       - name: Lint image (dockle)
         # CIS-DI-0006 (HEALTHCHECK) waived: sshepherd is a CLI, not a service.
         run: |
+          docker tag "$IMAGE_REPO@$DIGEST" sshepherd:gate
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            "$DOCKLE_IMAGE" --exit-code 1 -i CIS-DI-0006 "$IMAGE_REPO@$DIGEST"
+            "$DOCKLE_IMAGE" --exit-code 1 -i CIS-DI-0006 sshepherd:gate
 
   # The only job that can sign, and it never runs on a dispatch (dry run),
   # not even one dispatched on a tag ref: only a tag push publishes.
