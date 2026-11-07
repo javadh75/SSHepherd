@@ -10,7 +10,7 @@ GO           := go
 # never @latest — so a new upstream rule or a broken/compromised release can't
 # flip the gate without a change in this repo. Bump deliberately.
 GOLANGCI_VERSION := v2.15.0
-GOSEC_VERSION    := v2.29.0
+GOSEC_VERSION    := v2.30.0
 GOVULN_VERSION   := v1.8.0
 GITLEAKS_VERSION := v8.30.1
 DEADCODE_VERSION := v0.51.0
@@ -80,8 +80,22 @@ deadcode:
 ## security: SAST + vulnerabilities + secret scan
 security: gosec vuln secrets
 
-gosec:
-	gosec -quiet -tags=integration ./...
+## gosec: SAST. Standalone gosec scans the non-test code (it skips every
+## _test.go file). golangci-lint's gosec scans the //go:build integration test
+## files, which are scoped and triaged in .golangci.yml. The target fails when
+## gosec cannot type-check the code, because then only its syntax rules run.
+gosec: lint-toolchain
+	@out=$$(gosec -fmt=text -tags=integration ./... 2>&1); rc=$$?; \
+	if printf '%s\n' "$$out" | grep -q 'Golang errors'; then \
+	  printf '%s\n' "$$out" | grep -m3 -A2 'Golang errors'; \
+	  echo "FAIL: gosec could not type-check the code; rebuild it with: make tools"; exit 1; \
+	fi; \
+	if [ $$rc -ne 0 ]; then printf '%s\n' "$$out" | grep -v '^\[gosec\]'; exit $$rc; fi
+	@bad=$$(grep -rl --include='*_test.go' '^//go:build integration' cmd internal | grep -Ev '(integration|e2e)_test\.go$$'); \
+	if [ -n "$$bad" ]; then \
+	  echo "$$bad"; echo "FAIL: name //go:build integration test files *integration_test.go or *e2e_test.go (the gosec scope in .golangci.yml)"; exit 1; \
+	fi
+	golangci-lint run --enable-only=gosec
 
 vuln:
 	govulncheck ./...

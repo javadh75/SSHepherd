@@ -26,7 +26,7 @@ func itKeys(t *testing.T) string {
 // itPubLine reads a harness public key line.
 func itPubLine(t *testing.T, dir, name string) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, name+".pub"))
+	b, err := os.ReadFile(filepath.Join(dir, name+".pub")) // #nosec G304 -- harness key dir (SSHEPHERD_IT_KEYS)
 	if err != nil {
 		t.Fatalf("%s.pub: %v", name, err)
 	}
@@ -37,7 +37,7 @@ func itPubLine(t *testing.T, dir, name string) string {
 // environment: only --identity keys can authenticate.
 func runHeadless(t *testing.T, bin string, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), bin, args...)
+	cmd := exec.CommandContext(t.Context(), bin, args...) // #nosec G204 -- the binary this test just built
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "SSH_AUTH_SOCK=") {
 			cmd.Env = append(cmd.Env, kv)
@@ -168,7 +168,7 @@ servers:
 	if code, out, stderr = runHeadless(t, bin, append([]string{"audit", "--config", m0, "--known-hosts", kh}, id...)...); code != 0 {
 		t.Fatalf("headless audit exit = %d, want 0 — the loop must close (stderr: %s)\n%s", code, stderr, out)
 	}
-	if b, err := os.ReadFile(adopted); err != nil || !strings.Contains(string(b), "adopted from e2eh") {
+	if b, err := os.ReadFile(adopted); err != nil || !strings.Contains(string(b), "adopted from e2eh") { // #nosec G304 -- t.TempDir path
 		t.Errorf("adopted manifest lacks the stale key (%v):\n%s", err, b)
 	}
 }
@@ -193,7 +193,7 @@ servers:
 	if code != 0 || !strings.Contains(out, "applied · verified") {
 		t.Fatalf("headless rotate exit = %d, want 0 + applied (stderr: %s)\n%s", code, stderr, out)
 	}
-	b, err := os.ReadFile(m)
+	b, err := os.ReadFile(m) // #nosec G304 -- t.TempDir path
 	if err != nil {
 		t.Fatal(err)
 	}

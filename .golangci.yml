@@ -85,6 +85,37 @@ linters:
           - errcheck
           - gocyclo
           - wrapcheck
+      # gosec is not in `enable` above: `make gosec` runs it here with
+      # `--enable-only=gosec`, for the //go:build integration test files
+      # only (standalone gosec skips every _test.go file; it covers the
+      # non-test code). Unit test files stay out of scope.
+      - path-except: '(integration|e2e)_test\.go$'
+        linters:
+          - gosec
+      # Triaged gosec false positives in the integration files, pinned to
+      # the exact source line so a new hit in the same file still fails.
+      # The harness hands the tests their inputs (SSHEPHERD_IT_* env vars,
+      # t.TempDir paths) and they run the freshly built binary.
+      - path: '(^|/)(cmd/sshepherd/e2e|internal/sshwrite/integration)_test\.go$'
+        linters:
+          - gosec
+        text: G703
+        source: 'os\.ReadFile\(os\.Getenv\("SSHEPHERD_IT_PUB"\)\)'
+      - path: '(^|/)cmd/sshepherd/e2e_test\.go$'
+        linters:
+          - gosec
+        text: G204
+        source: 'exec\.CommandContext\(t\.Context\(\), "go", "build", "-o", bin, "\."\)'
+      - path: '(^|/)cmd/sshepherd/e2e_test\.go$'
+        linters:
+          - gosec
+        text: G204|G702
+        source: '^\s*cmd := exec\.CommandContext\(t\.Context\(\), bin, args\.\.\.\)$'
+      - path: '(^|/)cmd/sshepherd/e2e_test\.go$'
+        linters:
+          - gosec
+        text: G304
+        source: 'os\.ReadFile\(adopted\)'
 
 formatters:
   enable:

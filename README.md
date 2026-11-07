@@ -1498,7 +1498,7 @@ $ make tools        # install pinned dev tooling (exact versions, no @latest)
 `make tidy` (part of the gate) uses `go mod tidy -diff`: it fails and prints the
 needed change when `go.mod`/`go.sum` are not tidy, and never rewrites them. Re-run
 `make tools` after upgrading Go — `make lint` refuses a `golangci-lint` built by a
-different Go toolchain. The gate supports the Go 1.27 line (what CI runs): when the
+different Go toolchain, and `make gosec` fails if gosec cannot type-check the code. The gate supports the Go 1.27 line (what CI runs): when the
 `go` on your `PATH` is from another line (e.g. Homebrew's newest), every `make`
 target — and the pre-push hook, which goes through `make` — runs under the pinned
 `go1.27.3` instead, which the `go` command downloads once. Set `GOTOOLCHAIN`
@@ -1506,7 +1506,9 @@ yourself (`make GOTOOLCHAIN=local …`) to override.
 
 The gate includes `gofmt`, `go vet`, `golangci-lint`, whole-program `deadcode`,
 `gosec`, `govulncheck`, and `gitleaks`; `go vet`, `golangci-lint` and `gosec` also
-cover the `//go:build integration` test files. Container work has its own targets:
+cover the `//go:build integration` test files (gosec through golangci-lint, since
+standalone gosec skips test files; name them `*integration_test.go` or
+`*e2e_test.go`). Container work has its own targets:
 `make docker` (passes `--build-arg VERSION=$(git describe --tags --always --dirty)`,
 overridable with `VERSION=`), `docker-lint` (hadolint + dockle), `docker-scan`
 (Trivy), and `smoke` — `scripts/docker-gates.sh`: `--version` and `--help`, the

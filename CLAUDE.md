@@ -112,7 +112,7 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
 - `.golangci.yml` sets `run.build-tags: [integration]`, so `golangci-lint run` also type-checks and lints the integration-tagged test files.
 
 ### Security (SAST + vulnerabilities)
-- `gosec -tags=integration ./...` — SAST for insecure patterns (integration-tagged files included). High-value here: this tool writes
+- `gosec -tags=integration ./...` — SAST for insecure patterns in the non-test code (gosec skips `_test.go` files). `make gosec` also runs golangci-lint's gosec (`golangci-lint run --enable-only=gosec`) over the `//go:build integration` test files, which must be named `*integration_test.go` or `*e2e_test.go`. That run is scoped and triaged in `.golangci.yml`. The target fails if gosec cannot type-check the code (rebuild it with `make tools`). High-value here: this tool writes
   `authorized_keys`, sets file permissions, and shells out to SSH — gosec flags weak file
   perms (G302/G306), command injection (G204), and weak crypto.
 - `govulncheck ./...` — official Go vulnerability scanner. Reachability-aware: only reports
@@ -373,8 +373,10 @@ reminder's tail is per edit kind; JSON gains the `remove-access` edit kind and
 `keep_old` on rotate entries (schema stays 1). The E2E suite adds a `revoke --server`
 run and a keep-old overlap → finish loop.
 The gates also cover the `//go:build integration` files: `make vet` runs `go vet`
-plain and with `-tags=integration`, `gosec` runs with `-tags=integration`, and
-`.golangci.yml` sets `run.build-tags: [integration]` (review remediation P13-0,
+plain and with `-tags=integration`, `.golangci.yml` sets `run.build-tags: [integration]`,
+and `make gosec` runs golangci-lint's gosec over those test files (standalone gosec,
+pinned at v2.30.0 so it can type-check Go 1.27, skips every `_test.go`; triaged false
+positives are `#nosec` lines or source-pinned exclusions) (review remediation P13-0,
 OPS-7; plan in `docs/superpowers/plans/2026-11-07-review-remediation.md`).
 The write script's owner checks are pinned by real-sshd ownership fixtures
 (root-owned `~/.ssh` and `authorized_keys`, a `nobody`-owned override ancestor, root
