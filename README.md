@@ -1576,8 +1576,9 @@ Release recovery:
    another waits cancels the waiting one. Nothing was tagged or signed. Re-run it once
    the queue drains: `gh run rerun <run-id>`.
 
-Every release tag must point at a commit at or after `38c92c0`, the commit that gated
-releases; older commits run the ungated release workflow.
+Every release tag must point at a commit at or after `ca50409`, the commit that fixed
+the gated release workflow; older commits run an ungated release workflow or one whose
+publish step always fails.
 
 Test kinds in the repo: unit (table-driven), integration (real `sshd` in Docker,
 build-tagged), end-to-end (the CLI binary through adopt → apply → audit), fuzz
