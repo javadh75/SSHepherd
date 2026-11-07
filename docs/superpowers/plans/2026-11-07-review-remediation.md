@@ -125,7 +125,11 @@ Still open: Block 1 (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a,
 
 **New owner rule (2026-11-07): every command offers `--json`.** `validate` from day one (D25a); `import` and `adopt` get a JSON report too (new item, needs a short design: likely a discovery/warnings report, since their normal output is YAML) — schedule it as its own slice after W1.
 
-Still open: D4c, D1d, D1e (added by the W0 repair to the P04 spec) — ask next.
+| D4c | Recommended: exit 0 (converged) with "written by newer manifest serial S (yours is M): pull the latest manifest"; audit still reports drift (D4a). |
+| D1d | Recommended: drift, exit 1, labelled `bob (access revoked <date>)` (critical is only for revoked keys, D2). |
+| D1e | **B (owner, against the planner's recommendation, for consistency with D29):** an access tombstone naming a server no longer in `servers:` is a **warning** and that entry is ignored for that server — not a load error. |
+
+All decisions answered (D0–D31 incl. sub-decisions, D4c, D1d, D1e). D11–D13 and the D14a–c / D17a–b spec defaults stand unless the owner changes them at spec approval.
 
 **W0 verifier follow-ups (unconfirmed single-lens, triaged by the main session):**
 - P04 spec line ~275 (`S < M, or no serial | equal | Converged`): an affected, already-converged server keeps an old/absent serial, so a stale copy can still re-grant there (PRD-2 hole). Fix in the spec before the W4 plan: on an affected server, an older serial with an equal body gets a header-only write carrying M when the run bumped the serial; drop `TestPlanConvergedOnOlderSerialSameBody` as written.
