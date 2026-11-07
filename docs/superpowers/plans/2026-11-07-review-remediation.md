@@ -44,7 +44,7 @@
  │ P13-0 OPS-7 lint  │  │  │ P08 spec  P09 spec    │  │ │ round 2: P12-C, P13-B/D │   └─────────────┘   └───────────────┘   │ slices S1–S6   │
  │ P04 spec (PRD-1)  │  │  │ round 2: P07-F1       │  │ └────────────────────────┘                                          └───────────────┘
  └──────────────────┘  │  └──────────────────────┘  │
-   owner: D6 ──────────┴── D27 before W1 ───────────┴── D8, D8a, D30, D31, D7 before W2 ── Block 1 (D28…D4a) before the W4 plan
+   owner: D6 ──────────┴── D27 before W1 ───────────┴── D8, D8a, D30, D31, D7 before W2 ── Block 1 (D28…D1e) before the W4 plan
 ```
 
 ### Findings per wave
@@ -81,7 +81,7 @@ Agents: these are final — implement the recommended option for each; do not re
 | D31 | **Yes** — the login probe offers keys in the same order later runs use (no `--identity` preference). |
 | D7 | **(1)** — releases also publish signed binaries (plain `go build` matrix, `SHA256SUMS`, `cosign sign-blob`). |
 
-Still open: Block 1 (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a) — needed before the W4 plan; D9 onward at their spec approvals.
+Still open: Block 1 (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a, D4c, D1d, D1e) — needed before the W4 plan; D9 onward at their spec approvals.
 
 Rules: ask **one decision at a time**, in the order below, in short plain English, with the recommendation. Decisions are never delegated to agents. A decision that is not answered never blocks a fix wave: each package names its safe default (usually today's behavior). The quick questions that unblock W0–W2 come first; the revocation block (Block 1) is asked while W1–W3 run, because only the W4 plan needs it. Technical sub-choices that do not change what a user sees are decided by the spec author with a stated default and shown to the owner at spec approval; they are listed in the table so nothing is hidden.
 
@@ -94,10 +94,10 @@ Rules: ask **one decision at a time**, in the order below, in short plain Englis
 | 6 | D30 | before W2 | P11 Task 6 | Task 6 skipped (apply keeps exit 0) |
 | 7 | D31 | before W2 | P11 Task 5 | Task 5 skipped (WP-5 waits) |
 | 8 | D7 | before W2 | P13 Task 9 | image only |
-| 9–21 | D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a | before the W4 plan | P04-impl (W4) | W4 waits |
-| 22–24 | D9, D9b, D10 (D11–D13 stated) | P08 spec approval | P08-impl (W5+) | — |
-| 25–30 | D14, D15, D16 (re-asked), D17, D18, D19 (D14a–c, D17a–b spec defaults) | P09 spec approval | P09-impl (W5+); D18's README narrowing goes to the next integrator | — |
-| 31–43 | D25, D25a, D25b, D23, D24, D24a, D26, D21, D21a, D20, D20a, D20b, D22 | P10 spec approval (after W4) | P10 slices (W5+) | — |
+| 9–24 | D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a, D4c, D1d, D1e | before the W4 plan | P04-impl (W4) | W4 waits |
+| 25–27 | D9, D9b, D10 (D11–D13 stated) | P08 spec approval | P08-impl (W5+) | — |
+| 28–33 | D14, D15, D16 (re-asked), D17, D18, D19 (D14a–c, D17a–b spec defaults) | P09 spec approval | P09-impl (W5+); D18's README narrowing goes to the next integrator | — |
+| 34–46 | D25, D25a, D25b, D23, D24, D24a, D26, D21, D21a, D20, D20a, D20b, D22 | P10 spec approval (after W4) | P10 slices (W5+) | — |
 
 ### Block 0: workflow setup
 
@@ -177,6 +177,15 @@ Rules: ask **one decision at a time**, in the order below, in short plain Englis
 
 **D4a — Audit sees a server written by a newer manifest than yours. Should it say so and count it as drift (exit 1)?** (PRD-2)
 - **Recommendation: yes:** "written by manifest serial 8, yours is 7: pull the latest manifest".
+
+**D4c — apply meets a server written by a newer manifest whose keys already match yours. Exit 0 or 1?** (PRD-2; was the spec's open point 4)
+- **Recommendation: exit 0 (converged), with the note** "written by newer manifest serial S (yours is M): pull the latest manifest". Nothing would change, and audit still counts it as drift (D4a). Otherwise: exit 1, refused, so apply and audit agree.
+
+**D1d — audit finds bob's key on db-1 after `revoke bob --server db-1`. Drift (exit 1) or critical (exit 2)?** (PRD-1; was open point 6)
+- **Recommendation: drift, exit 1**, labelled `bob (access revoked 2026-11-08)`. Bob is still trusted on his other servers; critical is for revoked keys (D2).
+
+**D1e — A server named in an access tombstone is removed from `servers:`. Does the manifest still load?** (PRD-1; was open point 7)
+- **Recommendation: no, a load error** (`revoked[N]: unknown server "NAME"`, exit 3), so a typo never silently protects nothing. Otherwise: a warning, and the entry is ignored for that server.
 
 ### Block 3: write-path failure semantics (P08 spec; implementation W5+)
 
@@ -574,7 +583,7 @@ After the workflow returns, the main session runs step 6 (preflight, push) and s
 - **P02 → owner:** required checks, if ever added, name only `ci-ok`.
 - **P03:** `TestOwnerChecksBite` matches the exact text of the owner checks. P11 (W2) must update its `ownerMutants` table, never delete the test.
 - **P13-0:** CLAUDE.md quality-gates text: `go vet` and `gosec` also run with `-tags=integration`, and golangci-lint has `build-tags: [integration]`.
-- **P04:** after the spec lands, the main session asks Block 1 (D28 → D4a), one at a time, while W1–W3 run.
+- **P04:** after the spec lands, the main session asks Block 1 (D28 → D1e), one at a time, while W1–W3 run.
 
 **Wave exit:** `make check`, `make integration`, `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= .github/workflows/*.yml`, `make docker docker-lint docker-scan smoke`; verifier and repair; then the CI preflight branch run (step 6), the push, and the post-push `release.yml` dispatch dry run (step 7).
 
@@ -2888,7 +2897,7 @@ Plus the three scratch-copy mutation runs. Each FAILs as stated, and the verifie
 
 ### P04 — Spec: revocation memory and manifest authority (tombstones, post-revoke sweep, serial, adopt wildcard)
 
-> **Program notes (master plan, revised by the review panel):** Spec only. The implementation is **W4** (after P14) and needs D28, D29, D1–D5, D4b, D1a, D1b, D1c, D2a and D4a. After P13 (W2), `make fuzz` discovers targets, so there is no Makefile edit: W4's acceptance checks `make fuzz-list | grep -q FuzzParseHeader`. Panel changes folded in below: exit 2 follows the shared contract (D28); manifest policy conflicts are reported, not load errors (D29); the sweep becomes opt-in and also reads `authorized_keys2` (D3); removal-only plans are never blocked by a server serial and absurd serials count as forged (D4); hand edits that remove keys bump the serial (D4b); a repeated revoke is idempotent (D1c).
+> **Program notes (master plan, revised by the review panel):** Spec only. The implementation is **W4** (after P14) and needs D28, D29, D1–D5, D4b, D1a, D1b, D1c, D2a, D4a, D4c, D1d and D1e. After P13 (W2), `make fuzz` discovers targets, so there is no Makefile edit: W4's acceptance checks `make fuzz-list | grep -q FuzzParseHeader`. Panel changes folded in below: exit 2 follows the shared contract (D28); manifest policy conflicts are reported, not load errors (D29); the sweep becomes opt-in and also reads `authorized_keys2` (D3); removal-only plans are never blocked by a server serial and absurd serials count as forged (D4); hand edits that remove keys bump the serial (D4b); a repeated revoke is idempotent (D1c).
 
 - **Kind:** spec (design doc + owner decisions only; no code, no tests, no README change in this package)
 - **Wave:** 0 (spec written now). Implementation is **W4**, after P05, P06, P07, P11, P12 and P14 (W3) have landed.
@@ -2917,7 +2926,7 @@ Plus the three scratch-copy mutation runs. Each FAILs as stated, and the verifie
 
 #### Design questions (ask ONE at a time, short English, recommendation first)
 
-The questions are the master list's Block 1 (Owner decisions, top of this plan), asked one at a time in that order: **D28 → D1 → D29 → D2 → D3 → D4 → D4b → D5 → D1a → D1b → D1c → D2a → D4a**. The spec records each answer with its date. This table repeats them in the spec's wording; the plain-English versions in Block 1 are what the owner hears.
+The questions are the master list's Block 1 (Owner decisions, top of this plan), asked one at a time in that order: **D28 → D1 → D29 → D2 → D3 → D4 → D4b → D5 → D1a → D1b → D1c → D2a → D4a → D4c → D1d → D1e**. The spec records each answer with its date. This table repeats them in the spec's wording; the plain-English versions in Block 1 are what the owner hears.
 
 | # | Question | Recommendation | Why |
 |---|---|---|---|
@@ -2934,6 +2943,9 @@ The questions are the master list's Block 1 (Owner decisions, top of this plan),
 | **D1c** | Re-running a revoke for someone already revoked: exit 0 with the apply hint? | **Yes, using the `revoked:` list to know they were revoked** | Fixes the rest of UX-6 (a retry exits 3 today) and makes `revoke USER` and `revoke --key` agree on retry. |
 | **D2a** | When adopt finds a revoked key, what should happen to the run? | **Skip the key and print a loud warning. adopt's exit code is unchanged (D8/P12 owns adopt's exit codes).** | audit is the monitoring surface. adopt only proposes a manifest. |
 | **D4a** | Audit sees a server written by a *newer* manifest than the one you are using. What should audit say? | **A note on that server, counted as drift (exit 1), naming both serials** | An audit against a stale manifest proves nothing, but it is not a security alarm. Absurd serials are D4's "forged" case (exit 2). |
+| **D4c** | apply meets a newer-serial server whose body already equals yours: exit 0 or 1? | **Converged, exit 0, with the pull-the-latest note** | Nothing would change; audit still reports it (D4a). |
+| **D1d** | audit finds a key installed where an access tombstone removed it: drift or critical? | **Drift, exit 1, labelled `(access revoked DATE)`** | The user is still trusted elsewhere; critical stays for revoked keys (D2). |
+| **D1e** | An access tombstone names a server no longer in `servers:`: load error or warning? | **Load error (exit 3)** | A typo in a tombstone must never silently protect nothing. |
 
 #### Recommended design sketch (what the spec doc should say)
 
@@ -3016,7 +3028,7 @@ Only servers that the bump actually changed (the affected set) carry the new ser
 
 #### What the spec doc must decide or record (checklist for the author)
 
-1. The answers to D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a and D4a, each with its date.
+1. The answers to D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a, D4c, D1d and D1e, each with its date.
 2. The YAML schema and the validation messages, verbatim (they become test expectations).
 3. The header wording for serial > 0, the exact regexp, and the "serial 0 = legacy bytes" rule.
 4. The convergence/refusal table above, and that `Affected` ignores the header.
@@ -3066,7 +3078,7 @@ Commands: `GOTOOLCHAIN=go1.27.3 go test -race ./internal/config/... ./internal/m
 #### Acceptance
 
 - The spec file exists at `docs/superpowers/specs/2026-11-08-revocation-memory-design.md` with Status `Draft — awaiting owner decisions` and every item in the checklist above.
-- Each of D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a and D4a is answered by the owner, one at a time, and recorded in the spec with its date. The spec is approved before the W4 plan is written, and that plan is written after W3 (P14) lands.
+- Each of D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a, D4c, D1d and D1e is answered by the owner, one at a time, and recorded in the spec with its date. The spec is approved before the W4 plan is written, and that plan is written after W3 (P14) lands.
 - `git status --porcelain` shows only the new spec file. This package changes no code, tests, README or CLAUDE.md.
 - After implementation (W4): `make check`, `make integration`, `make fuzz-list | grep -q FuzzParseHeader`, `make fuzz`, and `GOTOOLCHAIN=go1.27.3 go test -race -run 'TestE2ERevokeNoResurrect|TestE2EStaleManifestRefused|TestE2EStaleManifestAfterHandEdit' -tags integration ./cmd/sshepherd` all pass.
 
@@ -10790,7 +10802,7 @@ grep -cE '/internal/(sshconn/sshtest|testkeys)/' coverage.out   # 0
 
 ## Wave 4 — revocation memory (P04-impl)
 
-**Starts when all hold:** W3 (P14) is committed; D28, D29, D1–D5, D4b, D1a, D1b, D1c, D2a and D4a are answered; P04's spec is approved; and a writing-plans plan for it exists (`docs/superpowers/plans/2026-11-xx-revocation-memory.md`, same format as this file), **written after P14 landed** so its file lists name `internal/fleet` and `internal/workflow`.
+**Starts when all hold:** W3 (P14) is committed; D28, D29, D1–D5, D4b, D1a, D1b, D1c, D2a, D4a, D4c, D1d and D1e are answered; P04's spec is approved; and a writing-plans plan for it exists (`docs/superpowers/plans/2026-11-xx-revocation-memory.md`, same format as this file), **written after P14 landed** so its file lists name `internal/fleet` and `internal/workflow`.
 
 It touches `internal/config`, `internal/manifest`, `internal/authkeys/render.go`, `internal/adopt`, `internal/reconcile`, `internal/audit`, `internal/apply/{plan,affected}.go`, `internal/sshwrite/sshwrite.go`, `internal/workflow` and `cmd/sshepherd/{revoke,rotate,editrun,adopt,import,manifest_out}.go`, so it runs alone. P04's "Implementation outline" (in its Wave 0 section above) splits it into **W4a** (schema + header, 2 parallel agents, plus a failing-first E2E lane) and **W4b** (adopt/reconcile/plan, audit, cmd; 3 parallel agents against the merged W4a API). The README Exit codes row is rewritten from the shared exit-code table (D28).
 
