@@ -253,7 +253,7 @@ are new.
     scope line; `--no-apply`, `--dry-run`, `--json`.
   - rotate `--keep-old`: both keys installed; expiry carried; every
     finish-hint row (including the operator `--identity` line); per-kind save
-    reminder; `--comment:` multi-key warning surfaces as it does for other
+    reminder; the manifest's `comment:`-on-a-multi-key-user warning surfaces as it does for other
     edits; then `revoke --key OLD` leaves only the new key and `audit` is
     clean.
 - **Integration / E2E:** extend the loop with `revoke USER --server` on a
