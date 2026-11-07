@@ -52,9 +52,10 @@ build:
 fmt:
 	@files=$$(gofmt -l .); if [ -n "$$files" ]; then echo "gofmt needed:"; echo "$$files"; exit 1; fi
 
-## vet: go vet
+## vet: go vet, plain and with the integration build tag
 vet:
 	$(GO) vet $(PKG)
+	$(GO) vet -tags=integration $(PKG)
 
 ## lint: golangci-lint (v2)
 lint: lint-toolchain
@@ -80,7 +81,7 @@ deadcode:
 security: gosec vuln secrets
 
 gosec:
-	gosec -quiet ./...
+	gosec -quiet -tags=integration ./...
 
 vuln:
 	govulncheck ./...

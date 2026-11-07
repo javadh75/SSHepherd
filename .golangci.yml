@@ -1,5 +1,11 @@
 version: "2"
 
+run:
+  # Lint the //go:build integration files too (real-sshd and E2E tests);
+  # they compile without sshd, so the gate costs nothing extra.
+  build-tags:
+    - integration
+
 linters:
   default: none
   enable:

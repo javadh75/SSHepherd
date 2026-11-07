@@ -1483,7 +1483,8 @@ target — and the pre-push hook, which goes through `make` — runs under the p
 yourself (`make GOTOOLCHAIN=local …`) to override.
 
 The gate includes `gofmt`, `go vet`, `golangci-lint`, whole-program `deadcode`,
-`gosec`, `govulncheck`, and `gitleaks`. Container work has its own targets:
+`gosec`, `govulncheck`, and `gitleaks`; `go vet`, `golangci-lint` and `gosec` also
+cover the `//go:build integration` test files. Container work has its own targets:
 `make docker` (passes `--build-arg VERSION=$(git describe --tags --always --dirty)`,
 overridable with `VERSION=`), `docker-lint` (hadolint + dockle), `docker-scan`
 (Trivy), and `smoke` — `scripts/docker-gates.sh`: `--version` and `--help`, an image

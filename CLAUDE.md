@@ -86,7 +86,7 @@ run the exact same commands. Target **Go 1.22+**. Listed cheapest-to-run first.
 - `goimports -l ./...` (`golang.org/x/tools/cmd/goimports`) — formatting + import grouping.
 
 ### Vet / correctness (value check)
-- `go vet ./...` — catches printf mismatches, unreachable code, bad struct tags, etc.
+- `go vet ./...` and `go vet -tags=integration ./...` — catches printf mismatches, unreachable code, bad struct tags, etc., in the plain build and in the `//go:build integration` real-sshd/E2E test files.
 - Bundles the `loopclosure` analyzer — flags loop variables captured by goroutines/closures.
 
 ### Loop safety
@@ -109,9 +109,10 @@ run the exact same commands. Target **Go 1.22+**. Listed cheapest-to-run first.
 - Optional but recommended: `gofumpt` (stricter gofmt) and `nilaway` (Uber's nil-panic
   static analysis — experimental, run as a separate step).
 - Pin the `golangci-lint` version and commit `.golangci.yml` so results are reproducible.
+- `.golangci.yml` sets `run.build-tags: [integration]`, so `golangci-lint run` also type-checks and lints the integration-tagged test files.
 
 ### Security (SAST + vulnerabilities)
-- `gosec ./...` — SAST for insecure patterns. High-value here: this tool writes
+- `gosec -tags=integration ./...` — SAST for insecure patterns (integration-tagged files included). High-value here: this tool writes
   `authorized_keys`, sets file permissions, and shells out to SSH — gosec flags weak file
   perms (G302/G306), command injection (G204), and weak crypto.
 - `govulncheck ./...` — official Go vulnerability scanner. Reachability-aware: only reports
@@ -357,3 +358,7 @@ carried) and prints the `revoke --key OLD` that finishes the overlap. The save
 reminder's tail is per edit kind; JSON gains the `remove-access` edit kind and
 `keep_old` on rotate entries (schema stays 1). The E2E suite adds a `revoke --server`
 run and a keep-old overlap → finish loop.
+The gates also cover the `//go:build integration` files: `make vet` runs `go vet`
+plain and with `-tags=integration`, `gosec` runs with `-tags=integration`, and
+`.golangci.yml` sets `run.build-tags: [integration]` (review remediation P13-0,
+OPS-7; plan in `docs/superpowers/plans/2026-11-07-review-remediation.md`).

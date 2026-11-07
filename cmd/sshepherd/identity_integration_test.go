@@ -157,7 +157,7 @@ servers:
 	adopted := filepath.Join(dir, "adopted.yaml")
 	code, out, stderr := runHeadless(t, bin, append([]string{"adopt", "--config", m0, "--known-hosts", kh, "-o", adopted}, id...)...)
 	if code != 0 {
-		t.Fatalf("headless adopt exit = %d (stderr: %s)", code, stderr)
+		t.Fatalf("headless adopt exit = %d (stderr: %s)\n%s", code, stderr, out)
 	}
 	if code, out, stderr = runHeadless(t, bin, append([]string{"apply", "--yes", "--config", m0, "--known-hosts", kh}, id...)...); code != 0 {
 		t.Fatalf("headless apply (revoking the stale key) exit = %d (stderr: %s)\n%s", code, stderr, out)
