@@ -52,7 +52,7 @@ docker run -d --name "$CONTAINER" \
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok; do
       adduser -D -s /bin/sh "$u"
       sed -i "s|^$u:!|$u:*|" /etc/shadow   # unlock for pubkey login
       mkdir -p "/home/$u/.ssh"
@@ -61,7 +61,7 @@ docker run -d --name "$CONTAINER" \
     # refusal and failure cases); trima/trimb/overlap: the agent key alone
     # (revoke --server and rotate --keep-old E2E); unparse: plus a line
     # apply cannot parse.
-    for u in cas locked verifyfail drop lockout trima trimb overlap; do
+    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok; do
       cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
     done
     { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
@@ -81,11 +81,29 @@ docker run -d --name "$CONTAINER" \
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
+    # Ownership-refusal fixtures (TST-1). StrictModes in sshd accepts each
+    # one (root may own ~/.ssh or authorized_keys of a user), so the user
+    # can still log in. The write script must refuse each one with exit 48.
+    # fdir: ~/.ssh owned by root. Refused at the directory check (root not exempt).
+    chown root:root /home/fdir/.ssh && chmod 755 /home/fdir/.ssh
+    # ffile: authorized_keys owned by root. Refused at the file check under the lock.
+    chown root:root /home/ffile/.ssh/authorized_keys && chmod 644 /home/ffile/.ssh/authorized_keys
+    # fanc: an authorized_keys_file override below ~/shared, which nobody owns.
+    mkdir -p /home/fanc/shared/keys
+    chown nobody:nobody /home/fanc/shared && chmod 755 /home/fanc/shared
+    chown fanc:fanc /home/fanc/shared/keys && chmod 700 /home/fanc/shared/keys
+    # root logs in with the agent key. The authorized_keys of rootvictim is
+    # the target root must never write through.
+    mkdir -p /root/.ssh && cp /seed/key.pub /root/.ssh/authorized_keys
+    chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys
+    sed -i "s|^root:!|root:*|" /etc/shadow
+    cp /seed/stale.pub /home/rootvictim/.ssh/authorized_keys
+    chown rootvictim:rootvictim /home/rootvictim/.ssh/authorized_keys && chmod 600 /home/rootvictim/.ssh/authorized_keys
     # Alpine ships an active "AuthorizedKeysFile .ssh/authorized_keys" line;
     # OpenSSH keeps the first occurrence of a directive, so appending a second
     # one is silently ignored. Replace it in place instead — and fail loudly if
@@ -95,6 +113,13 @@ docker run -d --name "$CONTAINER" \
       exit 1
     }
     sed -i "s|^AuthorizedKeysFile.*|AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2|" /etc/ssh/sshd_config
+    # Root login for the ownership fixture only. OpenSSH keeps the first
+    # occurrence, so delete any active line before appending ours.
+    sed -i "/^#*PermitRootLogin/d" /etc/ssh/sshd_config && echo "PermitRootLogin prohibit-password" >> /etc/ssh/sshd_config
+    # OpenSSH 9.8+ penalizes a source address after failed logins and then
+    # drops its handshakes. The lockout and from= probe tests fail logins on
+    # purpose (twice each, shuffled), so the penalty would refuse later tests.
+    sed -i "/^#*PerSourcePenalties/d" /etc/ssh/sshd_config && echo "PerSourcePenalties no" >> /etc/ssh/sshd_config
     exec /usr/sbin/sshd -D -e
   '
 
@@ -118,10 +143,13 @@ eval "$(ssh-agent -s)" >/dev/null
 OUR_AGENT_PID="$SSH_AGENT_PID"
 ssh-add "$WORKDIR/id_ed25519"
 
-SSHEPHERD_IT_HOST=127.0.0.1 \
-SSHEPHERD_IT_PORT="$PORT" \
-SSHEPHERD_IT_KNOWN_HOSTS="$WORKDIR/known_hosts" \
-SSHEPHERD_IT_PUB="$WORKDIR/id_ed25519.pub" \
-SSHEPHERD_IT_KEYS="$WORKDIR" \
-  go test -race -tags=integration -run 'TestIntegration|TestE2E' -v \
-  ./internal/sshread/ ./internal/sshwrite/ ./cmd/sshepherd/
+export SSHEPHERD_IT_HOST=127.0.0.1 \
+  SSHEPHERD_IT_PORT="$PORT" \
+  SSHEPHERD_IT_KNOWN_HOSTS="$WORKDIR/known_hosts" \
+  SSHEPHERD_IT_PUB="$WORKDIR/id_ed25519.pub" \
+  SSHEPHERD_IT_KEYS="$WORKDIR"
+# sshwrite's write tests mutate shared container users. Shuffled and run
+# twice, they prove each test reseeds its own starting state (go test
+# prints the -test.shuffle seed so a failure reproduces).
+go test -race -tags=integration -run 'TestIntegration' -shuffle=on -count=2 -v ./internal/sshwrite/
+go test -race -tags=integration -run 'TestIntegration|TestE2E' -v ./internal/sshread/ ./cmd/sshepherd/

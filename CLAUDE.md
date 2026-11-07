@@ -362,3 +362,10 @@ The gates also cover the `//go:build integration` files: `make vet` runs `go vet
 plain and with `-tags=integration`, `gosec` runs with `-tags=integration`, and
 `.golangci.yml` sets `run.build-tags: [integration]` (review remediation P13-0,
 OPS-7; plan in `docs/superpowers/plans/2026-11-07-review-remediation.md`).
+The write script's owner checks are pinned by real-sshd ownership fixtures
+(root-owned `~/.ssh` and `authorized_keys`, a `nobody`-owned override ancestor, root
+writing into another user's file), and the login probe is proven against real sshd
+(forced `command=`, unmatched `from=`, and a `restrict` negative control); the
+sshwrite integration package runs shuffled and twice with each test reseeding its own
+user, and the throwaway sshd sets `PerSourcePenalties no` because those tests fail
+logins on purpose (review remediation P03 lane B, TST-1).

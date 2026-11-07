@@ -130,6 +130,68 @@ func itRequest(t *testing.T, d *sshconn.Dialer, srv config.Server, content []byt
 	return Request{Content: content, Expect: itSnapshot(t, d, srv), Survivors: itSurvivors(t)}
 }
 
+// fixture is a user's starting state. A nil field leaves that file absent.
+type fixture struct {
+	keys, keys2 *string
+	clear       []string // extra $HOME-relative paths to remove (e.g. "keys.d")
+}
+
+func strp(s string) *string { return &s }
+
+// itDrifted is the writer/e2e seed: the harness key plus a stale key that
+// apply must remove. testkeys keeps it hermetic.
+func itDrifted(t *testing.T) string { return itPub(t) + "\n" + testkeys.Line(t, 7) + "\n" }
+
+// shPrint returns a single-line sh command that prints content byte for
+// byte. sshconn.Exec refuses a script holding a newline, so each line goes
+// in as its own quoted printf argument instead of one quoted blob.
+func shPrint(content string) string {
+	lines := strings.Split(content, "\n")
+	full, last := lines[:len(lines)-1], lines[len(lines)-1]
+	var parts []string
+	if len(full) > 0 {
+		args := make([]string, len(full))
+		for i, l := range full {
+			args[i] = sshconn.ShQuote(l)
+		}
+		parts = append(parts, `printf '%s\n' `+strings.Join(args, " "))
+	}
+	if last != "" {
+		parts = append(parts, `printf '%s' `+sshconn.ShQuote(last))
+	}
+	if len(parts) == 0 {
+		return `{ :; }`
+	}
+	return `{ ` + strings.Join(parts, "; ") + `; }`
+}
+
+// reseed puts srv's user back to f over that user's own connection. It
+// removes every artifact a previous test or run left behind (.bak, .orig,
+// temp, lock, the disabled authorized_keys2), so no test depends on run
+// order. The trailing marker catches a forced command= left on the login
+// key, which would otherwise turn the reseed into a silent no-op.
+func reseed(t *testing.T, d *sshconn.Dialer, srv config.Server, f fixture) {
+	t.Helper()
+	put := func(name string, content *string) string {
+		if content == nil {
+			return `rm -f ` + name
+		}
+		return shPrint(*content) + ` > ` + name + `.new && mv -f ` + name + `.new ` + name
+	}
+	var b strings.Builder
+	b.WriteString(`set -e; umask 077; cd "$HOME/.ssh"`)
+	b.WriteString(`; rm -f authorized_keys` + bakSuffix + ` authorized_keys` + origSuffix + ` authorized_keys` + tmpSuffix + ` authorized_keys2` + Keys2DisabledSuffix)
+	b.WriteString(`; rmdir authorized_keys` + lockSuffix + ` 2>/dev/null || :`)
+	b.WriteString(`; ` + put("authorized_keys", f.keys) + `; ` + put("authorized_keys2", f.keys2))
+	for _, c := range f.clear {
+		b.WriteString(`; rm -rf "$HOME"/` + sshconn.ShQuote(c))
+	}
+	b.WriteString(`; echo reseeded`)
+	if out := remoteOut(t, d, srv, b.String()); out != "reseeded\n" {
+		t.Fatalf("reseed %s: output %q — a forced command on the login key?", srv.User, out)
+	}
+}
+
 // TestIntegrationApplyWriteBackupVerify covers the drifted-seed protocol on
 // one user in one ordered flow: write → byte-equal → 0600 → backup and the
 // sticky original hold the pre-apply bytes → no temp/lock residue →
@@ -137,6 +199,7 @@ func itRequest(t *testing.T, d *sshconn.Dialer, srv config.Server, content []byt
 func TestIntegrationApplyWriteBackupVerify(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "writer", Host: host, Port: port, User: "writer"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itDrifted(t))})
 	rendered := itRendered(t)
 
 	orig := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
@@ -185,6 +248,7 @@ func TestIntegrationApplyWriteBackupVerify(t *testing.T) {
 func TestIntegrationOrphanedTempReclaimed(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "writer", Host: host, Port: port, User: "writer"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itDrifted(t))})
 	rendered := itRendered(t)
 
 	remoteOut(t, w.Dialer, srv, `printf 'orphaned partial write' > "$HOME/.ssh/authorized_keys.sshepherd.tmp"`)
@@ -206,6 +270,7 @@ func TestIntegrationOrphanedTempReclaimed(t *testing.T) {
 func TestIntegrationApplyFileAbsent(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "virgin", Host: host, Port: port, User: "virgin"}
+	reseed(t, w.Dialer, srv, fixture{keys2: strp(itPub(t) + "\n")})
 	rendered := itRendered(t)
 
 	if err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, rendered)); err != nil {
@@ -232,6 +297,7 @@ func TestIntegrationApplyCreatesOverrideDir(t *testing.T) {
 		Name: "virgin", Host: host, Port: port, User: "virgin",
 		AuthorizedKeysFile: "~/keys.d/authorized_keys",
 	}
+	reseed(t, w.Dialer, srv, fixture{keys2: strp(itPub(t) + "\n"), clear: []string{"keys.d"}})
 	rendered := itRendered(t)
 
 	if err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, rendered)); err != nil {
@@ -282,6 +348,7 @@ func TestIntegrationSymlinkRefused(t *testing.T) {
 func TestIntegrationChangedSincePlanRefused(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "cas", Host: host, Port: port, User: "cas"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
 	req := itRequest(t, w.Dialer, srv, itRendered(t)) // the plan's snapshot
 	remoteOut(t, w.Dialer, srv, `printf '# emergency key added by a teammate\n' >> "$HOME/.ssh/authorized_keys"`)
 	edited := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
@@ -301,6 +368,7 @@ func TestIntegrationChangedSincePlanRefused(t *testing.T) {
 func TestIntegrationConcurrentApplyLocked(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "locked", Host: host, Port: port, User: "locked"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
 	before := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
 	remoteOut(t, w.Dialer, srv, `mkdir "$HOME/.ssh/authorized_keys.sshepherd.lock"`)
 	t.Cleanup(func() { remoteOut(t, w.Dialer, srv, `rmdir "$HOME/.ssh/authorized_keys.sshepherd.lock"`) })
@@ -324,6 +392,7 @@ func TestIntegrationConcurrentApplyLocked(t *testing.T) {
 func TestIntegrationVerifyFailure(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "verifyfail", Host: host, Port: port, User: "verifyfail"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
 	w.exec = func(ctx context.Context, client *ssh.Client, cmd string, stdin io.Reader) (int, *sshconn.CappedBuffer, *sshconn.CappedBuffer, error) {
 		code, out, errBuf, err := sshconn.Exec(ctx, client, cmd, stdin)
 		if stdin != nil && err == nil && code == 0 { // the write just landed
@@ -344,6 +413,7 @@ func TestIntegrationVerifyFailure(t *testing.T) {
 func TestIntegrationInterruptedWriteLeavesOriginal(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "drop", Host: host, Port: port, User: "drop"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
 	before := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
 	// Large enough to span many channel packets.
 	content := append(itRendered(t), bytes.Repeat([]byte("# padding padding padding padding\n"), 4000)...)
@@ -400,6 +470,7 @@ func (r *droppingReader) Read(p []byte) (int, error) {
 func TestIntegrationLoginProbeRestores(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "lockout", Host: host, Port: port, User: "lockout"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
 	before := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
 	content := []byte(authkeys.ManagedHeader + "\n" + testkeys.Line(t, 42) + "\n")
 
@@ -421,6 +492,7 @@ func TestIntegrationLoginProbeRestores(t *testing.T) {
 func TestIntegrationApplyDisablesAuthorizedKeys2(t *testing.T) {
 	w, host, port := itWriter(t)
 	srv := config.Server{Name: "writer", Host: host, Port: port, User: "writer"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itDrifted(t))})
 	line := testkeys.Line(t, 9) + " revoked@example"
 	planted := line + "\n"
 	remoteOut(t, w.Dialer, srv, `printf '%s\n' '`+line+`' > "$HOME/.ssh/authorized_keys2"`)
@@ -435,5 +507,82 @@ func TestIntegrationApplyDisablesAuthorizedKeys2(t *testing.T) {
 	}
 	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys2`+Keys2DisabledSuffix+`"`); got != planted {
 		t.Errorf("disabled copy = %q, want the planted file", got)
+	}
+}
+
+// TestIntegrationOwnershipRefusals runs the write script's StrictModes-style
+// owner checks (sshwrite.go:160-161, 199, 202) against real sshd fixtures.
+// Each must refuse with *UnsafePathError and leave the target byte-identical,
+// with no backup.
+func TestIntegrationOwnershipRefusals(t *testing.T) {
+	w, host, port := itWriter(t)
+	tests := []struct{ name, user, akf string }{
+		{"~/.ssh owned by root (directory check)", "fdir", ""},
+		{"authorized_keys owned by root (file check)", "ffile", ""},
+		{"ancestor owned by nobody (ancestor walk)", "fanc", "~/shared/keys/authorized_keys"},
+		{"root writing into a user's directory", "root", "/home/rootvictim/.ssh/authorized_keys"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := config.Server{Name: tt.user, Host: host, Port: port, User: tt.user, AuthorizedKeysFile: tt.akf}
+			path := tt.akf
+			if path == "" {
+				path = sshconn.DefaultAuthorizedKeysPath
+			}
+			cat := sshconn.PathAssign(path) + `; cat "$p" 2>/dev/null || :`
+			lsDir := sshconn.PathAssign(path) + `; ls -a "$(dirname "$p")" 2>/dev/null || :`
+			before := remoteOut(t, w.Dialer, srv, cat)
+			err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, itRendered(t)))
+			var uns *UnsafePathError
+			if !errors.As(err, &uns) {
+				t.Fatalf("Apply = %v, want *UnsafePathError", err)
+			}
+			if got := remoteOut(t, w.Dialer, srv, cat); got != before {
+				t.Errorf("target = %q, want it byte-identical to %q", got, before)
+			}
+			if ls := remoteOut(t, w.Dialer, srv, lsDir); strings.Contains(ls, ".sshepherd.") {
+				t.Errorf("ls = %q, a refused write leaves no backup, temp or lock", ls)
+			}
+		})
+	}
+}
+
+// TestIntegrationLoginProbeHonorsWrittenOptions: the post-write probe
+// against real sshd. A survivor line that sshd will force to /bin/true, or
+// refuse by source address, is a lockout. The probe restores the
+// byte-identical pre-write file. A restrict-only survivor still runs
+// the probe command (negative control).
+func TestIntegrationLoginProbeHonorsWrittenOptions(t *testing.T) {
+	w, host, port := itWriter(t)
+	pub := itPub(t)
+	tests := []struct {
+		name, user, line string
+		lockout          bool
+	}{
+		{"forced command= fails the probe and restores", "probecmd", `command="/bin/true" ` + pub, true},
+		{"from= the client cannot match fails the login and restores", "probefrom", `from="10.255.255.1" ` + pub, true},
+		{"restrict alone passes the probe (negative control)", "probeok", `restrict ` + pub, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := config.Server{Name: tt.user, Host: host, Port: port, User: tt.user}
+			reseed(t, w.Dialer, srv, fixture{keys: strp(pub + "\n")})
+			before := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
+			content := []byte(authkeys.ManagedHeader + "\n" + tt.line + "\n")
+			err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, content))
+			if !tt.lockout {
+				if err != nil {
+					t.Fatalf("Apply = %v, want success: restrict permits exec", err)
+				}
+				return // the next run's reseed puts the plain line back
+			}
+			var lo *LockoutError
+			if !errors.As(err, &lo) || lo.Restore != nil {
+				t.Fatalf("Apply = %v, want a restored *LockoutError", err)
+			}
+			if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != before {
+				t.Errorf("file = %q, want the pre-write bytes %q", got, before)
+			}
+		})
 	}
 }
