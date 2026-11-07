@@ -77,7 +77,10 @@ $ go install github.com/javadh75/SSHepherd/cmd/sshepherd@latest
 $ make build
 ```
 
-**Docker** — minimal Alpine image, non-root (UID 65532), `tini` as PID 1:
+**Docker** — distroless image (~11 MB): the static binary, TLS roots and nothing else — no
+shell, no `ssh`/`ssh-keygen`/`ssh-keyscan` (run those on your host). Non-root (UID 65532,
+HOME `/home/nonroot`); sshepherd is PID 1 and handles Ctrl-C/SIGTERM itself (a second
+signal exits at once):
 
 ```console
 $ make docker

@@ -22,15 +22,15 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -o /out/sshepherd ./cmd/sshepherd
 
 # ---- runtime stage ----------------------------------------------------------
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
-
-# Essential tools only — TLS roots, the OpenSSH client family (ssh, ssh-keygen,
-# ssh-keyscan), and tini as PID 1 for correct signal handling. Add nothing else.
-# hadolint ignore=DL3018
-RUN apk add --no-cache ca-certificates openssh-client tini \
- && adduser -D -u 65532 sshepherd
+# Distroless static, nonroot variant: TLS roots, /etc/passwd with uid 65532
+# ("nonroot", HOME /home/nonroot) and nothing else — no shell, no package
+# manager, no ssh tools. sshepherd speaks SSH natively (golang.org/x/crypto/ssh)
+# and needs none of them; run ssh-keygen/ssh-keyscan on the host. No init
+# either: sshepherd handles SIGINT/SIGTERM itself, including as PID 1 (a second
+# signal exits explicitly — see watchSignals in cmd/sshepherd/run.go).
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 
 COPY --from=build /out/sshepherd /usr/local/bin/sshepherd
 
 USER 65532
-ENTRYPOINT ["/sbin/tini", "--", "sshepherd"]
+ENTRYPOINT ["/usr/local/bin/sshepherd"]

@@ -173,22 +173,21 @@ test that fails before the fix and passes after.
 
 ## Container image
 
-Ship a first-class Docker image: **minimal, but carrying the essential runtime tools** — not a
-bare `scratch` box. Multi-stage build, non-root, static binary.
+Ship a first-class Docker image: **minimal — the static binary on a distroless base**, nothing
+else. Multi-stage build, non-root, no shell. (Decided 2026-11-07: the native
+`golang.org/x/crypto/ssh` transport needs no `ssh`/`ssh-keygen`/`ssh-keyscan` in the image, so
+the earlier Alpine + openssh-client + tini image was replaced.)
 
 ### Build
-- **Multi-stage**: a `golang:1.26-alpine` build stage (pinned by digest) compiles the static
-  binary (`CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`); the runtime stage starts from a
-  minimal base and copies only the binary + certs.
-- **Base**: latest stable Alpine, pinned by digest (currently `alpine:3.24.2@sha256:…`; the build
-  stage is `golang:1.26.9-alpine@sha256:…`) — tiny (~7 MB) but ships a shell + `apk`, so the
-  essential tools below are present. (The transport decision — native `golang.org/x/crypto/ssh`,
-  no `ssh` binary needed — makes the `gcr.io/distroless/static` switch viable for an even
-  smaller, shell-less image; do it once `ssh-keygen`/`ssh-keyscan` are also no longer needed
-  as in-image conveniences.)
-- **Essential tools in the image** — keep this list short, add nothing else:
-  `ca-certificates` (TLS to the fleet/registries), `openssh-client` (`ssh`, `ssh-keygen`,
-  `ssh-keyscan` for key ops + `known_hosts`), and `tini` as PID 1 for correct signal handling.
+- **Multi-stage**: a `golang:<ver>-alpine` build stage (pinned by digest, `GOTOOLCHAIN=local`)
+  compiles the static binary (`CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`); the runtime
+  stage copies only the binary.
+- **Base**: `gcr.io/distroless/static-debian13:nonroot`, pinned by its multi-arch index digest —
+  TLS roots, tzdata and a passwd entry for uid 65532 (`nonroot`, HOME `/home/nonroot`); no
+  shell, no package manager, no ssh tools (users run `ssh-keygen`/`ssh-keyscan` on the host).
+- **No init**: sshepherd is PID 1 and handles SIGINT/SIGTERM itself — the first signal cancels,
+  a second exits explicitly with 128+signo (`watchSignals`), because the kernel ignores default
+  signal actions for PID 1. `scripts/docker-gates.sh` proves it against the built image.
 - **Hardening**: run as a **non-root** user (e.g. UID 65532), compatible with a read-only
   rootfs, no secrets baked into layers, `ENTRYPOINT` = the binary. Pin every base image by digest.
 - **Multi-arch**: build `linux/amd64` + `linux/arm64` with `docker buildx`.
@@ -201,6 +200,7 @@ bare `scratch` box. Multi-stage build, non-root, static binary.
 - **Smoke test** — `docker run --rm <image> --version` (and `--help`) must succeed.
 - **Size & user gates** — assert the final image stays under a budget (e.g. < 30 MB) and does
   not run as root.
+- **PID-1 signal gate** — two SIGTERMs to a blocked container must stop it with exit 143.
 - **Provenance** — generate an image SBOM (`syft <image>` or `buildx --sbom`), attach build
   provenance/attestations, and sign the image with `cosign`. Keep base images fresh via
   Dependabot/Renovate.

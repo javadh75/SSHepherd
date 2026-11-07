@@ -89,14 +89,53 @@ func logFleetReadDone(log *slog.Logger, cfg *config.Config, results []audit.Serv
 // run is the process entrypoint: SIGINT/SIGTERM cancel the command's
 // context instead of killing the process, so in-flight work unwinds through
 // ctx (sessions close, apply reports what it finished) and run still maps
-// the outcome to an exit code. The first signal cancels; signal handling is
-// then released, so a second Ctrl-C kills the process the default way.
+// the outcome to an exit code. A second signal exits at once (see
+// watchSignals).
 func run(args []string, stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	release := context.AfterFunc(ctx, stop)
-	defer release()
+	sigs := make(chan os.Signal, 2)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := watchSignals(context.Background(), sigs, os.Exit)
+	defer func() {
+		signal.Stop(sigs)
+		stop()
+	}()
 	return runContext(ctx, args, stdout, stderr)
+}
+
+// watchSignals cancels the returned context on the first signal from sigs
+// and calls exit(128+signo) on a second one. The forced exit is explicit
+// rather than "re-raise and let the default action kill us": in a container
+// sshepherd may run as PID 1 (the distroless image has no init), and the
+// kernel ignores default signal actions for PID 1. stop ends the watcher
+// and cancels the context.
+func watchSignals(parent context.Context, sigs <-chan os.Signal, exit func(int)) (ctx context.Context, stop func()) {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		canceled := false
+		for {
+			select {
+			case s := <-sigs:
+				if !canceled {
+					canceled = true
+					cancel()
+					continue
+				}
+				code := 130 // 128 + SIGINT
+				if sn, ok := s.(syscall.Signal); ok {
+					code = 128 + int(sn)
+				}
+				exit(code)
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		cancel()
+	}
 }
 
 // runContext is the testable entrypoint: it builds the Cobra tree, executes

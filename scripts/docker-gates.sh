@@ -32,3 +32,25 @@ case "$user" in
     ;;
 esac
 echo "ok: image runs as non-root user '$user'"
+
+# Signals as PID 1: the image has no init, so sshepherd is PID 1, where the
+# kernel ignores default signal actions. Block it on an open, empty stdin
+# (reading the manifest), then send two SIGTERMs: the first only cancels, the
+# second must exit explicitly with 128+15 — within a few seconds, not after a
+# SIGKILL timeout.
+sig=$(docker run -d -i "$IMAGE" apply --dry-run --config /dev/stdin)
+trap 'docker rm -f "$cid" "$sig" >/dev/null 2>&1 || true' EXIT
+sleep 1
+docker kill -s TERM "$sig" >/dev/null
+sleep 1
+docker kill -s TERM "$sig" >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(docker inspect -f '{{.State.Running}}' "$sig")" = false ] && break
+  sleep 0.5
+done
+code=$(docker inspect -f '{{.State.ExitCode}}' "$sig")
+if [ "$(docker inspect -f '{{.State.Running}}' "$sig")" != false ] || [ "$code" != 143 ]; then
+  echo "FAIL: a second SIGTERM did not stop the container as PID 1 (running=$(docker inspect -f '{{.State.Running}}' "$sig"), exit=$code; want exit 143)" >&2
+  exit 1
+fi
+echo "ok: a second SIGTERM stops sshepherd as PID 1 (exit 143)"
