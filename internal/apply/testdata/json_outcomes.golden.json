@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": false,
+  "edit": null,
+  "summary": {
+    "servers": 4,
+    "skipped": 0,
+    "converged": 1,
+    "applied": 1,
+    "pending": 1,
+    "failed": 1,
+    "refused": 1,
+    "unreachable": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "a",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "applied",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "b",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": "interrupted before the write started",
+      "error_kind": "canceled",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "c",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "failed",
+      "error": "verify failed",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "d",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "refused",
+      "error": "target is a symlink",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}

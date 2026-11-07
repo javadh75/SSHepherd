@@ -320,3 +320,27 @@ func TestRenderSummaryInterruptedGolden(t *testing.T) {
 	}
 	checkGolden(t, "summary_interrupted.golden", buf.Bytes())
 }
+
+// TestCountSummaryMatchesRenderSummary pins that the JSON summary and the
+// text summary line count from one helper and cannot disagree.
+func TestCountSummaryMatchesRenderSummary(t *testing.T) {
+	plans := []ServerPlan{
+		{Server: config.Server{Name: "a"}, Class: ClassConverged},
+		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomeApplied},
+		{Server: config.Server{Name: "c"}, Class: ClassChange, Outcome: OutcomePending, OutcomeErr: errInterrupted},
+		{Server: config.Server{Name: "d"}, Class: ClassChange, Outcome: OutcomeFailed, OutcomeErr: errors.New("boom")},
+		{Server: config.Server{Name: "e"}, Class: ClassChange, Outcome: OutcomeRefused, OutcomeErr: errors.New("symlink")},
+		{Server: config.Server{Name: "f"}, Class: ClassRefused, Refusal: "wipe"},
+		{Server: config.Server{Name: "g"}, Class: ClassUnreachable, Err: errors.New("dial")},
+	}
+	got := countSummary(plans)
+	want := summaryCounts{converged: 2, applied: 1, pending: 1, failed: 1, refused: 2, unreachable: 1}
+	if got != want {
+		t.Fatalf("countSummary = %+v, want %+v", got, want)
+	}
+	var buf bytes.Buffer
+	RenderSummary(&buf, plans, RenderOptions{})
+	if !strings.Contains(buf.String(), "Summary: 2/7 servers converged (1 applied) · 1 pending · 1 failed · 2 refused · 1 unreachable  → exit 1") {
+		t.Errorf("summary line disagrees with countSummary:\n%s", buf.String())
+	}
+}

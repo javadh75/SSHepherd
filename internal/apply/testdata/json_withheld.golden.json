@@ -1,0 +1,160 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": {
+    "saved": false,
+    "edits": [
+      {
+        "kind": "remove-user",
+        "user": "carol",
+        "keys": 1,
+        "grants": 1
+      }
+    ],
+    "affected": 4,
+    "operators": [
+      "carol"
+    ],
+    "emptied": []
+  },
+  "summary": {
+    "servers": 4,
+    "skipped": 0,
+    "converged": 1,
+    "applied": 0,
+    "pending": 1,
+    "failed": 0,
+    "refused": 1,
+    "unreachable": 1,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "db-1",
+      "host": "10.0.0.9",
+      "port": 22,
+      "user": "deploy",
+      "class": "refused",
+      "outcome": null,
+      "error": "1 key installed but manifest grants none — refusing to wipe",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "comment": "bob"
+          }
+        ],
+        "remove": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "comment": "stray@laptop"
+          }
+        ],
+        "rewrite": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "comment_change": {
+              "from": "alice@old",
+              "to": "alice@work"
+            },
+            "loosens": []
+          }
+        ],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 1,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "class": "converged",
+      "outcome": null,
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-3",
+      "host": "10.0.0.3",
+      "port": 22,
+      "user": "deploy",
+      "class": "unreachable",
+      "outcome": null,
+      "error": "dial tcp 10.0.0.3:22: connection refused",
+      "error_kind": "unknown",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}

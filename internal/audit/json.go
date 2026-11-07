@@ -7,6 +7,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
 // schemaVersion marks the JSON report shape. Bump only on breaking changes
@@ -159,8 +160,9 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 	}
 	if r.Err != nil {
 		// oneLine collapses newlines (same defense as the human head line);
-		// encoding/json escapes any remaining control bytes.
-		msg := oneLine(r.Err)
+		// sanitize.Remote strips C0/C1/Cf, which encoding/json leaves raw
+		// (C1, Cf) or merely escapes (C0) for the consumer to decode.
+		msg := sanitize.Remote(oneLine(r.Err))
 		s.Error = &msg
 		s.ErrorKind = string(ErrorKindOf(r.Err))
 		return s
@@ -177,10 +179,10 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 	for _, k := range r.Diff.OK {
 		jk := jsonKeyFor(cfg, k, false)
 		if actual, desired, drifted := r.optionsDrift(k); drifted {
-			jk.OptionsDrift = &jsonOptionsDrift{Actual: nonNil(actual), Desired: nonNil(desired)}
+			jk.OptionsDrift = &jsonOptionsDrift{Actual: sanitizeAll(actual), Desired: sanitizeAll(desired)}
 		}
 		if actual, desired, drifted := commentDrift(cfg, r, k); opts.Comments && drifted {
-			jk.CommentDrift = &jsonCommentDrift{Actual: actual, Desired: desired}
+			jk.CommentDrift = &jsonCommentDrift{Actual: sanitize.Remote(actual), Desired: sanitize.Remote(desired)}
 		}
 		s.Keys.Present = append(s.Keys.Present, jk)
 	}
@@ -193,7 +195,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 	for _, pe := range r.ParseErrs {
 		// pe.Error() is the control-stripped rendering; the line prefix is
 		// redundant with Line but keeps the string self-contained.
-		s.ParseErrors = append(s.ParseErrors, jsonParseError{Line: pe.Line, Error: pe.Error()})
+		s.ParseErrors = append(s.ParseErrors, jsonParseError{Line: pe.Line, Error: sanitize.Remote(pe.Error())})
 	}
 	return s
 }
@@ -202,7 +204,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 // operator: true is the JSON twin of the CRITICAL rendering and appears
 // nowhere else.
 func jsonKeyFor(cfg *config.Config, k authkeys.Key, markOperator bool) jsonKey {
-	jk := jsonKey{Comment: k.Comment, Fingerprint: k.Fingerprint, Type: k.Type}
+	jk := jsonKey{Comment: sanitize.Remote(k.Comment), Fingerprint: k.Fingerprint, Type: k.Type}
 	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
 		name := u.Name
 		jk.Owner = &name
@@ -213,10 +215,13 @@ func jsonKeyFor(cfg *config.Config, k authkeys.Key, markOperator bool) jsonKey {
 	return jk
 }
 
-// nonNil renders an absent options list as [] rather than null.
-func nonNil(s []string) []string {
-	if s == nil {
-		return []string{}
+// sanitizeAll renders an options list with each entry through
+// sanitize.Remote (on-server options are remote-controlled text), and an
+// absent list as [] rather than null.
+func sanitizeAll(s []string) []string {
+	out := make([]string, 0, len(s))
+	for _, v := range s {
+		out = append(out, sanitize.Remote(v))
 	}
-	return s
+	return out
 }

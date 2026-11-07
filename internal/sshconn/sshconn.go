@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
 // DefaultAuthorizedKeysPath is the file read (and written) when a server
@@ -119,15 +119,9 @@ func interpretExit(code int, stderr string) (fileAbsent bool, err error) {
 // Format (Cf) runes are dropped too: bidi overrides like U+202E can visually
 // reorder the message. internal/clog's sanitize applies the same class of
 // defense on the log path (collapsing newlines besides); keep the two in
-// mind together when changing either.
-func SanitizeRemote(s string) string {
-	return strings.Map(func(r rune) rune {
-		if (unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) && r != '\n' && r != '\t' {
-			return -1
-		}
-		return r
-	}, s)
-}
+// mind together when changing either. The rule lives in internal/sanitize
+// (a stdlib-only leaf, so internal/audit can share it without a cycle).
+func SanitizeRemote(s string) string { return sanitize.Remote(s) }
 
 // SanitizedError control-strips the wrapped error's message while preserving
 // the errors.Is/As chain. Both the read and write paths wrap their returned
@@ -191,7 +185,7 @@ func FinishRead(code int, stdout, stderr *CappedBuffer, addr string, log *slog.L
 		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: %w", addr, err))
 	}
 	if stdout.truncated {
-		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to audit a truncated authorized_keys", addr))
+		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to trust a truncated authorized_keys", addr))
 	}
 	if absent {
 		return audit.ReadResult{FileAbsent: true}, nil

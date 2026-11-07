@@ -54,6 +54,9 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := rf.checkJSON(); err != nil {
+				return err
+			}
 			log := a.logger
 			m, err := readManifest(rf.cfgPath)
 			if err != nil {
@@ -74,6 +77,9 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			skipped := len(cfg.Servers) - len(targets)
 			ropts := apply.RenderOptions{Color: a.reportColor}
 			if len(targets) == 0 {
+				if rf.json {
+					return apply.RenderJSON(stdout, cfg, nil, apply.JSONOptions{Command: "apply", DryRun: rf.dryRun, Skipped: skipped})
+				}
 				apply.Render(stdout, cfg, nil, ropts)
 				return nil
 			}
@@ -96,6 +102,11 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				finish: func(plans []apply.ServerPlan, stage applyStage) error {
 					if stage == stageDeclined {
 						log.Error("aborted; no changes made")
+					}
+					if rf.json {
+						return finishDoc(func(plans []apply.ServerPlan, _ bool) error {
+							return apply.RenderJSON(stdout, cfg, plans, apply.JSONOptions{Command: "apply", DryRun: rf.dryRun, Skipped: skipped})
+						}, plans, stage, false)
 					}
 					apply.RenderSummary(stdout, plans, ropts)
 					if skipped > 0 {
@@ -121,6 +132,7 @@ const (
 	stagePlanned   applyStage = iota // plan shown, nothing confirmed: --dry-run, or nothing to confirm
 	stageDeclined                    // the confirmation prompt was declined
 	stageConfirmed                   // confirmed: beforeWrite passed and the writes (if any) ran
+	stageWithheld                    // planned, but the prompt hook or beforeWrite withheld the run (errNonCompliant): nothing saved or written
 )
 
 // applyRun parameterizes runApply: plain apply passes the loaded config
@@ -132,7 +144,7 @@ type applyRun struct {
 	formerNote string                       // label note for keys only former owns: "" (revoked) or "rotated out"
 	servers    []config.Server              // the servers to plan, manifest order; never empty
 	preferKeys func(config.Server) []string // fingerprints offered first on every dial (read and write)
-	header     func(io.Writer)              // printed to stdout before anything connects; nil prints nothing
+	header     func(io.Writer)              // printed to stdout before anything connects (not under --json); nil prints nothing
 	// alwaysConfirm asks even when no server needs a write (the manifest
 	// edit is itself a change).
 	alwaysConfirm bool
@@ -144,16 +156,31 @@ type applyRun struct {
 	// be written (fresh is that listing), else straight after the prompt
 	// (fresh nil). An error ends the run with nothing written.
 	beforeWrite func(ctx context.Context, plans []apply.ServerPlan, fresh []sshconn.HeldKey) error
-	// finish renders the tail of the report and maps the run to its exit.
+	// finish renders the tail of the report (or, under --json, the whole
+	// document) and maps the run to its exit; stageWithheld always maps to
+	// exit 1.
 	finish func(plans []apply.ServerPlan, stage applyStage) error
+}
+
+// withheld routes a hook's errNonCompliant (nothing can land, no held key
+// survives) through finish so the run still reports — under --json that
+// is the document; any other error is a tool error and passes through.
+// writePhase returns beforeWrite's error before any worker starts, so the
+// plans are untouched.
+func (run applyRun) withheld(plans []apply.ServerPlan, err error) error {
+	if errors.Is(err, errNonCompliant) {
+		return run.finish(plans, stageWithheld)
+	}
+	return err
 }
 
 // runApply is apply's run body over run.servers: preflight (known_hosts,
 // key files, credentials, held keys), phase-1 read and plan, the report,
-// the confirmation gate, beforeWrite, the writes, finish.
+// the confirmation gate, beforeWrite, the writes, finish. Under --json no
+// text reaches stdout: finish renders the one document.
 func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids identities, run applyRun) error {
 	ctx, log := cmd.Context(), a.logger
-	if run.header != nil {
+	if run.header != nil && !rf.json {
 		run.header(stdout)
 	}
 	pre, err := applyPreflight(ctx, log, rf.knownHosts, ids)
@@ -164,7 +191,9 @@ func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids id
 	if err != nil {
 		return err
 	}
-	apply.Render(stdout, run.cfg, plans, apply.RenderOptions{Color: a.reportColor, Former: run.former, FormerNote: run.formerNote})
+	if !rf.json {
+		apply.Render(stdout, run.cfg, plans, apply.RenderOptions{Color: a.reportColor, Former: run.former, FormerNote: run.formerNote})
+	}
 
 	toWrite := countChanges(plans)
 	if rf.dryRun || (toWrite == 0 && !run.alwaysConfirm) {
@@ -172,7 +201,7 @@ func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids id
 	}
 	question, err := run.prompt(plans, toWrite)
 	if err != nil {
-		return err
+		return run.withheld(plans, err)
 	}
 	ok, err := confirmGate(cmd, rf.yes, question)
 	if err != nil {
@@ -183,13 +212,13 @@ func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids id
 	}
 	if toWrite == 0 {
 		if err := run.beforeWrite(ctx, plans, nil); err != nil {
-			return err
+			return run.withheld(plans, err)
 		}
 		return run.finish(plans, stageConfirmed)
 	}
 	log.Info(fmt.Sprintf("applying %d servers (parallelism %d)…", toWrite, rf.parallel))
 	if err := writePhase(ctx, log, pre, run.preferKeys, plans, rf.parallel, run.beforeWrite); err != nil {
-		return err
+		return run.withheld(plans, err)
 	}
 	return run.finish(plans, stageConfirmed)
 }

@@ -370,7 +370,7 @@ func TestFinishRead(t *testing.T) {
 		trunc := NewCappedBuffer(2)
 		_, _ = trunc.Write([]byte("too long"))
 		_, err := FinishRead(0, trunc, NewCappedBuffer(10), "h:22", discard)
-		if err == nil || !strings.Contains(err.Error(), "refusing to audit") {
+		if err == nil || !strings.Contains(err.Error(), "refusing to trust a truncated authorized_keys") {
 			t.Fatalf("err = %v, want the truncation refusal", err)
 		}
 	})

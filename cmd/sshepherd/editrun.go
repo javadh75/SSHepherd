@@ -39,9 +39,13 @@ func (f *editFlags) register(cmd *cobra.Command) {
 var connectionFlags = []string{"identity", "identity-passphrase-file", "identity-passphrase", "known-hosts", "parallel"}
 
 // validate is step 1's flag half (exit 3 before the manifest is read):
-// --no-apply refuses the connection flags; otherwise --parallel and the
-// identity flags are checked exactly as apply checks them.
+// --json needs --dry-run or --yes (--no-apply still confirms); --no-apply
+// refuses the connection flags; otherwise --parallel and the identity flags
+// are checked exactly as apply checks them.
 func (f *editFlags) validate(cmd *cobra.Command) (identities, error) {
+	if err := f.run.checkJSON(); err != nil {
+		return identities{}, err
+	}
 	if f.noApply {
 		for _, name := range connectionFlags {
 			if cmd.Flags().Changed(name) {
@@ -146,10 +150,26 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 	ep.summary.Emptied = emptiedServers(ep.former, aff.Emptied)
 	ropts := apply.RenderOptions{Color: a.reportColor, Former: ep.former, FormerNote: ep.formerNote}
 	header := func(w io.Writer) { apply.RenderEditHeader(w, ep.summary, ropts) }
-	if f.noApply || len(aff.Servers) == 0 {
-		header(stdout)
-		return saveOnly(cmd, log, stdout, f, ep, aff.Servers)
+	// doc renders the --json document; nil in text mode. Every exit-0/1
+	// path calls it exactly once, and nothing else reaches stdout.
+	var doc editDoc
+	if f.run.json {
+		doc = func(plans []apply.ServerPlan, saved bool) error {
+			return apply.RenderJSON(stdout, ep.edited, plans, apply.JSONOptions{
+				Command: cmd.Name(), DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary, Saved: saved,
+			})
+		}
 	}
+	if f.noApply || len(aff.Servers) == 0 {
+		if doc == nil {
+			header(stdout)
+		}
+		return saveOnly(cmd, log, stdout, f, ep, aff.Servers, doc)
+	}
+	// saved is set by beforeWrite after a successful save and read by
+	// finish, which runs after it: false under --dry-run and on the
+	// withheld paths.
+	saved := false
 	return runApply(cmd, a, stdout, &f.run, ids, applyRun{
 		cfg:        ep.edited,
 		former:     ep.former,
@@ -178,19 +198,32 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 				log.Error("nothing saved — none of the keys you hold would survive on any server (did a key expire after the plan?)")
 				return errNonCompliant
 			}
-			return saveEdit(stdout, ep)
+			if err := saveEdit(stdout, ep, doc != nil); err != nil {
+				return err
+			}
+			saved = true
+			return nil
 		},
 		finish: func(plans []apply.ServerPlan, stage applyStage) error {
-			return finishEdit(stdout, log, ep, aff, f.run.cfgPath, plans, stage, ropts)
+			return finishEdit(stdout, log, ep, aff, f.run.cfgPath, plans, stage, ropts, doc, saved)
 		},
 	})
 }
 
+// editDoc renders the --json document from the plans (nil on revoke's and
+// rotate's edit-only path) and whether the manifest was saved (always
+// false for plain apply, which has no edit section).
+type editDoc func(plans []apply.ServerPlan, saved bool) error
+
 // saveOnly confirms and saves without contacting any server: zero
 // affected servers, or --no-apply. --dry-run stops before the prompt.
-func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ep editPlan, affected []string) error {
+// Under --json (doc non-nil) the document replaces every text line.
+func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ep editPlan, affected []string, doc editDoc) error {
 	if f.run.dryRun {
 		log.Info("dry run — manifest not changed")
+		if doc != nil {
+			return doc(nil, false)
+		}
 		return nil
 	}
 	ok, err := confirmGate(cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(affected), f.noApply))
@@ -201,8 +234,11 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 		log.Error("aborted; manifest not changed, nothing written")
 		return errNonCompliant
 	}
-	if err := saveEdit(stdout, ep); err != nil {
+	if err := saveEdit(stdout, ep, doc != nil); err != nil {
 		return err
+	}
+	if doc != nil {
+		return doc(nil, true)
 	}
 	switch {
 	case f.noApply && len(affected) == 0:
@@ -221,21 +257,48 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 }
 
 // saveEdit is step 7's save, then the reminder that the manifest is the
-// source of truth only once it is committed.
-func saveEdit(stdout io.Writer, ep editPlan) error {
+// source of truth only once it is committed (skipped when quiet: --json,
+// whose edit.saved carries the fact).
+func saveEdit(stdout io.Writer, ep editPlan, quiet bool) error {
 	if err := ep.target.Save(ep.encoded); err != nil {
 		return err
+	}
+	if quiet {
+		return nil
 	}
 	fmt.Fprintf(stdout, "manifest %s updated — commit and push it: an apply from a copy without this edit re-grants the removed key\n", ep.target.Path)
 	return nil
 }
 
-// finishEdit renders step 8's tail and maps the exit code.
+// finishDoc is finish under --json, shared by apply, revoke and rotate:
+// render the one document, then map the run to its exit — stageWithheld
+// (nothing saved or written) and any server not converged are exit 1. A
+// declined prompt cannot occur: --json needs --dry-run or --yes.
+func finishDoc(doc editDoc, plans []apply.ServerPlan, stage applyStage, saved bool) error {
+	if err := doc(plans, saved); err != nil {
+		return err
+	}
+	if stage == stageWithheld || apply.ExitCode(plans) != 0 {
+		return errNonCompliant
+	}
+	return nil
+}
+
+// finishEdit renders step 8's tail (or, under --json, the whole document)
+// and maps the exit code. stageWithheld (nothing can land, or no held key
+// survives) is exit 1 with nothing saved; in text mode the hook already
+// logged why and the plan is shown, so nothing more is printed.
 func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.AffectedSet, cfgPath string,
-	plans []apply.ServerPlan, stage applyStage, ropts apply.RenderOptions,
+	plans []apply.ServerPlan, stage applyStage, ropts apply.RenderOptions, doc editDoc, saved bool,
 ) error {
-	if stage == stageDeclined {
+	if doc != nil {
+		return finishDoc(doc, plans, stage, saved)
+	}
+	switch stage {
+	case stageDeclined:
 		log.Error("aborted; manifest not changed, nothing written")
+		return errNonCompliant
+	case stageWithheld:
 		return errNonCompliant
 	}
 	apply.RenderSummary(stdout, plans, ropts)

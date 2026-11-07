@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -71,9 +72,10 @@ func writeE2EManifest(t *testing.T, dir, name, body string) string {
 
 // TestE2EApplyLoop drives the built binary through the testing policy's
 // distribute → audit → revoke → rotate flow against the docker fleet:
-// adopt → apply --yes (first write, normalizes everything) → apply
-// --dry-run (no-op, byte-stable) → revoke --key --dry-run (plan, manifest
-// untouched) → revoke --key --yes → audit exits 0 → the lockout guard trips
+// adopt → apply --json --yes (first write, normalizes everything; the
+// parsed document says applied) → apply --dry-run (no-op, byte-stable) →
+// revoke --key --dry-run (plan, manifest untouched) → revoke --key --json
+// --yes (edit saved, server applied) → audit exits 0 → the lockout guard trips
 // on a manifest holding none of the agent's keys (file untouched) → rotate
 // the operator's agent key to a key-file key → audit exits 0. Ordered
 // subtests: each stage's on-server state is the next stage's input.
@@ -104,13 +106,26 @@ servers:
 		}
 	})
 
-	t.Run("first apply normalizes and verifies", func(t *testing.T) {
-		code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", adopted, "--known-hosts", kh)
+	t.Run("first apply normalizes and verifies (--json)", func(t *testing.T) {
+		code, out, stderr := runBin(t, bin, "apply", "--json", "--yes", "--config", adopted, "--known-hosts", kh)
 		if code != 0 {
 			t.Fatalf("apply exit = %d (stderr: %s)\n%s", code, stderr, out)
 		}
-		if !strings.Contains(out, "applied · verified") {
-			t.Errorf("apply output lacks the applied·verified outcome:\n%s", out)
+		var doc struct {
+			Summary struct {
+				Applied  int `json:"applied"`
+				ExitCode int `json:"exit_code"`
+			} `json:"summary"`
+			Servers []struct {
+				Outcome *string `json:"outcome"`
+			} `json:"servers"`
+		}
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("stdout is not one JSON document: %v\n%s", err, out)
+		}
+		if doc.Summary.Applied != 1 || doc.Summary.ExitCode != 0 || len(doc.Servers) != 1 ||
+			doc.Servers[0].Outcome == nil || *doc.Servers[0].Outcome != "applied" {
+			t.Errorf("apply document = %+v\n%s", doc, out)
 		}
 	})
 
@@ -145,14 +160,38 @@ servers:
 		}
 	})
 
-	t.Run("revoke --key saves the manifest and converges", func(t *testing.T) {
-		code, out, stderr := runBin(t, bin, "revoke", "--key", stalePub, "--yes", "--config", adopted, "--known-hosts", kh)
+	t.Run("revoke --key --json saves the manifest and converges", func(t *testing.T) {
+		code, out, stderr := runBin(t, bin, "revoke", "--key", stalePub, "--json", "--yes", "--config", adopted, "--known-hosts", kh)
 		if code != 0 {
 			t.Fatalf("revoke exit = %d (stderr: %s)\n%s", code, stderr, out)
 		}
-		for _, want := range []string{"has no keys left", "updated — commit and push it", "applied · verified", "scope: only servers whose grants changed were contacted (1 of 1)"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("revoke output lacks %q:\n%s", want, out)
+		var doc struct {
+			Command string `json:"command"`
+			Edit    struct {
+				Saved bool `json:"saved"`
+				Edits []struct {
+					Kind       string `json:"kind"`
+					NoKeysLeft *bool  `json:"no_keys_left"`
+				} `json:"edits"`
+			} `json:"edit"`
+			Summary struct {
+				ExitCode int `json:"exit_code"`
+			} `json:"summary"`
+			Servers []struct {
+				Name    string  `json:"name"`
+				Outcome *string `json:"outcome"`
+			} `json:"servers"`
+		}
+		if err := json.Unmarshal([]byte(out), &doc); err != nil {
+			t.Fatalf("stdout is not one JSON document: %v\n%s", err, out)
+		}
+		if doc.Command != "revoke" || !doc.Edit.Saved || len(doc.Edit.Edits) != 1 || doc.Edit.Edits[0].Kind != "remove-key" ||
+			doc.Edit.Edits[0].NoKeysLeft == nil || !*doc.Edit.Edits[0].NoKeysLeft || doc.Summary.ExitCode != 0 || len(doc.Servers) == 0 {
+			t.Errorf("revoke document = %+v\n%s", doc, out)
+		}
+		for _, s := range doc.Servers {
+			if s.Outcome == nil || *s.Outcome != "applied" {
+				t.Errorf("server %s outcome = %v, want applied\n%s", s.Name, s.Outcome, out)
 			}
 		}
 	})

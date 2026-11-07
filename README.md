@@ -56,8 +56,8 @@ rotate → audit**.
 | `audit`  | ✅ | Read-only drift report (text + `--json`, monitoring exit codes) |
 | `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
 | `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported) |
-| `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe |
-| `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, drop a lost key, swap a key in place |
+| `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe (text + `--json`) |
+| `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, drop a lost key, swap a key in place (text + `--json`) |
 
 `audit`, `adopt`, `apply`, `revoke` and `rotate` authenticate with the SSH agent,
 `--identity` key files, or both — so they also run headless in CI, cron and containers (see
@@ -448,6 +448,12 @@ Optional fields, present only when they apply: `servers[].error_kind` (exactly w
 (`[{"owner", "fingerprint", "count"}]`) and `servers[].authorized_keys2_present`.
 See `internal/audit/testdata/*.golden.json` for every shape.
 
+On-server comments, options and error text are sanitized — control characters
+(C0, DEL, C1) and Unicode format characters (such as U+202E) are removed — so a
+hostile `authorized_keys` line cannot smuggle terminal escapes or bidi overrides
+through the document; such a comment or option is then not byte-identical to the
+server's line. The write-path documents (`apply`/`revoke`/`rotate --json`) do the same.
+
 ### `sshepherd import [ssh-config-path]`
 
 Convert an OpenSSH client config (default `~/.ssh/config`) into a starter manifest.
@@ -550,6 +556,7 @@ rendered desired state.
 | `--server` | all | Restrict the run to this server (repeatable; canary rollout) |
 | `--dry-run` | off | Plan and report only; never write |
 | `--yes` | off | Skip the confirmation prompt (automation) |
+| `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
@@ -557,6 +564,172 @@ rendered desired state.
 `--dry-run` and `--yes` are mutually exclusive. `--yes` skips only the `[y/N]`
 confirmation: an encrypted `--identity` key may still prompt for its passphrase on
 the terminal (see [Authentication](#authentication)).
+
+**JSON.** `--json` prints one indented JSON document on stdout at the end of the run
+(`"schema": 1`; `command` names the kind — `apply`, `revoke` or `rotate`) and never
+the text report; logs stay on stderr. It needs `--dry-run` or `--yes` — a script
+cannot answer the prompt — otherwise the run exits `3` before the manifest is read:
+`--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)`.
+A document is written exactly when the run exits `0` or `1` (including an interrupt
+after the plan, where unstarted servers are `pending` with `"error_kind":
+"canceled"`); exit-`3` tool errors print no document. Each server carries its
+`class` (`converged`, `change`, `refused`, `unreachable`), its `outcome` (`applied`,
+`refused`, `failed`, `pending` for a `change` server, `null` otherwise — always
+`pending` under `--dry-run`), its `error`, and its `changes` (`add`, `remove`,
+`rewrite` with `loosens` naming dropped restrictive options verbatim, `normalize`).
+Comments and options are sanitized (control and Unicode format characters
+removed), so they may not byte-match the server line. A dry run over a mixed
+fleet:
+
+```json
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": true,
+  "edit": null,
+  "summary": {
+    "servers": 4,
+    "skipped": 0,
+    "converged": 1,
+    "applied": 0,
+    "pending": 1,
+    "failed": 0,
+    "refused": 1,
+    "unreachable": 1,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "db-1",
+      "host": "10.0.0.9",
+      "port": 22,
+      "user": "deploy",
+      "class": "refused",
+      "outcome": null,
+      "error": "1 key installed but manifest grants none — refusing to wipe",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "comment": "bob"
+          }
+        ],
+        "remove": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "comment": "stray@laptop"
+          }
+        ],
+        "rewrite": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "comment_change": {
+              "from": "alice@old",
+              "to": "alice@work"
+            },
+            "loosens": []
+          }
+        ],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 1,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "class": "converged",
+      "outcome": null,
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-3",
+      "host": "10.0.0.3",
+      "port": 22,
+      "user": "deploy",
+      "class": "unreachable",
+      "outcome": null,
+      "error": "dial tcp 10.0.0.3:22: connection refused",
+      "error_kind": "unknown",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}
+```
+
+See `internal/apply/testdata/json_*.golden.json` for every shape.
 
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
 restrictive option** (`from=`, `command=`, `restrict`, `no-*`, `expiry-time=`,
@@ -612,6 +785,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | `--parallel` | `32` | Max concurrent server connections |
 | `--dry-run` | off | Plan and report only; never write (the manifest is not changed) |
 | `--yes` | off | Skip the confirmation prompt (automation) |
+| `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
@@ -667,6 +841,112 @@ refused for a fixable reason, unreachable, interrupted) are named in a ready-mad
 **`--no-apply`** shows the header, asks, saves, and contacts nothing; it refuses
 `--identity*`, `--known-hosts` and `--parallel` (they would be silently unused).
 `--dry-run --no-apply` prints the header only.
+
+**JSON.** Under `--json` (see [`apply`](#sshepherd-apply)) the document adds an
+`edit` section — `saved` (the manifest was written: `false` under `--dry-run` and
+when nothing could land), `edits` (one per change, fields by `kind`:
+`remove-user`, `remove-key`, `rotate`), `affected`, `operators` and `emptied` — and a
+removed key the edited manifest no longer owns carries `former_owner`. `--no-apply`
+prints the edit section with `servers: []`. `revoke --no-apply --json` still needs
+`--yes` (or `--dry-run`). The shape, from the revoke golden fixture (`former_owner`
+on removed keys, and `db-1` named in `emptied` because the revoke would leave it
+with no granted keys):
+
+```json
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": {
+    "saved": true,
+    "edits": [
+      {
+        "kind": "remove-user",
+        "user": "alice",
+        "keys": 1,
+        "grants": 1
+      }
+    ],
+    "affected": 1,
+    "operators": [],
+    "emptied": [
+      {
+        "server": "db-1",
+        "users": [
+          "carol"
+        ],
+        "keys": 1
+      }
+    ]
+  },
+  "summary": {
+    "servers": 1,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 1,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w",
+            "type": "ssh-ed25519",
+            "comment": "bob"
+          }
+        ],
+        "remove": [
+          {
+            "owner": null,
+            "former_owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "comment": "alice@work"
+          },
+          {
+            "owner": null,
+            "former_owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "comment": "bob"
+          },
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "comment": "stray"
+          }
+        ],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}
+```
 
 **Operators.** A target that is, or belongs to, an `operator: true` user refuses the
 whole command until you pass `--operator` (and `--operator` with no operator target
@@ -725,6 +1005,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | `--parallel` | `32` | Max concurrent server connections |
 | `--dry-run` | off | Plan and report only; never write (the manifest is not changed) |
 | `--yes` | off | Skip the confirmation prompt (automation) |
+| `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
@@ -741,6 +1022,10 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
   (the new key would be rejected by sshd); a future one is named in the header.
 - Confirmation, saving, `--dry-run`, `--no-apply`, operators and the scope line work
   exactly as for `revoke`.
+- Under `--json` the document carries the same `edit` section as `revoke`'s, with a
+  `rotate` entry (`user`, `fingerprint`, `new_fingerprint`, and `keeps_expiry` when
+  an `expiry-time=` carries over); the rotated-out key's `remove` entry names its
+  `former_owner`.
 
 ```console
 manifest edit: rotate deploy key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o → SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w (keeps expiry-time="20270101") — 5 servers affected

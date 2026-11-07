@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 func renderJSON(t *testing.T, cfg *config.Config, results []ServerResult) []byte {
@@ -259,7 +261,9 @@ func TestRenderJSONCommentDrift(t *testing.T) {
 }
 
 // TestRenderJSONHostileErrorEscaped: even if a raw control byte reaches the
-// renderer, the JSON encoding must escape it — no raw ESC in the output.
+// renderer, it never reaches the output — not raw, and (since the
+// 2026-11-07 sanitizing fix) not as a JSON \u001b escape either, so a
+// consumer decoding the document cannot get it back. Newlines collapse.
 func TestRenderJSONHostileErrorEscaped(t *testing.T) {
 	cfg := reportConfig(t)
 	results := []ServerResult{{
@@ -270,7 +274,46 @@ func TestRenderJSONHostileErrorEscaped(t *testing.T) {
 	if bytes.ContainsRune(got, 0x1b) {
 		t.Errorf("raw ESC byte survived into JSON output:\n%s", got)
 	}
-	if !strings.Contains(string(got), `\u001b`) {
-		t.Errorf("ESC should be JSON-escaped as \\u001b, got:\n%s", got)
+	if strings.Contains(string(got), `\u001b`) {
+		t.Errorf("ESC must be stripped, not JSON-escaped as \\u001b, got:\n%s", got)
+	}
+	if !strings.Contains(string(got), `"error": "dial failed Summary: 99/99 compliant [31mred"`) {
+		t.Errorf("error not collapsed and stripped as expected:\n%s", got)
+	}
+}
+
+// TestRenderJSONSanitizesHostileText: on-server comments, options (drift
+// actual) and error strings carrying ESC / C1 CSI / bidi-override runes
+// never reach audit --json — not raw, and not JSON-escaped either (a
+// consumer decoding the document must not get them back).
+func TestRenderJSONSanitizesHostileText(t *testing.T) {
+	const hostile = "x\x1b[31m\u009b2J\u202ey"
+	cfg := reportConfig(t)
+	content := `environment="A=` + hostile + `" ` + testkeys.Line(t, 1) + " " + hostile + "\n" +
+		testkeys.Line(t, 2) + "\n" +
+		testkeys.Line(t, 9) + " " + hostile + "\n"
+	reader := &fakeReader{
+		byName: map[string]ReadResult{"web-1": {Content: []byte(content)}},
+		errs:   map[string]error{"web-2": errors.New("banner " + hostile)},
+	}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+	if len(results[0].Diff.Unauthorized) != 1 || len(results[0].Diff.OK) != 2 {
+		t.Fatalf("fixture did not parse as intended: %+v", results[0])
+	}
+	got := renderJSONOpts(t, cfg, results, JSONOptions{Comments: true})
+	for _, want := range []string{`"options_drift"`, `"comment_drift"`, `"error": "banner x[31m2Jy"`} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("output lacks %s:\n%s", want, got)
+		}
+	}
+	var decoded any
+	if err := json.Unmarshal(got, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	flat := fmt.Sprint(decoded)
+	for _, r := range []rune{0x1b, 0x9b, 0x202e} {
+		if strings.ContainsRune(flat, r) {
+			t.Errorf("hostile rune %U survived:\n%s", r, got)
+		}
 	}
 }

@@ -227,6 +227,41 @@ func normalizeDetail(n Normalize) string {
 	return strings.Join(parts, "; ")
 }
 
+// summaryCounts is the outcome tally behind the text Summary line and the
+// JSON summary object — one helper so the two can never disagree.
+// converged includes servers applied this run; refused counts plan
+// refusals and write refusals alike.
+type summaryCounts struct {
+	converged, applied, pending, refused, failed, unreachable int
+}
+
+func countSummary(plans []ServerPlan) summaryCounts {
+	var c summaryCounts
+	for _, p := range plans {
+		switch p.Class {
+		case ClassConverged:
+			c.converged++
+		case ClassRefused:
+			c.refused++
+		case ClassUnreachable:
+			c.unreachable++
+		case ClassChange:
+			switch p.Outcome {
+			case OutcomeApplied:
+				c.converged++
+				c.applied++
+			case OutcomeRefused:
+				c.refused++
+			case OutcomeFailed:
+				c.failed++
+			default:
+				c.pending++
+			}
+		}
+	}
+	return c
+}
+
 // RenderSummary writes the phase-2 outcome lines (one per written, refused,
 // failed, or interrupted-before-writing server) and the final Summary. "Converged" counts servers that
 // needed nothing and servers applied-and-verified this run.
@@ -235,43 +270,32 @@ func RenderSummary(w io.Writer, plans []ServerPlan, opts RenderOptions) {
 		return // Render already printed the 0-servers summary
 	}
 	pal := palette{on: opts.Color}
-	var converged, applied, pending, refused, failed, unreachable int
 	for _, p := range plans {
-		switch p.Class {
-		case ClassConverged:
-			converged++
-		case ClassRefused:
-			refused++
-		case ClassUnreachable:
-			unreachable++
-		case ClassChange:
-			switch p.Outcome {
-			case OutcomeApplied:
-				converged++
-				applied++
-				fmt.Fprintf(w, "%s: %s\n", p.Server.Name, pal.paint(codeGreen, "applied · verified"))
-			case OutcomeRefused:
-				refused++
-				fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeBoldRed, "REFUSED:"), oneLine(p.OutcomeErr))
-			case OutcomeFailed:
-				failed++
-				fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeRed, "FAILED:"), oneLine(p.OutcomeErr))
-			default:
-				pending++
-				if p.OutcomeErr != nil {
-					fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeYellow, "NOT STARTED:"), oneLine(p.OutcomeErr))
-				}
+		if p.Class != ClassChange {
+			continue
+		}
+		switch p.Outcome {
+		case OutcomeApplied:
+			fmt.Fprintf(w, "%s: %s\n", p.Server.Name, pal.paint(codeGreen, "applied · verified"))
+		case OutcomeRefused:
+			fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeBoldRed, "REFUSED:"), oneLine(p.OutcomeErr))
+		case OutcomeFailed:
+			fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeRed, "FAILED:"), oneLine(p.OutcomeErr))
+		default:
+			if p.OutcomeErr != nil {
+				fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeYellow, "NOT STARTED:"), oneLine(p.OutcomeErr))
 			}
 		}
 	}
-	line := fmt.Sprintf("Summary: %d/%d servers converged", converged, len(plans))
-	if applied > 0 {
-		line += fmt.Sprintf(" (%d applied)", applied)
+	c := countSummary(plans)
+	line := fmt.Sprintf("Summary: %d/%d servers converged", c.converged, len(plans))
+	if c.applied > 0 {
+		line += fmt.Sprintf(" (%d applied)", c.applied)
 	}
 	for _, seg := range []struct {
 		n     int
 		label string
-	}{{pending, "pending"}, {failed, "failed"}, {refused, "refused"}, {unreachable, "unreachable"}} {
+	}{{c.pending, "pending"}, {c.failed, "failed"}, {c.refused, "refused"}, {c.unreachable, "unreachable"}} {
 		if seg.n > 0 {
 			line += fmt.Sprintf(" · %d %s", seg.n, seg.label)
 		}

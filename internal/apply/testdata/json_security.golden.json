@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": true,
+  "edit": null,
+  "summary": {
+    "servers": 1,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 1,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "options_change": {
+              "from": [
+                "from=\"10.0.0.5\"",
+                "command=\"/usr/bin/pg_dump-wrapper\""
+              ],
+              "to": []
+            },
+            "loosens": [
+              "from=\"10.0.0.5\"",
+              "command=\"/usr/bin/pg_dump-wrapper\""
+            ]
+          }
+        ],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 1,
+          "duplicate_options_differ": true,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": true,
+      "disables_authorized_keys2": true,
+      "notes": {}
+    }
+  ]
+}

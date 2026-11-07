@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": {
+    "saved": true,
+    "edits": [
+      {
+        "kind": "remove-user",
+        "user": "alice",
+        "keys": 1,
+        "grants": 1
+      }
+    ],
+    "affected": 1,
+    "operators": [],
+    "emptied": [
+      {
+        "server": "db-1",
+        "users": [
+          "carol"
+        ],
+        "keys": 1
+      }
+    ]
+  },
+  "summary": {
+    "servers": 1,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 1,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w",
+            "type": "ssh-ed25519",
+            "comment": "bob"
+          }
+        ],
+        "remove": [
+          {
+            "owner": null,
+            "former_owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "comment": "alice@work"
+          },
+          {
+            "owner": null,
+            "former_owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "comment": "bob"
+          },
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "comment": "stray"
+          }
+        ],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}

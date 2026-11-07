@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": false,
+  "edit": null,
+  "summary": {
+    "servers": 0,
+    "skipped": 2,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": []
+}

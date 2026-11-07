@@ -19,6 +19,7 @@ type runFlags struct {
 	parallel   int
 	dryRun     bool
 	yes        bool
+	json       bool
 	idf        identityFlags
 }
 
@@ -29,8 +30,24 @@ func (f *runFlags) register(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&f.parallel, "parallel", defaultParallel, "max concurrent server connections")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "plan and report only; never write")
 	cmd.Flags().BoolVar(&f.yes, "yes", false, "skip the confirmation prompt (automation)")
+	cmd.Flags().BoolVar(&f.json, "json", false,
+		"emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)")
 	cmd.MarkFlagsMutuallyExclusive("dry-run", "yes")
 	f.idf.register(cmd)
+}
+
+// errJSONNeedsMode: a script cannot answer the [y/N] prompt, so --json
+// must say up front whether this run previews or writes.
+var errJSONNeedsMode = errors.New("--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)")
+
+// checkJSON enforces errJSONNeedsMode — even when nothing would change, so
+// the rule is predictable. It runs with the other flag checks, before the
+// manifest is read or anything is printed.
+func (f *runFlags) checkJSON() error {
+	if f.json && !f.dryRun && !f.yes {
+		return errJSONNeedsMode
+	}
+	return nil
 }
 
 // manifestTarget is the manifest as a run read it: the path given, the

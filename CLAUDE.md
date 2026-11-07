@@ -340,3 +340,8 @@ saves nothing, `--no-apply` saves without connecting. Apply's run body is now
 (skipped for a piped `--config`, which edits refuse).
 Report count strings are pluralized. The E2E loop is adopt → apply → revoke
 --key → audit → rotate → audit, plus a headless `rotate`.
+`apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
+schema-1 document with plan, per-server outcome and the manifest edit, written
+exactly when the run exits 0 or 1 (specced in
+`docs/superpowers/specs/2026-11-07-apply-json-design.md`); remote text in both JSON
+reports passes through the new `internal/sanitize` leaf.
