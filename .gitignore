@@ -11,3 +11,6 @@ graphify-out/
 
 # Stray `go build ./cmd/sshepherd` output at the repo root
 /sshepherd
+
+# Workflow agent worktrees (local only)
+.claude/worktrees/
