@@ -2622,9 +2622,10 @@ func TestApplyHermeticProbeReadsWrittenFile(t *testing.T) {
 
 - [ ] **Step 2: Run. Expect PASS on the current code:** `go test -race ./internal/sshwrite/ -run TestApplyHermeticProbeReadsWrittenFile -v`
 - [ ] **Step 3: Mutation proof (scratch copy, as in Task 1 Step 7):**
-  - (a) `perl -0pi -e 's/case code != 0 \|\| stdout.String\(\) != probeOutput:/case code != 0:/' internal/sshwrite/sshwrite.go`. The `forced command=` row must FAIL (Apply returns nil). The existing `TestApplyLoginProbeFailureRestores/forced_command…` row fails too.
+  - (a) `perl -0pi -e 's/case code != 0 \|\| stdout.String\(\) != probeOutput:/case code != 0 || stdout.Len() < 0:/' internal/sshwrite/sshwrite.go` (it keeps `stdout` used, so the mutant compiles). The `forced command=` row must FAIL (Apply returns nil). The existing `TestApplyLoginProbeFailureRestores/forced_command…` row fails too.
   - (b) `perl -0pi -e 's/perr := w\.probe\(ctx, srv, req\.Survivors\)/perr := error(nil)/' internal/sshwrite/sshwrite.go`. Both lockout rows must FAIL.
-  - (c) In `sshtest.go`, change `switch strings.ToLower(name)` to `switch "ignored"`. The command= and from= rows here, and in `sshtest_test.go`, must FAIL.
+  - (c) In `sshtest.go`, change `switch strings.ToLower(name)` to `switch strings.ToLower(name) + "-ignored"` (it keeps `name` used, so the mutant compiles). The command= and from= rows here, and in `sshtest_test.go`, must FAIL.
+  - Every mutant must compile: a `[build failed]` run is not a mutation kill. Check that the failure is the intended test row, not a compile error.
 
 ---
 

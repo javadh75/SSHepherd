@@ -281,7 +281,7 @@ func NewServer(tb testing.TB, cfg ServerConfig) *Server {
 	tb.Cleanup(tr.close)
 
 	sc := &ssh.ServerConfig{
-		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) { // #nosec G408 -- test server: the attempt log only observes; the verdict depends on the key alone
+		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) { // #nosec G408 -- test server: the attempt log only observes; the verdict depends on the key and, with AuthorizedKeysFile set, on that file's current lines and the client address (from=)
 			fp := ssh.FingerprintSHA256(key)
 			s.mu.Lock()
 			s.attempts = append(s.attempts, fp)
