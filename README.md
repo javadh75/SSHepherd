@@ -1557,6 +1557,9 @@ Release recovery:
    with `docker buildx imagetools create --tag ghcr.io/javadh75/sshepherd:latest ghcr.io/javadh75/sshepherd@<previous signed digest>`,
    then run the `cosign verify` above against it, then cut a fixed `vX.Y.Z+1`.
 
+Every release tag must point at a commit at or after `38c92c0`, the commit that gated
+releases; older commits run the ungated release workflow.
+
 Test kinds in the repo: unit (table-driven), integration (real `sshd` in Docker,
 build-tagged), end-to-end (the CLI binary through adopt → apply → audit), fuzz
 (every parser, with a committed seed corpus), benchmarks, race, goroutine-leak

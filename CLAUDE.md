@@ -403,8 +403,8 @@ cross-compiled multi-arch build gated per arch by digest, then tag/sign/verify, 
 signed build provenance), CI checks the shipped Go, gates the image natively on amd64
 and arm64 and scans the published image daily, and Dependabot waits 7 days (review
 remediation P02 lane B, SEC-6/OPS-1/OPS-2/OPS-3/OPS-4/OPS-6). Every release tag must
-point at a commit at or after the release-gating commit (W0 integration of P02 lane B);
-older commits carry the ungated release.yml.
+point at a commit at or after the release-gating commit `38c92c0`; older commits carry
+the ungated release.yml.
 Revocation memory (tombstones, manifest serial, opt-in post-revoke sweep, no adopt
 wildcard) is specced, awaiting owner decisions, in
 `docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation
