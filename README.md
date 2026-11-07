@@ -1473,7 +1473,11 @@ $ make tools        # install pinned dev tooling (exact versions, no @latest)
 `make tidy` (part of the gate) uses `go mod tidy -diff`: it fails and prints the
 needed change when `go.mod`/`go.sum` are not tidy, and never rewrites them. Re-run
 `make tools` after upgrading Go — `make lint` refuses a `golangci-lint` built by a
-different Go toolchain.
+different Go toolchain. The gate supports the Go 1.26 line (what CI runs): when the
+`go` on your `PATH` is from another line (e.g. Homebrew's newest), every `make`
+target — and the pre-push hook, which goes through `make` — runs under the pinned
+`go1.26.9` instead, which the `go` command downloads once. Set `GOTOOLCHAIN`
+yourself (`make GOTOOLCHAIN=local …`) to override.
 
 The gate includes `gofmt`, `go vet`, `golangci-lint`, whole-program `deadcode`,
 `gosec`, `govulncheck`, and `gitleaks`. Container work has its own targets:

@@ -13,15 +13,17 @@ pre-commit:
     gitleaks:
       run: gitleaks git --staged --redact
 
+# Through make so the hooks get the Makefile's toolchain pin (GO_PIN) when the
+# go on PATH is from another minor line than the pinned linters support.
 pre-push:
   parallel: true
   commands:
     vet:
-      run: go vet ./...
+      run: make -s vet
     lint:
-      run: golangci-lint run
+      run: make -s lint
     test:
-      run: go test -race ./...
+      run: make -s test
 
 # Refresh the code side of the knowledge graph after commits that touch Go files.
 # AST-only (no LLM, free); doc/markdown changes still need a manual `/graphify` rebuild.

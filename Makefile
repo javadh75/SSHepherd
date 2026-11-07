@@ -20,8 +20,20 @@ DEADCODE_VERSION := v0.51.0
 # newer stdlib (e.g. math/rand/v2), so `lint` refuses a mismatched binary and
 # points at `make tools`. GOTOOLCHAIN=local keeps `go install` from silently
 # fetching a different toolchain for a tool whose go.mod asks for a newer Go.
-GO_VERSION   = $(shell $(GO) env GOVERSION)
-TOOLS_ENV   := GOTOOLCHAIN=local
+#
+# Supported Go line. The pinned linters cannot read a newer Go's export data
+# ("unsupported export data version"), so when the go on PATH is from another
+# minor line (e.g. Homebrew's newest), every target runs under GO_PIN instead —
+# the go command downloads it once — and local runs match CI (Go 1.26). An
+# explicit GOTOOLCHAIN (environment or `make GOTOOLCHAIN=…`) always wins.
+GO_LINE := go1.26
+GO_PIN  := go1.26.9
+ifeq ($(origin GOTOOLCHAIN),undefined)
+  ifneq ($(GO_LINE),$(shell $(GO) env GOVERSION | cut -d. -f1-2))
+    export GOTOOLCHAIN := $(GO_PIN)
+  endif
+endif
+TOOLS_ENV   := GOTOOLCHAIN=$(or $(GOTOOLCHAIN),local)
 
 .PHONY: all check build fmt vet lint lint-toolchain deadcode security gosec vuln secrets test \
         coverage integration fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
@@ -52,8 +64,9 @@ lint: lint-toolchain
 # different Go than the active toolchain.
 lint-toolchain:
 	@have=$$(golangci-lint version 2>/dev/null | sed -n 's/.* built with \(go[^ ]*\) .*/\1/p'); \
-	if [ "$$have" != "$(GO_VERSION)" ]; then \
-	  echo "golangci-lint was built with $${have:-an unknown Go} but the active toolchain is $(GO_VERSION);"; \
+	want=$$($(GO) env GOVERSION); \
+	if [ "$$have" != "$$want" ]; then \
+	  echo "golangci-lint was built with $${have:-an unknown Go} but the active toolchain is $$want;"; \
 	  echo "rebuild it with: make tools"; exit 1; \
 	fi
 
