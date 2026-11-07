@@ -18,3 +18,11 @@ regexes = ['''SHA256:[A-Za-z0-9+/]{43}''']
 [[allowlists]]
 description = "throwaway ssh-keygen fixtures for internal/keyfile tests"
 paths = ['''^internal/keyfile/testdata/''']
+
+# Workflow agent worktrees (.claude/worktrees/, git-ignored) are throwaway
+# checkouts of this same repo. `gitleaks dir` does not honor .gitignore, so
+# without this it re-scans every copy (fixtures included) and `make secrets`
+# fails while lanes run. The real files are scanned at their own paths.
+[[allowlists]]
+description = "workflow agent worktrees are copies of this repo"
+paths = ['''^\.claude/worktrees/''']
