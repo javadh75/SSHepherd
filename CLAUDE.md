@@ -383,3 +383,7 @@ The image build cross-compiles on `$BUILDPLATFORM` (no QEMU at build time), and
 `scripts/docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]` gates one variant of
 any local or registry image, starting with an ELF-architecture check (review
 remediation P02 lane A, OPS-4).
+Revocation memory (tombstones, manifest serial, opt-in post-revoke sweep, no adopt
+wildcard) is specced, awaiting owner decisions, in
+`docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation
+P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4).

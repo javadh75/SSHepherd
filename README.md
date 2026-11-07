@@ -1572,6 +1572,9 @@ specced in
 [`docs/superpowers/specs/2026-10-23-revoke-rotate-design.md`](docs/superpowers/specs/2026-10-23-revoke-rotate-design.md),
 and `revoke --server` / `rotate --keep-old` in
 [`docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`](docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md).
+Revocation memory (tombstones, a manifest serial, an opt-in post-revoke sweep, no
+adopt wildcard) is a draft awaiting owner decisions, not yet built:
+[`docs/superpowers/specs/2026-11-08-revocation-memory-design.md`](docs/superpowers/specs/2026-11-08-revocation-memory-design.md).
 
 ## License
 
