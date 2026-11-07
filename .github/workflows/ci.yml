@@ -220,11 +220,23 @@ jobs:
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        # "Not published yet" is decided from the repo's vX.Y.Z tags, never
+        # from a registry error: once a release tag exists, any inspect
+        # failure (auth, outage, a missing :latest) fails the job.
         run: |
+          set -euo pipefail
           REF=ghcr.io/javadh75/sshepherd:latest
-          if ! docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
-            echo "::notice::$REF is not published yet; nothing to scan"
+          # Its own assignment, so a failed listing fails the job; and grep
+          # without -q reads all input, so no SIGPIPE turns a match into "none".
+          tags=$(git ls-remote --tags --refs origin 'refs/tags/v*')
+          if ! printf '%s\n' "$tags" | cut -f2 |
+               grep -E '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null; then
+            echo "::notice::no vX.Y.Z release tag yet; nothing to scan"
             exit 0
+          fi
+          if ! docker buildx imagetools inspect "$REF" >/dev/null; then
+            echo "::error::cannot read $REF although a release tag exists; the published image was not scanned"
+            exit 1
           fi
           for p in linux/amd64 linux/arm64; do
             docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD "$TRIVY_IMAGE" image \

@@ -1333,14 +1333,17 @@ containers:
       seccompProfile: {type: RuntimeDefault}
     volumeMounts:
       - {name: secrets, mountPath: /secrets, readOnly: true}
+      - {name: config, mountPath: /config, readOnly: true}
 securityContext:
   fsGroup: 65532
 volumes:
   - name: secrets
     secret: {secretName: sshepherd-ci, defaultMode: 0440}
+  - name: config
+    configMap: {name: sshepherd-config}   # sshepherd.yaml and known_hosts
 ```
 
-Get the digest with `docker buildx imagetools inspect ghcr.io/javadh75/sshepherd:<version> --format '{{json .Manifest.Digest}}'`,
+Get the digest with `docker buildx imagetools inspect ghcr.io/javadh75/sshepherd:<version> --format '{{.Manifest.Digest}}'`,
 then verify it as shown under Releases. `apply` writes nothing to the local
 filesystem, so `readOnlyRootFilesystem` is safe here; `revoke`/`rotate` edit the
 manifest, so mount it from a writable volume for those.
@@ -1527,18 +1530,20 @@ any local or registry image. The Dockerfile cross-compiles on the build host's
 platform, so a multi-arch `docker buildx` build never runs the compiler under QEMU. CI builds
 and gates the image natively on amd64 and arm64. CI also runs `govulncheck` and every fuzz
 target daily, and Trivy-scans the published `latest` image for both architectures (job
-`published-image-scan`, "Published image CVEs").
+`published-image-scan`, "Published image CVEs"). Before the first `vX.Y.Z` tag there is
+nothing to scan and the job passes. After that, a registry error fails it.
 
 **Releases.** Pushing a `vMAJOR.MINOR.PATCH` tag runs `.github/workflows/release.yml`.
 It refuses a tag whose commit is not on `master`, then runs `make check` (including
 `govulncheck` on the exact Go the image ships) and `make integration`. It builds the
 `linux/amd64` + `linux/arm64` image once (arm64 is cross-compiled) and pushes it by
-digest only. Then it gates that exact digest on native amd64 and arm64 runners with
-hadolint, Trivy (fails on HIGH/CRITICAL), dockle and `scripts/docker-gates.sh`. Only
+digest only. It lints the Dockerfile with hadolint and Trivy config before the build.
+Then it gates that exact digest on native amd64 and arm64 runners with Trivy (fails on
+HIGH/CRITICAL), dockle and `scripts/docker-gates.sh`. Only
 when every job passes does it tag the digest with semver tags (`latest` last, and only
 for the newest release), sign it keyless with cosign, attach signed build provenance,
 and verify that signature with the command below. A manual `workflow_dispatch` run is
-a dry run: every job except the publishing one. Verify an image before you run it
+a dry run: every job except the publishing one, even one dispatched on a tag. Verify an image before you run it
 (requires cosign v3.1.4 or newer, the `COSIGN_VERSION` in release.yml; older cosign v2
 may report "no signatures found"):
 
@@ -1566,6 +1571,10 @@ Release recovery:
 3. **A published release is bad:** move `latest` back to the previous signed digest
    with `docker buildx imagetools create --tag ghcr.io/javadh75/sshepherd:latest ghcr.io/javadh75/sshepherd@<previous signed digest>`,
    then run the `cosign verify` above against it, then cut a fixed `vX.Y.Z+1`.
+4. **A release run was cancelled while queued:** GitHub keeps only one pending run in
+   the `release` concurrency group, so a third tag pushed while one release runs and
+   another waits cancels the waiting one. Nothing was tagged or signed. Re-run it once
+   the queue drains: `gh run rerun <run-id>`.
 
 Every release tag must point at a commit at or after `38c92c0`, the commit that gated
 releases; older commits run the ungated release workflow.

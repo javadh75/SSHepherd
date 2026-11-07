@@ -20,8 +20,11 @@ on:
 permissions:
   contents: read
 
-# One release at a time, never cancelled: two tags pushed close together
-# cannot race each other for `latest`.
+# One release at a time, so two tags pushed close together cannot race each
+# other for `latest`. The running release is never cancelled, but GitHub
+# keeps only ONE pending run per group: a third tag queued behind a pending
+# one cancels it. That fails closed (nothing is tagged or signed); re-run the
+# cancelled tag's run once the queue drains (README, Release recovery).
 concurrency:
   group: release
   cancel-in-progress: false
@@ -57,7 +60,8 @@ jobs:
         run: |
           set -euo pipefail
           sha=$(git rev-parse "${GITHUB_SHA}^{commit}")
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+          # Only a tag push is a release; a dispatch (even on a tag) is a dry run.
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/* ]]; then
             if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "::error::tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH"
               exit 1
@@ -229,11 +233,12 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
             "$DOCKLE_IMAGE" --exit-code 1 -i CIS-DI-0006 "$IMAGE_REPO@$DIGEST"
 
-  # The only job that can sign, and it never runs on a dispatch (dry run).
+  # The only job that can sign, and it never runs on a dispatch (dry run),
+  # not even one dispatched on a tag ref: only a tag push publishes.
   publish:
     name: Tag, sign and verify
     needs: [verify-ref, check, integration, image, gate]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -248,12 +253,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      # `latest` moves only for the newest v* tag, so an older patch release
-      # can never move it backwards.
+      # `latest` moves only for the newest vX.Y.Z tag, so an older patch
+      # release can never move it backwards. Other v* tags (v1.3.0-rc1) are
+      # never released, and v:refname sorts them above v1.3.0, so drop them.
       - name: Is this the newest release?
         id: newest
         run: |
-          newest=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          set -euo pipefail
+          tags=$(git tag -l 'v*' --sort=-v:refname)
+          newest=$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n 1p)
           if [ "$newest" = "$GITHUB_REF_NAME" ]; then echo "latest=true" >> "$GITHUB_OUTPUT"; else echo "latest=false" >> "$GITHUB_OUTPUT"; fi
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -288,7 +296,18 @@ jobs:
           NEWEST: ${{ steps.newest.outputs.latest }}
         run: |
           set -euo pipefail
-          planned="sha256:$(docker buildx imagetools create --dry-run "$IMAGE_REPO@$DIGEST" | sha256sum | cut -d' ' -f1)"
+          # --dry-run prints the manifest plus ONE newline that is not part of
+          # the pushed bytes. Strip exactly that one (the manifest may itself
+          # end in a newline, so a bare "$(...)" would strip too much); the
+          # `&& echo .` keeps every byte through the command substitution.
+          manifest=$(docker buildx imagetools create --dry-run "$IMAGE_REPO@$DIGEST" && echo .)
+          manifest=${manifest%.}
+          if [[ "$manifest" != *$'\n' ]]; then
+            echo "::error::imagetools --dry-run output has no trailing newline; cannot check the digest; no tag was moved"
+            exit 1
+          fi
+          manifest=${manifest%$'\n'}
+          planned="sha256:$(printf %s "$manifest" | sha256sum | cut -d' ' -f1)"
           if [ "$planned" != "$DIGEST" ]; then
             echo "::error::imagetools would push $planned, not the gated $DIGEST; no tag was moved"
             exit 1
