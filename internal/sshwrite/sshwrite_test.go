@@ -498,6 +498,13 @@ func TestRestoreCmdThroughRealSh(t *testing.T) {
 				t.Fatal(err)
 			}
 			code := runShEnv(t, sh, restoreCmdFor(target, false, SnapshotOf(false, []byte(managed))), home, nil, "PATH="+stub+":"+os.Getenv("PATH"))
+			if _, err := os.Stat(filepath.Join(stub, "raced")); os.IsNotExist(err) {
+				// busybox-static (FEATURE_SH_STANDALONE / PREFER_APPLETS, as on
+				// GitHub's ubuntu runners) runs mkdir as its built-in applet and
+				// never consults PATH, so a stub cannot simulate the race here.
+				// dash, bash and PATH-honoring busybox builds still cover it.
+				t.Skipf("%v runs mkdir as a built-in applet; a PATH stub cannot simulate the lost race", sh)
+			}
 			if code != lockedExit {
 				t.Fatalf("exit = %d, want %d (a lost race, safe to retry)", code, lockedExit)
 			}
