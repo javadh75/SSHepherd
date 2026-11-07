@@ -1,7 +1,7 @@
 # Design: `--json` for apply, revoke and rotate
 
 - **Date:** 2026-11-07
-- **Status:** Approved design (adversarial critique folded in) — awaiting plan
+- **Status:** Implemented (2026-11-07, commit 3080a57) — see docs/superpowers/plans/2026-11-07-apply-json.md
 - **Scope:** `internal/apply` (a JSON renderer beside the text one),
   `cmd/sshepherd` (`--json` on the shared run flags of `apply`, `revoke`,
   `rotate`), plus two small fixes: the truncation wording in
