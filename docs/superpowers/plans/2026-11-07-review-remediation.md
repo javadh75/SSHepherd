@@ -66,6 +66,23 @@ Severity: 2 HIGH (PRD-1, TST-1), 21 MEDIUM, 55 LOW. The full map is in "Finding 
 
 ## Owner decisions
 
+### Answers recorded (2026-11-07)
+
+Agents: these are final — implement the recommended option for each; do not re-ask.
+
+| ID | Answer |
+|---|---|
+| D0 | **Yes** — push a throwaway `preflight/<wave>` branch, wait for CI, delete it, then push master (W0, W2). |
+| D27 | **Yes** — a malformed `expiry-time` fails the manifest load like an unknown option (P05 Task 2 main diff). |
+| D6 | **Done** — tag ruleset 26768538 "protect release tags" (refs/tags/v*: creation, update, deletion, non-fast-forward; bypass: repo admin). No required checks on master. Owner still sets the GHCR package public + linked before the first tag. |
+| D8 | **Yes** — `adopt --partial` exits 1 when some servers were unreadable (manifest still written). |
+| D8a | **Yes** — `adopt` exits 3 and writes nothing when zero servers were read. |
+| D30 | **Yes** — apply refuses (exit 1, writes nothing) a no-grant server whose `authorized_keys2` holds keys. |
+| D31 | **Yes** — the login probe offers keys in the same order later runs use (no `--identity` preference). |
+| D7 | **(1)** — releases also publish signed binaries (plain `go build` matrix, `SHA256SUMS`, `cosign sign-blob`). |
+
+Still open: Block 1 (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a) — needed before the W4 plan; D9 onward at their spec approvals.
+
 Rules: ask **one decision at a time**, in the order below, in short plain English, with the recommendation. Decisions are never delegated to agents. A decision that is not answered never blocks a fix wave: each package names its safe default (usually today's behavior). The quick questions that unblock W0–W2 come first; the revocation block (Block 1) is asked while W1–W3 run, because only the W4 plan needs it. Technical sub-choices that do not change what a user sees are decided by the spec author with a stated default and shown to the owner at spec approval; they are listed in the table so nothing is hidden.
 
 | Order | ID | Needed by | Blocks | Safe default if unanswered |
