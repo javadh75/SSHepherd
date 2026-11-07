@@ -1,0 +1,39 @@
+Makes each targeted server's authorized_keys equal the manifest's rendered
+desired state — a FULL-FILE rewrite (managed header, operator keys first,
+decided comment policy). Non-key lines (hand-written comments, blank lines)
+are DELETED by the rewrite; the plan shows a normalize row with the count
+before anything is written. Flow: read the whole fleet, show one plan,
+confirm once (interactive prompt, or --yes), then write only drifted
+servers — atomically (length-checked temp file + rename, under a
+per-file lock), with a .sshepherd.bak backup of the previous version, a
+one-time .sshepherd.orig of the pre-SSHepherd file, and a read-back
+verify. A server whose file changed after the plan was read is refused
+(re-run apply), and so is the whole run when the manifest itself changed
+since it was read. A self-lockout guard refuses any write that would leave
+no key you hold (identity files + agent) on a server; after each write a
+fresh login offering only the surviving keys must succeed, or the
+previous file is restored. --yes skips only the confirmation: an
+encrypted --identity key may still prompt for its passphrase.
+Ctrl-C stops new writes; started ones finish. --dry-run previews the
+plan and never writes.
+
+Usage:
+  sshepherd apply [flags]
+
+Flags:
+      --config string                   path to the manifest (default "sshepherd.yaml")
+      --dry-run                         plan and report only; never write
+  -h, --help                            help for apply
+      --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
+      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
+      --json                            emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)
+      --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --parallel int                    max concurrent server connections (default 32)
+      --server stringArray              restrict the run to this server (repeatable; canary rollout)
+      --yes                             skip the confirmation prompt (automation)
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging

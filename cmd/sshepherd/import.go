@@ -431,6 +431,6 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringArrayVar(&operators, "operator", nil,
 		"key file whose owner is an operator: granted every server and protected from removal (repeatable)")
 	cmd.Flags().StringVar(&mergePath, "merge", "",
-		"merge into this existing manifest: preserve its text (comments intact) and append only what is new")
+		"merge into the existing manifest `FILE`: preserve its text (comments intact) and append only what is new")
 	return cmd
 }

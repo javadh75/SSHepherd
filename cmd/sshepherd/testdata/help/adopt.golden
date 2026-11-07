@@ -1,0 +1,28 @@
+Connects to every server in the manifest (same SSH path as audit), reads
+the actual authorized_keys, and emits a complete new manifest in which
+every installed key is accounted for: keys of known users found beyond
+their grants extend that user's access; unknown keys become new users
+with access to exactly the servers where they were found. The input
+file is never modified — review the output, then adopt it as your
+manifest. Any unreadable server aborts the run unless --partial is set.
+
+Usage:
+  sshepherd adopt [flags]
+
+Flags:
+      --config string                   path to the manifest (default "sshepherd.yaml")
+      --force                           allow --output to overwrite an existing file
+  -h, --help                            help for adopt
+      --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
+      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
+      --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --merge                           preserve the manifest text (comments intact) and append the additions instead of regenerating
+  -o, --output string                   write the manifest to this file instead of stdout
+      --parallel int                    max concurrent server reads (default 32)
+      --partial                         proceed even if some servers cannot be read (their access will be missing from the output)
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging

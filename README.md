@@ -317,10 +317,19 @@ keys; it is informational and never affects the exit code.
 
 ## Commands
 
-Global flags on every command: `-v/--verbose` (debug logging), `-q/--quiet`
-(errors only), `--color auto|always|never`. Reports go to **stdout**; logs,
-warnings, and the confirmation prompt go to **stderr** — so `sshepherd apply > plan.txt`
-captures exactly the report.
+Reports go to **stdout**; logs, warnings, and the confirmation prompt go to **stderr** —
+so `sshepherd apply > plan.txt` captures exactly the report.
+
+### Global flags
+
+These work on every command.
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `-v, --verbose` | off | Debug logging (per-SSH-stage detail); cannot be combined with `--quiet` |
+| `-q, --quiet` | off | Log errors only |
+| `--color` | `auto` | Colorize output: `auto`, `always`, or `never` |
+| `--version` | off | Print the version and exit |
 
 ### `sshepherd audit`
 

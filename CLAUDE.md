@@ -369,3 +369,7 @@ writing into another user's file), and the login probe is proven against real ss
 sshwrite integration package runs shuffled and twice with each test reseeding its own
 user, and the throwaway sshd sets `PerSourcePenalties no` because those tests fail
 logins on purpose (review remediation P03 lane B, TST-1).
+`--help` is snapshot-tested (`cmd/sshepherd/testdata/help/*.golden`); bool flags
+render without pflag v1.1.0's `[=true|false]` via `cmd/sshepherd/usage.go`, and the
+README flag tables (global flags included) are checked against `--help`, defaults
+included (review remediation P01).

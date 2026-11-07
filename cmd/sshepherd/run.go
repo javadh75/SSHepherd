@@ -212,6 +212,7 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetVersionTemplate("sshepherd {{.Version}}\n")
+	root.SetUsageTemplate(usageTemplate) // bool flags without pflag v1.1.0's [=true|false]; see usage.go
 	pf := root.PersistentFlags()
 	pf.BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 	pf.BoolVarP(&quiet, "quiet", "q", false, "log errors only")

@@ -1,0 +1,37 @@
+Edits the manifest — comments preserved — and pushes the edit through
+apply's pipeline, restricted to the servers whose rendered
+authorized_keys changes. 'revoke USER...' removes each user and every
+access entry naming them (offboarding); 'revoke --key KEY...' removes
+single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key
+line, or a .pub file path. 'revoke USER... --server NAME...' removes only
+the users' access to those servers (a wildcard grant gains an except:
+entry); the users and their keys stay. Operator users (and their keys)
+need --operator. The plan is shown and confirmed once; the manifest is
+saved after confirmation and before the first write, so commit and push
+it afterwards. --dry-run changes nothing; --no-apply saves the edit
+without contacting any server. A server whose only grantee is revoked is
+never emptied: the key stays installed there (a warning says so).
+
+Usage:
+  sshepherd revoke {USER... [--server NAME...] | --key KEY...} [flags]
+
+Flags:
+      --config string                   path to the manifest (default "sshepherd.yaml")
+      --dry-run                         plan and report only; never write
+  -h, --help                            help for revoke
+      --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
+      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
+      --json                            emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)
+      --key KEY                         KEY to revoke: a SHA256: fingerprint, a public-key line, or a .pub file path (repeatable)
+      --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --no-apply                        edit and save the manifest after confirmation; contact no server
+      --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
+      --parallel int                    max concurrent server connections (default 32)
+      --server stringArray              remove the users' access to this server only (repeatable); the users and their keys stay
+      --yes                             skip the confirmation prompt (automation)
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging

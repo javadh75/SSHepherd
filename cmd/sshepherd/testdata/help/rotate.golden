@@ -1,0 +1,35 @@
+Replaces USER's --old key with --new in the manifest, in place — the old
+line's options (from=, command=, restrict, …) carry over; the comment is
+the new key's, else the old line's — and pushes the swap through
+apply's pipeline on the servers that grant USER. The old key is dead
+fleet-wide in the same run (unless --keep-old). --old is a SHA256:
+fingerprint, a public-key line, or a .pub path; --new is a public-key
+line or a .pub path. Rotating the key you log in with? Pass the new
+private key with --identity, so the lockout guard and the post-write
+login probe can use it. Operators need --operator (the flag is kept).
+Saves and confirms like revoke.
+
+Usage:
+  sshepherd rotate USER --old KEY --new KEY [flags]
+
+Flags:
+      --config string                   path to the manifest (default "sshepherd.yaml")
+      --dry-run                         plan and report only; never write
+  -h, --help                            help for rotate
+      --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
+      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
+      --json                            emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)
+      --keep-old                        add the new key alongside the old one instead of replacing it (overlap; the new key keeps the old line's options, expiry-time included); finish later with 'sshepherd revoke --key OLD'
+      --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --new KEY                         the KEY to rotate in: a public-key line or a .pub file path
+      --no-apply                        edit and save the manifest after confirmation; contact no server
+      --old KEY                         the KEY to rotate out: a SHA256: fingerprint, a public-key line, or a .pub file path
+      --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
+      --parallel int                    max concurrent server connections (default 32)
+      --yes                             skip the confirmation prompt (automation)
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging

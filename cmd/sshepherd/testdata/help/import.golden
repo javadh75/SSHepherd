@@ -1,0 +1,28 @@
+Reads an OpenSSH client config (default ~/.ssh/config), resolves each
+concrete Host to the HostName/Port/User that ssh would use, and emits a
+valid SSHepherd manifest. users: and access: are derived from each host's
+IdentityFile (or ssh's default identities when none is set) by reading the
+matching .pub files on this machine — run import where you actually ssh
+from, and review the result before use. Private keys are never read.
+Keys named via --operator become operator users: granted every server
+implicitly (no access entry) and protected from removal by future apply.
+With --merge FILE the existing manifest FILE is preserved — comments
+intact — and only what is genuinely new is appended; on any conflict the
+manifest wins and the incoming entry is dropped with a warning.
+Warnings about skipped entries go to stderr.
+
+Usage:
+  sshepherd import [ssh-config-path] [flags]
+
+Flags:
+      --force                  allow --output to overwrite an existing file
+  -h, --help                   help for import
+      --merge FILE             merge into the existing manifest FILE: preserve its text (comments intact) and append only what is new
+      --operator stringArray   key file whose owner is an operator: granted every server and protected from removal (repeatable)
+  -o, --output string          write the manifest to this file instead of stdout
+      --servers-only           leave the users and access sections empty (skip identity resolution)
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging

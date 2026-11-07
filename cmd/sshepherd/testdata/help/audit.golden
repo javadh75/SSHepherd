@@ -1,0 +1,20 @@
+Report drift between the manifest and each server's authorized_keys (read-only)
+
+Usage:
+  sshepherd audit [flags]
+
+Flags:
+      --comments                        also report comment drift on present keys (informational; never affects the exit code)
+      --config string                   path to the manifest (default "sshepherd.yaml")
+  -h, --help                            help for audit
+      --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
+      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
+      --json                            emit the report as machine-readable JSON on stdout
+      --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --parallel int                    max concurrent server audits (default 32)
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging
