@@ -79,7 +79,7 @@ Rules for the content:
 
 Every check below must pass before commit and in CI. They apply once Go code lands
 (`go.mod` + packages). Wire them into a single `make check` target so local and CI
-run the exact same commands. Target **Go 1.22+**. Listed cheapest-to-run first.
+run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-run first.
 
 ### Formatting
 - `gofmt -l ./...` — must print nothing (fail if it lists any file).
@@ -132,6 +132,9 @@ run the exact same commands. Target **Go 1.22+**. Listed cheapest-to-run first.
 - `go build ./...`, plus a reproducible static single binary for releases:
   `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`.
 - Tests and coverage are mandatory and have their own policy — see **Testing** below.
+- **Toolchain lockstep** — go.mod's `go` line, the Dockerfile build stage tag and the Makefile's
+  `GO_PIN` name the same Go patch release. Go bump procedure: bump go.mod, the Dockerfile and
+  `GO_PIN` together in one commit (on the Dependabot `golang` PR's branch, or by hand).
 
 ### CI
 - One `make check` (or `Taskfile`) target running all of the above; CI invokes the same target.
@@ -180,9 +183,10 @@ else. Multi-stage build, non-root, no shell. (Decided 2026-11-07: the native
 the earlier Alpine + openssh-client + tini image was replaced.)
 
 ### Build
-- **Multi-stage**: a `golang:<ver>-alpine` build stage (pinned by digest, `GOTOOLCHAIN=local`)
-  compiles the static binary (`CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`); the runtime
-  stage copies only the binary.
+- **Multi-stage**: a `golang:<ver>-alpine` build stage **on `$BUILDPLATFORM`** (pinned by digest,
+  `GOTOOLCHAIN=local`) cross-compiles the static binary with `GOOS=$TARGETOS GOARCH=$TARGETARCH`
+  (`CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`; no QEMU at build time — keep the runtime
+  stage free of `RUN`); the runtime stage copies only the binary.
 - **Base**: `gcr.io/distroless/static-debian13:nonroot`, pinned by its multi-arch index digest —
   TLS roots, tzdata and a passwd entry for uid 65532 (`nonroot`, HOME `/home/nonroot`); no
   shell, no package manager, no ssh tools (users run `ssh-keygen`/`ssh-keyscan` on the host).
@@ -191,13 +195,15 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   signal actions for PID 1. `scripts/docker-gates.sh` proves it against the built image.
 - **Hardening**: run as a **non-root** user (e.g. UID 65532), compatible with a read-only
   rootfs, no secrets baked into layers, `ENTRYPOINT` = the binary. Pin every base image by digest.
-- **Multi-arch**: build `linux/amd64` + `linux/arm64` with `docker buildx`.
+- **Multi-arch**: build `linux/amd64` + `linux/arm64` once with `docker buildx`; gate each variant
+  with `scripts/docker-gates.sh --platform OS/ARCH`.
 
 ### Docker checks (all in CI)
 - **hadolint** — lint the `Dockerfile` for best-practice violations.
 - **Trivy** — `trivy image` scans the built image for OS + Go-dependency CVEs (fail on
   HIGH/CRITICAL); `trivy config` lints the `Dockerfile` for misconfiguration.
 - **dockle** — image linter / CIS checks (non-root, no setuid surprises, no leaked secrets).
+- **Architecture gate** — the binary's ELF machine must match the image platform (`docker-gates.sh`).
 - **Smoke test** — `docker run --rm <image> --version` (and `--help`) must succeed.
 - **Size & user gates** — assert the final image stays under a budget (e.g. < 30 MB) and does
   not run as root.
@@ -373,3 +379,7 @@ logins on purpose (review remediation P03 lane B, TST-1).
 render without pflag v1.1.0's `[=true|false]` via `cmd/sshepherd/usage.go`, and the
 README flag tables (global flags included) are checked against `--help`, defaults
 included (review remediation P01).
+The image build cross-compiles on `$BUILDPLATFORM` (no QEMU at build time), and
+`scripts/docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]` gates one variant of
+any local or registry image, starting with an ELF-architecture check (review
+remediation P02 lane A, OPS-4).

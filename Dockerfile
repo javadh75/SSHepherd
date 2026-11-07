@@ -2,7 +2,10 @@
 
 # ---- build stage ------------------------------------------------------------
 # Base images are pinned by digest (tag kept for readability); Dependabot bumps both.
-FROM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
+# Cross-compile: the Go toolchain runs on the build host's platform and emits
+# the target's binary (pure Go, CGO off), so a multi-arch build never runs the
+# compiler under QEMU. The runtime stage has no RUN, so it needs no emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
 WORKDIR /src
 
 # Build with the pinned image's Go — never silently download another toolchain
@@ -16,8 +19,10 @@ RUN go mod download
 COPY . .
 
 ARG VERSION=dev
+# Set by BuildKit from --platform (or the daemon's platform for a plain build).
+ARG TARGETOS TARGETARCH
 # Reproducible, fully static binary (CGO off) so it runs on a minimal base.
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
       -o /out/sshepherd ./cmd/sshepherd
 
@@ -28,6 +33,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # and needs none of them; run ssh-keygen/ssh-keyscan on the host. No init
 # either: sshepherd handles SIGINT/SIGTERM itself, including as PID 1 (a second
 # signal exits explicitly — see watchSignals in cmd/sshepherd/run.go).
+# Keep this stage free of RUN: release builds do not install QEMU.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 
 COPY --from=build /out/sshepherd /usr/local/bin/sshepherd

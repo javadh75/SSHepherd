@@ -1311,10 +1311,18 @@ apply:
 ```yaml
 containers:
   - name: sshepherd
-    image: ghcr.io/javadh75/sshepherd:latest
+    # Pin the digest you verified with `cosign verify` (see Releases), never
+    # :latest, for an unattended `apply --yes`.
+    image: ghcr.io/javadh75/sshepherd:<version>@sha256:<digest>
     args: ["apply", "--yes", "--identity", "/secrets/ci",
            "--identity-passphrase-file", "/secrets/ci.pass",
            "--config", "/config/sshepherd.yaml", "--known-hosts", "/config/known_hosts"]
+    securityContext:
+      runAsNonRoot: true
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities: {drop: ["ALL"]}
+      seccompProfile: {type: RuntimeDefault}
     volumeMounts:
       - {name: secrets, mountPath: /secrets, readOnly: true}
 securityContext:
@@ -1323,6 +1331,11 @@ volumes:
   - name: secrets
     secret: {secretName: sshepherd-ci, defaultMode: 0440}
 ```
+
+Get the digest with `docker buildx imagetools inspect ghcr.io/javadh75/sshepherd:<version> --format '{{json .Manifest.Digest}}'`,
+then verify it as shown under Releases. `apply` writes nothing to the local
+filesystem, so `readOnlyRootFilesystem` is safe here; `revoke`/`rotate` edit the
+manifest, so mount it from a writable volume for those.
 
 **`docker run`** — bind-mount the files (or use a tmpfs); a host-side `<(...)` file
 descriptor is not passed into the container:
@@ -1496,8 +1509,12 @@ The gate includes `gofmt`, `go vet`, `golangci-lint`, whole-program `deadcode`,
 cover the `//go:build integration` test files. Container work has its own targets:
 `make docker` (passes `--build-arg VERSION=$(git describe --tags --always --dirty)`,
 overridable with `VERSION=`), `docker-lint` (hadolint + dockle), `docker-scan`
-(Trivy), and `smoke` — `scripts/docker-gates.sh`: `--version` and `--help`, an image
-size budget under 30 MB (`SIZE_BUDGET_MB`), and a non-root user check. CI also runs
+(Trivy), and `smoke` — `scripts/docker-gates.sh`: `--version` and `--help`, the
+binary's ELF architecture matches the image platform, an image size budget under
+30 MB (`SIZE_BUDGET_MB`), a non-root user check, and the PID-1 SIGTERM gate.
+`scripts/docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]` checks one variant of
+any local or registry image. The Dockerfile cross-compiles on the build host's
+platform, so a multi-arch `docker buildx` build never runs the compiler under QEMU. CI also runs
 `govulncheck` and every fuzz target daily.
 
 **Releases.** Pushing a `v*` tag runs `.github/workflows/release.yml`, which
