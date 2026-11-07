@@ -1,0 +1,6 @@
+manifest edit: remove alice's access to web-1 (1 access entry removed)
+manifest edit: remove bob's access to web-1 (1 access entry changed, 1 server excepted)
+manifest edit: 2 changes — 1 server affected
+warning: alice's wildcard grant is removed — it would cover no current server; servers added later are no longer granted to alice automatically
+note: alice has no access left — 'sshepherd revoke alice' removes the user
+warning: web-1 would have no granted keys — apply never empties a server, so the keys of alice, bob stay installed there; grant another user (or an operator) on web-1 first, or remove the key by hand

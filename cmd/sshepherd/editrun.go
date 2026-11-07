@@ -116,10 +116,56 @@ type editPlan struct {
 	encoded    []byte         // the one Encode: the plan, Affected and the save all use these bytes
 	edited     *config.Config // config.Parse(encoded)
 	summary    apply.EditSummary
-	formerNote string // "" (revoked) or "rotated out"
-	removesKey bool   // print the scope line after the writes
-	stillHas   string // "alice still has" — for the nothing-can-land refusal
+	formerNote string         // "" (revoked) or "rotated out"
+	removesKey bool           // print the scope line after the writes
+	stillHas   string         // "alice still has" — for the nothing-can-land refusal
+	saveNote   string         // the save reminder's tail; "" = defaultSaveNote
+	overlap    *overlapFinish // rotate --keep-old: the finish hint to print; nil otherwise
 }
+
+// overlapFinish is rotate --keep-old's pending finish: the revoke --key
+// that ends the overlap once every client uses the new key.
+type overlapFinish struct {
+	user     string // the rotated user
+	oldFP    string // the old key, which the finish revokes
+	operator bool   // the user is an operator: the finish needs --operator
+}
+
+// overlapHint is rotate --keep-old's finish hint for one text-mode path
+// (never under --json or --dry-run, whose callers return first): affected
+// is the affected-server count, noApply is --no-apply, and notConverged
+// counts a confirmed run's affected servers that do not hold the new key
+// yet. CMD quotes like applyHint; an operator's hint gets a second line.
+func overlapHint(o overlapFinish, cfgPath string, affected int, noApply bool, notConverged int) string {
+	cmd := "sshepherd revoke --key " + hintArg(o.oldFP)
+	if cfgPath != "sshepherd.yaml" {
+		cmd += " --config " + hintArg(cfgPath)
+	}
+	if o.operator {
+		cmd += " --operator"
+	}
+	var lead string
+	switch {
+	case affected == 0:
+		lead = "new key recorded — " + o.user + " has no grants yet, so no server was contacted; finish the overlap with: "
+	case noApply:
+		lead = "overlap recorded, not pushed — run the apply hint above, then, once every client uses the new key, finish with: "
+	case notConverged == 0:
+		lead = "overlap started — every affected server accepts both keys; once every client uses the new key, finish with: "
+	default:
+		lead = fmt.Sprintf("overlap incomplete — %s %s not have the new key yet; push it first (see the apply hint above), then finish with: ",
+			apply.Plural(notConverged, "server", "servers"), pluralWord(notConverged, "does", "do"))
+	}
+	out := lead + cmd + "\n"
+	if o.operator {
+		out += "if the old key is how this machine logs in, run the finish with --identity pointing at the new key's private key, or the lockout guard will refuse it\n"
+	}
+	return out
+}
+
+// defaultSaveNote is the save reminder's tail for edits that remove a key
+// (revoke USER, revoke --key, plain rotate).
+const defaultSaveNote = "an apply from a copy without this edit re-grants the removed key"
 
 // encodeEdit is step 3's one Encode; its built-in config.Parse self-check
 // is the only validation (a failure is an internal error, nothing saved).
@@ -253,6 +299,9 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 	case ep.removesKey:
 		printScope(stdout, 0, len(ep.edited.Servers))
 	}
+	if ep.overlap != nil {
+		fmt.Fprint(stdout, overlapHint(*ep.overlap, f.run.cfgPath, len(affected), f.noApply, 0))
+	}
 	return nil
 }
 
@@ -266,7 +315,11 @@ func saveEdit(stdout io.Writer, ep editPlan, quiet bool) error {
 	if quiet {
 		return nil
 	}
-	fmt.Fprintf(stdout, "manifest %s updated — commit and push it: an apply from a copy without this edit re-grants the removed key\n", ep.target.Path)
+	note := ep.saveNote
+	if note == "" {
+		note = defaultSaveNote
+	}
+	fmt.Fprintf(stdout, "manifest %s updated — commit and push it: %s\n", ep.target.Path, note)
 	return nil
 }
 
@@ -316,6 +369,9 @@ func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.Affec
 		}
 		if ep.removesKey {
 			printScope(stdout, len(plans), len(ep.edited.Servers))
+		}
+		if ep.overlap != nil {
+			fmt.Fprint(stdout, overlapHint(*ep.overlap, cfgPath, len(aff.Servers), false, len(pending)))
 		}
 	}
 	if apply.ExitCode(plans) != 0 {

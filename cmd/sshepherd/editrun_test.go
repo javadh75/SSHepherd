@@ -94,3 +94,36 @@ func TestUnionFPs(t *testing.T) {
 		t.Errorf("unionFPs = %v", got)
 	}
 }
+
+// TestOverlapHint pins every finish-hint row, the --config/--operator
+// parts of CMD (quoted like applyHint), and the operator's second line.
+func TestOverlapHint(t *testing.T) {
+	bob := overlapFinish{user: "bob", oldFP: "SHA256:old+/="}
+	ops := overlapFinish{user: "ops", oldFP: "SHA256:old", operator: true}
+	const opLine = "if the old key is how this machine logs in, run the finish with --identity pointing at the new key's private key, or the lockout guard will refuse it\n"
+	for _, tt := range []struct {
+		name                   string
+		o                      overlapFinish
+		cfg                    string
+		affected, notConverged int
+		noApply                bool
+		want                   string
+	}{
+		{"started", bob, "sshepherd.yaml", 3, 0, false,
+			"overlap started — every affected server accepts both keys; once every client uses the new key, finish with: sshepherd revoke --key SHA256:old+/=\n"},
+		{"incomplete, one", bob, "sshepherd.yaml", 3, 1, false,
+			"overlap incomplete — 1 server does not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key SHA256:old+/=\n"},
+		{"incomplete, many", bob, "/etc/fleet.yaml", 3, 2, false,
+			"overlap incomplete — 2 servers do not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key SHA256:old+/= --config /etc/fleet.yaml\n"},
+		{"not pushed", bob, "my fleet.yaml", 3, 0, true,
+			"overlap recorded, not pushed — run the apply hint above, then, once every client uses the new key, finish with: sshepherd revoke --key SHA256:old+/= --config 'my fleet.yaml'\n"},
+		{"no grants", bob, "sshepherd.yaml", 0, 0, true,
+			"new key recorded — bob has no grants yet, so no server was contacted; finish the overlap with: sshepherd revoke --key SHA256:old+/=\n"},
+		{"operator", ops, "sshepherd.yaml", 2, 0, false,
+			"overlap started — every affected server accepts both keys; once every client uses the new key, finish with: sshepherd revoke --key SHA256:old --operator\n" + opLine},
+	} {
+		if got := overlapHint(tt.o, tt.cfg, tt.affected, tt.noApply, tt.notConverged); got != tt.want {
+			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
+		}
+	}
+}

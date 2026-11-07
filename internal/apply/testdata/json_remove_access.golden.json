@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": {
+    "saved": true,
+    "edits": [
+      {
+        "kind": "remove-access",
+        "user": "bob",
+        "access_servers": [
+          "web-1",
+          "db-1"
+        ],
+        "entries_changed": 1,
+        "entries_removed": 1,
+        "servers_excepted": 1,
+        "wildcards_removed": 0,
+        "no_grants_left": false
+      },
+      {
+        "kind": "remove-access",
+        "user": "carol",
+        "access_servers": [],
+        "entries_changed": 0,
+        "entries_removed": 1,
+        "servers_excepted": 0,
+        "wildcards_removed": 1,
+        "no_grants_left": true
+      }
+    ],
+    "affected": 2,
+    "operators": [],
+    "emptied": []
+  },
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": []
+}

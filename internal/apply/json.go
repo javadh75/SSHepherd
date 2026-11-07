@@ -70,8 +70,17 @@ type jsonEditEntry struct {
 	Fingerprint    string `json:"fingerprint,omitempty"`
 	NewFingerprint string `json:"new_fingerprint,omitempty"`
 	KeepsExpiry    string `json:"keeps_expiry,omitempty"`
+	KeepOld        *bool  `json:"keep_old,omitempty"` // always present on rotate entries
 	NoKeysLeft     *bool  `json:"no_keys_left,omitempty"`
 	ClearsOperator *bool  `json:"clears_operator,omitempty"`
+	// remove-access: AccessServers is a pointer so an empty list still
+	// encodes as [] (never null) while staying absent for other kinds.
+	AccessServers    *[]string `json:"access_servers,omitempty"`
+	EntriesChanged   *int      `json:"entries_changed,omitempty"`
+	EntriesRemoved   *int      `json:"entries_removed,omitempty"`
+	ServersExcepted  *int      `json:"servers_excepted,omitempty"`
+	WildcardsRemoved *int      `json:"wildcards_removed,omitempty"`
+	NoGrantsLeft     *bool     `json:"no_grants_left,omitempty"`
 }
 
 type jsonEmptied struct {
@@ -196,6 +205,16 @@ func cleanAll(in []string) []string {
 	return out
 }
 
+// jsonRemoveAccess fills a remove-access entry: every field present, the
+// server list [] rather than null.
+func jsonRemoveAccess(je *jsonEditEntry, ed Edit) {
+	servers := append([]string{}, ed.AccessServers...)
+	changed, removed, excepted, wildcards, noGrants := ed.EntriesChanged, ed.EntriesRemoved, ed.ServersExcepted, ed.WildcardsRemoved, ed.NoGrantsLeft
+	je.AccessServers = &servers
+	je.EntriesChanged, je.EntriesRemoved, je.ServersExcepted, je.WildcardsRemoved = &changed, &removed, &excepted, &wildcards
+	je.NoGrantsLeft = &noGrants
+}
+
 // jsonEditFor maps the revoke/rotate edit section; every list encodes as
 // [] when empty, and each entry carries exactly its kind's fields.
 func jsonEditFor(s EditSummary, saved bool) *jsonEdit {
@@ -217,7 +236,10 @@ func jsonEditFor(s EditSummary, saved bool) *jsonEdit {
 			je.Fingerprint = ed.Fingerprint
 			je.NoKeysLeft, je.ClearsOperator = &noKeys, &clears
 		case EditRotate:
-			je.Fingerprint, je.NewFingerprint, je.KeepsExpiry = ed.Fingerprint, ed.NewFingerprint, ed.KeepsExpiry
+			keepOld := ed.KeepOld
+			je.Fingerprint, je.NewFingerprint, je.KeepsExpiry, je.KeepOld = ed.Fingerprint, ed.NewFingerprint, ed.KeepsExpiry, &keepOld
+		case EditRemoveAccess:
+			jsonRemoveAccess(&je, ed)
 		}
 		e.Edits = append(e.Edits, je)
 	}

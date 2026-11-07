@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "command": "rotate",
+  "dry_run": false,
+  "edit": {
+    "saved": true,
+    "edits": [
+      {
+        "kind": "rotate",
+        "user": "bob",
+        "fingerprint": "SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o",
+        "new_fingerprint": "SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w",
+        "keep_old": true
+      }
+    ],
+    "affected": 3,
+    "operators": [],
+    "emptied": []
+  },
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": []
+}

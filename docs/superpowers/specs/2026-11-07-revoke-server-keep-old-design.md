@@ -1,7 +1,7 @@
 # Design: `revoke USER --server` and `rotate --keep-old`
 
 - **Date:** 2026-11-07
-- **Status:** Approved design (adversarial critique folded in) — awaiting plan
+- **Status:** Implemented (plan: docs/superpowers/plans/2026-11-07-revoke-server-keep-old.md)
 - **Scope:** `internal/manifest` (two new comment-preserving edits),
   `internal/apply` (edit-summary kinds, header text, JSON fields),
   `cmd/sshepherd` (`revoke.go`, `rotate.go`, `editrun.go`), README. Fulfils

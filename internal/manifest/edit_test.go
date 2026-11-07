@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -409,4 +410,324 @@ func TestEditErrors(t *testing.T) {
 	if _, err := empty.RemoveUser("bob"); err == nil {
 		t.Error("RemoveUser on an empty manifest succeeded")
 	}
+}
+
+// accessFixture exercises every access: shape RemoveAccess handles: a
+// flow explicit list with a line comment, a flow wildcard with except:, a
+// block wildcard without except:, and a second explicit entry for the same
+// user — with head comments on entries (first, middle, last) and a
+// document footer.
+func accessFixture(tb testing.TB) string {
+	tb.Helper()
+	return `# fleet manifest
+users:
+  - {name: alice, keys: ["` + testkeys.Line(tb, 2) + `"]}
+  - {name: bob, keys: ["` + testkeys.Line(tb, 4) + `"]}
+  - {name: carol, keys: ["` + testkeys.Line(tb, 5) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+  - {name: db-1, host: 10.0.0.9, user: deploy}
+access:
+  # alice: the web tier
+  - user: alice
+    servers: [web-1, web-2, db-1] # reviewed 2026-10
+  # bob: everywhere but the database
+  - user: bob
+    servers: ["*"]
+    except: [db-1]
+  # carol: everywhere
+  - user: carol
+    servers:
+      - "*"
+  # alice db access (temporary)
+  - user: alice
+    servers: [db-1]
+# end of manifest
+`
+}
+
+// grantsOf returns user's effective servers in the re-parsed config.
+func grantsOf(cfg *config.Config, user string) []string {
+	var out []string
+	for _, s := range cfg.Servers {
+		if cfg.Covers(user, s.Name) {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
+// TestRemoveAccessExplicitPositions: the first, middle and last item of an
+// explicit list; removing db-1 also empties alice's second entry, which is
+// deleted with its head comment rescued to the section footer (before the
+// document footer). The surviving item keeps the entry's line comment.
+func TestRemoveAccessExplicitPositions(t *testing.T) {
+	for _, tt := range []struct {
+		server string
+		list   string
+		want   AccessRemoval
+		grants []string
+	}{
+		{"web-1", "servers: [web-2, db-1] # reviewed 2026-10", AccessRemoval{EntriesChanged: 1}, []string{"web-2", "db-1"}},
+		{"web-2", "servers: [web-1, db-1] # reviewed 2026-10", AccessRemoval{EntriesChanged: 1}, []string{"web-1", "db-1"}},
+		{"db-1", "servers: [web-1, web-2] # reviewed 2026-10", AccessRemoval{EntriesChanged: 1, EntriesRemoved: 1}, []string{"web-1", "web-2"}},
+	} {
+		t.Run(tt.server, func(t *testing.T) {
+			f := loadFixture(t, accessFixture(t))
+			r, err := f.RemoveAccess("alice", []string{tt.server})
+			if err != nil {
+				t.Fatalf("RemoveAccess: %v", err)
+			}
+			if r != tt.want {
+				t.Errorf("AccessRemoval = %+v, want %+v", r, tt.want)
+			}
+			out, cfg := encodeParsed(t, f)
+			if got := grantsOf(cfg, "alice"); !slices.Equal(got, tt.grants) {
+				t.Errorf("alice's grants = %v, want %v", got, tt.grants)
+			}
+			inOrder(t, out, "  # alice: the web tier\n  - user: alice\n    "+tt.list+"\n", "  # bob: everywhere but the database\n")
+			if tt.server == "db-1" {
+				inOrder(t, out, "      - \"*\"\n# alice db access (temporary)\n# end of manifest\n")
+				if strings.Count(out, "- user: alice") != 1 {
+					t.Errorf("the emptied entry survived:\n%s", out)
+				}
+			}
+		})
+	}
+}
+
+// TestRemoveAccessDuplicateItems: every item equal to the server goes.
+func TestRemoveAccessDuplicateItems(t *testing.T) {
+	f := loadFixture(t, "users:\n  - {name: bob, keys: [\""+testkeys.Line(t, 4)+"\"]}\n"+
+		"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.9, user: deploy}\n"+
+		"access:\n  - {user: bob, servers: [web-1, db-1, web-1]}\n")
+	r, err := f.RemoveAccess("bob", []string{"web-1"})
+	if err != nil || r != (AccessRemoval{EntriesChanged: 1}) {
+		t.Fatalf("RemoveAccess = (%+v, %v)", r, err)
+	}
+	out, _ := encodeParsed(t, f)
+	if !strings.Contains(out, "{user: bob, servers: [db-1]}") {
+		t.Errorf("want only db-1 left:\n%s", out)
+	}
+}
+
+// TestRemoveAccessBlockListComments: in a block list, a removed item's
+// line comment goes with it; a surviving item keeps its own.
+func TestRemoveAccessBlockListComments(t *testing.T) {
+	f := loadFixture(t, "users:\n  - {name: bob, keys: [\""+testkeys.Line(t, 4)+"\"]}\n"+
+		"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.9, user: deploy}\n"+
+		"access:\n  - user: bob\n    servers:\n      - web-1 # primary\n      - db-1 # replica\n")
+	if _, err := f.RemoveAccess("bob", []string{"db-1"}); err != nil {
+		t.Fatalf("RemoveAccess: %v", err)
+	}
+	out, _ := encodeParsed(t, f)
+	inOrder(t, out, "    servers:\n      - web-1 # primary\n")
+	if strings.Contains(out, "replica") {
+		t.Errorf("the removed item's line comment survived:\n%s", out)
+	}
+}
+
+// TestRemoveAccessEmptiedRescuesToNextEntry: a deleted entry that is not
+// the last passes its head comment to the next entry.
+func TestRemoveAccessEmptiedRescuesToNextEntry(t *testing.T) {
+	f := loadFixture(t, accessFixture(t))
+	r, err := f.RemoveAccess("alice", []string{"web-1", "web-2", "db-1"})
+	if err != nil || r != (AccessRemoval{EntriesRemoved: 2}) {
+		t.Fatalf("RemoveAccess = (%+v, %v), want 2 entries removed", r, err)
+	}
+	out, cfg := encodeParsed(t, f)
+	if len(grantsOf(cfg, "alice")) != 0 || len(cfg.Users) != 3 {
+		t.Errorf("alice must keep her user entry and lose every grant:\n%s", out)
+	}
+	inOrder(t, out, "access:\n  # alice: the web tier\n  # bob: everywhere but the database\n  - user: bob\n",
+		"# alice db access (temporary)\n# end of manifest\n")
+	if strings.Contains(out, "reviewed 2026-10") {
+		t.Errorf("a deleted entry's line comment survived:\n%s", out)
+	}
+}
+
+func TestRemoveAccessErrors(t *testing.T) {
+	f := loadFixture(t, accessFixture(t))
+	if _, err := f.RemoveAccess("dave", []string{"web-1"}); err == nil || !strings.Contains(err.Error(), `user "dave" is not in the manifest`) {
+		t.Errorf("unknown user err = %v", err)
+	}
+	if _, err := f.RemoveAccess("alice", []string{"db-9"}); err == nil || !strings.Contains(err.Error(), `server "db-9" is not in the manifest`) {
+		t.Errorf("unknown server err = %v", err)
+	}
+}
+
+// TestRemoveAccessWildcard: except: extended (flow), created (block and
+// flow styles, right after servers:), and a wildcard left covering no
+// current server deleted (decision 1b).
+func TestRemoveAccessWildcard(t *testing.T) {
+	t.Run("except appended", func(t *testing.T) {
+		f := loadFixture(t, accessFixture(t))
+		r, err := f.RemoveAccess("bob", []string{"web-2"})
+		if err != nil || r != (AccessRemoval{EntriesChanged: 1, ServersExcepted: 1}) {
+			t.Fatalf("RemoveAccess = (%+v, %v)", r, err)
+		}
+		out, cfg := encodeParsed(t, f)
+		inOrder(t, out, "  - user: bob\n    servers: [\"*\"]\n    except: [db-1, web-2]\n")
+		if got := grantsOf(cfg, "bob"); !slices.Equal(got, []string{"web-1"}) {
+			t.Errorf("bob's grants = %v, want [web-1]", got)
+		}
+		if !cfg.Covers("bob", "web-9") {
+			t.Error("the wildcard must keep covering future servers")
+		}
+	})
+	t.Run("except created, block style", func(t *testing.T) {
+		f := loadFixture(t, accessFixture(t))
+		r, err := f.RemoveAccess("carol", []string{"db-1", "web-1"})
+		if err != nil || r != (AccessRemoval{EntriesChanged: 1, ServersExcepted: 2}) {
+			t.Fatalf("RemoveAccess = (%+v, %v)", r, err)
+		}
+		out, cfg := encodeParsed(t, f)
+		inOrder(t, out, "  # carol: everywhere\n  - user: carol\n    servers:\n      - \"*\"\n    except:\n      - db-1\n      - web-1\n  # alice db access")
+		if got := grantsOf(cfg, "carol"); !slices.Equal(got, []string{"web-2"}) {
+			t.Errorf("carol's grants = %v, want [web-2]", got)
+		}
+	})
+	t.Run("except created, flow style", func(t *testing.T) {
+		f := loadFixture(t, "users:\n  - {name: bob, keys: [\""+testkeys.Line(t, 4)+"\"]}\n"+
+			"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.9, user: deploy}\n"+
+			"access:\n  - user: bob\n    servers: [\"*\"] # all of them\n")
+		if _, err := f.RemoveAccess("bob", []string{"web-1"}); err != nil {
+			t.Fatalf("RemoveAccess: %v", err)
+		}
+		out, _ := encodeParsed(t, f)
+		inOrder(t, out, "    servers: [\"*\"] # all of them\n    except: [web-1]\n")
+	})
+	t.Run("null except is rebuilt in place", func(t *testing.T) {
+		f := loadFixture(t, "users:\n  - {name: bob, keys: [\""+testkeys.Line(t, 4)+"\"]}\n"+
+			"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.9, user: deploy}\n"+
+			"access:\n  - user: bob\n    servers: [\"*\"]\n    except:\n")
+		if _, err := f.RemoveAccess("bob", []string{"db-1"}); err != nil {
+			t.Fatalf("RemoveAccess: %v", err)
+		}
+		out, _ := encodeParsed(t, f)
+		inOrder(t, out, "    servers: [\"*\"]\n    except: [db-1]\n")
+	})
+	t.Run("wildcard left covering nothing is deleted", func(t *testing.T) {
+		f := loadFixture(t, accessFixture(t))
+		r, err := f.RemoveAccess("bob", []string{"web-1", "web-2"})
+		if err != nil || r != (AccessRemoval{EntriesRemoved: 1, WildcardsRemoved: 1}) {
+			t.Fatalf("RemoveAccess = (%+v, %v), want 1 wildcard entry removed", r, err)
+		}
+		out, cfg := encodeParsed(t, f)
+		if len(grantsOf(cfg, "bob")) != 0 || strings.Contains(out, "- user: bob") {
+			t.Errorf("bob's wildcard survived:\n%s", out)
+		}
+		inOrder(t, out, "  # bob: everywhere but the database\n  # carol: everywhere\n  - user: carol\n")
+	})
+}
+
+// TestRemoveAccessUntouched: an entry covering none of the servers (the
+// server is already excepted) is not edited, and other users' entries
+// never are: the encode is byte-identical to the unedited one.
+func TestRemoveAccessUntouched(t *testing.T) {
+	want, err := loadFixture(t, accessFixture(t)).Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := loadFixture(t, accessFixture(t))
+	r, err := f.RemoveAccess("bob", []string{"db-1"})
+	if err != nil || r != (AccessRemoval{}) {
+		t.Fatalf("RemoveAccess = (%+v, %v), want nothing changed", r, err)
+	}
+	if out, _ := encodeParsed(t, f); out != string(want) {
+		t.Errorf("an uncovered entry was edited:\n%s", out)
+	}
+}
+
+// TestRemoveAccessGolden: one File, three users trimmed, one Encode — the
+// shape revoke USER... --server uses.
+func TestRemoveAccessGolden(t *testing.T) {
+	f := loadFixture(t, accessFixture(t))
+	for _, c := range []struct {
+		user    string
+		servers []string
+	}{{"alice", []string{"db-1"}}, {"bob", []string{"web-2"}}, {"carol", []string{"db-1"}}} {
+		if _, err := f.RemoveAccess(c.user, c.servers); err != nil {
+			t.Fatalf("RemoveAccess(%s): %v", c.user, err)
+		}
+	}
+	out, _ := encodeParsed(t, f)
+	for _, want := range []string{"# fleet manifest", "# alice: the web tier", "# reviewed 2026-10",
+		"# bob: everywhere but the database", "# carol: everywhere", "# alice db access (temporary)", "# end of manifest"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q", want)
+		}
+	}
+	checkGolden(t, "edit_remove_access.golden", []byte(out))
+}
+
+// TestAddKeyAfter: the new line lands right after the old key (first,
+// middle, last); every existing line, comment and operator: flag stays.
+func TestAddKeyAfter(t *testing.T) {
+	three := `users:
+  - name: ops
+    # break-glass account
+    operator: true # vault-held
+    keys:
+      # ops laptop
+      - ` + testkeys.Line(t, 1) + ` ops@laptop
+      # ops desktop
+      - ` + testkeys.Line(t, 2) + ` ops@desk
+      - ` + testkeys.Line(t, 3) + ` ops@ci # ci runner
+`
+	newLine := `from="10.0.0.0/8" ` + testkeys.Line(t, 5) + " ops@new"
+	for _, tt := range []struct {
+		name string
+		old  byte
+		want []byte // seeds in order; 5 is the new key
+	}{
+		{"first", 1, []byte{1, 5, 2, 3}},
+		{"middle", 2, []byte{1, 2, 5, 3}},
+		{"last", 3, []byte{1, 2, 3, 5}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := loadFixture(t, three)
+			if err := f.AddKeyAfter("ops", keyFP(t, tt.old), newLine); err != nil {
+				t.Fatalf("AddKeyAfter: %v", err)
+			}
+			out, cfg := encodeParsed(t, f)
+			u := cfg.Users[0]
+			if !u.Operator || len(u.Keys) != 4 {
+				t.Fatalf("ops = %+v, want an operator with 4 keys", u)
+			}
+			for i, seed := range tt.want {
+				if k, err := authkeys.ParseLine(u.Keys[i]); err != nil || k.Fingerprint != keyFP(t, seed) {
+					t.Errorf("keys[%d] = %q, want seed %d", i, u.Keys[i], seed)
+				}
+			}
+			if !slices.Contains(u.Keys, newLine) {
+				t.Errorf("new line not stored verbatim: %q", u.Keys)
+			}
+			for _, c := range []string{"# break-glass account", "operator: true # vault-held", "# ops laptop", "# ops desktop", "# ci runner"} {
+				if !strings.Contains(out, c) {
+					t.Errorf("output lacks %q:\n%s", c, out)
+				}
+			}
+		})
+	}
+	t.Run("flow list", func(t *testing.T) {
+		f := loadFixture(t, editFixture(t))
+		if err := f.AddKeyAfter("bob", keyFP(t, 4), newLine); err != nil {
+			t.Fatalf("AddKeyAfter: %v", err)
+		}
+		_, cfg := encodeParsed(t, f)
+		if got := cfg.Users[1].Keys; len(got) != 2 || got[1] != newLine {
+			t.Errorf("bob keys = %q", got)
+		}
+	})
+	t.Run("errors", func(t *testing.T) {
+		f := loadFixture(t, editFixture(t))
+		if err := f.AddKeyAfter("alice", keyFP(t, 9), newLine); err == nil || !strings.Contains(err.Error(), "is not in the manifest") {
+			t.Errorf("unknown key err = %v", err)
+		}
+		if err := f.AddKeyAfter("bob", keyFP(t, 2), newLine); err == nil || !strings.Contains(err.Error(), `belongs to "alice", not "bob"`) {
+			t.Errorf("wrong owner err = %v", err)
+		}
+	})
 }

@@ -444,3 +444,68 @@ func TestRenderJSONDryRunAllPending(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderJSONRemoveAccess: a remove-access entry carries exactly its
+// fields — access_servers ([] never null), the four counts and
+// no_grants_left, zero/false included — and no other kind's.
+func TestRenderJSONRemoveAccess(t *testing.T) {
+	sum := EditSummary{
+		Edits: []Edit{
+			{Kind: EditRemoveAccess, User: "bob", AccessServers: []string{"web-1", "db-1"}, EntriesChanged: 1, EntriesRemoved: 1, ServersExcepted: 1},
+			{Kind: EditRemoveAccess, User: "carol", EntriesRemoved: 1, WildcardsRemoved: 1, NoGrantsLeft: true},
+		},
+		Affected: 2,
+	}
+	out := renderJSONCfg(t, planCfg(t), nil, JSONOptions{Command: "revoke", Edit: &sum, Saved: true})
+	checkGolden(t, "json_remove_access.golden.json", out)
+	var doc struct {
+		Edit struct {
+			Edits []map[string]any `json:"edits"`
+		} `json:"edit"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	bob, carol := doc.Edit.Edits[0], doc.Edit.Edits[1]
+	for _, k := range []string{"access_servers", "entries_changed", "entries_removed", "servers_excepted", "wildcards_removed", "no_grants_left"} {
+		if _, ok := bob[k]; !ok {
+			t.Errorf("remove-access entry lacks %q: %v", k, bob)
+		}
+	}
+	for _, k := range []string{"keys", "grants", "fingerprint", "no_keys_left", "clears_operator", "keep_old"} {
+		if _, ok := bob[k]; ok {
+			t.Errorf("remove-access entry carries another kind's %q: %v", k, bob)
+		}
+	}
+	if bob["wildcards_removed"] != float64(0) || bob["no_grants_left"] != false {
+		t.Errorf("zero values must be present: %v", bob)
+	}
+	if s, ok := carol["access_servers"].([]any); !ok || len(s) != 0 {
+		t.Errorf("empty access_servers = %v, want []", carol["access_servers"])
+	}
+	if carol["no_grants_left"] != true || carol["wildcards_removed"] != float64(1) {
+		t.Errorf("carol = %v", carol)
+	}
+}
+
+// TestRenderJSONKeepOld: keep_old is present on every rotate entry — true
+// for --keep-old, false for a plain rotate — and on no other kind.
+func TestRenderJSONKeepOld(t *testing.T) {
+	sum := EditSummary{
+		Edits:    []Edit{{Kind: EditRotate, User: "bob", Fingerprint: fp(t, 4), NewFingerprint: fp(t, 5), KeepOld: true}},
+		Affected: 3,
+	}
+	out := renderJSONCfg(t, planCfg(t), nil, JSONOptions{Command: "rotate", Edit: &sum, Saved: true})
+	checkGolden(t, "json_rotate_keep_old.golden.json", out)
+	if !strings.Contains(string(out), `"keep_old": true`) {
+		t.Errorf("keep_old missing:\n%s", out)
+	}
+	plain := EditSummary{Edits: []Edit{
+		{Kind: EditRotate, User: "bob", Fingerprint: fp(t, 4), NewFingerprint: fp(t, 5)},
+		{Kind: EditRemoveKey, User: "bob", Fingerprint: fp(t, 3)},
+	}}
+	out = renderJSONCfg(t, planCfg(t), nil, JSONOptions{Command: "rotate", Edit: &plain})
+	if strings.Count(string(out), `"keep_old"`) != 1 || !strings.Contains(string(out), `"keep_old": false`) {
+		t.Errorf("want keep_old: false on the rotate entry only:\n%s", out)
+	}
+}

@@ -113,3 +113,90 @@ func TestEditPromptGolden(t *testing.T) {
 	}
 	checkGolden(t, "edit_prompt.golden", buf.Bytes())
 }
+
+// TestRenderEditHeaderRemoveAccess: one line per user; count fragments
+// pluralized and omitted when zero (the first present one names "access
+// entry"); the wildcard-removed warning and the no-access-left note follow
+// the edit lines; the affected tail obeys the lone-edit rule.
+func TestRenderEditHeaderRemoveAccess(t *testing.T) {
+	tests := []struct {
+		golden string
+		s      EditSummary
+		color  bool
+	}{
+		{"edit_header_access.golden", EditSummary{
+			Edits: []Edit{{Kind: EditRemoveAccess, User: "bob", AccessServers: []string{"web-1", "db-1"},
+				EntriesChanged: 2, EntriesRemoved: 1, ServersExcepted: 1}},
+			Affected: 2,
+		}, false},
+		{"edit_header_access_multi.golden", EditSummary{
+			Edits: []Edit{
+				{Kind: EditRemoveAccess, User: "alice", AccessServers: []string{"web-1"}, EntriesRemoved: 1, WildcardsRemoved: 1, NoGrantsLeft: true},
+				{Kind: EditRemoveAccess, User: "bob", AccessServers: []string{"web-1"}, EntriesChanged: 1, ServersExcepted: 1},
+			},
+			Affected: 1,
+			Emptied:  []EmptiedServer{{Server: "web-1", Users: []string{"alice", "bob"}, Keys: 2}},
+		}, false},
+		{"edit_header_access_color.golden", EditSummary{
+			Edits:    []Edit{{Kind: EditRemoveAccess, User: "carol", AccessServers: []string{"db-1"}, EntriesRemoved: 1, WildcardsRemoved: 1, NoGrantsLeft: true}},
+			Affected: 1,
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.golden, func(t *testing.T) {
+			var buf bytes.Buffer
+			RenderEditHeader(&buf, tt.s, RenderOptions{Color: tt.color})
+			checkGolden(t, tt.golden, buf.Bytes())
+		})
+	}
+}
+
+// TestEditTextRemoveAccessCounts pins every fragment combination.
+func TestEditTextRemoveAccessCounts(t *testing.T) {
+	e := func(changed, removed, excepted int) Edit {
+		return Edit{Kind: EditRemoveAccess, User: "bob", AccessServers: []string{"web-1"},
+			EntriesChanged: changed, EntriesRemoved: removed, ServersExcepted: excepted}
+	}
+	for _, tt := range []struct {
+		e    Edit
+		want string
+	}{
+		{e(1, 0, 0), "remove bob's access to web-1 (1 access entry changed)"},
+		{e(2, 1, 2), "remove bob's access to web-1 (2 access entries changed, 1 removed, 2 servers excepted)"},
+		{e(0, 2, 0), "remove bob's access to web-1 (2 access entries removed)"},
+		{e(1, 0, 1), "remove bob's access to web-1 (1 access entry changed, 1 server excepted)"},
+		{e(0, 0, 0), "remove bob's access to web-1"},
+	} {
+		if got := editText(tt.e); got != tt.want {
+			t.Errorf("editText(%+v) = %q, want %q", tt.e, got, tt.want)
+		}
+	}
+}
+
+// TestRenderEditHeaderKeepOld: rotate --keep-old adds "keeps the old key",
+// joined to the expiry fragment with "; " when one carries over.
+func TestRenderEditHeaderKeepOld(t *testing.T) {
+	for _, tt := range []struct {
+		golden string
+		expiry string
+	}{
+		{"edit_header_keep_old.golden", ""},
+		{"edit_header_keep_old_expiry.golden", `expiry-time="20270101"`},
+	} {
+		t.Run(tt.golden, func(t *testing.T) {
+			var buf bytes.Buffer
+			RenderEditHeader(&buf, EditSummary{
+				Edits: []Edit{{Kind: EditRotate, User: "bob", Fingerprint: fp(t, 4), NewFingerprint: fp(t, 5),
+					KeepsExpiry: tt.expiry, KeepOld: true}},
+				Affected: 3,
+			}, RenderOptions{})
+			checkGolden(t, tt.golden, buf.Bytes())
+		})
+	}
+	var buf bytes.Buffer
+	RenderEditHeader(&buf, EditSummary{Edits: []Edit{{Kind: EditRotate, User: "bob", Fingerprint: "SHA256:old", NewFingerprint: "SHA256:new",
+		KeepsExpiry: `expiry-time="20270101"`, KeepOld: true}}, Affected: 3}, RenderOptions{})
+	if want := "manifest edit: rotate bob key SHA256:old → SHA256:new (keeps the old key; keeps expiry-time=\"20270101\") — 3 servers affected\n"; buf.String() != want {
+		t.Errorf("header = %q, want %q", buf.String(), want)
+	}
+}

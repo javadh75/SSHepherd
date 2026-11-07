@@ -1,0 +1,3 @@
+manifest edit: remove carol's access to db-1 (1 access entry removed) — 1 server affected
+[0;33mwarning:[0m carol's wildcard grant is removed — it would cover no current server; servers added later are no longer granted to carol automatically
+note: carol has no access left — 'sshepherd revoke carol' removes the user

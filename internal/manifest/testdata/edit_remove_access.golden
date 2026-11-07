@@ -1,0 +1,25 @@
+# fleet manifest
+users:
+  - {name: alice, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOU"]}
+  - {name: bob, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMqTrBcFGHBx1nuDx/8O/oEI6OxFMFdddyaHkzPb2r58"]}
+  - {name: carol, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG56HN0psLeP0Tr0xVmP7/TvKpcWbjym8uT7/M2AUFvx"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+  - {name: db-1, host: 10.0.0.9, user: deploy}
+access:
+  # alice: the web tier
+  - user: alice
+    servers: [web-1, web-2] # reviewed 2026-10
+  # bob: everywhere but the database
+  - user: bob
+    servers: ["*"]
+    except: [db-1, web-2]
+  # carol: everywhere
+  - user: carol
+    servers:
+      - "*"
+    except:
+      - db-1
+# alice db access (temporary)
+# end of manifest

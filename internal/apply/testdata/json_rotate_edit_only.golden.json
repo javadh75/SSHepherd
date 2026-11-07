@@ -10,7 +10,8 @@
         "user": "deploy",
         "fingerprint": "SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o",
         "new_fingerprint": "SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w",
-        "keeps_expiry": "expiry-time=\"20270101\""
+        "keeps_expiry": "expiry-time=\"20270101\"",
+        "keep_old": false
       },
       {
         "kind": "remove-key",

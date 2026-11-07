@@ -57,7 +57,7 @@ rotate → audit**.
 | `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
 | `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported) |
 | `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe (text + `--json`) |
-| `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, drop a lost key, swap a key in place (text + `--json`) |
+| `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, take away one server (`--server`), drop a lost key, swap a key in place or overlap old and new (`--keep-old`) (text + `--json`) |
 
 `audit`, `adopt`, `apply`, `revoke` and `rotate` authenticate with the SSH agent,
 `--identity` key files, or both — so they also run headless in CI, cron and containers (see
@@ -765,12 +765,14 @@ short are never passed off as unreachable).
 
 ### `sshepherd revoke`
 
-Removes users or keys from the manifest — comments preserved — and pushes the edit
-through `apply`'s pipeline (plan → confirm → guarded write → verify → login probe),
-restricted to the servers whose rendered `authorized_keys` changes.
+Removes users, keys, or a user's access to named servers from the manifest — comments
+preserved — and pushes the edit through `apply`'s pipeline (plan → confirm → guarded
+write → verify → login probe), restricted to the servers whose rendered
+`authorized_keys` changes.
 
 ```console
 $ sshepherd revoke alice                       # offboard: alice and every access entry naming her
+$ sshepherd revoke bob --server db-1           # bob loses db-1 only; his keys and other grants stay
 $ sshepherd revoke --key ~/lost-laptop.pub     # one key: a fingerprint, a key line, or a .pub path
 $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 ```
@@ -778,6 +780,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | Flag | Default | Description |
 | ---- | ------- | ----------- |
 | `--key KEY` | none | Key to revoke: a `SHA256:` fingerprint, a public-key line, or a `.pub` file path (repeatable) |
+| `--server` | none | Remove the users' access to this server only (repeatable); the users and their keys stay |
 | `--operator` | off | Confirm that a target is, or belongs to, an operator user (fleet-wide, protected) |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
@@ -799,6 +802,35 @@ exactly one key. MD5 fingerprints, certificates (`*-cert.pub`) and private keys 
 refused with the fix; an error never quotes a file's contents. A key the manifest
 does not grant is refused too — `apply` already removes it; `sshepherd audit` shows
 where it is installed.
+
+**One server, not the whole user (`--server`).** `revoke USER... --server NAME...`
+takes the named servers away from each user and changes nothing else — the user
+entry, its keys and its other grants stay. (Unlike `apply --server`, which only
+restricts which servers a run touches, `revoke --server` edits the grants.) An
+explicit `servers:` list loses every occurrence of the server, and an entry left
+empty is deleted (its comment moves on, as for a removed user). A wildcard grant
+(`servers: ["*"]`) gets the server appended to `except:` — created right after
+`servers:` when absent — so it keeps covering servers added later; a wildcard that
+would then cover no current server is deleted, with a warning that later servers are
+no longer granted automatically. Refused with exit `3` and nothing edited: `--server`
+with `--key` (access is per user), with `--operator`, or on an operator user
+(operators have every server by definition), `--server '*'` (use `revoke USER`), an
+unknown server, and any user × server pair the user has no access to — every problem
+is listed in one message. Only the trimmed servers are contacted, there is no
+`scope:` line, and the save reminder ends `re-grants the removed access`.
+
+```console
+manifest edit: remove bob's access to web-1, db-1 (2 access entries changed, 1 removed, 1 server excepted) — 2 servers affected
+```
+
+```console
+manifest edit: remove alice's access to web-1 (1 access entry removed)
+manifest edit: remove bob's access to web-1 (1 access entry changed, 1 server excepted)
+manifest edit: 2 changes — 1 server affected
+warning: alice's wildcard grant is removed — it would cover no current server; servers added later are no longer granted to alice automatically
+note: alice has no access left — 'sshepherd revoke alice' removes the user
+warning: web-1 would have no granted keys — apply never empties a server, so the keys of alice, bob stay installed there; grant another user (or an operator) on web-1 first, or remove the key by hand
+```
 
 **The edit header** heads the plan:
 
@@ -845,7 +877,9 @@ refused for a fixable reason, unreachable, interrupted) are named in a ready-mad
 **JSON.** Under `--json` (see [`apply`](#sshepherd-apply)) the document adds an
 `edit` section — `saved` (the manifest was written: `false` under `--dry-run` and
 when nothing could land), `edits` (one per change, fields by `kind`:
-`remove-user`, `remove-key`, `rotate`), `affected`, `operators` and `emptied` — and a
+`remove-user`, `remove-key`, `rotate` (with `keep_old`), `remove-access`
+(`access_servers`, `entries_changed`, `entries_removed`, `servers_excepted`,
+`wildcards_removed`, `no_grants_left`)), `affected`, `operators` and `emptied` — and a
 removed key the edited manifest no longer owns carries `former_owner`. `--no-apply`
 prints the edit section with `servers: []`. `revoke --no-apply --json` still needs
 `--yes` (or `--dry-run`). The shape, from the revoke golden fixture (`former_owner`
@@ -985,10 +1019,18 @@ $ git commit -am "revoke alice's laptop key" && git push
 $ sshepherd audit
 ```
 
+**Recipe: take one server away.**
+
+```console
+$ sshepherd revoke bob --server db-1 --dry-run
+$ sshepherd revoke bob --server db-1
+$ git commit -am "bob: no more db-1" && git push
+```
+
 ### `sshepherd rotate`
 
 Replaces one of a user's keys in place and pushes the swap the same way: the old key
-is dead fleet-wide in the same run.
+is dead fleet-wide in the same run — unless `--keep-old` (below).
 
 ```console
 $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o --new ~/.ssh/deploy_2027.pub
@@ -998,6 +1040,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | ---- | ------- | ----------- |
 | `--old KEY` | — | Key to rotate out: a `SHA256:` fingerprint, a public-key line, or a `.pub` file path |
 | `--new KEY` | — | Key to rotate in: a public-key line or a `.pub` file path |
+| `--keep-old` | off | Add the new key alongside the old one instead of replacing it (overlap; the new key keeps the old line's options, `expiry-time` included); finish later with `sshepherd revoke --key OLD` |
 | `--operator` | off | Confirm that the user is an operator (fleet-wide, protected); the flag is kept |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
@@ -1021,10 +1064,11 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 - A carried-over `expiry-time=` that has already passed is refused before any edit
   (the new key would be rejected by sshd); a future one is named in the header.
 - Confirmation, saving, `--dry-run`, `--no-apply`, operators and the scope line work
-  exactly as for `revoke`.
+  exactly as for `revoke` (no scope line under `--keep-old`: nothing is removed).
 - Under `--json` the document carries the same `edit` section as `revoke`'s, with a
-  `rotate` entry (`user`, `fingerprint`, `new_fingerprint`, and `keeps_expiry` when
-  an `expiry-time=` carries over); the rotated-out key's `remove` entry names its
+  `rotate` entry (`user`, `fingerprint`, `new_fingerprint`, `keeps_expiry` when
+  an `expiry-time=` carries over, and `keep_old` (always present on `rotate` entries;
+  `false` for a plain rotation)); the rotated-out key's `remove` entry names its
   `former_owner`.
 
 ```console
@@ -1039,6 +1083,48 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o --new ~/.ssh/deploy_2027.pub
 $ git commit -am "rotate the deploy key" && git push
 $ sshepherd audit
+```
+
+**Overlap (`--keep-old`).** For a key held by running systems (CI deploy keys,
+automation) that cannot all switch at once: the new key is added right after the old
+one instead of replacing it. It carries the old line's options, `expiry-time=`
+included (a passed one is refused, as for a plain rotation), and the header says
+`keeps the old key`. Nothing marks the overlap: the manifest simply lists both keys,
+`audit` sees both as granted and `apply` keeps both — so the save reminder warns that
+an apply from a copy without the edit removes the new key. The run ends (text mode
+only; never under `--json` or `--dry-run`, nor when nothing was saved) with the exact
+command that finishes the overlap once every client uses the new key —
+`sshepherd revoke --key OLD`, plus `--config` when not the default and `--operator`
+for an operator, whose hint gets a second line about `--identity`. It reads
+`overlap started — …` when every affected server holds both keys,
+`overlap incomplete — N servers do not have the new key yet …` after a partial run,
+`overlap recorded, not pushed — …` under `--no-apply`, and
+`new key recorded — USER has no grants yet …` when no server is affected.
+`--keep-old` again on the same old key adds another key; a plain `--old OLD` during
+an overlap replaces the old key.
+
+```console
+manifest edit: rotate bob key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o → SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w (keeps the old key; keeps expiry-time="20270101") — 3 servers affected
+```
+
+A `--no-apply` overlap, as printed:
+
+```console
+manifest edit: rotate deploy key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o → SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w (keeps the old key; keeps expiry-time="20270101") — 2 servers affected
+manifest sshepherd.yaml updated — commit and push it: an apply from a copy without this edit removes the new key — clients that already switched would be locked out
+no servers contacted — 2 affected servers still carry the old keys; run 'sshepherd apply --server web-1 --server web-2' to push
+overlap recorded, not pushed — run the apply hint above, then, once every client uses the new key, finish with: sshepherd revoke --key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o
+```
+
+**Recipe: overlap a deploy key.**
+
+```console
+$ ssh-keygen -t ed25519 -f ~/.ssh/deploy_2027
+$ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o --new ~/.ssh/deploy_2027.pub --keep-old
+$ git commit -am "deploy key: start the 2027 overlap" && git push
+$ # … switch every client to ~/.ssh/deploy_2027 …
+$ sshepherd revoke --key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o
+$ git commit -am "deploy key: end the overlap" && git push
 ```
 
 **Rotating the key you log in with.** Pass the new private key with `--identity`, so
@@ -1258,7 +1344,7 @@ Monitoring-style, shared by `audit`, `apply`, `revoke` and `rotate` (code `2` is
 | `0` | Compliant / converged — nothing to do |
 | `1` | Drift, unreachable servers, or pending changes — compliance not proven |
 | `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply`, `revoke` and `rotate` never return `2` |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a concurrent save) |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a concurrent save) |
 
 ## Safety model
 
@@ -1449,7 +1535,9 @@ authentication (`--identity`, passphrase sources, certificates and the guard) is
 specced in
 [`docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md`](docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md);
 `revoke` and `rotate` in
-[`docs/superpowers/specs/2026-10-23-revoke-rotate-design.md`](docs/superpowers/specs/2026-10-23-revoke-rotate-design.md).
+[`docs/superpowers/specs/2026-10-23-revoke-rotate-design.md`](docs/superpowers/specs/2026-10-23-revoke-rotate-design.md),
+and `revoke --server` / `rotate --keep-old` in
+[`docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`](docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md).
 
 ## License
 

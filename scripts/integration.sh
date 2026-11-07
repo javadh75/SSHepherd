@@ -52,14 +52,16 @@ docker run -d --name "$CONTAINER" \
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap; do
       adduser -D -s /bin/sh "$u"
       sed -i "s|^$u:!|$u:*|" /etc/shadow   # unlock for pubkey login
       mkdir -p "/home/$u/.ssh"
     done
     # cas/locked/verifyfail/drop/lockout: the agent key alone (write-path
-    # refusal and failure cases); unparse: plus a line apply cannot parse.
-    for u in cas locked verifyfail drop lockout; do
+    # refusal and failure cases); trima/trimb/overlap: the agent key alone
+    # (revoke --server and rotate --keep-old E2E); unparse: plus a line
+    # apply cannot parse.
+    for u in cas locked verifyfail drop lockout trima trimb overlap; do
       cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
     done
     { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
@@ -79,7 +81,7 @@ docker run -d --name "$CONTAINER" \
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true

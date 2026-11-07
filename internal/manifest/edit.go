@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"fmt"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
@@ -233,5 +234,166 @@ func (f *File) SetOperator(user string, on bool) error {
 		}
 	}
 	item.Content = append(item.Content[:at], append(pair, item.Content[at:]...)...)
+	return nil
+}
+
+// AccessRemoval reports what RemoveAccess changed.
+type AccessRemoval struct {
+	EntriesChanged   int // entries edited in place (list shortened or except: extended)
+	EntriesRemoved   int // entries deleted: list emptied, or wildcard left covering nothing
+	ServersExcepted  int // servers appended to except: lists
+	WildcardsRemoved int // of EntriesRemoved: wildcard entries deleted (decision 1b)
+}
+
+// RemoveAccess takes servers away from user's access: entries, leaving the
+// user, its keys and every other grant alone. An explicit servers: list
+// loses every item naming one of servers; an entry left with no servers is
+// deleted (its head comment rescued as RemoveUser does). A wildcard
+// (servers: ["*"]) gets each covered server appended to except: — created
+// right after servers:, in that list's flow/block style, when absent — and
+// is deleted instead when it would then cover no server of the loaded
+// config. A server already excepted is not covered, so it is never
+// appended twice. Every name in servers must be a server of the loaded
+// config; the wildcard is resolved against f.Config().Servers.
+func (f *File) RemoveAccess(user string, servers []string) (AccessRemoval, error) {
+	m, err := f.rootMapping()
+	if err != nil {
+		return AccessRemoval{}, err
+	}
+	fleet, err := f.accessTargets(m, user, servers)
+	if err != nil {
+		return AccessRemoval{}, err
+	}
+	var r AccessRemoval
+	accessKey, access := sectionOf(m, "access")
+	if access == nil {
+		return r, nil
+	}
+	drop := map[*yaml.Node]bool{}
+	for _, entry := range access.Content {
+		if entry.Kind != yaml.MappingNode || scalarField(entry, "user") != user {
+			continue
+		}
+		switch t := trimEntry(entry, servers, fleet); {
+		case t.gone:
+			drop[entry] = true
+			r.EntriesRemoved++
+			if t.wildcard {
+				r.WildcardsRemoved++
+			}
+		case t.changed:
+			r.EntriesChanged++
+			r.ServersExcepted += t.excepted
+		}
+	}
+	if len(drop) > 0 {
+		removeItems(accessKey, access, func(n *yaml.Node) bool { return drop[n] }, true)
+	}
+	return r, nil
+}
+
+// accessTargets checks RemoveAccess's arguments against the loaded
+// manifest (user has a users: entry, every server is a servers: entry) and
+// returns the fleet's server names, manifest order.
+func (f *File) accessTargets(m *yaml.Node, user string, servers []string) ([]string, error) {
+	_, users := sectionOf(m, "users")
+	if userItem(users, user) == nil {
+		return nil, fmt.Errorf("user %q is not in the manifest", user)
+	}
+	fleet := make([]string, 0, len(f.cfg.Servers))
+	for _, s := range f.cfg.Servers {
+		fleet = append(fleet, s.Name)
+	}
+	for _, s := range servers {
+		if !slices.Contains(fleet, s) {
+			return nil, fmt.Errorf("server %q is not in the manifest", s)
+		}
+	}
+	return fleet, nil
+}
+
+// entryTrim is what trimEntry did to one access: entry.
+type entryTrim struct {
+	changed  bool // servers: shortened or except: extended
+	gone     bool // the entry must be deleted (list emptied, or wildcard left covering nothing)
+	wildcard bool // the entry is a servers: ["*"] grant
+	excepted int  // servers appended to except:
+}
+
+// trimEntry removes servers from one access: entry of the user: items of
+// an explicit list (every occurrence; the removed item's comments go with
+// it), or except: appends on a wildcard.
+func trimEntry(entry *yaml.Node, servers, fleet []string) entryTrim {
+	list := valueOf(entry, "servers")
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return entryTrim{}
+	}
+	if seqHas(list, "*") {
+		n, gone := exceptServers(entry, list, servers, fleet)
+		return entryTrim{changed: n > 0, gone: gone, wildcard: true, excepted: n}
+	}
+	n := removeItems(nil, list, func(it *yaml.Node) bool {
+		return it.Kind == yaml.ScalarNode && slices.Contains(servers, it.Value)
+	}, false)
+	return entryTrim{changed: n > 0, gone: n > 0 && len(list.Content) == 0}
+}
+
+// exceptServers appends to a wildcard entry's except: every server of
+// servers the entry still covers, creating except: right after servers:
+// (same sequence style) when absent or null. gone reports that the
+// wildcard would then cover no server of fleet: the caller deletes the
+// entry (decision 1b) and the appends do not matter.
+func exceptServers(entry, list *yaml.Node, servers, fleet []string) (appended int, gone bool) {
+	except := valueOf(entry, "except")
+	if except != nil && except.Kind == yaml.ScalarNode && except.Tag == "!!null" {
+		*except = yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: list.Style & yaml.FlowStyle,
+			HeadComment: except.HeadComment, LineComment: except.LineComment, FootComment: except.FootComment}
+	}
+	for _, s := range servers {
+		if except != nil && seqHas(except, s) {
+			continue // already carved out: not covered
+		}
+		if except == nil {
+			except = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: list.Style & yaml.FlowStyle}
+			at := len(entry.Content)
+			for i := 0; i+1 < len(entry.Content); i += 2 {
+				if entry.Content[i].Value == "servers" {
+					at = i + 2
+					break
+				}
+			}
+			entry.Content = append(entry.Content[:at], append([]*yaml.Node{strScalar("except"), except}, entry.Content[at:]...)...)
+		}
+		except.Content = append(except.Content, strScalar(s))
+		appended++
+	}
+	for _, s := range fleet {
+		if except == nil || !seqHas(except, s) {
+			return appended, false
+		}
+	}
+	return appended, true
+}
+
+// seqHas reports whether a sequence holds a scalar item equal to v.
+func seqHas(seq *yaml.Node, v string) bool {
+	return slices.ContainsFunc(seq.Content, func(it *yaml.Node) bool { return it.Kind == yaml.ScalarNode && it.Value == v })
+}
+
+// AddKeyAfter inserts newLine as a new keys: item of user immediately after
+// the item whose fingerprint is oldFP (rotate --keep-old). It only inserts:
+// the old item, its comments and the user's operator: flag are untouched;
+// the caller composes newLine (rotatedLine), and nothing is validated until
+// Encode.
+func (f *File) AddKeyAfter(user, oldFP, newLine string) error {
+	owner, keys, idx, err := f.findKey(oldFP)
+	if err != nil {
+		return err
+	}
+	if name := scalarField(owner, "name"); name != user {
+		return fmt.Errorf("key %s belongs to %q, not %q", oldFP, name, user)
+	}
+	item := strScalar(newLine)
+	keys.Content = append(keys.Content[:idx+1], append([]*yaml.Node{item}, keys.Content[idx+1:]...)...)
 	return nil
 }

@@ -300,3 +300,99 @@ servers:
 		t.Errorf("file = %q, want it untouched (%q)", after, before)
 	}
 }
+
+// TestE2ERevokeServer: tmp is granted trim-a and trim-b; revoke tmp
+// --server trim-a removes the key from trim-a only (trim-b is never
+// contacted), the manifest keeps tmp with trim-b, and audit is clean.
+func TestE2ERevokeServer(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	stale := itPubLine(t, itKeys(t), "stale")
+	m := writeE2EManifest(t, t.TempDir(), "trim.yaml", `
+users:
+  - {name: op, operator: true, keys: ["`+pub+`"]}
+  - {name: tmp, keys: ["`+stale+`"]}
+servers:
+  - {name: trim-a, host: `+host+`, port: `+port+`, user: trima}
+  - {name: trim-b, host: `+host+`, port: `+port+`, user: trimb}
+access:
+  - {user: tmp, servers: [trim-a, trim-b]}
+`)
+	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("apply exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	code, out, stderr := runBin(t, bin, "revoke", "tmp", "--server", "trim-a", "--yes", "--config", m, "--known-hosts", kh)
+	if code != 0 {
+		t.Fatalf("revoke --server exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	for _, want := range []string{"manifest edit: remove tmp's access to trim-a (1 access entry changed) — 1 server affected", "trim-a: applied · verified"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("revoke output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "trim-b:") {
+		t.Errorf("trim-b was contacted:\n%s", out)
+	}
+	blob := strings.Fields(stale)[1]
+	if got := e2eRemoteCat(t, host, port, kh, "trima"); strings.Contains(got, blob) {
+		t.Errorf("trim-a still holds tmp's key:\n%s", got)
+	}
+	if got := e2eRemoteCat(t, host, port, kh, "trimb"); !strings.Contains(got, blob) {
+		t.Errorf("trim-b lost tmp's key:\n%s", got)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("audit exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+}
+
+// TestE2ERotateKeepOld: rotate --keep-old installs the new key beside the
+// old one (audit clean with both), and the printed finish — revoke --key
+// OLD — leaves only the new key (audit clean again).
+func TestE2ERotateKeepOld(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	keys := itKeys(t)
+	stale, ciOld := itPubLine(t, keys, "stale"), itPubLine(t, keys, "ci_old")
+	m := writeE2EManifest(t, t.TempDir(), "overlap.yaml", `
+users:
+  - {name: op, operator: true, keys: ["`+pub+`"]}
+  - {name: deploy, keys: ["`+stale+`"]}
+servers:
+  - {name: ov, host: `+host+`, port: `+port+`, user: overlap}
+access:
+  - {user: deploy, servers: [ov]}
+`)
+	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("apply exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	code, out, stderr := runBin(t, bin, "rotate", "deploy", "--old", filepath.Join(keys, "stale.pub"), "--new", filepath.Join(keys, "ci_old.pub"),
+		"--keep-old", "--yes", "--config", m, "--known-hosts", kh)
+	if code != 0 {
+		t.Fatalf("rotate --keep-old exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	const lead = "overlap started — every affected server accepts both keys; once every client uses the new key, finish with: "
+	_, finish, ok := strings.Cut(out, lead)
+	if !ok || !strings.Contains(out, "(keeps the old key)") {
+		t.Fatalf("rotate output lacks the keep-old header or the finish hint:\n%s", out)
+	}
+	finish, _, _ = strings.Cut(finish, "\n")
+	got := e2eRemoteCat(t, host, port, kh, "overlap")
+	if !strings.Contains(got, strings.Fields(stale)[1]) || !strings.Contains(got, strings.Fields(ciOld)[1]) {
+		t.Errorf("overlap must hold both keys:\n%s", got)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("audit during the overlap exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+	args := strings.Fields(finish)
+	if len(args) < 4 || args[0] != "sshepherd" || args[1] != "revoke" || args[2] != "--key" {
+		t.Fatalf("finish = %q, want a sshepherd revoke --key command", finish)
+	}
+	if code, out, stderr := runBin(t, bin, append(args[1:], "--yes", "--known-hosts", kh)...); code != 0 {
+		t.Fatalf("finish exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	got = e2eRemoteCat(t, host, port, kh, "overlap")
+	if strings.Contains(got, strings.Fields(stale)[1]) || !strings.Contains(got, strings.Fields(ciOld)[1]) {
+		t.Errorf("after the finish, overlap must hold only the new key:\n%s", got)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("audit after the finish exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+}

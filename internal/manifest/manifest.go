@@ -8,7 +8,11 @@
 //   - RemoveUser deletes a users: entry and every access: entry naming it;
 //   - RemoveKey deletes one keys: line, found by fingerprint;
 //   - ReplaceKey replaces one keys: line in place (same index);
-//   - SetOperator sets or removes a user's operator: flag.
+//   - SetOperator sets or removes a user's operator: flag;
+//   - RemoveAccess takes servers away from a user's access: entries
+//     (explicit items removed, wildcards gain except:, emptied entries
+//     deleted);
+//   - AddKeyAfter inserts one keys: line right after another.
 //
 // Nothing else is reordered, rewritten, or removed. The edit methods change
 // only the node tree — none validates, and Config stays the as-loaded
@@ -16,8 +20,8 @@
 //
 // Fidelity contract: comments are preserved (a removed users:/access:
 // entry's head comment moves to the next entry or the section's footer; a
-// removed key line's head comment goes with it); blank lines and quote
-// styles may normalize.
+// removed key line's or servers: item's head comment goes with it); blank
+// lines and quote styles may normalize.
 package manifest
 
 import (

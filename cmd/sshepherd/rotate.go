@@ -22,6 +22,7 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 		f       editFlags
 		oldFlag []string
 		newFlag []string
+		keepOld bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rotate USER --old KEY --new KEY",
@@ -30,11 +31,12 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 			"line's options (from=, command=, restrict, …) carry over; the comment is\n" +
 			"the new key's, else the old line's — and pushes the swap through\n" +
 			"apply's pipeline on the servers that grant USER. The old key is dead\n" +
-			"fleet-wide in the same run. --old is a SHA256: fingerprint, a public-key\n" +
-			"line, or a .pub path; --new is a public-key line or a .pub path. Rotating\n" +
-			"the key you log in with? Pass the new private key with --identity, so the\n" +
-			"lockout guard and the post-write login probe can use it. Operators need\n" +
-			"--operator (the flag is kept). Saves and confirms like revoke.",
+			"fleet-wide in the same run (unless --keep-old). --old is a SHA256:\n" +
+			"fingerprint, a public-key line, or a .pub path; --new is a public-key\n" +
+			"line or a .pub path. Rotating the key you log in with? Pass the new\n" +
+			"private key with --identity, so the lockout guard and the post-write\n" +
+			"login probe can use it. Operators need --operator (the flag is kept).\n" +
+			"Saves and confirms like revoke.",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("rotate takes exactly one USER (got %d)", len(args))
@@ -69,7 +71,7 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ep, err := planRotate(mf, args[0], oldArg, newArg, f.operator, rotateNow())
+			ep, err := planRotate(mf, args[0], oldArg, newArg, rotateOpts{operator: f.operator, keepOld: keepOld, now: rotateNow()})
 			if err != nil {
 				return err
 			}
@@ -80,13 +82,23 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 	f.register(cmd)
 	cmd.Flags().StringArrayVar(&oldFlag, "old", nil, "the `KEY` to rotate out: a SHA256: fingerprint, a public-key line, or a .pub file path")
 	cmd.Flags().StringArrayVar(&newFlag, "new", nil, "the `KEY` to rotate in: a public-key line or a .pub file path")
+	cmd.Flags().BoolVar(&keepOld, "keep-old", false,
+		"add the new key alongside the old one instead of replacing it (overlap; the new key keeps the old line's options, expiry-time included); finish later with 'sshepherd revoke --key OLD'")
 	return cmd
+}
+
+// rotateOpts are planRotate's flags and clock.
+type rotateOpts struct {
+	operator bool      // --operator
+	keepOld  bool      // --keep-old: add the new key after the old one
+	now      time.Time // the expiry-time= check's clock
 }
 
 // planRotate resolves and applies 'rotate USER --old --new' against the
 // as-loaded config: ownership, novelty, operator and expiry checks, then
-// the one in-place replacement.
-func planRotate(mf *manifest.File, user string, oldArg, newArg keyArg, operator bool, now time.Time) (editPlan, error) {
+// the one edit — an in-place replacement, or with --keep-old an insert
+// right after the old key (an overlap; the old key stays).
+func planRotate(mf *manifest.File, user string, oldArg, newArg keyArg, opts rotateOpts) (editPlan, error) {
 	cfg := mf.Config()
 	var u *config.User
 	for i := range cfg.Users {
@@ -109,24 +121,32 @@ func planRotate(mf *manifest.File, user string, oldArg, newArg keyArg, operator 
 	if o, taken := cfg.OwnerOf(newArg.Fingerprint); taken {
 		return editPlan{}, fmt.Errorf("--new %s is already in the manifest (owned by %s)", keyName(newArg), o.Name)
 	}
-	ops, err := operatorGate(cfg, []string{user}, operator)
+	ops, err := operatorGate(cfg, []string{user}, opts.operator)
 	if err != nil {
 		return editPlan{}, err
 	}
-	line, expiry, err := rotatedLine(*u, oldArg, newArg, now)
+	line, expiry, err := rotatedLine(*u, oldArg, newArg, opts.now)
 	if err != nil {
 		return editPlan{}, err
-	}
-	if err := mf.ReplaceKey(user, oldArg.Fingerprint, line); err != nil {
-		return editPlan{}, fmt.Errorf("edit manifest: %w", err)
 	}
 	ep := editPlan{
-		former: cfg, formerNote: "rotated out", removesKey: true,
-		stillHas: user + "'s old key still has",
+		former: cfg,
 		summary: apply.EditSummary{Operators: ops, Edits: []apply.Edit{{
 			Kind: apply.EditRotate, User: user, Fingerprint: oldArg.Fingerprint,
-			NewFingerprint: newArg.Fingerprint, KeepsExpiry: expiry,
+			NewFingerprint: newArg.Fingerprint, KeepsExpiry: expiry, KeepOld: opts.keepOld,
 		}}},
+	}
+	if opts.keepOld {
+		err = mf.AddKeyAfter(user, oldArg.Fingerprint, line)
+		ep.stillHas = user + "'s new key would get no"
+		ep.saveNote = "an apply from a copy without this edit removes the new key — clients that already switched would be locked out"
+		ep.overlap = &overlapFinish{user: user, oldFP: oldArg.Fingerprint, operator: u.Operator}
+	} else {
+		err = mf.ReplaceKey(user, oldArg.Fingerprint, line)
+		ep.formerNote, ep.removesKey, ep.stillHas = "rotated out", true, user+"'s old key still has"
+	}
+	if err != nil {
+		return editPlan{}, fmt.Errorf("edit manifest: %w", err)
 	}
 	if ep.encoded, ep.edited, err = encodeEdit(mf); err != nil {
 		return editPlan{}, err
