@@ -266,6 +266,8 @@ func TestPlanEmptyDesiredSplit(t *testing.T) {
 			ClassRefused, "3 keys installed but manifest grants none — refusing to wipe"},
 		{"unparseable content refuses too", audit.ReadResult{Content: []byte("garbage\n")},
 			ClassRefused, "unparseable"},
+		{"no keys but authorized_keys2 refuses (audit calls it drift)", audit.ReadResult{FileAbsent: true, AuthorizedKeys2: true},
+			ClassRefused, "authorized_keys2 holds keys but the manifest grants none — refusing to wipe; remove it by hand"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -278,6 +280,26 @@ func TestPlanEmptyDesiredSplit(t *testing.T) {
 				t.Errorf("Refusal = %q, want it to contain %q", p.Refusal, tt.wantRefusal)
 			}
 		})
+	}
+}
+
+// TestApplyAuditAgreeOnKeys2WithoutGrants (COR-2): apply's exit code and
+// audit's verdict agree for a no-grant server whose authorized_keys2 holds
+// keys — both non-zero, and apply writes nothing (no wipe mode exists).
+func TestApplyAuditAgreeOnKeys2WithoutGrants(t *testing.T) {
+	cfg := emptyDesiredCfg(t)
+	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: renderedFor(t, cfg, "web-1")}, "bare": {FileAbsent: true, AuthorizedKeys2: true}}}
+	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 1})
+	plans, err := Build(cfg, results, agentHeld(fp(t, 2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := planFor(t, plans, "bare")
+	if p.Class != ClassRefused || p.DisableKeys2() || p.Rendered != nil {
+		t.Fatalf("plan = %s (disable=%v), want a refusal that writes nothing", p.Class, p.DisableKeys2())
+	}
+	if ExitCode(plans) != 1 || audit.ExitCode(cfg, results) != 1 {
+		t.Errorf("apply exit %d, audit exit %d; want both 1", ExitCode(plans), audit.ExitCode(cfg, results))
 	}
 }
 

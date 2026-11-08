@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -353,5 +355,44 @@ func TestRunServerSubset(t *testing.T) {
 	// nil Servers still means the whole fleet.
 	if got := len(Run(context.Background(), cfg, r, Options{Parallel: 2})); got != 2 {
 		t.Errorf("nil subset audited %d servers, want 2", got)
+	}
+}
+
+func fpOf(t *testing.T, seed byte) string {
+	t.Helper()
+	k, err := authkeys.ParseLine(testkeys.Line(t, seed))
+	if err != nil || k == nil {
+		t.Fatalf("fpOf(%d): %v", seed, err)
+	}
+	return k.Fingerprint
+}
+
+// TestGrantedFingerprintsDemotesRiskyLines (WP-5): every connection offers
+// a server's granted keys plain first, then lines that may reject the login
+// (from=, expiry-time=, restrict), then forced commands, then cert-only
+// lines — stable within each group.
+func TestGrantedFingerprintsDemotesRiskyLines(t *testing.T) {
+	y := `
+users:
+  - {name: op, operator: true, keys: ["from=\"10.0.0.0/8\" ` + testkeys.Line(t, 1) + `"]}
+  - {name: backup, keys: ["command=\"rrsync -ro /\" ` + testkeys.Line(t, 2) + `"]}
+  - {name: ca, keys: ["cert-authority ` + testkeys.Line(t, 4) + `"]}
+  - {name: admin, keys: ["` + testkeys.Line(t, 3) + `"]}
+servers:
+  - {name: s, host: 10.0.0.1, user: deploy}
+access:
+  - {user: backup, servers: [s]}
+  - {user: ca, servers: [s]}
+  - {user: admin, servers: [s]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// DesiredFor: op, backup, ca, admin. Offer: plain, then from=/expiry/restrict,
+	// then command=, then cert-only — stable within each group.
+	want := []string{fpOf(t, 3), fpOf(t, 1), fpOf(t, 2), fpOf(t, 4)}
+	if got := GrantedFingerprints(cfg, "s"); !slices.Equal(got, want) {
+		t.Errorf("GrantedFingerprints = %v, want %v", got, want)
 	}
 }

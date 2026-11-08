@@ -335,8 +335,8 @@ with the agent (agent optional once a key file is given). The new
 passphrase files and a foreground-only `/dev/tty` prompter; `sshconn.Credentials`
 is the run's one credential source (`Signers` before the dial, `Held` with
 sources, certificates offered but never held); `sshread.CheckCredentials`
-replaces the agent preflight. apply's guard, survivor order (key files before
-agent keys) and probe reason over every held key, refusals list each key with
+replaces the agent preflight. apply's guard and probe (production offer order)
+reason over every held key, refusals list each key with
 its source, and an agent-only-survivor warning flags a stray agent satisfying
 the guard for a headless run. Headless rotation (old + new `--identity`) is
 covered end to end by the integration suite.
@@ -450,3 +450,14 @@ Revocation memory (tombstones, manifest serial, opt-in post-revoke sweep, no ado
 wildcard) is specced, awaiting owner decisions, in
 `docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation
 P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4).
+Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
+after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
+(never a global `sync`), refusals create nothing (even through `..`), one
+`audit.OfferOrder` for every connection and the probe, keys2 on equivalent default
+spellings, no-grant + keys2 refused, `sanitize.RemoteSnippet` bounds remote stderr
+and handshake/disconnect text. One offer order (`audit.OfferOrder`/`OfferRank`:
+plain, then from=/expiry-time=/restrict, then command=, then cert-only; stable in
+manifest order) now feeds `GrantedFingerprints` and the post-write probe, so the
+probe proves the key the next run logs in with (no `--identity` preference, D31,
+WP-5); a no-grant server whose `authorized_keys2` holds keys is refused (exit 1),
+agreeing with audit (D30, COR-2).

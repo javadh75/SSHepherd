@@ -22,7 +22,8 @@ type Class string
 
 const (
 	// ClassConverged — current bytes equal the render, or the desired set is
-	// empty with nothing installed ("nothing should be there and nothing is").
+	// empty and nothing is installed, authorized_keys2 included ("nothing
+	// should be there and nothing is").
 	ClassConverged Class = "converged"
 	// ClassChange — a write is needed and allowed.
 	ClassChange Class = "change"
@@ -120,8 +121,11 @@ type ServerPlan struct {
 
 // DisableKeys2 reports whether the write moves a non-empty
 // ~/.ssh/authorized_keys2 aside: every change plan does when phase 1 found
-// one (only probed while the managed path is the default), because sshd
-// keeps accepting its keys — a revoked key there would survive the revoke.
+// one (probed when the managed path is the default file under any spelling
+// that resolves to it), because sshd keeps accepting its keys — a revoked
+// key there would survive the revoke.
+// A server the manifest grants nothing never gets here: with a non-empty
+// authorized_keys2 it is refused, since apply never wipes a server.
 func (p ServerPlan) DisableKeys2() bool {
 	return p.Class == ClassChange && p.AuthorizedKeys2
 }
@@ -157,6 +161,34 @@ func theLines(n int) string {
 	return "the lines"
 }
 
+// planNoGrants classifies a server whose desired set is empty. Apply never
+// wipes a server, so nothing is ever written here — converged when nothing
+// (parseable or not) is installed, authorized_keys2 included; refused
+// otherwise.
+func planNoGrants(p ServerPlan, r audit.ServerResult) ServerPlan {
+	switch {
+	case len(r.Diff.Unauthorized) > 0 || len(r.ParseErrs) > 0:
+		p.Class = ClassRefused
+		p.Refusal = fmt.Sprintf("%s installed but manifest grants none — refusing to wipe",
+			Plural(len(r.Diff.Unauthorized), "key", "keys"))
+		if n := len(r.ParseErrs); n > 0 {
+			p.Refusal = fmt.Sprintf(
+				"%s and %s installed but manifest grants none — refusing to wipe",
+				Plural(len(r.Diff.Unauthorized), "key", "keys"), Plural(n, "unparseable line", "unparseable lines"))
+		}
+	case r.AuthorizedKeys2:
+		// sshd still accepts keys from authorized_keys2, so this is not
+		// converged (audit calls it drift). Apply never wipes a server —
+		// the on-hold empty-server mode — so refuse and leave the file to
+		// the operator (COR-2).
+		p.Class = ClassRefused
+		p.Refusal = "authorized_keys2 holds keys but the manifest grants none — refusing to wipe; remove it by hand"
+	default:
+		p.Class = ClassConverged
+	}
+	return p
+}
+
 func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (ServerPlan, error) {
 	p := ServerPlan{
 		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
@@ -174,23 +206,8 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (
 		p.Desired = append(p.Desired, e.Key)
 	}
 
-	// Empty desired set: apply never wipes a server, so nothing is ever
-	// written here — converged when nothing (parseable or not) is
-	// installed, refused otherwise.
 	if len(entries) == 0 {
-		if len(r.Diff.Unauthorized) == 0 && len(r.ParseErrs) == 0 {
-			p.Class = ClassConverged
-			return p, nil
-		}
-		p.Class = ClassRefused
-		p.Refusal = fmt.Sprintf("%s installed but manifest grants none — refusing to wipe",
-			Plural(len(r.Diff.Unauthorized), "key", "keys"))
-		if n := len(r.ParseErrs); n > 0 {
-			p.Refusal = fmt.Sprintf(
-				"%s and %s installed but manifest grants none — refusing to wipe",
-				Plural(len(r.Diff.Unauthorized), "key", "keys"), Plural(n, "unparseable line", "unparseable lines"))
-		}
-		return p, nil
+		return planNoGrants(p, r), nil
 	}
 
 	// Unparseable lines: a full-file render would destroy content we could

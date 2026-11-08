@@ -1379,7 +1379,8 @@ web-1 (deploy@10.0.0.1:22)  REFUSED: none of the 2 keys you hold (identity files
 
 **Headless key rotation.** Run `rotate` with both keys: the write logs in with the
 old key, the guard sees the new key survive, and the post-write probe (which offers
-surviving key files first) proves the new key logs in. Then commit and push the
+the surviving keys in the order every later run offers them) proves the new key logs
+in. Then commit and push the
 manifest; a later run needs only the new key.
 
 ```console
@@ -1580,6 +1581,9 @@ reinstalling a revoked key. A manifest piped in (`--config /dev/stdin`,
 nothing changed (no file, backup or directory is created) — when:
 
 - the manifest grants nobody but keys are installed (refusing to wipe);
+- the manifest grants nobody, nothing is installed, but `~/.ssh/authorized_keys2` holds keys
+  (`authorized_keys2 holds keys but the manifest grants none — refusing to wipe; remove it by hand`;
+  `audit` reports the same server as drift, so both exit 1);
 - the file contains unparseable lines (refusing to rewrite a file it could not fully
   read);
 - the rendered file would exceed the 1 MiB the read path accepts
@@ -1622,15 +1626,17 @@ undo the first apply. A symlink planted at either name is never written through.
 (default path or an equivalent spelling), the plan shows
 `disable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2.sshepherd.disabled` and the
 write moves it aside after the verify and before the login probe — even when
-`authorized_keys` itself already matches. A server apply does not write (refused,
-or no grants) keeps a hand-removal warning instead. If the move fails, the server is
+`authorized_keys` itself already matches. A server apply does not write keeps a hand-removal warning instead; a server the
+manifest grants nobody whose `authorized_keys2` holds keys is refused (exit 1), never
+written. If the move fails, the server is
 reported `FAILED` (its `authorized_keys` was still written and verified).
 
 **Verify, then prove you can still log in.** After the rename the file is re-read in
 the same session and compared byte-exactly. Then SSHepherd opens a **fresh
-connection offering only the surviving keys you hold** (unrestricted ones first,
-then key files before agent keys, so a surviving `--identity` key is the one
-proven) and runs a probe command over it, so a surviving key whose line forces a `command=` fails
+connection offering only the surviving keys you hold**, in exactly the order every
+later connection offers them (see Connection posture), so the probe proves the key
+the next run logs in with; it no longer prefers `--identity` key files over agent
+keys. It runs a probe command over it, so a surviving key whose line forces a `command=` fails
 the probe just like a refused login. If the probe fails, the previous file (and a
 disabled `authorized_keys2`) is restored over the still-open session and the server
 is reported `FAILED: lockout prevented — restored previous file (…)`. The restore
@@ -1644,8 +1650,13 @@ tuned from the fan-out benchmarks). `known_hosts` is parsed once per run. Host-k
 algorithms are negotiated in the order `known_hosts` implies, so a host with an sshd
 `HostCertificate` still works when its plain key is pinned; certificate algorithms
 are offered only when a matching `@cert-authority` line exists. Keys granted on the
-server (operators first) are offered first, to avoid sshd `MaxAuthTries` lockouts
-with many held keys. Remote commands always run under `/bin/sh`.
+server are offered first, to avoid sshd `MaxAuthTries` lockouts with many held keys,
+in one order shared by audit, adopt, apply and the post-write probe: plain lines
+first, then lines that may reject the login (`from=`, `expiry-time=`, `restrict`),
+then forced `command=` lines, then certificate-only lines (`cert-authority`,
+`principals=`); manifest order (operators first, then grant order) within each group.
+A session therefore authenticates with an unrestricted key whenever one is held, so
+a key that gains a forced `command=` cannot capture later runs. Remote commands always run under `/bin/sh`.
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.

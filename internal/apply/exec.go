@@ -1,16 +1,14 @@
 package apply
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
@@ -98,7 +96,7 @@ func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []sshconn.HeldK
 		log.Warn(fmt.Sprintf("%s: %v", p.Server.Name, p.OutcomeErr))
 		return
 	}
-	fps := probeOrder(surviving, sourceMap(held))
+	fps := probeOrderFor(p.Desired, surviving)
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -123,36 +121,24 @@ func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []sshconn.HeldK
 	log.Warn(fmt.Sprintf("%s: %v", p.Server.Name, err))
 }
 
-// probeOrder orders the survivors the post-write probe offers,
-// deterministically across runs: unrestricted first — the probe runs a
-// command, sshd authenticates with the first acceptable key, and one whose
-// line forces command= (deliberately, say) would fail the probe and roll
-// back a write a plain survivor proves safe — then key files before agent
-// keys (so when an --identity key survives, the probe proves THAT key: the
-// one the next headless run will have), then fingerprint.
-func probeOrder(surviving []authkeys.Key, src map[string]string) []string {
-	surviving = slices.Clone(surviving)
-	rank := func(k authkeys.Key) int {
-		r := 0
-		if hasRestrictiveOption(k.Options) {
-			r += 2
-		}
-		if src[k.Fingerprint] == sshconn.SourceAgent {
-			r++
-		}
-		return r
-	}
-	slices.SortFunc(surviving, func(a, b authkeys.Key) int {
-		if c := cmp.Compare(rank(a), rank(b)); c != 0 {
-			return c
-		}
-		return strings.Compare(a.Fingerprint, b.Fingerprint)
-	})
-	fps := make([]string, 0, len(surviving))
+// probeOrderFor returns what the post-write probe offers: the survivors in
+// the order every later connection offers them (audit.OfferOrder over the
+// plan's desired keys — what GrantedFingerprints hands the Dialer). The
+// probe therefore proves exactly the key the next run logs in with, and a
+// forced command= line is offered only after every plain survivor.
+func probeOrderFor(desired, surviving []authkeys.Key) []string {
+	keep := make(map[string]bool, len(surviving))
 	for _, k := range surviving {
-		fps = append(fps, k.Fingerprint)
+		keep[k.Fingerprint] = true
 	}
-	return fps
+	var order []string
+	for _, fp := range audit.OfferOrder(desired) {
+		if keep[fp] {
+			order = append(order, fp)
+			delete(keep, fp)
+		}
+	}
+	return order
 }
 
 // Interrupted counts the change plans phase 2 never started because the

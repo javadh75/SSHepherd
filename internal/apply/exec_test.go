@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
@@ -213,6 +215,44 @@ func TestExecuteProbesUnrestrictedSurvivorsFirst(t *testing.T) {
 	got := w.calls["s"].Survivors
 	if fmt.Sprint(got) != fmt.Sprint([]string{plain.Fingerprint, restricted.Fingerprint}) {
 		t.Errorf("Survivors = %v, want the unrestricted key first", got)
+	}
+}
+
+// TestProbeOfferEqualsProductionOffer (WP-5): the probe offers survivors in
+// exactly the order every later connection will (GrantedFingerprints
+// filtered to held keys), so a key that gains command= and is listed first
+// can never pass the probe and then capture the next session.
+func TestProbeOfferEqualsProductionOffer(t *testing.T) {
+	y := `
+users:
+  - {name: backup, keys: ["command=\"rrsync -ro /\" ` + testkeys.Line(t, 1) + `"]}
+  - {name: admin, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: s, host: 10.0.0.1, user: deploy}
+access:
+  - {user: backup, servers: [s]}
+  - {user: admin, servers: [s]}
+`
+	cfg, err := config.Parse([]byte(y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := agentHeld(fp(t, 1), fp(t, 2))
+	plans := buildPlansHeld(t, cfg, &fakeReader{byName: map[string]audit.ReadResult{"s": {FileAbsent: true}}}, held)
+	w := &fakeWriter{}
+	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: held})
+	isHeld := map[string]bool{}
+	for _, h := range held {
+		isHeld[h.Fingerprint] = true
+	}
+	var want []string
+	for _, f := range audit.GrantedFingerprints(cfg, "s") {
+		if isHeld[f] {
+			want = append(want, f)
+		}
+	}
+	if got := w.calls["s"].Survivors; !slices.Equal(got, want) || len(got) == 0 || got[0] != fp(t, 2) {
+		t.Errorf("probe offers %v, production offers %v; want equal, admin's plain key first", got, want)
 	}
 }
 

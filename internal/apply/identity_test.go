@@ -149,27 +149,37 @@ func TestExecuteRecheckAcrossSources(t *testing.T) {
 	})
 }
 
+// TestProbeOrder (WP-5): the probe offers audit.OfferOrder(desired)
+// filtered to the survivors — the order every later connection offers —
+// whatever order the survivors arrive in, and with no preference for
+// --identity files over agent keys.
 func TestProbeOrder(t *testing.T) {
-	keys := []authkeys.Key{testKey(t, 1), testKey(t, 2), testKey(t, 3), testKey(t, 4)}
-	restrictedFile := keys[3]
-	restrictedFile.Options = []string{`from="10.0.0.1"`}
-	desired := []authkeys.Key{keys[0], keys[1], keys[2], restrictedFile}
-	src := map[string]string{
-		keys[0].Fingerprint: sshconn.SourceAgent,
-		keys[1].Fingerprint: "/k/b",
-		keys[2].Fingerprint: "/k/c",
-		keys[3].Fingerprint: "/k/d",
+	plainA, plainB := testKey(t, 1), testKey(t, 3)
+	from := testKey(t, 4)
+	from.Options = []string{`from="10.0.0.1"`}
+	forced := testKey(t, 2)
+	forced.Options = []string{`command="/bin/true"`}
+	gone := testKey(t, 5) // desired but not held: never offered
+	// Manifest order: forced, plainB, gone, from, plainA.
+	desired := []authkeys.Key{forced, plainB, gone, from, plainA}
+	surviving := []authkeys.Key{plainA, from, forced, plainB}
+	want := []string{plainB.Fingerprint, plainA.Fingerprint, from.Fingerprint, forced.Fingerprint}
+	var wantOffer []string
+	for _, fp := range audit.OfferOrder(desired) {
+		if fp != gone.Fingerprint {
+			wantOffer = append(wantOffer, fp)
+		}
 	}
-	files := []string{keys[1].Fingerprint, keys[2].Fingerprint}
-	slices.Sort(files)
-	want := append(append(files, keys[0].Fingerprint), keys[3].Fingerprint)
-	if got := probeOrder(desired, src); !slices.Equal(got, want) {
-		t.Errorf("probeOrder = %v, want unrestricted files (by fingerprint), unrestricted agent, then restricted: %v", got, want)
+	if !slices.Equal(want, wantOffer) {
+		t.Fatalf("test premise: OfferOrder filtered = %v, want %v", wantOffer, want)
 	}
-	// Deterministic whatever the desired order.
-	rev := slices.Clone(desired)
+	if got := probeOrderFor(desired, surviving); !slices.Equal(got, want) {
+		t.Errorf("probeOrderFor = %v, want plain keys in manifest order, then from=, then command=: %v", got, want)
+	}
+	// The same whatever the survivors' order.
+	rev := slices.Clone(surviving)
 	slices.Reverse(rev)
-	if got := probeOrder(rev, src); !slices.Equal(got, want) {
-		t.Errorf("probeOrder(reversed) = %v, want %v", got, want)
+	if got := probeOrderFor(desired, rev); !slices.Equal(got, want) {
+		t.Errorf("probeOrderFor(reversed survivors) = %v, want %v", got, want)
 	}
 }
