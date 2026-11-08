@@ -12,7 +12,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 // hermeticFleet runs one in-process SSH server (commands through the local
@@ -168,6 +170,9 @@ func TestAuditInterruptedMidFanOutExits3(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "interrupted") {
 		t.Errorf("stderr = %q, want the interrupt surfaced", errBuf.String())
 	}
+	if strings.Contains(errBuf.String(), "warn:") {
+		t.Errorf("a canceled read must not warn (one \"interrupted\" line only):\n%s", errBuf.String())
+	}
 }
 
 // TestAdoptInterruptedMidFanOutWritesNothing: Ctrl-C during adopt --partial
@@ -209,4 +214,40 @@ func TestApplyInterruptedDuringPlanExits3(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "interrupted") {
 		t.Errorf("stderr = %q, want the interrupt surfaced", errBuf.String())
 	}
+}
+
+// TestAuditClosedPortsHintOnce: the real transport through the real CLI —
+// two refused servers give two clean [dial] heads, one hint line, and
+// stderr warn lines without the hint. Its stdout is the README's source for
+// real dial-error samples.
+func TestAuditClosedPortsHintOnce(t *testing.T) {
+	fakeAgent(t)
+	kh := writeEmptyKnownHosts(t)
+	p1, p2 := closedPort(t), closedPort(t)
+	path := writeConfig(t, fmt.Sprintf(`
+users:
+  - {name: alice, keys: ["%s"]}
+servers:
+  - {name: web-1, host: 127.0.0.1, port: %d, user: deploy}
+  - {name: web-2, host: 127.0.0.1, port: %d, user: deploy}
+access:
+  - {user: alice, servers: [web-1, web-2]}
+`, testkeys.Line(t, 1), p1, p2))
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", path, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	for _, p := range []int{p1, p2} {
+		want := fmt.Sprintf("ERROR [dial]: dial tcp 127.0.0.1:%d: connect: connection refused\n", p)
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
+	}
+	if n := strings.Count(out.String(), "  hint: "+sshconn.DialHint+"\n"); n != 1 {
+		t.Errorf("hint printed %d times on stdout, want 1:\n%s", n, out.String())
+	}
+	if strings.Contains(errBuf.String(), "hint") {
+		t.Errorf("live warn lines must not repeat the hint:\n%s", errBuf.String())
+	}
+	t.Logf("README sample source:\n%s", out.String())
 }

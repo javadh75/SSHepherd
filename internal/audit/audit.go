@@ -148,8 +148,13 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	read, err := reader.ReadAuthorizedKeys(ctx, srv)
 	if err != nil {
 		// Live telemetry: the report will also show this, but during a slow
-		// fan-out the operator sees which server failed as it happens.
-		log.Warn(fmt.Sprintf("%s: %v", srv.Name, err))
+		// fan-out the operator sees which server failed as it happens. A
+		// canceled read is the operator's own Ctrl-C: the command exits 3
+		// with one "interrupted" line, so a warning per queued server would
+		// only bury it.
+		if ErrorKindOf(err) != ErrorKindCanceled {
+			log.Warn(fmt.Sprintf("%s: %v", srv.Name, err))
+		}
 		res.Err = err
 		return res
 	}
@@ -204,8 +209,19 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
+			// Ctrl-C stops the queue: a server still waiting for a slot is
+			// never dialed (the same select apply.Execute uses).
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results[i] = canceledResult(ctx, cfg, srv)
+				return
+			}
 			defer func() { <-sem }()
+			if ctx.Err() != nil { // both select cases were ready
+				results[i] = canceledResult(ctx, cfg, srv)
+				return
+			}
 			results[i] = auditOne(ctx, cfg, reader, srv, opts.PerServerTimeout, log)
 		}()
 	}
@@ -214,4 +230,16 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 		return results[a].Server.Name < results[b].Server.Name
 	})
 	return results
+}
+
+// canceledResult is a server the run never read because ctx ended first.
+// ErrorKindOf classifies the wrapped context error (canceled or timeout),
+// so callers (cmd's interrupted(), apply's plan) see the same kind a read
+// cut short would have produced.
+func canceledResult(ctx context.Context, cfg *config.Config, srv config.Server) ServerResult {
+	return ServerResult{
+		Server:         srv,
+		NoUsersGranted: len(cfg.DesiredFor(srv.Name)) == 0,
+		Err:            fmt.Errorf("not read: %w", ctx.Err()),
+	}
 }

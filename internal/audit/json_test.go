@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -315,5 +316,41 @@ func TestRenderJSONSanitizesHostileText(t *testing.T) {
 		if strings.ContainsRune(flat, r) {
 			t.Errorf("hostile rune %U survived:\n%s", r, got)
 		}
+	}
+}
+
+// TestRenderJSONHintField: hint is additive and separate — error holds only
+// the error, hint the sanitized remediation, absent when there is none.
+func TestRenderJSONHintField(t *testing.T) {
+	cfg := reportConfig(t)
+	hostile := hintedErr{kindedErr{ErrorKindDial, "dial tcp 10.0.0.2:22: connect: connection refused"}, "fix\nit \x1b[31mnow\u202e"}
+	var rep jsonReport
+	raw := renderJSON(t, cfg, []ServerResult{{Server: cfg.Servers[0], Err: hostile}, {Server: cfg.Servers[1], Err: errors.New("boom")}})
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatal(err)
+	}
+	s0, s1 := rep.Servers[0], rep.Servers[1]
+	if *s0.Error != "dial tcp 10.0.0.2:22: connect: connection refused" || s0.ErrorKind != "dial" || s0.Hint != "fix it [31mnow" {
+		t.Errorf("server 0 = error %q kind %q hint %q", *s0.Error, s0.ErrorKind, s0.Hint)
+	}
+	if s1.Hint != "" || bytes.Count(raw, []byte(`"hint"`)) != 1 {
+		t.Errorf("hint must be omitted when the error carries none:\n%s", raw)
+	}
+}
+
+// TestRenderJSONUnauthorizedOptions: on-server options of an unowned key are
+// additive `options` (sanitized), absent when the key has none.
+func TestRenderJSONUnauthorizedOptions(t *testing.T) {
+	cfg := reportConfig(t)
+	reader := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(`no-pty,command="x` + "\u202e" + `" ` + testkeys.Line(t, 9) + " a@b\n" + testkeys.Line(t, 8) + "\n")},
+	}, errs: map[string]error{"web-2": errors.New("boom")}}
+	var rep jsonReport
+	if err := json.Unmarshal(renderJSON(t, cfg, Run(context.Background(), cfg, reader, Options{Parallel: 1})), &rep); err != nil {
+		t.Fatal(err)
+	}
+	u := rep.Servers[0].Keys.Unauthorized
+	if len(u) != 2 || !slices.Equal(u[0].Options, []string{"no-pty", `command="x"`}) || u[1].Options != nil {
+		t.Errorf("unauthorized = %+v, want options on the first key only, U+202E stripped", u)
 	}
 }

@@ -89,7 +89,8 @@
               "from": "alice@old",
               "to": "alice@work"
             },
-            "loosens": []
+            "loosens": [],
+            "widens": []
           }
         ],
         "normalize": {
@@ -137,8 +138,9 @@
       "user": "deploy",
       "class": "unreachable",
       "outcome": null,
-      "error": "dial tcp 10.0.0.3:22: connection refused",
-      "error_kind": "unknown",
+      "error": "dial tcp 10.0.0.3:22: connect: connection refused",
+      "error_kind": "dial",
+      "hint": "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet",
       "changes": {
         "add": [],
         "remove": [],

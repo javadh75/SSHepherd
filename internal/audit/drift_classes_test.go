@@ -51,7 +51,8 @@ func TestErrorKindOf(t *testing.T) {
 func errorKindResults(t *testing.T, cfg *config.Config) []ServerResult {
 	t.Helper()
 	reader := &fakeReader{errs: map[string]error{
-		"web-1": kindedErr{ErrorKindHostKeyChanged, "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch"},
+		"web-1": hintedErr{kindedErr{ErrorKindHostKeyChanged, "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch"},
+			"HOST KEY CHANGED for 10.0.0.1:22 — possible impersonation; investigate and verify the new fingerprint out of band before touching ~/.ssh/known_hosts"},
 		"web-2": kindedErr{ErrorKindAuth, "ssh deploy@10.0.0.2:22: ssh: unable to authenticate"},
 	}}
 	return Run(context.Background(), cfg, reader, Options{Parallel: 2})
@@ -102,10 +103,41 @@ func TestHostKeyChangedIsCritical(t *testing.T) {
 	}
 }
 
+// hintedErr is a reader error carrying kind and hint, the way sshconn.Error does.
+type hintedErr struct {
+	kindedErr
+	hint string
+}
+
+func (e hintedErr) ErrorHint() string { return e.hint }
+
+func TestHintOf(t *testing.T) {
+	h := hintedErr{kindedErr{ErrorKindDial, "dial tcp x: refused"}, "check the firewall"}
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"plain", errors.New("boom"), ""},
+		{"hinted", h, "check the firewall"},
+		{"hinted behind wrappers", fmt.Errorf("read: %w", h), "check the firewall"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HintOf(tt.err); got != tt.want {
+				t.Errorf("HintOf = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnknownErrorKindStaysPlain(t *testing.T) {
 	cfg := reportConfig(t)
 	var buf bytes.Buffer
-	Render(&buf, cfg, driftResults(t, cfg), RenderOptions{})
+	Render(&buf, cfg, []ServerResult{{Server: cfg.Servers[1], Err: errors.New("boom")}}, RenderOptions{})
+	if !strings.Contains(buf.String(), "ERROR: boom") {
+		t.Errorf("an unclassified error must render its plain ERROR: head:\n%s", buf.String())
+	}
 	if strings.Contains(buf.String(), "ERROR [") {
 		t.Errorf("an unclassified error must keep the plain ERROR: head:\n%s", buf.String())
 	}

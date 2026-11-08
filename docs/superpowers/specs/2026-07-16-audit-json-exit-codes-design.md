@@ -115,6 +115,14 @@ are always present.
 - **Empty fleet**: valid document, `servers: []`, all counts 0, exit 0. The
   current early-return path must also honor `--json`.
 
+- **Amendment (2026-11-08, P07):** additive, schema stays 1. `servers[].hint`
+  holds the failure's remediation (sanitized, one line). It is omitted when
+  there is none and is never part of `error`, so `error` stays groupable.
+  `keys.unauthorized[].options` lists the on-server options of a key the
+  manifest does not own (sanitized). It is omitted when there are none. A
+  refused dial's `error` names the address once
+  (`dial tcp 10.0.0.2:22: connect: connection refused`, `error_kind` `dial`).
+
 ## Implementation shape
 
 - `internal/audit/json.go`: unexported report/server/key structs with json

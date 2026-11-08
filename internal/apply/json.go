@@ -90,15 +90,18 @@ type jsonEmptied struct {
 }
 
 type jsonServer struct {
-	Name                    string      `json:"name"`
-	Host                    string      `json:"host"`
-	Port                    int         `json:"port"`
-	User                    string      `json:"user"`
-	AuthorizedKeysFile      string      `json:"authorized_keys_file,omitempty"`
-	Class                   string      `json:"class"`
-	Outcome                 *string     `json:"outcome"`
-	Error                   *string     `json:"error"`
-	ErrorKind               string      `json:"error_kind,omitempty"`
+	Name               string  `json:"name"`
+	Host               string  `json:"host"`
+	Port               int     `json:"port"`
+	User               string  `json:"user"`
+	AuthorizedKeysFile string  `json:"authorized_keys_file,omitempty"`
+	Class              string  `json:"class"`
+	Outcome            *string `json:"outcome"`
+	Error              *string `json:"error"`
+	ErrorKind          string  `json:"error_kind,omitempty"`
+	// Hint is additive-optional (schema stays 1): operator remediation for
+	// error (unreachable or phase-2 failure), sanitized; never part of error.
+	Hint                    string      `json:"hint,omitempty"`
 	Changes                 jsonChanges `json:"changes"`
 	FileAbsent              bool        `json:"file_absent"`
 	AuthorizedKeys2Present  bool        `json:"authorized_keys2_present"`
@@ -122,6 +125,10 @@ type jsonKey struct {
 	Type        string  `json:"type"`
 	Comment     string  `json:"comment,omitempty"`
 	Operator    bool    `json:"operator,omitempty"`
+	// Options is additive-optional (schema stays 1): remove keys neither
+	// the rendered nor the former manifest owns, their on-server options,
+	// sanitized.
+	Options []string `json:"options,omitempty"`
 }
 
 // jsonRewrite is not a key object: only what changes is present.
@@ -133,6 +140,10 @@ type jsonRewrite struct {
 	OptionsChange *jsonOptionsChange `json:"options_change,omitempty"`
 	CommentChange *jsonCommentChange `json:"comment_change,omitempty"`
 	Loosens       []string           `json:"loosens"`
+	// Widens is additive (schema stays 1), always present like loosens:
+	// the relaxing options the rewrite adds (no-touch-required, or
+	// pty/port-forwarding/… under restrict), [] when none.
+	Widens []string `json:"widens"`
 }
 
 type jsonOptionsChange struct {
@@ -286,7 +297,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 		outcome := string(p.Outcome)
 		s.Outcome = &outcome
 	}
-	s.Error, s.ErrorKind = jsonErrorFor(p)
+	s.Error, s.ErrorKind, s.Hint = jsonErrorFor(p)
 	for _, k := range p.Add {
 		jk := jsonKeyFor(cfg, opts.Former, k)
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
@@ -295,7 +306,11 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 		s.Changes.Add = append(s.Changes.Add, jk)
 	}
 	for _, k := range p.Remove {
-		s.Changes.Remove = append(s.Changes.Remove, jsonKeyFor(cfg, opts.Former, k))
+		jk := jsonKeyFor(cfg, opts.Former, k)
+		if jk.Owner == nil && jk.FormerOwner == "" && len(k.Options) > 0 {
+			jk.Options = cleanAll(k.Options)
+		}
+		s.Changes.Remove = append(s.Changes.Remove, jk)
 	}
 	for _, rw := range p.Rewrites {
 		s.Changes.Rewrite = append(s.Changes.Rewrite, jsonRewriteFor(cfg, rw))
@@ -303,30 +318,43 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 	return s
 }
 
-// jsonErrorFor picks the server's error text and kind: the unreachable
-// error (kind from audit's classifier), the plan refusal (no kind), or the
-// phase-2 outcome error — "canceled" only on a pending server phase 2 never
-// started, so "not started" is detectable without parsing English.
-func jsonErrorFor(p ServerPlan) (*string, string) {
+// jsonErrorFor picks the server's error text, kind and hint: the
+// unreachable error (kind from audit's classifier), the plan refusal (no
+// kind, no hint), or the phase-2 outcome error — "canceled" on a pending
+// server phase 2 never started, so "not started" is detectable without
+// parsing English; otherwise the kind the transport attached (ARC-3: e.g.
+// host_key_changed when the host key changed between plan and write, auth,
+// timeout), none for refusals and unclassified write/verify errors. A
+// LockoutError unwraps to its probe error, so a refused probe reports
+// "auth". The hint is the error's remediation (audit.CleanHint), never part
+// of the message.
+func jsonErrorFor(p ServerPlan) (msg *string, kind, hint string) {
 	switch p.Class {
 	case ClassUnreachable:
 		if p.Err != nil {
-			msg := cleanLine(p.Err.Error())
-			return &msg, string(audit.ErrorKindOf(p.Err))
+			m := cleanLine(p.Err.Error())
+			return &m, string(audit.ErrorKindOf(p.Err)), audit.CleanHint(p.Err)
 		}
 	case ClassRefused:
-		msg := cleanLine(p.Refusal)
-		return &msg, ""
+		m := cleanLine(p.Refusal)
+		return &m, "", ""
 	case ClassChange:
 		if p.OutcomeErr != nil {
-			msg := cleanLine(p.OutcomeErr.Error())
+			m := cleanLine(p.OutcomeErr.Error())
 			if p.Outcome == OutcomePending && errors.Is(p.OutcomeErr, errInterrupted) {
-				return &msg, string(audit.ErrorKindCanceled)
+				return &m, string(audit.ErrorKindCanceled), ""
 			}
-			return &msg, ""
+			// A transport-classified failure (host key changed at the
+			// write connect, auth, timeout…) keeps its kind; refusals and
+			// unclassified write/verify errors carry none, as before.
+			hint := audit.CleanHint(p.OutcomeErr)
+			if k := audit.ErrorKindOf(p.OutcomeErr); k != audit.ErrorKindUnknown {
+				return &m, string(k), hint
+			}
+			return &m, "", hint
 		}
 	}
-	return nil, ""
+	return nil, "", ""
 }
 
 // jsonKeyFor renders a key object: the comment is the key's own (on-server
@@ -350,9 +378,11 @@ func jsonKeyFor(cfg, former *config.Config, k authkeys.Key) jsonKey {
 }
 
 // jsonRewriteFor renders a rewrite row: only what changes, plus loosens
-// (the dropped restrictive options verbatim, [] when none).
+// (the dropped restrictive options verbatim, [] when none) and widens (the
+// added relaxing options, [] when none).
 func jsonRewriteFor(cfg *config.Config, rw RewriteRow) jsonRewrite {
-	jr := jsonRewrite{Fingerprint: rw.Key.Fingerprint, Type: rw.Key.Type, Loosens: cleanAll(rw.Loosens)}
+	jr := jsonRewrite{Fingerprint: rw.Key.Fingerprint, Type: rw.Key.Type,
+		Loosens: cleanAll(rw.Loosens), Widens: cleanAll(rw.Widens)}
 	if u, ok := cfg.OwnerOf(rw.Key.Fingerprint); ok {
 		name := u.Name
 		jr.Owner = &name

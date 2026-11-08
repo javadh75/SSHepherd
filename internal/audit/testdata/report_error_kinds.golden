@@ -1,4 +1,5 @@
 web-1 (deploy@10.0.0.1:22)  ERROR [host_key_changed]: ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch
+  hint: HOST KEY CHANGED for 10.0.0.1:22 — possible impersonation; investigate and verify the new fingerprint out of band before touching ~/.ssh/known_hosts
 
 web-2 (deploy@10.0.0.2:22)  ERROR [auth]: ssh deploy@10.0.0.2:22: ssh: unable to authenticate
 

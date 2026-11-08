@@ -1366,3 +1366,17 @@ func TestApplyDisablesKeys2BeforeTheProbe(t *testing.T) {
 		}
 	})
 }
+
+// TestApplyConnectErrorKeepsKind pins ARC-3's precondition: a classified
+// connect failure keeps its kind through connectForWrite's SanitizedError
+// wrapping, so apply's JSON can report it as error_kind.
+func TestApplyConnectErrorKeepsKind(t *testing.T) {
+	w := &FleetWriter{connect: func(context.Context, config.Server, sshconn.ConnectOptions) (*sshconn.Conn, error) {
+		return nil, &sshconn.Error{Kind: audit.ErrorKindHostKeyChanged, Err: errors.New("knownhosts: key mismatch")}
+	}}
+	err := w.Apply(context.Background(), config.Server{Name: "a", Host: "10.0.0.1", Port: 22, User: "deploy"},
+		Request{Content: []byte("x\n"), Survivors: []string{"SHA256:x"}})
+	if got := audit.ErrorKindOf(err); got != audit.ErrorKindHostKeyChanged {
+		t.Fatalf("ErrorKindOf(%v) = %q, want host_key_changed", err, got)
+	}
+}

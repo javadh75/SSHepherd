@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -394,7 +397,8 @@ func TestRenderJSONSanitizes(t *testing.T) {
 	cfg := planCfg(t)
 	content := testkeys.Line(t, 1) + " op@sshepherd\n" +
 		`from="10.0.0.5` + hostile + `" ` + testkeys.Line(t, 2) + " alice@work\n" +
-		testkeys.Line(t, 9) + " " + hostile + "\n"
+		testkeys.Line(t, 9) + " " + hostile + "\n" +
+		`command="/bin/` + hostile + `" ` + testkeys.Line(t, 8) + " backup@nas\n"
 	r := &fakeReader{
 		byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}},
 	}
@@ -433,6 +437,49 @@ func TestRenderJSONSanitizes(t *testing.T) {
 		}
 	}
 	walk(decoded)
+	// The unowned remove key's on-server options arrive sanitized.
+	var doc jsonDoc
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, k := range doc.Servers[serverNamed(t, d, "web-1")].Changes.Remove {
+		if k.Fingerprint == fp(t, 8) {
+			found = true
+			if want := []string{`command="/bin/x[31m2Jy"`}; !slices.Equal(k.Options, want) {
+				t.Errorf("remove options = %q, want %q", k.Options, want)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("fixture lacks the optioned remove key:\n%s", out)
+	}
+}
+
+// TestRenderJSONHintAndRemoveOptions: unreachable and failed servers carry
+// the hint beside, never inside, error; remove keys carry on-server options.
+func TestRenderJSONHintAndRemoveOptions(t *testing.T) {
+	cfg, plans := mixedPlans(t)
+	plans = append(plans, ServerPlan{Server: config.Server{Name: "w"}, Class: ClassChange, Outcome: OutcomeFailed, OutcomeErr: dialRefused("10.0.0.7")})
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, cfg, plans, JSONOptions{Command: "apply", DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	var doc jsonDoc
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range doc.Servers {
+		if s.Name != "web-3" && s.Name != "w" {
+			if s.Hint != "" {
+				t.Errorf("%s: unexpected hint %q", s.Name, s.Hint)
+			}
+			continue
+		}
+		if s.ErrorKind != "dial" || s.Hint != sshconn.DialHint || strings.Contains(*s.Error, "hint") {
+			t.Errorf("%s: error %q kind %q hint %q", s.Name, *s.Error, s.ErrorKind, s.Hint)
+		}
+	}
 }
 
 func TestRenderJSONDryRunAllPending(t *testing.T) {
@@ -507,5 +554,71 @@ func TestRenderJSONKeepOld(t *testing.T) {
 	out = renderJSONCfg(t, planCfg(t), nil, JSONOptions{Command: "rotate", Edit: &plain})
 	if strings.Count(string(out), `"keep_old"`) != 1 || !strings.Contains(string(out), `"keep_old": false`) {
 		t.Errorf("want keep_old: false on the rotate entry only:\n%s", out)
+	}
+}
+
+// TestRenderJSONRewriteWidens: a rewrite that adds relaxing options carries
+// them as widens; one that adds none carries widens: [] (always present,
+// like loosens).
+func TestRenderJSONRewriteWidens(t *testing.T) {
+	plans := []ServerPlan{{
+		Server: srv("web-1"), Class: ClassChange, Outcome: OutcomePending,
+		Rewrites: []RewriteRow{
+			{Key: testKey(t, 1), Widens: []string{"no-touch-required"}},
+			{Key: testKey(t, 2), CommentDiffers: true, ActualComment: "a", DesiredComment: "b"},
+		},
+	}}
+	out := renderJSONCfg(t, planCfg(t), plans, JSONOptions{Command: "apply", DryRun: true})
+	d := decodeDoc(t, out)
+	rw := d.Servers[0].Changes.Rewrite
+	if len(rw) != 2 {
+		t.Fatalf("rewrite = %v, want 2 rows", rw)
+	}
+	if got := fmt.Sprint(rw[0]["widens"]); got != "[no-touch-required]" {
+		t.Errorf("widens = %s, want [no-touch-required]:\n%s", got, out)
+	}
+	if w, ok := rw[1]["widens"].([]any); !ok || len(w) != 0 {
+		t.Errorf("a rewrite without widening must carry widens: [], got %v:\n%s", rw[1]["widens"], out)
+	}
+}
+
+// srv is a bare server named name, enough for jsonErrorFor.
+func srv(name string) config.Server { return config.Server{Name: name} }
+
+// writeKindErr stands in for a classified transport error (sshconn.Error)
+// that reaches a plan's OutcomeErr through sshwrite's wrappers.
+type writeKindErr struct{ kind audit.ErrorKind }
+
+func (e writeKindErr) Error() string              { return "ssh deploy@10.0.0.1:22: knownhosts: key mismatch" }
+func (e writeKindErr) ErrorKind() audit.ErrorKind { return e.kind }
+
+// TestJSONErrorKindWritePhase: a write-phase failure keeps the kind the
+// transport attached (ARC-3), so a host key that changed between plan and
+// write is distinguishable from an ordinary verify failure. Unclassified
+// write errors and refusals keep no kind, so existing documents are unchanged.
+func TestJSONErrorKindWritePhase(t *testing.T) {
+	tests := []struct {
+		name string
+		p    ServerPlan
+		want string
+	}{
+		{"host key changed at write connect", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
+			OutcomeErr: fmt.Errorf("write on a: %w", writeKindErr{audit.ErrorKindHostKeyChanged})}, "host_key_changed"},
+		{"dial at write connect", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
+			OutcomeErr: writeKindErr{audit.ErrorKindDial}}, "dial"},
+		{"unclassified verify failure", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
+			OutcomeErr: errors.New("verify failed")}, ""},
+		{"refusal", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeRefused,
+			OutcomeErr: errors.New("target is a symlink")}, ""},
+		{"interrupted pending", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomePending,
+			OutcomeErr: errInterrupted}, "canceled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, kind, _ := jsonErrorFor(tt.p)
+			if msg == nil || kind != tt.want {
+				t.Errorf("jsonErrorFor = (%v, %q), want kind %q", msg, kind, tt.want)
+			}
+		})
 	}
 }

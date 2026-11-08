@@ -77,6 +77,24 @@ func ErrorKindOf(err error) ErrorKind {
 	return ErrorKindUnknown
 }
 
+// Hinted is implemented by reader errors that carry operator remediation
+// separately from the message (sshconn.Error). The hint never appears in
+// Error(): reports print it on its own line, once, and JSON carries it as
+// `hint`, so `error` stays groupable.
+type Hinted interface {
+	error
+	ErrorHint() string
+}
+
+// HintOf returns the hint of the first Hinted in err's chain; "" if none.
+func HintOf(err error) string {
+	var h Hinted
+	if errors.As(err, &h) {
+		return h.ErrorHint()
+	}
+	return ""
+}
+
 // hostKeyAlert reports whether kind is a host-key failure that may mean the
 // server is being impersonated — exit 2, not a mere unreachable.
 func hostKeyAlert(kind ErrorKind) bool {

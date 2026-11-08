@@ -256,6 +256,65 @@ func TestRunLogsPerServer(t *testing.T) {
 	}
 }
 
+// countingReader counts reads; any read after cancellation is a wasted dial.
+type countingReader struct{ calls atomic.Int32 }
+
+func (c *countingReader) ReadAuthorizedKeys(ctx context.Context, _ config.Server) (ReadResult, error) {
+	c.calls.Add(1)
+	return ReadResult{}, fmt.Errorf("read: %w", ctx.Err())
+}
+
+// TestRunPreCanceledReadsNothing: a run whose ctx is already canceled takes
+// no slot, dials nothing, and marks every server canceled without a warning.
+func TestRunPreCanceledReadsNothing(t *testing.T) {
+	cfg := fleetConfig(t, 50)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := &countingReader{}
+	var logBuf bytes.Buffer
+	log := slog.New(clog.NewHandler(&logBuf, clog.Options{Level: slog.LevelDebug}))
+	results := Run(ctx, cfg, r, Options{Parallel: 1, Logger: log})
+	if n := r.calls.Load(); n != 0 {
+		t.Errorf("reader called %d times on a canceled run, want 0", n)
+	}
+	for _, res := range results {
+		if ErrorKindOf(res.Err) != ErrorKindCanceled {
+			t.Fatalf("%s: err %v (kind %q), want canceled", res.Server.Name, res.Err, ErrorKindOf(res.Err))
+		}
+	}
+	if strings.Contains(logBuf.String(), "warn:") {
+		t.Errorf("canceled servers must not warn:\n%s", logBuf.String())
+	}
+}
+
+// cancelingReader cancels the run from inside the first read (Ctrl-C
+// mid-fan-out) and reports the canceled ctx, like sshconn would.
+type cancelingReader struct {
+	countingReader
+	cancel context.CancelFunc
+}
+
+func (c *cancelingReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (ReadResult, error) {
+	c.cancel()
+	return c.countingReader.ReadAuthorizedKeys(ctx, srv)
+}
+
+func TestRunCancelMidFanOutStopsQueue(t *testing.T) {
+	cfg := fleetConfig(t, 50)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelingReader{cancel: cancel}
+	var logBuf bytes.Buffer
+	log := slog.New(clog.NewHandler(&logBuf, clog.Options{Level: slog.LevelDebug}))
+	Run(ctx, cfg, r, Options{Parallel: 1, Logger: log})
+	if n := r.calls.Load(); n != 1 {
+		t.Errorf("reads = %d, want 1 (queued servers must not dial after Ctrl-C)", n)
+	}
+	if strings.Contains(logBuf.String(), "warn:") {
+		t.Errorf("canceled reads must not warn:\n%s", logBuf.String())
+	}
+}
+
 // TestRunNilLoggerSafe: Options.Logger is optional.
 func TestRunNilLoggerSafe(t *testing.T) {
 	cfg := reportConfig(t)

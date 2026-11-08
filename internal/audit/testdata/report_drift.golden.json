@@ -55,8 +55,9 @@
       "port": 22,
       "user": "deploy",
       "status": "unreachable",
-      "error": "dial tcp 10.0.0.2:22: connection refused",
-      "error_kind": "unknown",
+      "error": "dial tcp 10.0.0.2:22: connect: connection refused",
+      "error_kind": "dial",
+      "hint": "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet",
       "keys": {
         "present": [],
         "missing": [],

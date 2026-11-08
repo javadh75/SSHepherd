@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,8 +11,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -166,14 +170,18 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			if got := kindOf(t, err); got != tt.kind {
 				t.Errorf("kind = %q, want %q (err: %v)", got, tt.kind, err)
 			}
+			if strings.Contains(err.Error(), "hint:") || strings.ContainsAny(err.Error(), "\n") {
+				t.Errorf("message %q must not embed the hint", err)
+			}
+			full := err.Error() + "\n" + audit.HintOf(err)
 			for _, w := range tt.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("error lacks %q:\n%v", w, err)
+				if !strings.Contains(full, w) {
+					t.Errorf("error + hint lacks %q:\n%s", w, full)
 				}
 			}
 			for _, w := range tt.notWant {
-				if strings.Contains(err.Error(), w) {
-					t.Errorf("error must not contain %q:\n%v", w, err)
+				if strings.Contains(full, w) {
+					t.Errorf("error + hint must not contain %q:\n%s", w, full)
 				}
 			}
 			if n := len(f.srv.Attempts()); n != 0 {
@@ -270,7 +278,10 @@ func TestConnectDeadlineAndCancel(t *testing.T) {
 	})
 }
 
-func TestConnectDialRefusedMentionsBastion(t *testing.T) {
+// TestConnectDialRefusedHintIsSeparate: a refused dial names the address
+// once, says "dial" once, carries no hint text in its message, and exposes
+// the bastion hint through audit.HintOf.
+func TestConnectDialRefusedHintIsSeparate(t *testing.T) {
 	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -285,8 +296,50 @@ func TestConnectDialRefusedMentionsBastion(t *testing.T) {
 	if got := kindOf(t, err); got != audit.ErrorKindDial {
 		t.Errorf("kind = %q, want dial", got)
 	}
-	if !strings.Contains(err.Error(), "ProxyJump") {
-		t.Errorf("dial hint must mention bastions: %v", err)
+	msg := err.Error()
+	addr := "127.0.0.1:" + strconv.Itoa(port)
+	if strings.Count(msg, "dial") != 1 || strings.Count(msg, addr) != 1 {
+		t.Errorf("message %q: want exactly one \"dial\" and one %q", msg, addr)
+	}
+	if strings.Contains(msg, "hint") || strings.ContainsAny(msg, "\n") {
+		t.Errorf("message %q must not embed the hint", msg)
+	}
+	if h := audit.HintOf(err); h != DialHint {
+		t.Errorf("HintOf = %q, want DialHint", h)
+	}
+}
+
+// TestAuditGoldenCarriesDialHint: audit's goldens (and the README samples
+// copied from them) use a mirror of DialHint; this keeps the mirror honest.
+func TestAuditGoldenCarriesDialHint(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "audit", "testdata", "report_drift.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte("  hint: "+DialHint+"\n")) {
+		t.Error("internal/audit/testdata/report_drift.golden does not carry sshconn.DialHint verbatim; update testDialHint in internal/audit/report_test.go")
+	}
+}
+
+// TestDialErr: the address is added only when the net error does not
+// already name it (a DNS failure names the host, not host:port).
+func TestDialErr(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Net: "tcp", Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 22},
+		Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	lookup := &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "web-1.invalid"}}
+	for _, tt := range []struct {
+		name, addr string
+		in         error
+		want       string
+	}{
+		{"refused names addr", "10.0.0.1:22", refused, "dial tcp 10.0.0.1:22: connect: connection refused"},
+		{"lookup gets addr", "web-1.invalid:22", lookup, "dial web-1.invalid:22: dial tcp: lookup web-1.invalid: no such host"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dialErr(tt.addr, tt.in).Error(); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -73,9 +76,67 @@ func mixedPlans(t *testing.T) (*config.Config, []ServerPlan) {
 			"web-2": {Content: renderedFor(t, cfg, "web-2")},
 			"db-1":  {Content: []byte(testkeys.Line(t, 8) + "\n")},
 		},
-		errs: map[string]error{"web-3": errors.New("dial tcp 10.0.0.3:22: connection refused")},
+		errs: map[string]error{"web-3": dialRefused("10.0.0.3")},
 	}
 	return cfg, buildPlans(t, cfg, r, []string{fp(t, 2)})
+}
+
+// dialRefused is exactly what sshconn returns for a refused TCP connect.
+func dialRefused(ip string) error {
+	return &sshconn.Error{Kind: audit.ErrorKindDial, Hint: sshconn.DialHint, Err: &net.OpError{Op: "dial", Net: "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 22}, Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+}
+
+// TestRenderRemoveRowShowsOptions: an unowned key's on-server options ride
+// in the remove row's detail cell.
+func TestRenderRemoveRowShowsOptions(t *testing.T) {
+	cfg := mixedCfg(t)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 2) + " alice@work\n" + testkeys.Line(t, 3) + " bob\n" +
+			`command="/bin/backup" ` + testkeys.Line(t, 9) + " backup@nas\n"), SessionKeyFP: fp(t, 2)},
+	}}
+	plans := buildPlans(t, cfg, r, []string{fp(t, 2)})
+	var buf bytes.Buffer
+	Render(&buf, cfg, plans, RenderOptions{})
+	if !strings.Contains(buf.String(), `(unknown) "backup@nas"`) ||
+		!strings.Contains(buf.String(), `remove (unauthorized) · options: "command=\"/bin/backup\""`) {
+		t.Errorf("remove row lacks comment/options:\n%s", buf.String())
+	}
+}
+
+// TestRenderRewriteWidens: a rewrite that adds a relaxing option is
+// flagged on its own warning line, painted like the loosening warning.
+func TestRenderRewriteWidens(t *testing.T) {
+	cfg := planCfg(t)
+	plans := []ServerPlan{{
+		Server: config.Server{Name: "web-1", Host: "10.0.0.1", Port: 22, User: "deploy"}, Class: ClassChange,
+		Rewrites: []RewriteRow{{Key: testKey(t, 1), Widens: []string{"no-touch-required"}}},
+	}}
+	var buf bytes.Buffer
+	Render(&buf, cfg, plans, RenderOptions{})
+	if !strings.Contains(buf.String(), `adds relaxing option(s) "no-touch-required"`) {
+		t.Errorf("report lacks the widening warning:\n%s", buf.String())
+	}
+	var color bytes.Buffer
+	Render(&color, cfg, plans, RenderOptions{Color: true})
+	if !strings.Contains(color.String(), "\x1b["+codeBoldRed+"mrewrite comment") {
+		t.Errorf("a widening rewrite row must be painted bold red:\n%q", color.String())
+	}
+}
+
+// TestRenderSummaryFailedHint: a phase-2 failure that carries a hint prints
+// it once under the first FAILED row.
+func TestRenderSummaryFailedHint(t *testing.T) {
+	plans := []ServerPlan{
+		{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeFailed, OutcomeErr: dialRefused("10.0.0.1")},
+		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomeFailed, OutcomeErr: dialRefused("10.0.0.2")},
+	}
+	var buf bytes.Buffer
+	RenderSummary(&buf, plans, RenderOptions{})
+	if n := strings.Count(buf.String(), "  hint: "+sshconn.DialHint+"\n"); n != 1 {
+		t.Errorf("hint printed %d times, want 1:\n%s", n, buf.String())
+	}
+	checkGolden(t, "summary_failed_hint.golden", buf.Bytes())
 }
 
 func TestRenderPlanMixedGolden(t *testing.T) {
@@ -91,7 +152,8 @@ func TestRenderPlanMixedGolden(t *testing.T) {
 		"→ 2 keys desired · 1 add · 1 remove · 1 rewrite",
 		"web-2 (deploy@10.0.0.2:22)  converged (no changes)",
 		"db-1 (deploy@10.0.0.9:22)  REFUSED: 1 key installed but manifest grants none — refusing to wipe",
-		"web-3 (deploy@10.0.0.3:22)  ERROR:",
+		"web-3 (deploy@10.0.0.3:22)  ERROR [dial]: dial tcp 10.0.0.3:22: connect: connection refused\n  hint: " + sshconn.DialHint + "\n",
+		`-  (unknown) "stray@laptop"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report lacks %q:\n%s", want, out)

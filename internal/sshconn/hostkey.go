@@ -13,8 +13,9 @@ import (
 	"github.com/javadh75/SSHepherd/internal/config"
 )
 
-// hostKeyHint classifies a known_hosts verification failure and augments it
-// with actionable remediation, using the key the server actually presented
+// hostKeyHint classifies a known_hosts verification failure and attaches
+// actionable remediation as the error's separate Hint (never part of the
+// message: reports print it on its own line, JSON as `hint`), using the key the server actually presented
 // to tell a genuinely changed key apart from a merely unrecorded key type.
 // known_hosts entries are keyed by the exact host form used, so hints name
 // the configured host:port verbatim — ShQuote-d wherever they enter a
@@ -28,33 +29,33 @@ func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, knownHos
 	}
 	var revoked *knownhosts.RevokedError
 	if errors.As(err, &revoked) {
-		return classify(audit.ErrorKindHostKeyRevoked, fmt.Errorf(
-			"%w\n  hint: this key is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
-			err, knownHostsPath))
+		return classifyHint(audit.ErrorKindHostKeyRevoked, fmt.Sprintf(
+			"this key is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
+			knownHostsPath), err)
 	}
 	var ke *knownhosts.KeyError
 	if !errors.As(err, &ke) {
 		if strings.Contains(err.Error(), noAuthorityPrefix) {
-			return classify(audit.ErrorKindHostKey, fmt.Errorf(
-				"%w\n  hint: the host presented a certificate but no @cert-authority line in %s vouches for it here; record the host's plain key or its CA (verified out of band)",
-				err, knownHostsPath))
+			return classifyHint(audit.ErrorKindHostKey, fmt.Sprintf(
+				"the host presented a certificate but no @cert-authority line in %s vouches for it here; record the host's plain key or its CA (verified out of band)",
+				knownHostsPath), err)
 		}
 		return classify(audit.ErrorKindHostKey, err)
 	}
 	if len(ke.Want) == 0 {
-		return classify(audit.ErrorKindHostKeyUnknown, fmt.Errorf(
-			"%w\n  hint: host is not in %s; verify the presented fingerprint out of band (on the server console: %s, or the cloud provider's console output), then compare before recording: %s — append only a line whose fingerprint matches",
-			err, knownHostsPath, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)))
+		return classifyHint(audit.ErrorKindHostKeyUnknown, fmt.Sprintf(
+			"host is not in %s; verify the presented fingerprint out of band (on the server console: %s, or the cloud provider's console output), then compare before recording: %s — append only a line whose fingerprint matches",
+			knownHostsPath, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
 	}
 	if presented != nil && !typeRecorded(ke, presented.Type()) {
-		return classify(audit.ErrorKindHostKeyTypeUnrecorded, fmt.Errorf(
-			"%w\n  hint: host key type %s is not recorded in known_hosts for this host (recorded: %s) — unverified, not proof of a change; verify the presented fingerprint out of band (%s on the console), compare with: %s — and append only a matching line",
-			err, presented.Type(), strings.Join(recordedTypes(ke), ", "),
-			consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)))
+		return classifyHint(audit.ErrorKindHostKeyTypeUnrecorded, fmt.Sprintf(
+			"host key type %s is not recorded in known_hosts for this host (recorded: %s) — unverified, not proof of a change; verify the presented fingerprint out of band (%s on the console), compare with: %s — and append only a matching line",
+			presented.Type(), strings.Join(recordedTypes(ke), ", "),
+			consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
 	}
-	return classify(audit.ErrorKindHostKeyChanged, fmt.Errorf(
-		"%w\n  hint: HOST KEY CHANGED for %s:%d — possible impersonation; investigate and verify the new fingerprint out of band before touching %s",
-		err, srv.Host, srv.Port, knownHostsPath))
+	return classifyHint(audit.ErrorKindHostKeyChanged, fmt.Sprintf(
+		"HOST KEY CHANGED for %s:%d — possible impersonation; investigate and verify the new fingerprint out of band before touching %s",
+		srv.Host, srv.Port, knownHostsPath), err)
 }
 
 // consoleFingerprintCmd names the on-server command that prints the host

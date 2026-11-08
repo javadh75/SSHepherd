@@ -49,7 +49,10 @@ type jsonServer struct {
 	Error              *string `json:"error"`
 	// ErrorKind is additive-optional (schema stays 1): present exactly when
 	// error is non-null; one of the audit.ErrorKind values.
-	ErrorKind      string           `json:"error_kind,omitempty"`
+	ErrorKind string `json:"error_kind,omitempty"`
+	// Hint is additive-optional (schema stays 1): operator remediation for
+	// error, sanitized; never part of error.
+	Hint           string           `json:"hint,omitempty"`
 	Keys           jsonKeySets      `json:"keys"`
 	ParseErrors    []jsonParseError `json:"parse_errors"`
 	FileAbsent     bool             `json:"file_absent"`
@@ -91,6 +94,9 @@ type jsonKey struct {
 	// whose on-server options differ from the manifest's. Unlike comment
 	// drift it is real drift (status drift, exit 1) and is always reported.
 	OptionsDrift *jsonOptionsDrift `json:"options_drift,omitempty"`
+	// Options is additive-optional (schema stays 1): unauthorized keys the
+	// manifest does not own, their on-server options, sanitized.
+	Options []string `json:"options,omitempty"`
 }
 
 type jsonOptionsDrift struct {
@@ -165,6 +171,8 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		msg := sanitize.Remote(oneLine(r.Err))
 		s.Error = &msg
 		s.ErrorKind = string(ErrorKindOf(r.Err))
+		// Not deduplicated: each server object stays self-contained.
+		s.Hint = CleanHint(r.Err)
 		return s
 	}
 	s.AuthorizedKeys2 = r.AuthorizedKeys2
@@ -190,7 +198,11 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		s.Keys.Missing = append(s.Keys.Missing, jsonKeyFor(cfg, k, true))
 	}
 	for _, k := range r.Diff.Unauthorized {
-		s.Keys.Unauthorized = append(s.Keys.Unauthorized, jsonKeyFor(cfg, k, false))
+		jk := jsonKeyFor(cfg, k, false)
+		if len(k.Options) > 0 && jk.Owner == nil {
+			jk.Options = sanitizeAll(k.Options)
+		}
+		s.Keys.Unauthorized = append(s.Keys.Unauthorized, jk)
 	}
 	for _, pe := range r.ParseErrs {
 		// pe.Error() is the control-stripped rendering; the line prefix is

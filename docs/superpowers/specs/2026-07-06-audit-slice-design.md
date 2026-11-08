@@ -245,6 +245,13 @@ Additional report rules:
 - Matched keys are labeled with the owning user's `name` (and `comment` if
   set); unauthorized keys are labeled with the owning manifest user when the
   fingerprint is known, else `(unknown)`.
+  *Amendment (2026-11-08, P07):* a key the manifest does not own is labeled
+  `(unknown) "<comment>"`. The on-server comment is whitespace-collapsed,
+  sanitized, Go-quoted and capped at 40 runes. A comment-less key stays a bare
+  `(unknown)`. Its on-server options follow the status cell as
+  ` · options: "..."`. A connection failure's remediation prints on its own
+  `hint:` line (once per distinct hint) and as the JSON `hint` field, never
+  inside the error text.
 - Unparseable lines render as `⚠ line N: unparseable entry` under their server
   (see *Remote read semantics*).
 - A server with an **empty desired set** (defined in `servers` but granted to

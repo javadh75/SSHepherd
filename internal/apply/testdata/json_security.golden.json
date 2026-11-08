@@ -41,7 +41,8 @@
             "loosens": [
               "from=\"10.0.0.5\"",
               "command=\"/usr/bin/pg_dump-wrapper\""
-            ]
+            ],
+            "widens": []
           }
         ],
         "normalize": {

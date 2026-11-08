@@ -6,6 +6,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
@@ -59,7 +60,8 @@ func oneLine(err error) string {
 // label mirrors audit's row label: the owning user (with their comment:
 // when set); for a key only opts.Former owns, its former owner and the
 // edit's note ("alice (revoked)", "deploy (rotated out)"); else
-// "(unknown)" for a key the manifest does not know.
+// audit.UnknownLabel — "(unknown)" plus the key's on-server comment — for a
+// key the manifest does not know.
 func label(cfg *config.Config, opts RenderOptions, k authkeys.Key) string {
 	u, ok := cfg.OwnerOf(k.Fingerprint)
 	if !ok {
@@ -72,12 +74,33 @@ func label(cfg *config.Config, opts RenderOptions, k authkeys.Key) string {
 				return fmt.Sprintf("%s (%s)", fu.Name, note)
 			}
 		}
-		return "(unknown)"
+		return audit.UnknownLabel(k)
 	}
 	if u.Comment != "" {
 		return fmt.Sprintf("%s (%s)", u.Name, u.Comment)
 	}
 	return u.Name
+}
+
+// formerOwns reports whether only the pre-edit config (opts.Former) owns k:
+// such a key is labeled by its former owner, not as an unknown key.
+func formerOwns(opts RenderOptions, k authkeys.Key) bool {
+	if opts.Former == nil {
+		return false
+	}
+	_, ok := opts.Former.OwnerOf(k.Fingerprint)
+	return ok
+}
+
+// removeDetail is a remove row's status cell. A key neither config owns
+// also shows its on-server options; the cell is the row's last, which
+// tabwriter never pads, so alignment holds.
+func removeDetail(cfg *config.Config, opts RenderOptions, k authkeys.Key) string {
+	detail := "remove (unauthorized)"
+	if _, ok := cfg.OwnerOf(k.Fingerprint); !ok && !formerOwns(opts, k) {
+		detail += audit.UnknownOptions(k)
+	}
+	return detail
 }
 
 // Render writes the plan report — the operator's review surface before the
@@ -89,11 +112,19 @@ func Render(w io.Writer, cfg *config.Config, plans []ServerPlan, opts RenderOpti
 		return
 	}
 	pal := palette{on: opts.Color}
+	var hints audit.Hints
 	for _, p := range plans {
 		head := fmt.Sprintf("%s (%s@%s:%d)", p.Server.Name, p.Server.User, p.Server.Host, p.Server.Port)
 		switch p.Class {
 		case ClassUnreachable:
-			fmt.Fprintf(w, "%s  %s %s\n\n", head, pal.paint(codeRed, "ERROR:"), oneLine(p.Err))
+			tag, alert := audit.ErrorTag(p.Err)
+			code := codeRed
+			if alert {
+				code = codeBoldRed
+			}
+			fmt.Fprintf(w, "%s  %s %s\n", head, pal.paint(code, tag), oneLine(p.Err))
+			hints.Write(w, p.Err)
+			fmt.Fprintln(w)
 		case ClassConverged:
 			fmt.Fprintf(w, "%s  converged (no changes)\n", head)
 			renderKeys2Warning(w, p, pal)
@@ -117,14 +148,14 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 			pal.paint(codeGreen, "+"), label(cfg, opts, k), k.Fingerprint, k.Type)
 	}
 	for _, k := range p.Remove {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tremove (unauthorized)\n",
-			pal.paint(codeRed, "-"), label(cfg, opts, k), k.Fingerprint, k.Type)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+			pal.paint(codeRed, "-"), label(cfg, opts, k), k.Fingerprint, k.Type, removeDetail(cfg, opts, k))
 	}
 	for _, rw := range p.Rewrites {
 		// The detail is the row's last cell, which tabwriter never pads, so
 		// painting it keeps the columns aligned.
 		detail := rewriteDetail(rw)
-		if len(rw.Loosens) > 0 {
+		if len(rw.Loosens) > 0 || len(rw.Widens) > 0 {
 			detail = pal.paint(codeBoldRed, detail)
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
@@ -156,18 +187,29 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), p.AgentOnly)
 	}
 	for _, rw := range p.Rewrites {
-		if len(rw.Loosens) == 0 {
-			continue
-		}
-		quoted := make([]string, 0, len(rw.Loosens))
-		for _, o := range rw.Loosens {
-			quoted = append(quoted, fmt.Sprintf("%q", o))
-		}
-		fmt.Fprintf(w, "  %s the rewrite of %s's key drops restrictive option(s) %s — the manifest line grants more than the server does today\n",
-			pal.paint(codeBoldRed, "warning:"), label(cfg, opts, rw.Key), strings.Join(quoted, ", "))
+		renderRewriteWarning(w, cfg, opts, pal, rw.Key, "drops restrictive", rw.Loosens)
+	}
+	for _, rw := range p.Rewrites {
+		renderRewriteWarning(w, cfg, opts, pal, rw.Key, "adds relaxing", rw.Widens)
 	}
 	fmt.Fprintf(w, "  → %s desired · %d add · %d remove · %d rewrite\n",
 		Plural(len(p.Desired), "key", "keys"), len(p.Add), len(p.Remove), len(p.Rewrites))
+}
+
+// renderRewriteWarning prints one bold-red warning naming the options a
+// rewrite drops (loosening) or adds (widening): either way the manifest line
+// grants more than the server does today. Nothing for an empty list; %q
+// keeps hostile option text inert.
+func renderRewriteWarning(w io.Writer, cfg *config.Config, opts RenderOptions, pal palette, k authkeys.Key, verb string, options []string) {
+	if len(options) == 0 {
+		return
+	}
+	quoted := make([]string, 0, len(options))
+	for _, o := range options {
+		quoted = append(quoted, fmt.Sprintf("%q", o))
+	}
+	fmt.Fprintf(w, "  %s the rewrite of %s's key %s option(s) %s — the manifest line grants more than the server does today\n",
+		pal.paint(codeBoldRed, "warning:"), label(cfg, opts, k), verb, strings.Join(quoted, ", "))
 }
 
 // renderKeys2Warning prints the phase-1 authorized_keys2 finding on a
@@ -270,6 +312,9 @@ func RenderSummary(w io.Writer, plans []ServerPlan, opts RenderOptions) {
 		return // Render already printed the 0-servers summary
 	}
 	pal := palette{on: opts.Color}
+	// The summary keeps its own dedupe set: a hint seen in the plan report
+	// prints again at most once here.
+	var hints audit.Hints
 	for _, p := range plans {
 		if p.Class != ClassChange {
 			continue
@@ -279,8 +324,10 @@ func RenderSummary(w io.Writer, plans []ServerPlan, opts RenderOptions) {
 			fmt.Fprintf(w, "%s: %s\n", p.Server.Name, pal.paint(codeGreen, "applied · verified"))
 		case OutcomeRefused:
 			fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeBoldRed, "REFUSED:"), oneLine(p.OutcomeErr))
+			hints.Write(w, p.OutcomeErr)
 		case OutcomeFailed:
 			fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeRed, "FAILED:"), oneLine(p.OutcomeErr))
+			hints.Write(w, p.OutcomeErr)
 		default:
 			if p.OutcomeErr != nil {
 				fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeYellow, "NOT STARTED:"), oneLine(p.OutcomeErr))

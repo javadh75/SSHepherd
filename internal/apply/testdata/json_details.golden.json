@@ -63,7 +63,8 @@
             },
             "loosens": [
               "expiry-time=\"20270101\""
-            ]
+            ],
+            "widens": []
           }
         ],
         "normalize": {

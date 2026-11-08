@@ -241,6 +241,17 @@ of a key the edited manifest no longer owns; the JSON twin of "bob (revoked)"
 - A test pins ESC, U+009B and U+202E in an on-server comment, an option and an
   error string, for both apply's and audit's JSON.
 
+- **Amendment (2026-11-08, P07):** additive, schema stays 1.
+  `servers[].hint` carries the remediation of an unreachable server or a
+  phase-2 failure (never a plan refusal). `changes.remove[].options` lists the
+  on-server options of a key neither the manifest nor the pre-edit manifest
+  owns. `changes.rewrite[].widens` is always present like `loosens` and lists
+  the relaxing options a rewrite adds (`[]` when none). A phase-2 failure now
+  keeps the `error_kind` the transport attached (ARC-3, for example
+  `host_key_changed` at the write connect, or `auth` for a refused probe
+  through `LockoutError`). Refusals and unclassified write/verify errors still
+  carry none.
+
 ## Implementation shape
 
 ### `internal/apply/json.go` (new)

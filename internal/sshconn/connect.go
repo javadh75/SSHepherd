@@ -192,13 +192,14 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	dialStart := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		kind := audit.ErrorKindDial
+		kind, hint := audit.ErrorKindDial, DialHint
 		if ctx.Err() != nil {
 			kind = ctxKind(ctx)
+			if kind == audit.ErrorKindCanceled {
+				hint = "" // the operator interrupted; there is nothing to fix
+			}
 		}
-		return nil, classify(kind, fmt.Errorf(
-			"dial %s: %w\n  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet",
-			addr, err))
+		return nil, classifyHint(kind, hint, dialErr(addr, err))
 	}
 	log.Debug("dial ok", "server", srv.Name, "addr", addr,
 		"dur", time.Since(dialStart).Round(time.Millisecond))
@@ -231,6 +232,21 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	}
 	log.Debug("auth ok", "server", srv.Name, "user", srv.User)
 	return &Conn{Client: ssh.NewClient(sshConn, chans, reqs), session: rec}, nil
+}
+
+// DialHint is the operator remediation for a TCP connect that failed. It is
+// carried in Error.Hint, never in the message, so reports print it once per
+// run and JSON keeps it in a separate `hint` field.
+const DialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+
+// dialErr names addr only when the net error does not already: a refused or
+// timed-out dial reads "dial tcp 10.0.0.1:22: connect: connection refused",
+// while a DNS failure names the host but not the port.
+func dialErr(addr string, err error) error {
+	if strings.Contains(err.Error(), addr) {
+		return err
+	}
+	return fmt.Errorf("dial %s: %w", addr, err)
 }
 
 // orderSigners applies the per-connection key offering: with only set,

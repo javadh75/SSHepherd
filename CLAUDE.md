@@ -362,6 +362,11 @@ restricts; added relaxations flagged via `RewriteRow.Widens`), the lockout-guard
 warning and rotate's expiry check; adopt turns server lines sshd would ignore into
 strict/`--partial` issues. sshcfg `Include` skips cycles and caps reads (1024 files,
 1 MiB each), and a `ssh -G` differential test checks sshcfg.
+Reports name unowned keys by on-server comment/options, connection errors carry
+their remediation as a separate `hint` (text: once per distinct hint; JSON:
+additive `hint`), a write-phase failure keeps its transport `error_kind`, apply
+JSON's rewrites gain `widens`, and Ctrl-C stops audit's fan-out without dialing
+queued servers.
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0 or 1 (specced in

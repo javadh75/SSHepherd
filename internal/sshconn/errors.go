@@ -17,6 +17,7 @@ import (
 type Error struct {
 	Kind audit.ErrorKind
 	Err  error
+	Hint string // operator remediation, never part of Error()
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
@@ -25,14 +26,26 @@ func (e *Error) Unwrap() error { return e.Err }
 // ErrorKind implements audit.KindedError.
 func (e *Error) ErrorKind() audit.ErrorKind { return e.Kind }
 
-var _ audit.KindedError = (*Error)(nil)
+// ErrorHint implements audit.Hinted: reports print it on its own line,
+// once per distinct hint, and JSON carries it as a separate `hint` field.
+func (e *Error) ErrorHint() string { return e.Hint }
+
+var (
+	_ audit.KindedError = (*Error)(nil)
+	_ audit.Hinted      = (*Error)(nil)
+)
 
 // classify wraps err with kind; nil stays nil.
 func classify(kind audit.ErrorKind, err error) error {
+	return classifyHint(kind, "", err)
+}
+
+// classifyHint is classify with operator remediation kept out of the message.
+func classifyHint(kind audit.ErrorKind, hint string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return &Error{Kind: kind, Err: err}
+	return &Error{Kind: kind, Err: err, Hint: hint}
 }
 
 // handshakeKind classifies an ssh.NewClientConn failure that was not a

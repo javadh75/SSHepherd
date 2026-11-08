@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -67,10 +69,45 @@ func driftResults(t *testing.T, cfg *config.Config) []ServerResult {
 					"garbage entry\n")},
 		},
 		errs: map[string]error{
-			"web-2": errors.New("dial tcp 10.0.0.2:22: connection refused"),
+			"web-2": dialRefused("10.0.0.2"),
 		},
 	}
 	return Run(context.Background(), cfg, reader, Options{Parallel: 2})
+}
+
+// testDialHint mirrors sshconn.DialHint (audit cannot import sshconn);
+// internal/sshconn's TestAuditGoldenCarriesDialHint pins the two equal.
+const testDialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+
+// dialRefused is the error sshconn returns for a refused TCP connect.
+func dialRefused(ip string) error {
+	return hintedErr{kindedErr{ErrorKindDial, (&net.OpError{Op: "dial", Net: "tcp",
+		Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 22},
+		Err:  os.NewSyscallError("connect", syscall.ECONNREFUSED)}).Error()}, testDialHint}
+}
+
+// TestRenderHintOncePerDistinctHint: two servers failing the same way print
+// the [kind] head each and the hint line once; a different hint prints too.
+func TestRenderHintOncePerDistinctHint(t *testing.T) {
+	cfg := fleetConfig(t, 3)
+	reader := &fakeReader{errs: map[string]error{
+		"srv-00": dialRefused("10.0.0.1"),
+		"srv-01": dialRefused("10.0.0.2"),
+		"srv-02": hintedErr{kindedErr{ErrorKindHostKeyChanged, "ssh deploy@10.0.0.3:22: knownhosts: key mismatch"}, "HOST KEY CHANGED for 10.0.0.3:22"},
+	}}
+	var buf bytes.Buffer
+	Render(&buf, cfg, Run(context.Background(), cfg, reader, Options{Parallel: 1}), RenderOptions{})
+	out := buf.String()
+	if n := strings.Count(out, "  hint: "+testDialHint+"\n"); n != 1 {
+		t.Errorf("dial hint printed %d times, want 1:\n%s", n, out)
+	}
+	if n := strings.Count(out, "ERROR [dial]: dial tcp 10.0.0."); n != 2 {
+		t.Errorf("want two [dial] heads, got %d:\n%s", n, out)
+	}
+	if !strings.Contains(out, "  hint: HOST KEY CHANGED for 10.0.0.3:22\n") {
+		t.Errorf("a distinct hint must still print:\n%s", out)
+	}
+	checkGolden(t, "report_hints.golden", buf.Bytes())
 }
 
 func TestRenderDrift(t *testing.T) {
@@ -497,5 +534,42 @@ servers:
 	}
 	if !strings.Contains(out, "(1 critical)") {
 		t.Errorf("summary must count servers, not keys:\n%s", out)
+	}
+}
+
+// TestRenderUnknownKeyShowsComment: an unowned key is labeled with its
+// sanitized on-server comment (quoted, capped at 40 runes) and its options
+// ride in the status cell; a comment-less key stays a bare (unknown).
+func TestRenderUnknownKeyShowsComment(t *testing.T) {
+	cfg := reportConfig(t)
+	long := strings.Repeat("x", 60)
+	reader := &fakeReader{byName: map[string]ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n" +
+			`from="10.0.0.0/8",no-pty ` + testkeys.Line(t, 9) + " alice@laptop\n" +
+			testkeys.Line(t, 8) + "\n" +
+			testkeys.Line(t, 7) + " evil\u202e\x1b[31m\n" +
+			testkeys.Line(t, 6) + " " + long + "\n")},
+		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n")},
+	}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{})
+	out := buf.String()
+	for _, want := range []string{
+		`(unknown) "alice@laptop"`,
+		`installed but UNAUTHORIZED · options: "from=\"10.0.0.0/8\",no-pty"`,
+		`(unknown) "evil[31m"`,                         // ESC and U+202E stripped, %q-quoted
+		`(unknown) "` + strings.Repeat("x", 39) + `…"`, // capped at 40 runes
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.ContainsAny(out, "\x1b\u202e") {
+		t.Errorf("hostile comment bytes reached the report:\n%q", out)
+	}
+	// Seed 8 has no comment: its row's label cell is a bare (unknown).
+	if !regexp.MustCompile(`⚠\s+\(unknown\)\s+SHA256:`).MatchString(out) {
+		t.Errorf("comment-less unowned key must keep a bare (unknown) label:\n%s", out)
 	}
 }

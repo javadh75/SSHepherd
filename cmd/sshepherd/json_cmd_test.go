@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/apply"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -154,6 +155,10 @@ access:
 	if s := docServers(doc); len(s) != 1 || s[0]["name"] != "web-1" || s[0]["class"] != "unreachable" ||
 		s[0]["outcome"] != nil || s[0]["error"] == nil || s[0]["error_kind"] == nil {
 		t.Errorf("servers = %v", s)
+	}
+	if s := docServers(doc); s[0]["error_kind"] != "dial" || s[0]["hint"] != sshconn.DialHint ||
+		strings.Contains(s[0]["error"].(string), "hint") || strings.Count(s[0]["error"].(string), "dial") != 1 {
+		t.Errorf("web-1 error/hint = %v / %v", s[0]["error"], s[0]["hint"])
 	}
 	if strings.Contains(out.String(), "skipped by --server") || strings.Contains(out.String(), "web-2") {
 		t.Errorf("text leaked into the document:\n%s", out.String())

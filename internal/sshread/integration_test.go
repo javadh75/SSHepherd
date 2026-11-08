@@ -88,7 +88,7 @@ func TestIntegrationUnknownHostKey(t *testing.T) {
 	_, err := c.ReadAuthorizedKeys(ctx, config.Server{
 		Name: "it", Host: host, Port: port, User: "present",
 	})
-	if err == nil || !strings.Contains(err.Error(), "| ssh-keygen -lf -") {
+	if err == nil || !strings.Contains(audit.HintOf(err), "| ssh-keygen -lf -") {
 		t.Errorf("err = %v, want strict-host-key failure with a compare-first keyscan hint", err)
 	}
 	if audit.ErrorKindOf(err) != audit.ErrorKindHostKeyUnknown {

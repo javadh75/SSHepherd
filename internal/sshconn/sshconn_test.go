@@ -193,39 +193,50 @@ func TestDefaultCmdBehavesLikeOldConst(t *testing.T) {
 	})
 }
 
+// splitHint asserts the hint stayed out of err's message (one line, no
+// "hint:") and returns the message and the hint audit.HintOf sees.
+func splitHint(t *testing.T, err error) (msg, hint string) {
+	t.Helper()
+	msg = err.Error()
+	if strings.Contains(msg, "hint:") || strings.ContainsAny(msg, "\n") {
+		t.Errorf("message %q must not embed the hint", msg)
+	}
+	return msg, audit.HintOf(err)
+}
+
 func TestHostKeyHint(t *testing.T) {
 	srv := config.Server{Name: "web-1", Host: "10.0.0.1", Port: 22, User: "deploy"}
 
 	t.Run("unknown host gets a compare-first keyscan hint", func(t *testing.T) {
-		err := hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), srv, "/kh")
-		if !strings.Contains(err.Error(), "ssh-keyscan -t ed25519 -p 22 '10.0.0.1' | ssh-keygen -lf -") {
-			t.Errorf("hint = %q, want the quoted exact-host keyscan | ssh-keygen -lf - pipeline", err)
+		_, hint := splitHint(t, hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), srv, "/kh"))
+		if !strings.Contains(hint, "ssh-keyscan -t ed25519 -p 22 '10.0.0.1' | ssh-keygen -lf -") {
+			t.Errorf("hint = %q, want the quoted exact-host keyscan | ssh-keygen -lf - pipeline", hint)
 		}
-		if strings.Contains(err.Error(), ">>") {
-			t.Errorf("hint = %q, must never append scan output to known_hosts blindly", err)
+		if strings.Contains(hint, ">>") {
+			t.Errorf("hint = %q, must never append scan output to known_hosts blindly", hint)
 		}
-		if !strings.Contains(err.Error(), "ssh_host_ed25519_key.pub") {
-			t.Errorf("hint = %q, want the on-console fingerprint command", err)
+		if !strings.Contains(hint, "ssh_host_ed25519_key.pub") {
+			t.Errorf("hint = %q, want the on-console fingerprint command", hint)
 		}
 	})
 	t.Run("hostile host is quoted in the suggested command", func(t *testing.T) {
 		evil := srv
 		evil.Host = "h; rm -rf ~"
-		err := hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), evil, "/kh")
-		if !strings.Contains(err.Error(), "'h; rm -rf ~'") {
-			t.Errorf("hint = %q, want the host ShQuote-d", err)
+		_, hint := splitHint(t, hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), evil, "/kh"))
+		if !strings.Contains(hint, "'h; rm -rf ~'") {
+			t.Errorf("hint = %q, want the host ShQuote-d", hint)
 		}
 	})
 	t.Run("same-type mismatch gets changed-key warning", func(t *testing.T) {
 		// known_hosts records one ed25519 key; the host presents a different
 		// ed25519 key — that is a genuine changed-key alarm.
 		ke := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: ed25519Key(t, 2)}}}
-		err := hostKeyHint(ke, ed25519Key(t, 1), srv, "/kh")
-		if !strings.Contains(err.Error(), "HOST KEY CHANGED") {
-			t.Errorf("hint = %q, want changed-key warning", err)
+		msg, hint := splitHint(t, hostKeyHint(ke, ed25519Key(t, 1), srv, "/kh"))
+		if !strings.Contains(hint, "HOST KEY CHANGED") {
+			t.Errorf("hint = %q, want changed-key warning", hint)
 		}
-		if !strings.Contains(err.Error(), "presented ssh-ed25519 key SHA256:") {
-			t.Errorf("hint = %q, want the presented key identified", err)
+		if !strings.Contains(msg, "presented ssh-ed25519 key SHA256:") {
+			t.Errorf("message = %q, want the presented key identified", msg)
 		}
 	})
 	t.Run("unrecorded key type gets keyscan-refresh hint, not alarm", func(t *testing.T) {
@@ -233,15 +244,25 @@ func TestHostKeyHint(t *testing.T) {
 		// key — no recorded key of that type exists, so this is likely a
 		// stale known_hosts entry, not a hostile key swap.
 		ke := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: ed25519Key(t, 2)}}}
-		err := hostKeyHint(ke, ecdsaKey(t), srv, "/kh")
-		if strings.Contains(err.Error(), "HOST KEY CHANGED") {
-			t.Errorf("hint = %q, must not raise the changed-key alarm", err)
+		msg, hint := splitHint(t, hostKeyHint(ke, ecdsaKey(t), srv, "/kh"))
+		if strings.Contains(msg+hint, "HOST KEY CHANGED") {
+			t.Errorf("hint = %q, must not raise the changed-key alarm", hint)
 		}
-		if !strings.Contains(err.Error(), "not recorded in known_hosts") {
-			t.Errorf("hint = %q, want unrecorded-type wording", err)
+		if !strings.Contains(hint, "not recorded in known_hosts") {
+			t.Errorf("hint = %q, want unrecorded-type wording", hint)
 		}
-		if !strings.Contains(err.Error(), "recorded: ssh-ed25519") {
-			t.Errorf("hint = %q, want the recorded types listed", err)
+		if !strings.Contains(hint, "recorded: ssh-ed25519") {
+			t.Errorf("hint = %q, want the recorded types listed", hint)
+		}
+	})
+	t.Run("revoked and uncertified hosts carry their hint separately", func(t *testing.T) {
+		_, hint := splitHint(t, hostKeyHint(&knownhosts.RevokedError{}, ed25519Key(t, 1), srv, "/kh"))
+		if !strings.Contains(hint, "marked @revoked in /kh") {
+			t.Errorf("revoked hint = %q", hint)
+		}
+		_, hint = splitHint(t, hostKeyHint(errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), srv, "/kh"))
+		if !strings.Contains(hint, "no @cert-authority line in /kh") {
+			t.Errorf("cert hint = %q", hint)
 		}
 	})
 	t.Run("unrelated error keeps its chain", func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
 // ExitCode maps audit results to the process exit code (monitoring-style,
@@ -85,27 +86,63 @@ func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts Render
 		return
 	}
 	pal := palette{on: opts.Color}
+	var hints Hints
 	for _, r := range results {
-		renderServer(w, cfg, r, pal, opts.Comments)
+		renderServer(w, cfg, r, pal, opts.Comments, &hints)
 		fmt.Fprintln(w)
 	}
 	renderSummary(w, cfg, results)
 }
 
-func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, comments bool) {
+// ErrorTag is the head of an unreachable server's row: "ERROR [kind]:" for
+// a classified failure, plain "ERROR:" otherwise. alert marks a host-key
+// alert (changed or @revoked), painted bold red by both reports. The kind
+// leads so a changed host key is told apart from a timeout at a glance.
+func ErrorTag(err error) (tag string, alert bool) {
+	kind := ErrorKindOf(err)
+	if kind == "" || kind == ErrorKindUnknown {
+		return "ERROR:", false
+	}
+	return "ERROR [" + string(kind) + "]:", hostKeyAlert(kind)
+}
+
+// CleanHint is err's hint on one sanitized line, the form both reports print
+// and JSON carries. Hints are built locally, but they quote the configured
+// host and the known_hosts path, so they get the same boundary as error text.
+func CleanHint(err error) string {
+	return sanitize.Remote(strings.Join(strings.Fields(HintOf(err)), " "))
+}
+
+// Hints prints each distinct remediation hint once per report, on its own
+// indented line under the first server that needs it. A fleet-wide outage
+// gets one bastion hint, not N. Per-host hints such as host-key changes are
+// distinct by text and still print per server. The zero value is ready.
+type Hints struct{ seen map[string]bool }
+
+// Write prints err's hint as "  hint: …" unless it is empty or was already
+// printed through h.
+func (h *Hints) Write(w io.Writer, err error) {
+	hint := CleanHint(err)
+	if hint == "" || h.seen[hint] {
+		return
+	}
+	if h.seen == nil {
+		h.seen = make(map[string]bool)
+	}
+	h.seen[hint] = true
+	fmt.Fprintf(w, "  hint: %s\n", hint)
+}
+
+func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, comments bool, hints *Hints) {
 	head := fmt.Sprintf("%s (%s@%s:%d)", r.Server.Name, r.Server.User, r.Server.Host, r.Server.Port)
 	if r.Err != nil {
-		// The kind leads so a changed host key is told apart from a timeout
-		// at a glance; unclassified errors keep the plain head.
-		tag := "ERROR:"
-		if kind := ErrorKindOf(r.Err); kind != ErrorKindUnknown {
-			tag = "ERROR [" + string(kind) + "]:"
-		}
+		tag, alert := ErrorTag(r.Err)
 		code := codeRed
-		if hostKeyAlert(ErrorKindOf(r.Err)) {
+		if alert {
 			code = codeBoldRed
 		}
 		fmt.Fprintf(w, "%s  %s %s\n", head, pal.paint(code, tag), oneLine(r.Err))
+		hints.Write(w, r.Err) // plain text: no new SGR, color-stripped == plain holds
 		return
 	}
 	fmt.Fprintln(w, head)
@@ -128,9 +165,16 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 			pal.paint(codeRed, "MISSING"))
 	}
 	for _, k := range r.Diff.Unauthorized {
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s\n",
+		// A key the manifest does not own also shows its on-server options:
+		// with the comment, the only clue to what it is and what it can do.
+		// A known owner's key keeps today's cell.
+		suffix := ""
+		if _, ok := cfg.OwnerOf(k.Fingerprint); !ok {
+			suffix = UnknownOptions(k)
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s%s\n",
 			pal.paint(codeYellow, "⚠"), label(cfg, k), k.Fingerprint, k.Type,
-			pal.paint(codeYellow, "UNAUTHORIZED"))
+			pal.paint(codeYellow, "UNAUTHORIZED"), suffix)
 	}
 	_ = tw.Flush()
 
@@ -226,10 +270,38 @@ func quoteOptions(opts []string) string {
 	return fmt.Sprintf("%q", strings.Join(opts, ","))
 }
 
+// maxLabelComment caps the on-server comment shown beside "(unknown)" so a
+// long or hostile comment cannot blow out the label column.
+const maxLabelComment = 40
+
+// UnknownLabel labels a key the manifest does not own: "(unknown)" plus its
+// sanitized on-server comment, Go-quoted (tabs/quotes stay inert inside the
+// tabwriter cell) and capped — the one clue to whose key it is.
+func UnknownLabel(k authkeys.Key) string {
+	c := sanitize.Remote(strings.Join(strings.Fields(k.Comment), " "))
+	if c == "" {
+		return "(unknown)"
+	}
+	if r := []rune(c); len(r) > maxLabelComment {
+		c = string(r[:maxLabelComment-1]) + "…"
+	}
+	return fmt.Sprintf("(unknown) %q", c)
+}
+
+// UnknownOptions is the status-cell suffix naming an unowned key's
+// on-server options; "" when it has none. The cell is the row's last, which
+// tabwriter never pads, so length cannot misalign columns.
+func UnknownOptions(k authkeys.Key) string {
+	if len(k.Options) == 0 {
+		return ""
+	}
+	return " · options: " + quoteOptions(sanitizeAll(k.Options))
+}
+
 func label(cfg *config.Config, k authkeys.Key) string {
 	u, ok := cfg.OwnerOf(k.Fingerprint)
 	if !ok {
-		return "(unknown)"
+		return UnknownLabel(k)
 	}
 	if u.Comment != "" {
 		return fmt.Sprintf("%s (%s)", u.Name, u.Comment)

@@ -1,0 +1,9 @@
+srv-00 (deploy@10.0.0.1:22)  ERROR [dial]: dial tcp 10.0.0.1:22: connect: connection refused
+  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+
+srv-01 (deploy@10.0.0.2:22)  ERROR [dial]: dial tcp 10.0.0.2:22: connect: connection refused
+
+srv-02 (deploy@10.0.0.3:22)  ERROR [host_key_changed]: ssh deploy@10.0.0.3:22: knownhosts: key mismatch
+  hint: HOST KEY CHANGED for 10.0.0.3:22
+
+Summary: 0/3 servers compliant · 0 with drift (0 critical) · 3 unreachable (1 HOST KEY ALERT)  → exit 2

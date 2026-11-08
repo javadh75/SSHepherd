@@ -15,11 +15,12 @@ $ sshepherd audit
 web-1 (deploy@10.0.0.1:22)
   ✓  alice (alice@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
   ✗  bob                      SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  authorized but MISSING
-  ⚠  (unknown)                SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  installed but UNAUTHORIZED
+  ⚠  (unknown) "who@is-this"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  installed but UNAUTHORIZED
   ⚠ line 3: unparseable entry
   → 2 authorized · 1 present · 1 missing · 1 unauthorized
 
-web-2 (deploy@10.0.0.2:22)  ERROR: dial tcp 10.0.0.2:22: connection refused
+web-2 (deploy@10.0.0.2:22)  ERROR [dial]: dial tcp 10.0.0.2:22: connect: connection refused
+  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
 
 Summary: 0/2 servers compliant · 1 with drift (0 critical) · 1 unreachable  → exit 1
 ```
@@ -163,15 +164,16 @@ $ sshepherd apply
 db-1 (deploy@10.0.0.9:22)  REFUSED: 1 key installed but manifest grants none — refusing to wipe
 
 web-1 (deploy@10.0.0.1:22)
-  +  bob                 SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  add (authorized, missing)
-  -  (unknown)           SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
-  ~  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite comment: "alice@old" → "alice@work"
-  ~  (formatting)                                                                         normalize: removing 1 non-key line (comments/blank)
+  +  bob                       SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  add (authorized, missing)
+  -  (unknown) "stray@laptop"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  ~  alice (alice@work)        SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite comment: "alice@old" → "alice@work"
+  ~  (formatting)                                                                               normalize: removing 1 non-key line (comments/blank)
   → 2 keys desired · 1 add · 1 remove · 1 rewrite
 
 web-2 (deploy@10.0.0.2:22)  converged (no changes)
 
-web-3 (deploy@10.0.0.3:22)  ERROR: dial tcp 10.0.0.3:22: connection refused
+web-3 (deploy@10.0.0.3:22)  ERROR [dial]: dial tcp 10.0.0.3:22: connect: connection refused
+  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
 
 apply 1 of 4 servers? [y/N]
 ```
@@ -386,15 +388,22 @@ Summary: 0/2 servers compliant · 2 with drift (0 critical) · 0 unreachable  �
 
 Comment drift (`--comments`) stays cosmetic and never affects the exit code.
 
+A key the manifest does not own shows as `(unknown)` with its on-server comment
+(quoted, sanitized, cut at 40 characters) and, in the status cell, its options
+(`installed but UNAUTHORIZED · options: "from=\"10.0.0.0/8\",no-pty"`).
+
 **Classified errors.** An unreachable server's line names the failure kind:
 `host_key_unknown`, `host_key_changed`, `host_key_type_unrecorded`,
 `host_key_revoked`, `host_key`, `agent`, `auth`, `dial`, `timeout`, `canceled`,
 `handshake` or `remote`. Unclassified errors keep a plain `ERROR:` head. A host key
 that **changed** or is marked `@revoked` in `known_hosts` (possible impersonation)
-counts as a host-key alert and makes the run exit `2`:
+counts as a host-key alert and makes the run exit `2`.
+When a failure has a remediation, it prints on its own `hint:` line under the first
+server that needs it; a hint shared by many servers prints once:
 
 ```console
 web-1 (deploy@10.0.0.1:22)  ERROR [host_key_changed]: ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch
+  hint: HOST KEY CHANGED for 10.0.0.1:22 — possible impersonation; investigate and verify the new fingerprint out of band before touching ~/.ssh/known_hosts
 
 web-2 (deploy@10.0.0.2:22)  ERROR [auth]: ssh deploy@10.0.0.2:22: ssh: unable to authenticate
 
@@ -434,6 +443,7 @@ The report for the classified-error example above:
       "status": "unreachable",
       "error": "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch",
       "error_kind": "host_key_changed",
+      "hint": "HOST KEY CHANGED for 10.0.0.1:22 — possible impersonation; investigate and verify the new fingerprint out of band before touching ~/.ssh/known_hosts",
       "keys": {
         "present": [],
         "missing": [],
@@ -468,7 +478,10 @@ Optional fields, present only when they apply: `servers[].error_kind` (exactly w
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`
 (omitted when 0), `keys.present[].options_drift` (`{"actual": [...], "desired": [...]}`),
 `keys.present[].comment_drift` (with `--comments`), `servers[].duplicates`
-(`[{"owner", "fingerprint", "count"}]`) and `servers[].authorized_keys2_present`.
+(`[{"owner", "fingerprint", "count"}]`), `servers[].authorized_keys2_present`,
+`servers[].hint` (remediation text, present only when the failure has one; `error`
+never contains it) and `keys.unauthorized[].options` (on-server options of a key the
+manifest does not own).
 See `internal/audit/testdata/*.golden.json` for every shape.
 
 On-server comments, options and error text are sanitized — control characters
@@ -609,11 +622,15 @@ cannot answer the prompt — otherwise the run exits `3` before the manifest is 
 `--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)`.
 A document is written exactly when the run exits `0` or `1` (including an interrupt
 after the plan, where unstarted servers are `pending` with `"error_kind":
-"canceled"`); exit-`3` tool errors print no document. Each server carries its
+"canceled"`); exit-`3` tool errors print no document. A write that fails after the
+plan carries `error_kind` when the transport classified the failure (for example
+`host_key_changed` when the host key changed between plan and write, `auth`,
+`timeout`); refusals and verify failures carry none. Each server carries its
 `class` (`converged`, `change`, `refused`, `unreachable`), its `outcome` (`applied`,
 `refused`, `failed`, `pending` for a `change` server, `null` otherwise — always
 `pending` under `--dry-run`), its `error`, and its `changes` (`add`, `remove`,
-`rewrite` with `loosens` naming dropped restrictive options verbatim, `normalize`).
+`rewrite` with `loosens` naming dropped restrictive options verbatim and `widens`
+naming the relaxing options it adds (`[]` when none), `normalize`).
 Comments and options are sanitized (control and Unicode format characters
 removed), so they may not byte-match the server line. A dry run over a mixed
 fleet:
@@ -695,7 +712,8 @@ fleet:
               "from": "alice@old",
               "to": "alice@work"
             },
-            "loosens": []
+            "loosens": [],
+            "widens": []
           }
         ],
         "normalize": {
@@ -743,8 +761,9 @@ fleet:
       "user": "deploy",
       "class": "unreachable",
       "outcome": null,
-      "error": "dial tcp 10.0.0.3:22: connection refused",
-      "error_kind": "unknown",
+      "error": "dial tcp 10.0.0.3:22: connect: connection refused",
+      "error_kind": "dial",
+      "hint": "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet",
       "changes": {
         "add": [],
         "remove": [],
@@ -766,6 +785,10 @@ fleet:
 }
 ```
 
+Optional fields, present only when they apply: `servers[].hint` (the remediation for
+an unreachable or failed server; `error` never contains it) and
+`changes.remove[].options` (on-server options of a key neither the manifest nor the
+pre-edit manifest owns).
 See `internal/apply/testdata/json_*.golden.json` for every shape.
 
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
@@ -785,6 +808,9 @@ web-1 (deploy@10.0.0.1:22)
   warning: the rewrite of alice (alice@work)'s key drops restrictive option(s) "from=\"10.0.0.5\"", "command=\"/usr/bin/pg_dump-wrapper\"" — the manifest line grants more than the server does today
   → 3 keys desired · 0 add · 0 remove · 1 rewrite
 ```
+
+A rewrite that adds a relaxing option is flagged the same way, with
+`warning: the rewrite of <user>'s key adds relaxing option(s) "no-touch-required" — the manifest line grants more than the server does today`.
 
 After the writes, a summary reports each server's outcome:
 

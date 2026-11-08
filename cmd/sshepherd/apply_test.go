@@ -127,7 +127,7 @@ func TestApplyDryRunUnreachable(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1 (stderr: %s)", code, errBuf.String())
 	}
-	if !strings.Contains(out.String(), "ERROR:") {
+	if !strings.Contains(out.String(), "ERROR [dial]:") {
 		t.Errorf("stdout = %q, want the unreachable head", out.String())
 	}
 	if !strings.Contains(out.String(), "1 unreachable  → exit 1") {
