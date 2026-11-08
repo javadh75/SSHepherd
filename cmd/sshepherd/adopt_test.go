@@ -21,6 +21,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/manifest"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -544,6 +545,38 @@ servers:
   - {name: web-1, host: 127.0.0.1, port: `+strconv.Itoa(closedPort(t))+`, user: deploy}
 `)
 	return cfgPath, khPath
+}
+
+// TestAdoptPartialPrintsHintOnce: two servers down for the same reason get
+// one dial hint, not one per server, while each server still gets its own
+// issue line (F-P07-1: the hint left Error() and must not vanish from adopt).
+func TestAdoptPartialPrintsHintOnce(t *testing.T) {
+	fakeAgent(t)
+	kh := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(kh, nil, 0o600); err != nil {
+		t.Fatalf("write known_hosts: %v", err)
+	}
+	path := writeConfig(t, `
+servers:
+  - {name: web-1, host: 127.0.0.1, port: `+strconv.Itoa(closedPort(t))+`, user: deploy}
+  - {name: web-2, host: 127.0.0.1, port: `+strconv.Itoa(closedPort(t))+`, user: deploy}
+`)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "--config", path, "--known-hosts", kh, "--partial"}, &out, &errBuf); code == 3 {
+		t.Fatalf("exit = 3, want a partial run (stderr: %s)", errBuf.String())
+	}
+	stderr := errBuf.String()
+	if n := strings.Count(stderr, "hint:"); n != 1 {
+		t.Errorf("stderr has %d hint: lines, want exactly 1:\n%s", n, stderr)
+	}
+	if !strings.Contains(stderr, "hint: "+sshconn.DialHint) {
+		t.Errorf("stderr = %q, want the dial hint", stderr)
+	}
+	for _, name := range []string{"web-1", "web-2"} {
+		if !strings.Contains(stderr, "server "+name+":") {
+			t.Errorf("stderr = %q, want the issue line for %s", stderr, name)
+		}
+	}
 }
 
 // The strict gate: an unreachable server aborts with exit 1 and no output;

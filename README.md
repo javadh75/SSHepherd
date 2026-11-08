@@ -588,7 +588,10 @@ they were found. The input file is never modified.
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 Any unreadable server aborts the run unless `--partial` is set — adopting a
-half-read fleet would silently drop real access.
+half-read fleet would silently drop real access. Each unreadable server gets its
+own `server <name>: …` line; a connection failure's remediation follows as a
+`hint:` line, printed once however many servers share it (`warn:` under
+`--partial`, `error:` in strict mode, so it survives `-q`).
 
 An on-server key whose comment has tabs or control/format characters is adopted
 **without** its comment (options + type + key are kept), with the warning

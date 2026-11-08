@@ -369,7 +369,8 @@ strict/`--partial` issues. sshcfg `Include` skips cycles and caps reads (1024 fi
 1 MiB each), and a `ssh -G` differential test checks sshcfg.
 Reports name unowned keys by on-server comment/options, connection errors carry
 their remediation as a separate `hint` (text: once per distinct hint; JSON:
-additive `hint`), a write-phase failure keeps its transport `error_kind`, apply
+additive `hint`; adopt's unreadable-server gate likewise prints each distinct
+hint once after the per-server lines), a write-phase failure keeps its transport `error_kind`, apply
 JSON's rewrites gain `widens`, and Ctrl-C stops audit's fan-out without dialing
 queued servers.
 The write-failure semantics spec (P08: login-check failures sorted by stage, exit 2

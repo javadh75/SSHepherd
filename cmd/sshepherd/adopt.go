@@ -122,13 +122,23 @@ func reportUnreadable(log *slog.Logger, plan adopt.Plan, unreadable []string, pa
 	// as they happen; these gate lines are the verdict that explains the
 	// abort/partial decision — and the only lines that survive -q in strict
 	// mode.
+	emit := log.Error
+	if partial {
+		emit = log.Warn
+	}
 	for _, is := range plan.Issues {
-		msg := fmt.Sprintf("server %s: %s", is.Server, is.Detail)
-		if partial {
-			log.Warn(msg)
-		} else {
-			log.Error(msg)
+		emit(fmt.Sprintf("server %s: %s", is.Server, is.Detail))
+	}
+	// Each distinct hint once, after the issue lines, the way audit.Hints
+	// dedupes them in the text report: a fleet-wide outage gets one dial
+	// hint, not one per server.
+	seen := make(map[string]bool)
+	for _, is := range plan.Issues {
+		if is.Hint == "" || seen[is.Hint] {
+			continue
 		}
+		seen[is.Hint] = true
+		emit("hint: " + is.Hint)
 	}
 	if !partial {
 		log.Error(apply.Plural(len(unreadable), "server", "servers") +

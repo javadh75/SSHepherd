@@ -9,6 +9,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -386,6 +387,28 @@ func TestBuildUnreachableServerIsAnIssue(t *testing.T) {
 	}
 	if got := p.UnreadableServers(); !reflect.DeepEqual(got, []string{"db-1"}) {
 		t.Errorf("UnreadableServers = %v, want [db-1]", got)
+	}
+}
+
+// The dial hint is not part of the error text (sshconn keeps it out of
+// Error()), so an Issue carries it in its own field for the cmd layer to
+// print once; Detail stays the clean error.
+func TestBuildKeepsHint(t *testing.T) {
+	cfg := testCfg(t)
+	err := &sshconn.Error{
+		Kind: audit.ErrorKindDial,
+		Err:  errors.New("dial tcp 127.0.0.1:1: connect: connection refused"),
+		Hint: sshconn.DialHint,
+	}
+	p := Build(cfg, []audit.ServerResult{{Server: config.Server{Name: "db-1"}, Err: err}})
+	if len(p.Issues) != 1 {
+		t.Fatalf("Issues = %+v, want one", p.Issues)
+	}
+	if got, want := p.Issues[0].Hint, audit.CleanHint(err); got != want || got == "" {
+		t.Errorf("Issues[0].Hint = %q, want %q", got, want)
+	}
+	if strings.Contains(p.Issues[0].Detail, sshconn.DialHint) {
+		t.Errorf("Issues[0].Detail = %q, must not embed the dial hint", p.Issues[0].Detail)
 	}
 }
 

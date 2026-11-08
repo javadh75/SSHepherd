@@ -35,10 +35,14 @@ type Extension struct {
 // line sshd ignores; the cmd layer enforces the strict/--partial gate on
 // these. Detail can embed
 // remote-influenced text, but the sshread and authkeys layers control-strip
-// it at the source, so it is safe to print.
+// it at the source, so it is safe to print. Hint is the failure's operator
+// remediation (audit.CleanHint: one sanitized line, empty when there is
+// none); it is never part of Detail, so the cmd layer can print each
+// distinct hint once instead of once per server.
 type Issue struct {
 	Server string
 	Detail string
+	Hint   string
 }
 
 // Plan is everything adopt would add to the manifest, plus warnings for the
@@ -68,7 +72,7 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	extByUser := make(map[string]map[string]bool)
 	for _, r := range results {
 		if r.Err != nil {
-			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: r.Err.Error()})
+			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: r.Err.Error(), Hint: audit.CleanHint(r.Err)})
 			continue
 		}
 		for _, pe := range r.ParseErrs {
