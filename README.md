@@ -1828,7 +1828,9 @@ publish step always fails.
 
 Test kinds in the repo: unit (table-driven), integration (real `sshd` in Docker,
 build-tagged), end-to-end (the CLI binary through adopt → apply → audit), fuzz
-(every parser, with a committed seed corpus), benchmarks, race, goroutine-leak
+(every `Fuzz*` target, each with a committed seed corpus under
+`<pkg>/testdata/fuzz/<Target>/` that runs as ordinary test cases on every
+`go test`), benchmarks, race, goroutine-leak
 checks (`goleak` in every package), and golden snapshots of rendered output.
 
 ### Layout

@@ -183,6 +183,13 @@ test that fails before the fix and passes after.
   failed; `FUZZTIME` defaults to 15s. The scheduled CI job runs `make fuzz FUZZTIME=2m`
   (90-minute timeout) and restores/saves `$(go env GOCACHE)/fuzz` through actions/cache
   restore/save, keyed per run, so the corpus survives even a crash.
+  Every fuzz target has a committed seed corpus under `<pkg>/testdata/fuzz/<Target>/`
+  (at most 16 entries of 4 KiB or less per target), and those entries run as ordinary
+  test cases on every `go test`. `FuzzWriteCmds` never executes a write script: it
+  checks that the target path enters each script only through its leading
+  `sshconn.PathAssign` token (the rest is byte-identical to the script built for a
+  reference path), and that `PathAssign` evaluated by `/bin/sh` with `HOME=/h` prints
+  exactly that path.
 - **Benchmarks** — `go test -bench=. -benchmem` for hot paths (fan-out to many servers); watch
   for regressions. An informational `bench` job on push/PR posts benchstat base->head to the
   job summary; it fails only if the head benchmarks fail, and it is not in `ci-ok`.
@@ -506,3 +513,6 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
+Fuzz oracles and corpus (P13, round 2): every one of the 19 `Fuzz*` targets has a
+committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
+write script outside the `PathAssign` token.
