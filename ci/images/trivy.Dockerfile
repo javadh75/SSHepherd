@@ -1,3 +1,3 @@
 # Pin file only: CI reads this FROM line (Dependabot's docker ecosystem bumps
 # tag + digest together). Never built.
-FROM aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
+FROM aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
