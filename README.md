@@ -589,14 +589,15 @@ What gets skipped or merged, always with a warning on stderr:
 **Output files** (`-o`, shared with `adopt`): written mode `0600`, fsynced, and
 published without ever clobbering an existing file unless `--force` is given.
 When `-o` names the manifest the run read (`adopt --config`, `adopt --merge`,
-`import --merge FILE`, symlinks followed), it is an in-place update. Without
+`import --merge FILE`; symlinks followed, however the path is spelled: relative or
+absolute, or a case variant on a case-insensitive filesystem), it is an in-place update. Without
 `--force` it is refused with
 `PATH is the manifest this run read; pass --force to update it in place`. With
 `--force` it is saved exactly as `revoke` saves: under the manifest lock, keeping
 the file's mode and owner, and refused with
 `manifest PATH changed since it was read; re-run` (exit 3) if anything changed the
 file meanwhile, so a concurrent revoke is never undone. Identical output writes
-nothing. A hard link to the manifest under another name is refused
+nothing. A second hard link to the manifest, under another name, is refused
 (`PATH is a hard link to the manifest M; pass the manifest's own path`). A
 different existing file overwritten with `--force` is still a new file (mode
 `0600`).
@@ -640,7 +641,13 @@ went unread under `--partial`, it logs this as a warning
 partial manifest with a
 `# WARNING: server NAME unreadable — its access is NOT represented` line for each
 gap, and exits 1 so scripts notice the result is incomplete. A server whose only
-problem is a line sshd ignores still counts as read, and adopt exits 0. When
+problems are lines adopt cannot use (lines sshd ignores, or unparseable lines) counts
+as read and is not called unreadable. Its other keys are adopted, and adopt exits 0.
+The read count is logged as a warning
+(`read 1 of 1 server — 1 server partly read: keys on lines adopt could not use are NOT in the output`),
+and the manifest marks the server with
+`# WARNING: server NAME partly read — keys on lines adopt could not use are NOT represented`.
+When
 `--partial` could read no server at all, adopt refuses before rendering, writes
 nothing to stdout or `-o`, and exits 3 with
 `read 0 of N servers — nothing could be adopted; fix the errors above`.
@@ -1582,7 +1589,7 @@ Exit codes:
 Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
-     existing --output without --force
+     existing --output without --force, an in-place save refused
 ```
 
 ## Safety model

@@ -139,7 +139,10 @@ silently dropped from the draft.
 - Per-server `Err` or `ParseErrs`: collected. Without `--partial`: all
   printed to stderr, exit nonzero, nothing written (stdout or `-o`). With
   `--partial`: stderr warnings plus a comment block in the generated manifest
-  (`# WARNING: server X unreadable — its access is NOT represented`).
+  (`# WARNING: server X unreadable — its access is NOT represented`). A server
+  read without a transport error whose only problems are lines adopt cannot use
+  is marked `# WARNING: server X partly read — keys on lines adopt could not use
+  are NOT represented` instead, and counts as read.
 - `-o`: no-clobber unless `--force`, 0600, pinned on overwrite (shared
   `writeFileNoClobber`).
 

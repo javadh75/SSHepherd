@@ -97,10 +97,36 @@ func (s Store) SameAs(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("stat %s: %w", path, err)
 	}
-	if resolved != s.Resolved {
-		return false, fmt.Errorf("%s is a hard link to the manifest %s; pass the manifest's own path", path, s.Path)
+	same, err := sameEntry(resolved, s.Resolved)
+	if err != nil {
+		return false, err
 	}
-	return true, nil
+	// One link means one name: path is the manifest's own name spelled
+	// another way (a case or normalization variant on a case-insensitive
+	// filesystem). With more links, only the same directory entry counts.
+	if n, ok := linkCount(fi); same || (ok && n == 1) {
+		return true, nil
+	}
+	return false, fmt.Errorf("%s is a hard link to the manifest %s; pass the manifest's own path", path, s.Path)
+}
+
+// sameEntry reports whether two symlink-free paths name the same directory
+// entry: the same final name in the same directory, however each is spelled
+// (relative or absolute, the directory through another path).
+func sameEntry(a, b string) (bool, error) {
+	var dirs [2]fs.FileInfo
+	var bases [2]string
+	for i, p := range [2]string{a, b} {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return false, fmt.Errorf("resolve %s: %w", p, err)
+		}
+		bases[i] = filepath.Base(abs)
+		if dirs[i], err = os.Stat(filepath.Dir(abs)); err != nil {
+			return false, fmt.Errorf("resolve %s: %w", p, err)
+		}
+	}
+	return bases[0] == bases[1] && os.SameFile(dirs[0], dirs[1]), nil
 }
 
 // beforeSave is a test seam: it runs at the start of Save, before the lock

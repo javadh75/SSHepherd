@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -229,7 +230,7 @@ func TestGenerateAdoptManifestPartialGolden(t *testing.T) {
 		errs: map[string]error{"db-1": errors.New("dial tcp 10.0.0.3:2222: connection refused")},
 	}
 	plan := adoptPlan(t, cfg, r)
-	got, err := generateAdoptManifest(cfg, plan, "sshepherd.yaml", plan.UnreadableServers())
+	got, err := generateAdoptManifest(cfg, plan, "sshepherd.yaml", gapNotes(plan.UnreadableServers(), nil))
 	if err != nil {
 		t.Fatalf("generateAdoptManifest: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestRenderMergedManifestGolden(t *testing.T) {
 	}
 	cfg := mf.Config()
 	plan := adoptPlan(t, cfg, mixedReader(t))
-	got, err := renderMergedManifest(mf, src, plan, []string{"db-9"}, "2026-07-16")
+	got, err := renderMergedManifest(mf, src, plan, gapNotes([]string{"db-9"}, nil), "2026-07-16")
 	if err != nil {
 		t.Fatalf("renderMergedManifest: %v", err)
 	}
@@ -610,6 +611,42 @@ func TestAdoptInPlaceKeepsConcurrentRevoke(t *testing.T) {
 	}
 }
 
+// TestAdoptInPlaceAnySpelling: adopt -o naming its own --config under
+// another spelling (relative against absolute, either way round) saves in
+// place through the store instead of refusing it as a hard link.
+func TestAdoptInPlaceAnySpelling(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	for _, tc := range []struct {
+		name            string
+		absConfig, absO bool
+	}{
+		{"relative --config, absolute -o", false, true},
+		{"absolute --config, relative -o", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			abs, err := filepath.EvalSymlinks(writeConfig(t, "users: []\nservers: []\naccess: []\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(filepath.Dir(abs))
+			spell := func(absolute bool) string {
+				if absolute {
+					return abs
+				}
+				return filepath.Base(abs)
+			}
+			var out, errBuf bytes.Buffer
+			args := []string{"adopt", "--config", spell(tc.absConfig), "-o", spell(tc.absO), "--force"}
+			if code := run(args, &out, &errBuf); code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+			}
+			if _, err := os.Lstat(manifest.LockPath(abs)); err != nil {
+				t.Errorf("lock sidecar missing: the in-place write did not go through the store (%v)", err)
+			}
+		})
+	}
+}
+
 // fakeAgent satisfies the agent preflight without a real ssh-agent: a real
 // in-memory keyring holding one generated key, served over a unix socket.
 // The socket lives in a short os.MkdirTemp dir, not t.TempDir(): this test's
@@ -829,6 +866,49 @@ func TestAdoptPartialSomeRead(t *testing.T) {
 	// when a server went unread.
 	if !strings.Contains(errBuf.String(), "on the readable servers") {
 		t.Errorf("stderr = %q, want the nothing-to-adopt note qualified for the unread server", errBuf.String())
+	}
+}
+
+// TestGapNotes: an unreadable server is marked missing whole, a partly read
+// one only for the lines adopt could not use; the order follows unreadable.
+func TestGapNotes(t *testing.T) {
+	results := []audit.ServerResult{
+		{Server: config.Server{Name: "web-1"}},
+		{Server: config.Server{Name: "db-1"}, Err: errors.New("dial: connection refused")},
+	}
+	unreadable := []string{"web-1", "db-1"}
+	got := gapNotes(unreadable, partlyRead(unreadable, results))
+	want := []string{
+		"WARNING: server web-1 partly read — keys on lines adopt could not use are NOT represented",
+		"WARNING: server db-1 unreadable — its access is NOT represented",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("gapNotes = %q, want %q", got, want)
+	}
+}
+
+// TestAdoptPartialLineIssueOnly: a server read in full except one line adopt
+// cannot use is partly read, not unreadable. --partial adopts its other keys
+// and exits 0 (the server was read), and neither stderr nor the manifest
+// calls it unreadable; both say the line's keys are not in the output.
+func TestAdoptPartialLineIssueOnly(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1")
+	hosts["web-1"].install(t, []byte{1}, "ssh-ed25519 !!!notbase64 broken")
+	cfg := writeConfig(t, "users: []\nservers:\n"+hosts["web-1"].line("web-1")+"access: []\n")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"adopt", "--config", cfg, "--known-hosts", kh, "--partial"}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "# WARNING: server web-1 partly read — keys on lines adopt could not use are NOT represented") ||
+		strings.Contains(out.String(), "web-1 unreadable") {
+		t.Errorf("stdout = %q, want the partly-read marker, not the unreadable one", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "read 1 of 1 server — 1 server partly read: keys on lines adopt could not use are NOT in the output") {
+		t.Errorf("stderr = %q, want the read count to flag the partly read server", errBuf.String())
+	}
+	if !strings.Contains(out.String(), strings.Fields(testkeys.Line(t, 1))[1]) {
+		t.Errorf("stdout = %q, want the readable key adopted", out.String())
 	}
 }
 

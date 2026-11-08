@@ -253,6 +253,83 @@ func TestStoreSameAs(t *testing.T) {
 	}
 }
 
+// TestStoreSameAsSpellings: the manifest's own file spelled another way
+// (relative against absolute, through "..", a case variant on a
+// case-insensitive filesystem) is the same file, not a hard link; a real
+// hard link is still refused whatever its spelling.
+func TestStoreSameAsSpellings(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	abs := filepath.Join(dir, "m.yaml")
+	if err := os.WriteFile(abs, []byte("users: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	rel, err := Read("m.yaml")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	full, err := Read(abs)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	type row struct {
+		name  string
+		store Store
+		path  string
+	}
+	rows := []row{
+		{"relative store, absolute -o", rel, abs},
+		{"absolute store, relative -o", full, "m.yaml"},
+		{"relative store, dot-dot -o", rel, "sub/../m.yaml"},
+		{"absolute store, dot-dot -o", full, filepath.Join(dir, "sub", "..", "m.yaml")},
+	}
+	if _, err := os.Stat(filepath.Join(dir, "M.YAML")); err == nil {
+		rows = append(rows, row{"case variant on a case-insensitive filesystem", rel, "M.yaml"},
+			row{"case variant, absolute store", full, filepath.Join(dir, "M.yaml")})
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.store.SameAs(tc.path)
+			if err != nil || !got {
+				t.Errorf("SameAs(%q) = (%v, %v), want (true, nil)", tc.path, got, err)
+			}
+		})
+	}
+	if err := os.Link(abs, filepath.Join(dir, "hard.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	// With a second name on the file, the manifest's own name spelled
+	// another way is still the manifest; the second name is refused.
+	for _, tc := range []struct {
+		row
+		wantSame bool
+	}{
+		{row{"hard link, relative -o", full, "hard.yaml"}, false},
+		{row{"hard link, absolute -o", rel, filepath.Join(dir, "hard.yaml")}, false},
+		{row{"own name relative, file has a second link", full, "m.yaml"}, true},
+		{row{"own name absolute, file has a second link", rel, abs}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.store.SameAs(tc.path)
+			if tc.wantSame {
+				if err != nil || !got {
+					t.Errorf("SameAs(%q) = (%v, %v), want (true, nil)", tc.path, got, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "hard link") {
+				t.Errorf("SameAs(%q) = (%v, %v), want a hard-link refusal", tc.path, got, err)
+			}
+		})
+	}
+}
+
 // A planted symlink at the lock name is never followed or created through.
 func TestStoreLockRefusesSymlink(t *testing.T) {
 	s := readTemp(t, "users: []\n")

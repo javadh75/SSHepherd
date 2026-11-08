@@ -476,3 +476,47 @@ func TestImportMergeSameTargetAsManifestServer(t *testing.T) {
 		t.Errorf("stderr = %q, want a same-target warning naming both", errBuf.String())
 	}
 }
+
+// TestImportMergeInPlaceAnySpelling: -o naming the --merge manifest under
+// another spelling (relative against absolute, either way round) is the
+// same in-place update, not a "hard link" refusal.
+func TestImportMergeInPlaceAnySpelling(t *testing.T) {
+	hermeticHome(t)
+	cfg := writeSSHConfig(t, "Host app-1\n  HostName 10.0.0.5\n  User deploy\n")
+	for _, tc := range []struct {
+		name           string
+		absMerge, absO bool
+	}{
+		{"relative manifest, absolute -o", false, true},
+		{"absolute manifest, relative -o", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			abs, err := filepath.EvalSymlinks(writeMergeManifest(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(filepath.Dir(abs))
+			spell := func(absolute bool) string {
+				if absolute {
+					return abs
+				}
+				return filepath.Base(abs)
+			}
+			var out, errBuf bytes.Buffer
+			args := []string{"import", cfg, "--merge", spell(tc.absMerge), "--servers-only", "-o", spell(tc.absO), "--force"}
+			if code := run(args, &out, &errBuf); code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+			}
+			got, err := os.ReadFile(abs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), "name: app-1") {
+				t.Errorf("manifest = %q, want the merged server", got)
+			}
+			if _, err := os.Lstat(manifest.LockPath(abs)); err != nil {
+				t.Errorf("lock sidecar missing: the in-place write did not go through the store (%v)", err)
+			}
+		})
+	}
+}

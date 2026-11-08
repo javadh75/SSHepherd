@@ -511,7 +511,8 @@ changed-since-read refusal, mode and owner kept; `WriteFile` for new files); fre
 and merged manifests share one encoder from the config types, guarded by a
 reflection round-trip test; `revoke NAME` resolves manifest users first;
 `adopt --partial` refuses a zero-read fleet (exit 3), exits 1 when some servers
-went unread, and reports `read X of N`.
+went unread, and reports `read X of N`; a server with only unusable lines is marked
+partly read, not unreadable.
 CI and gate hygiene (P13, round 1): `make fuzz` discovers every `Fuzz*` target and the
 daily CI fuzz keeps its corpus; `make check` adds `go-licenses`, and CI scans each push's
 commits with `gitleaks git` (`make secrets-history`); `make build`/`dist` and

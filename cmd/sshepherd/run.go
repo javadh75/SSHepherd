@@ -219,7 +219,7 @@ const exitCodesAdopt = `Exit codes:
 const exitCodesImport = `Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
-     existing --output without --force`
+     existing --output without --force, an in-place save refused`
 
 // exitCodeFor maps Execute's error to the monitoring-style process exit code
 // (see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md).

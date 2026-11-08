@@ -78,6 +78,15 @@ func checkLockFile(f *os.File, path, resolved string) error {
 	return fmt.Errorf("lock manifest: %s is owned by uid %d, not by you (uid %d) or the manifest's owner — remove it and re-run", path, uid, geteuid())
 }
 
+// linkCount is the file's hard-link count.
+func linkCount(fi fs.FileInfo) (uint64, bool) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Nlink), true // #nosec G115 -- widening: Nlink is uint16 (darwin) or uint64 (linux)
+}
+
 // chown is (*os.File).Chown, swappable to force the refusal path in tests.
 var chown = (*os.File).Chown
 

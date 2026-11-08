@@ -14,7 +14,7 @@ Warnings about skipped entries go to stderr.
 Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
-     existing --output without --force
+     existing --output without --force, an in-place save refused
 
 Usage:
   sshepherd import [ssh-config-path] [flags]
