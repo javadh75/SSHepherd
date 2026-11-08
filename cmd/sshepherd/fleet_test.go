@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/clog"
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 // TestConnFlagsRegister: one registration gives every connecting command the
@@ -120,5 +122,55 @@ func TestFleetSessionRead(t *testing.T) {
 	cancel()
 	if _, err := s.Read(ctx, "auditing", cfg, cfg.Servers, nil); err == nil || !strings.HasPrefix(err.Error(), "interrupted:") {
 		t.Errorf("canceled Read err = %v, want interrupted", err)
+	}
+}
+
+// TestManifestErrorEveryCallSite: every command that loads a manifest words
+// a missing file and an invalid one through manifestError — at the read
+// (missing: the check-the-flag hint naming the command's own flag) and at
+// the parse/load (invalid: "invalid manifest PATH:" exactly once). One row
+// per call site, so dropping the wrapper at any one of them fails a row.
+func TestManifestErrorEveryCallSite(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const bad = "bad.yaml"
+	if err := os.WriteFile(bad, []byte("users:\n  - {name: a, keys: []}\n  - {name: a, keys: []}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
+	for _, tt := range []struct {
+		name, flag string
+		args       func(path string) []string
+	}{
+		{"audit", "--config", func(p string) []string { return []string{"audit", "--config", p} }},
+		{"adopt", "--config", func(p string) []string { return []string{"adopt", "--config", p} }},
+		{"adopt --merge", "--config", func(p string) []string { return []string{"adopt", "--merge", "--config", p} }},
+		{"apply", "--config", func(p string) []string { return []string{"apply", "--config", p} }},
+		{"revoke", "--config", func(p string) []string { return []string{"revoke", "a", "--config", p} }},
+		{"rotate", "--config", func(p string) []string {
+			return []string{"rotate", "a", "--old", fpOf(t, 1), "--new", testkeys.Line(t, 2), "--config", p}
+		}},
+		{"import --merge", "--merge", func(p string) []string { return []string{"import", src, "--merge", p} }},
+	} {
+		t.Run(tt.name+"/missing", func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			if code := run(tt.args("no-such.yaml"), &out, &errBuf); code != 3 {
+				t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+			}
+			want := "error: no manifest at no-such.yaml — check " + tt.flag +
+				", or create one with 'sshepherd import --servers-only -o no-such.yaml'\n"
+			if errBuf.String() != want {
+				t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+			}
+		})
+		t.Run(tt.name+"/invalid", func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			if code := run(tt.args(bad), &out, &errBuf); code != 3 {
+				t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+			}
+			s := errBuf.String()
+			if !strings.HasPrefix(s, "error: invalid manifest "+bad+": ") || strings.Count(s, "manifest") != 1 {
+				t.Errorf("stderr = %q, want one \"error: invalid manifest %s: …\"", s, bad)
+			}
+		})
 	}
 }

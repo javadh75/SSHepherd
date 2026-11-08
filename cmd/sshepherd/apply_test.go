@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -454,6 +455,35 @@ func TestApplyDeclinedPrompt(t *testing.T) {
 	for _, never := range []string{"manifest edit:", "updated — commit and push"} {
 		if strings.Contains(out.String(), never) {
 			t.Errorf("plain apply printed %q:\n%s", never, out.String())
+		}
+	}
+}
+
+// TestApplyOffersGrantedKeysFirst: plain apply hands its read and write
+// dials the server's granted fingerprints (audit.GrantedFingerprints), so
+// the agent's own order — here an ungranted k5 first — never decides which
+// key logs in; the probe then offers only the surviving held key. Both
+// servers accept k1 and k5, so each dial's first offer is its login. It
+// also pins the write phase line's plural: "applying 2 servers".
+func TestApplyOffersGrantedKeysFirst(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1, 5}, "web-1", "web-2")
+	t.Setenv("SSH_AUTH_SOCK", sshtest.Agent(t, sshtest.Key(5), sshtest.Key(1)))
+	for _, h := range hosts {
+		h.install(t, []byte{1, 9}) // k9 is unknown: one remove each, so both servers are written
+	}
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\nservers:\n"+
+		hosts["web-1"].line("web-1")+hosts["web-2"].line("web-2")+"access:\n  - {user: alice, servers: [web-1, web-2]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"apply", "--yes", "--parallel", "3", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if want := "applying 2 servers (parallelism 3)…"; !strings.Contains(errBuf.String(), want) {
+		t.Errorf("stderr lacks %q:\n%s", want, errBuf.String())
+	}
+	for _, name := range []string{"web-1", "web-2"} {
+		want := []string{fpOf(t, 1), fpOf(t, 1), fpOf(t, 1)}
+		if got := hosts[name].srv.Attempts(); !slices.Equal(got, want) {
+			t.Errorf("%s offered keys = %q, want %q (read, write: granted k1 before the agent's k5; probe: the survivor)", name, got, want)
 		}
 	}
 }

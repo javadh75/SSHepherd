@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
@@ -137,6 +138,68 @@ func TestRenderSummaryFailedHint(t *testing.T) {
 		t.Errorf("hint printed %d times, want 1:\n%s", n, buf.String())
 	}
 	checkGolden(t, "summary_failed_hint.golden", buf.Bytes())
+}
+
+// TestRenderSummaryRefusedHint: a phase-2 refusal that carries a hint
+// prints it once under the first REFUSED row, like a failure's.
+func TestRenderSummaryRefusedHint(t *testing.T) {
+	const hint = "remove the stale lock by hand once no other run is writing"
+	refused := func(name string) error {
+		return fleet.Refused(&sshconn.Error{Kind: fleet.ErrorKindDial, Hint: hint, Err: errors.New(name + " is locked by another run")})
+	}
+	plans := []ServerPlan{
+		{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeRefused, OutcomeErr: refused("a")},
+		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomeRefused, OutcomeErr: refused("b")},
+	}
+	var buf bytes.Buffer
+	RenderSummary(&buf, plans, RenderOptions{})
+	want := "a: REFUSED: a is locked by another run\n  hint: " + hint + "\nb: REFUSED: b is locked by another run\n"
+	if !strings.HasPrefix(buf.String(), want) {
+		t.Errorf("summary =\n%s\nwant it to start with\n%s", buf.String(), want)
+	}
+}
+
+// TestRenderRemoveOptionsOnlyForUnknownKeys: the remove row's " · options:"
+// suffix is for keys neither config owns. A key the manifest owns (bob's,
+// on a server he is not granted) and a key only the pre-edit config owns
+// (carol's, revoked) keep the plain "remove (unauthorized)" cell, even
+// with on-server options.
+func TestRenderRemoveOptionsOnlyForUnknownKeys(t *testing.T) {
+	cfg := planCfg(t)
+	former, err := config.Parse([]byte("users:\n  - {name: carol, keys: [\"" + testkeys.Line(t, 4) + "\"]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withOpts := func(seed byte) authkeys.Key {
+		k, err := authkeys.ParseLine("no-pty " + testkeys.Line(t, seed))
+		if err != nil || k == nil {
+			t.Fatalf("key %d: %v", seed, err)
+		}
+		return *k
+	}
+	plans := []ServerPlan{{
+		Server: config.Server{Name: "web-1", Host: "10.0.0.1", Port: 22, User: "deploy"}, Class: ClassChange,
+		Remove: []authkeys.Key{withOpts(3), withOpts(4), withOpts(9)},
+	}}
+	var buf bytes.Buffer
+	Render(&buf, cfg, plans, RenderOptions{Former: former})
+	rows := map[string]string{"bob": "", "carol (revoked)": "", "(unknown)": ""}
+	for line := range strings.Lines(buf.String()) {
+		for label := range rows {
+			if strings.Contains(line, " "+label+" ") {
+				rows[label] = line
+			}
+		}
+	}
+	for label, want := range map[string]string{
+		"bob":             "remove (unauthorized)\n",
+		"carol (revoked)": "remove (unauthorized)\n",
+		"(unknown)":       `remove (unauthorized) · options: "no-pty"` + "\n",
+	} {
+		if !strings.HasSuffix(rows[label], want) {
+			t.Errorf("%s row = %q, want it to end %q\nreport:\n%s", label, rows[label], want, buf.String())
+		}
+	}
 }
 
 func TestRenderPlanMixedGolden(t *testing.T) {

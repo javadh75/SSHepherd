@@ -31,12 +31,24 @@ func TestResolveVersion(t *testing.T) {
 	}
 }
 
+// TestRootVersionUsesResolved: the root command's Version goes through
+// resolveVersion, not the raw ldflags variable. An -X value wins as is; an
+// empty one must still resolve (to the stamped module version, or "dev")
+// — printing the raw "" would mean --version skipped resolveVersion.
 func TestRootVersionUsesResolved(t *testing.T) {
 	orig := version
-	version = "v7.7.7-test"
 	t.Cleanup(func() { version = orig })
-	cmd := newRootCmd(&app{}, nil, nil)
-	if cmd.Version != "v7.7.7-test" {
-		t.Errorf("root Version = %q, want the ldflags value", cmd.Version)
+	resolved := resolveVersion("", debug.ReadBuildInfo)
+	if resolved == "" {
+		t.Fatal("resolveVersion returned empty; it always falls back to dev")
+	}
+	for _, tt := range []struct{ ldflag, want string }{
+		{"v7.7.7-test", "v7.7.7-test"},
+		{"", resolved},
+	} {
+		version = tt.ldflag
+		if got := newRootCmd(&app{}, nil, nil).Version; got != tt.want {
+			t.Errorf("version %q: root Version = %q, want %q", tt.ldflag, got, tt.want)
+		}
 	}
 }

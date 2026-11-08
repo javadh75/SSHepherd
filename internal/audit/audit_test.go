@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -315,6 +317,68 @@ func TestRunCancelMidFanOutStopsQueue(t *testing.T) {
 	}
 	if strings.Contains(logBuf.String(), "warn:") {
 		t.Errorf("canceled reads must not warn:\n%s", logBuf.String())
+	}
+}
+
+// blockingReader parks the first read until release is closed, ignoring
+// ctx (a read stuck in a slow handshake), and counts every read.
+type blockingReader struct {
+	countingReader
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return b.countingReader.ReadAuthorizedKeys(ctx, srv)
+}
+
+// runWorkers counts the goroutines Run started that are still alive.
+func runWorkers() int {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	n := 0
+	for g := range bytes.SplitSeq(buf, []byte("\n\n")) {
+		if bytes.Contains(g, []byte("internal/audit.Run.func")) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestRunCancelReleasesQueuedServers (COR-7): Ctrl-C ends a server that is
+// still waiting for a fan-out slot at once — it does not wait for the slot
+// a slow read holds. With --parallel 1 and the only slot stuck in a read
+// that ignores ctx, the queued servers' workers must be gone before that
+// read returns.
+func TestRunCancelReleasesQueuedServers(t *testing.T) {
+	cfg := fleetConfig(t, 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &blockingReader{entered: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan []ServerResult)
+	go func() { done <- Run(ctx, cfg, r, Options{Parallel: 1}) }()
+	<-r.entered
+	cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for runWorkers() > 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	left := runWorkers()
+	close(r.release)
+	results := <-done
+	if left != 1 {
+		t.Errorf("%d fan-out workers alive after cancel while one read holds the only slot, want 1 (queued servers must not wait for a slot)", left)
+	}
+	if n := r.calls.Load(); n != 1 {
+		t.Errorf("reads = %d, want 1", n)
+	}
+	for _, res := range results {
+		if fleet.ErrorKindOf(res.Err) != fleet.ErrorKindCanceled {
+			t.Errorf("%s: err %v (kind %q), want canceled", res.Server.Name, res.Err, fleet.ErrorKindOf(res.Err))
+		}
 	}
 }
 

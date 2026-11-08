@@ -187,6 +187,12 @@ func TestExpiry(t *testing.T) {
 		{`expiry-time="20991231"`, false, false},
 		{`expiry-time="202610231159Z"`, true, false},
 		{`expiry-time="20261023120100Z"`, false, false},
+		// OpenSSH's UTC suffixes are case-insensitive: z, UTC, utc.
+		{`expiry-time="202610231159z"`, true, false},
+		{`expiry-time="20261023120100z"`, false, false},
+		{`expiry-time="202610231159UTC"`, true, false},
+		{`expiry-time="20261023120100utc"`, false, false},
+		{`expiry-time="20261024UTC"`, false, false},
 		{`expiry-time="2026"`, false, true},
 		{`expiry-time="2026xx01"`, false, true},
 	}
@@ -198,14 +204,23 @@ func TestExpiry(t *testing.T) {
 	}
 }
 
-// expiryPassed and the manifest loader accept exactly the same expiry values.
+// TestExpiryAgreesWithManifestRule: expiryPassed and the manifest loader
+// accept exactly the same expiry values — each checked against an explicit
+// verdict, not only against each other (they share one parser, so mere
+// agreement would hold even if both broke the same way).
 func TestExpiryAgreesWithManifestRule(t *testing.T) {
 	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
-	for _, v := range []string{"20270101", "202701011200", "20270101120000Z", "2027", "2027xx01", "20271301", "202701011200z"} {
+	for v, valid := range map[string]bool{
+		"20270101": true, "202701011200": true, "20270101120000Z": true,
+		"202701011200z": true, "20270101UTC": true, "20270101120000utc": true, "202701011200Utc": true,
+		"2027": false, "2027xx01": false, "20271301": false, "20270101GMT": false, "UTC": false, "z": false,
+	} {
 		opt := `expiry-time="` + v + `"`
-		_, err := expiryPassed(opt, now)
-		if (err == nil) != (authkeys.CheckOption(opt) == "") {
-			t.Errorf("%s: expiryPassed err=%v but CheckOption=%q", opt, err, authkeys.CheckOption(opt))
+		if _, err := expiryPassed(opt, now); (err == nil) != valid {
+			t.Errorf("%s: expiryPassed err = %v, want valid=%v", opt, err, valid)
+		}
+		if got := authkeys.CheckOption(opt); (got == "") != valid {
+			t.Errorf("%s: CheckOption = %q, want valid=%v", opt, got, valid)
 		}
 	}
 }

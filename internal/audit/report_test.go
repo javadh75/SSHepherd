@@ -365,6 +365,37 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 	}
 }
 
+// TestRenderUnauthorizedOptionsOnlyForUnknownKeys: the " · options:"
+// suffix is for keys the manifest does not own. bob's key, installed with
+// options on a server he is not granted, keeps the plain cell; an unknown
+// key with the same options shows them.
+func TestRenderUnauthorizedOptionsOnlyForUnknownKeys(t *testing.T) {
+	cfg := reportConfig(t)
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")},
+		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\nno-pty " + testkeys.Line(t, 2) + "\nno-pty " + testkeys.Line(t, 9) + "\n")},
+	}}
+	results := Run(context.Background(), cfg, reader, Options{Parallel: 2})
+	var buf bytes.Buffer
+	Render(&buf, cfg, results, RenderOptions{})
+	rows := map[string]string{}
+	for line := range strings.Lines(buf.String()) {
+		for _, label := range []string{"bob", "(unknown)"} {
+			if strings.Contains(line, " "+label+" ") && strings.Contains(line, "UNAUTHORIZED") {
+				rows[label] = line
+			}
+		}
+	}
+	for label, want := range map[string]string{
+		"bob":       "installed but UNAUTHORIZED\n",
+		"(unknown)": `installed but UNAUTHORIZED · options: "no-pty"` + "\n",
+	} {
+		if !strings.HasSuffix(rows[label], want) {
+			t.Errorf("%s row = %q, want it to end %q\nreport:\n%s", label, rows[label], want, buf.String())
+		}
+	}
+}
+
 // commentDriftResults builds a fleet whose ONLY divergence is cosmetic:
 // every desired fingerprint is present, but alice's key on web-1 carries a
 // stale on-server comment ("alice@laptop" vs her manifest comment

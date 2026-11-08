@@ -81,6 +81,94 @@ func diffHost(h Host, g map[string][]string, me *user.User) []string {
 			d = append(d, "identityfile "+strings.Join(a, ",")+" vs "+strings.Join(b, ","))
 		}
 	}
+	if got := sshGProxy(g); h.Proxy != got {
+		d = append(d, "proxy "+strconv.Quote(h.Proxy)+" vs "+strconv.Quote(got))
+	}
+	return d
+}
+
+// sshGProxy is ssh -G's ProxyJump/ProxyCommand in Host.Proxy's form:
+// "ProxyJump X", "ProxyCommand Y", or "" when neither is set (or none).
+func sshGProxy(g map[string][]string) string {
+	for _, kw := range []string{"ProxyJump", "ProxyCommand"} {
+		if v := g[strings.ToLower(kw)]; len(v) > 0 && !strings.EqualFold(v[0], "none") {
+			return kw + " " + v[0]
+		}
+	}
+	return ""
+}
+
+// fixtureAliases is the set of concrete aliases the fixture's Host lines
+// name (no wildcard, not negated, up to a trailing comment): the hosts a
+// user would expect import to find. It reads the fixture text, not
+// sshcfg's parse, so it can catch sshcfg dropping a host.
+func fixtureAliases(files map[string]string) map[string]bool {
+	set := map[string]bool{}
+	for _, c := range files {
+		for line := range strings.Lines(c) {
+			f := strings.Fields(line)
+			if len(f) == 0 || !strings.EqualFold(f[0], "Host") {
+				continue
+			}
+			for _, pat := range f[1:] {
+				if strings.HasPrefix(pat, "#") {
+					break
+				}
+				if !strings.ContainsAny(pat, "*?") && !strings.HasPrefix(pat, "!") {
+					set[pat] = true
+				}
+			}
+		}
+	}
+	return set
+}
+
+// skippedOnPurpose records, per fixture, the aliases a Host line names that
+// sshcfg deliberately leaves out of its result (with why). Every other
+// fixture alias must come back from sshcfg, and a recorded one must stay
+// skipped: an entry that no longer applies fails the test, so the record
+// cannot rot.
+var skippedOnPurpose = map[string]map[string]string{
+	"HostName with an unsupported token skips the host": {
+		"a": "HostName %r cannot be expanded statically; sshcfg warns and skips the host",
+	},
+	"HostName with a dangling percent skips the host": {
+		"a": "HostName ends in a dangling %; sshcfg warns and skips the host",
+	},
+	"Include inside a Host block": {
+		"b": "Host b sits in a file included from Host a, which never matches b; sshcfg warns and skips it",
+	},
+}
+
+// diffAliases compares sshcfg's aliases with the fixture's both ways,
+// allowing exactly the recorded skips.
+func diffAliases(hosts []Host, files map[string]string, skipped map[string]string) []string {
+	got := map[string]bool{}
+	for _, h := range hosts {
+		got[h.Alias] = true
+	}
+	want := fixtureAliases(files)
+	var d []string
+	for a := range got {
+		if !want[a] {
+			d = append(d, "sshcfg returned "+a+", which no Host line names")
+		}
+	}
+	for a := range want {
+		_, skip := skipped[a]
+		switch {
+		case !got[a] && !skip:
+			d = append(d, "sshcfg dropped "+a+" (record it in skippedOnPurpose if deliberate)")
+		case got[a] && skip:
+			d = append(d, "sshcfg now returns "+a+"; drop its skippedOnPurpose entry")
+		}
+	}
+	for a := range skipped {
+		if !want[a] {
+			d = append(d, "skippedOnPurpose names "+a+", which no Host line names")
+		}
+	}
+	slices.Sort(d)
 	return d
 }
 
@@ -101,7 +189,7 @@ func TestResolutionMatchesSSHG(t *testing.T) {
 	if err != nil {
 		t.Skip("no current user:", err)
 	}
-	check := func(t *testing.T, files map[string]string, reason string) {
+	check := func(t *testing.T, name string, files map[string]string, reason string) {
 		t.Helper()
 		if reason != "" {
 			t.Skip("known deviation: " + reason)
@@ -121,6 +209,9 @@ func TestResolutionMatchesSSHG(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if d := diffAliases(hosts, files, skippedOnPurpose[name]); len(d) > 0 {
+			t.Errorf("alias set: %v", d)
+		}
 		for _, h := range hosts {
 			g, err := sshG(t, bin, cfg, h.Alias)
 			if err != nil {
@@ -131,11 +222,44 @@ func TestResolutionMatchesSSHG(t *testing.T) {
 			}
 		}
 	}
+	names := map[string]bool{}
 	for _, tc := range loadResolutionCases {
-		t.Run(tc.name, func(t *testing.T) { check(t, map[string]string{"config": tc.config}, tc.sshG) })
+		names[tc.name] = true
+		t.Run(tc.name, func(t *testing.T) { check(t, tc.name, map[string]string{"config": tc.config}, tc.sshG) })
 	}
 	for _, tc := range includeContextCases {
-		t.Run(tc.name, func(t *testing.T) { check(t, tc.files, tc.sshG) })
+		names[tc.name] = true
+		t.Run(tc.name, func(t *testing.T) { check(t, tc.name, tc.files, tc.sshG) })
+	}
+	for name := range skippedOnPurpose {
+		if !names[name] {
+			t.Errorf("skippedOnPurpose names %q, which is no fixture", name)
+		}
+	}
+}
+
+// TestDiffAliasesBothWays: the alias-set check fails when sshcfg drops a
+// named host, returns one no Host line names, or keeps a host recorded as
+// skipped — so the differential cannot pass by comparing nothing.
+func TestDiffAliasesBothWays(t *testing.T) {
+	files := map[string]string{"config": "Host a b # c\nHost web-* !d\n"}
+	for _, tt := range []struct {
+		name    string
+		hosts   []Host
+		skipped map[string]string
+		want    int
+	}{
+		{"agree", []Host{{Alias: "a"}, {Alias: "b"}}, nil, 0},
+		{"recorded skip", []Host{{Alias: "a"}}, map[string]string{"b": "why"}, 0},
+		{"dropped", []Host{{Alias: "a"}}, nil, 1},
+		{"none at all", nil, nil, 2},
+		{"extra", []Host{{Alias: "a"}, {Alias: "b"}, {Alias: "c"}}, nil, 1},
+		{"stale skip", []Host{{Alias: "a"}, {Alias: "b"}}, map[string]string{"b": "why"}, 1},
+		{"skip names no host", []Host{{Alias: "a"}, {Alias: "b"}}, map[string]string{"z": "why"}, 1},
+	} {
+		if d := diffAliases(tt.hosts, files, tt.skipped); len(d) != tt.want {
+			t.Errorf("%s: diffAliases = %v, want %d difference(s)", tt.name, d, tt.want)
+		}
 	}
 }
 

@@ -564,3 +564,11 @@ sshconn/sshread/sshwrite/keyfile, x/term, ssh/agent or cobra), `transport`
 `make layering` check (in `make check`). Four pre-existing test files are pinned by file
 and import in `exclusions.rules`: apply/json_test.go, apply/report_test.go,
 adopt/adopt_test.go and sshwrite/integration_test.go.
+Test hardening (P14 lane T): mutation-killing tests now cover apply's `applying N servers`
+plural and its granted-key-first offer order on the read and write dials, every
+manifestError call site (missing and invalid, per command), the ` · options:` suffix's
+owner/former guards in the audit and apply reports, the canceled-dial hint suppression, the
+REFUSED-row hint, audit's queued-server release on Ctrl-C (COR-7), and explicit z/UTC expiry
+rows. The `ssh -G` differential compares alias sets both ways (deliberate skips are recorded
+in `skippedOnPurpose`) and ProxyJump/ProxyCommand. `TestRootVersionUsesResolved` fails if
+`--version` bypasses `resolveVersion`.

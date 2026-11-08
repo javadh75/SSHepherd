@@ -25,6 +25,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
+	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 )
 
@@ -307,6 +308,42 @@ func TestConnectDialRefusedHintIsSeparate(t *testing.T) {
 	}
 	if h := fleet.HintOf(err); h != DialHint {
 		t.Errorf("HintOf = %q, want DialHint", h)
+	}
+}
+
+// TestConnectDialEndedByCtxHint: a dial the operator interrupted is kind
+// canceled and carries no hint (there is nothing to fix); a dial whose
+// deadline passed is kind timeout and keeps DialHint. Key-file credentials
+// only, so no agent I/O stands between the ctx and the dial.
+func TestConnectDialEndedByCtxHint(t *testing.T) {
+	d := &Dialer{KnownHostsPath: sshtest.KnownHostsFile(t),
+		Creds:       &Credentials{Files: []keyfile.Identity{sshtest.Identity(t, "/k/ci", sshtest.Key(1))}},
+		DialTimeout: time.Second}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	for _, tt := range []struct {
+		name     string
+		ctx      context.Context
+		kind     fleet.ErrorKind
+		wantHint string
+	}{
+		{"canceled", canceled, fleet.ErrorKindCanceled, ""},
+		{"deadline passed", expired, fleet.ErrorKindTimeout, DialHint},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := d.Connect(tt.ctx, config.Server{Name: "x", Host: "127.0.0.1", Port: 1, User: "u"})
+			if err == nil {
+				t.Fatal("dial under an ended ctx succeeded")
+			}
+			if got := kindOf(t, err); got != tt.kind {
+				t.Errorf("kind = %q, want %q (err: %v)", got, tt.kind, err)
+			}
+			if h := fleet.HintOf(err); h != tt.wantHint {
+				t.Errorf("HintOf = %q, want %q", h, tt.wantHint)
+			}
+		})
 	}
 }
 
