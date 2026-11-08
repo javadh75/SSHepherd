@@ -165,7 +165,7 @@ func (pa *plainApply) commit(_ context.Context, plans []apply.ServerPlan, _ []fl
 
 // finish renders the run's outcome: the JSON document, or the summary and
 // the dry-run's would-bump line.
-func (pa *plainApply) finish(out workflow.Outcome) error {
+func (pa *plainApply) finish(out workflow.Outcome, _ *fleetSession) error {
 	if out.Stage == workflow.StageDeclined {
 		pa.log.Error("aborted; no changes made")
 	}
@@ -173,9 +173,9 @@ func (pa *plainApply) finish(out workflow.Outcome) error {
 		pa.bump = dryRunBump(pa.m, pa.cfg, out.Plans)
 	}
 	if pa.rf.json {
-		return finishDoc(func(plans []apply.ServerPlan, _ bool) error {
+		return finishDoc(func(plans []apply.ServerPlan, _ bool, _ *apply.SweepReport) error {
 			return apply.RenderJSON(pa.stdout, pa.cfg, plans, apply.JSONOptions{Command: "apply", DryRun: pa.rf.dryRun, Skipped: pa.skipped, SerialBump: pa.bump})
-		}, out)
+		}, out, nil)
 	}
 	apply.RenderSummary(pa.stdout, out.Plans, pa.ropts)
 	if pa.skipped > 0 {
@@ -292,8 +292,8 @@ type applySpec struct {
 	commit workflow.CommitFunc
 	// finish renders the tail of the report (or, under --json, the whole
 	// document) and maps the outcome to its exit; StageWithheld always maps
-	// to exit 1.
-	finish func(out workflow.Outcome) error
+	// to exit 1. sess is the run's fleet session, for revoke/rotate's sweep.
+	finish func(out workflow.Outcome, sess *fleetSession) error
 }
 
 // runWorkflow is apply's run body over s.servers: the header, preflight
@@ -339,7 +339,7 @@ func runWorkflow(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids
 	if err != nil {
 		return err //nolint:wrapcheck // our own seams' errors (confirm gate, manifest commit), returned verbatim: their exit-3 text is user-facing
 	}
-	return s.finish(out)
+	return s.finish(out, pre.fleetSession)
 }
 
 // textReporter is the workflow's report seam: the phase-1 done line in

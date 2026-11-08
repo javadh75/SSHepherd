@@ -31,6 +31,7 @@ type editFlags struct {
 	operator bool
 	noApply  bool
 	reason   string
+	sweep    bool
 }
 
 func (f *editFlags) register(cmd *cobra.Command) {
@@ -41,6 +42,8 @@ func (f *editFlags) register(cmd *cobra.Command) {
 		"edit and save the manifest after confirmation; contact no server")
 	cmd.Flags().StringVar(&f.reason, "reason", "",
 		"free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)")
+	cmd.Flags().BoolVar(&f.sweep, "sweep", false,
+		"after the writes, read every other server and report any that still has a key this run revoked (read-only; exit 2 when one is found; skipped with --dry-run and --no-apply)")
 }
 
 // connectionFlags are the flags --no-apply would leave silently unused.
@@ -248,16 +251,16 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 	// Every hint repeats the run's own flags (a --no-apply run sets no
 	// connection flags, so its hints carry --config only).
 	ep.summary.FollowUp = h.suffix()
-	ep.summary.CheckCommand = checkCommand(ep, h)
+	ep.summary.CheckCommand = checkCommand(ep, h, f.sweep)
 	ropts := apply.RenderOptions{Color: a.reportColor, Former: ep.former, FormerNote: ep.formerNote}
 	header := func(w io.Writer) { apply.RenderEditHeader(w, ep.summary, ropts) }
 	// doc renders the --json document; nil in text mode. Every exit-0/1
 	// path calls it exactly once, and nothing else reaches stdout.
 	var doc editDoc
 	if f.run.json {
-		doc = func(plans []apply.ServerPlan, saved bool) error {
+		doc = func(plans []apply.ServerPlan, saved bool, sweep *apply.SweepReport) error {
 			return apply.RenderJSON(stdout, ep.edited, plans, apply.JSONOptions{
-				Command: cmd.Name(), DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary, Saved: saved,
+				Command: cmd.Name(), DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary, Saved: saved, Sweep: sweep,
 			})
 		}
 	}
@@ -265,7 +268,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 		if doc == nil {
 			header(stdout)
 		}
-		return saveOnly(cmd, log, stdout, f, ep, aff, doc, h)
+		return saveOnly(cmd, log, stdout, f, ids, ep, aff, doc, h)
 	}
 	return runWorkflow(cmd, a, stdout, &f.run, ids, applySpec{
 		cfg:        ep.edited,
@@ -303,10 +306,68 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 			}
 			return true, nil
 		},
-		finish: func(out workflow.Outcome) error {
-			return finishEdit(stdout, log, ep, aff, h, out, ropts, doc)
-		},
+		finish: editFinish(cmd, stdout, log, f, ep, aff, h, ropts, doc),
 	})
+}
+
+// editFinish is runEdit's finish seam: the opt-in sweep after a confirmed
+// apply phase, then finishEdit.
+func editFinish(cmd *cobra.Command, stdout io.Writer, log *slog.Logger, f *editFlags, ep editPlan, aff apply.AffectedSet,
+	h followUp, ropts apply.RenderOptions, doc editDoc,
+) func(workflow.Outcome, *fleetSession) error {
+	return func(out workflow.Outcome, sess *fleetSession) error {
+		rep, err := sweepAfter(cmd.Context(), f, ep, out, sess)
+		if err != nil {
+			return err
+		}
+		return finishEdit(stdout, log, ep, aff, h, out, ropts, doc, rep)
+	}
+}
+
+// sweepAfter runs the opt-in post-revoke sweep after a confirmed apply
+// phase; nil when --sweep is off, the run was not confirmed, or it added no
+// key tombstone.
+func sweepAfter(ctx context.Context, f *editFlags, ep editPlan, out workflow.Outcome, sess *fleetSession) (*apply.SweepReport, error) {
+	tombs := keyTombstones(ep.summary.Revoked)
+	if !f.sweep || out.Stage != workflow.StageConfirmed || len(tombs) == 0 {
+		return nil, nil
+	}
+	rep, err := runSweep(ctx, sess, ep.edited, sweepTargets(ep.edited, out.Plans), tombs)
+	if err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
+// sweepSaved is sweepAfter for the save-only path (no server affected,
+// e.g. D1b): it opens the run's session itself and sweeps every server.
+// --no-apply never sweeps (it contacts no server by contract).
+func sweepSaved(ctx context.Context, log *slog.Logger, f *editFlags, ids identities, ep editPlan) (*apply.SweepReport, error) {
+	tombs := keyTombstones(ep.summary.Revoked)
+	if !f.sweep || f.noApply || len(tombs) == 0 || len(ep.edited.Servers) == 0 {
+		return nil, nil
+	}
+	sess, err := openFleet(ctx, log, &f.run.connFlags, ids, false)
+	if err != nil {
+		return nil, err
+	}
+	rep, err := runSweep(ctx, sess, ep.edited, ep.edited.Servers, tombs)
+	if err != nil {
+		return nil, err
+	}
+	return &rep, nil
+}
+
+// exitFor maps a run's exit code to run()'s sentinels: 2 critical (the
+// sweep found a revoked key), 1 not converged, 0 nil.
+func exitFor(code int) error {
+	switch code {
+	case 2:
+		return errCriticalDrift
+	case 1:
+		return errNonCompliant
+	}
+	return nil
 }
 
 // editPrelude settles what runEdit decides before any apply phase: a run
@@ -355,21 +416,22 @@ func printAlready(w io.Writer, already []apply.AlreadyRevoked, h followUp) {
 }
 
 // editDoc renders the --json document from the plans (nil on revoke's and
-// rotate's edit-only path) and whether the manifest was saved (always
-// false for plain apply, which has no edit section).
-type editDoc func(plans []apply.ServerPlan, saved bool) error
+// rotate's edit-only path), whether the manifest was saved (always false
+// for plain apply, which has no edit section) and the sweep (nil when none
+// ran).
+type editDoc func(plans []apply.ServerPlan, saved bool, sweep *apply.SweepReport) error
 
 // saveOnly confirms and saves without contacting any server: zero
 // affected servers, or --no-apply. --dry-run stops before the prompt.
 // Under --json (doc non-nil) the document replaces every text line.
-func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, doc editDoc, h followUp) error {
+func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ids identities, ep editPlan, aff apply.AffectedSet, doc editDoc, h followUp) error {
 	if f.run.dryRun {
 		log.Info("dry run — manifest not changed")
 		if doc == nil && ep.removesKey {
 			printCheck(stdout, h)
 		}
 		if doc != nil {
-			return doc(nil, false)
+			return doc(nil, false, nil)
 		}
 		return nil
 	}
@@ -384,21 +446,31 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 	if err := saveEdit(stdout, ep, doc != nil, f.noApply); err != nil {
 		return err
 	}
-	if doc != nil {
-		return doc(nil, true)
+	rep, err := sweepSaved(cmd.Context(), log, f, ids, ep)
+	if err != nil {
+		return err
 	}
-	noApplyNote(stdout, f, ep, aff, h)
+	if doc != nil {
+		if err := doc(nil, true, rep); err != nil {
+			return err
+		}
+		return exitFor(rep.ExitCode())
+	}
+	noApplyNote(stdout, f, ep, aff, h, rep == nil)
+	if rep != nil {
+		renderSweep(stdout, *rep, ep.edited, h, len(ep.edited.Servers))
+	}
 	if ep.overlap != nil {
 		fmt.Fprint(stdout, overlapHint(*ep.overlap, h, len(aff.Servers), f.noApply, 0))
 	}
-	return nil
+	return exitFor(rep.ExitCode())
 }
 
 // noApplyNote is saveOnly's text tail after the save: under --no-apply what
 // is left to push — only the servers apply would not refuse, as finishEdit
-// does, since an emptied server is never written; then the check line of a
-// run that removes a key.
-func noApplyNote(stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, h followUp) {
+// does, since an emptied server is never written; then, when check is set
+// (no sweep ran), the check line of a run that removes a key.
+func noApplyNote(stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, h followUp, check bool) {
 	pushable := slices.DeleteFunc(slices.Clone(aff.Servers), func(s string) bool { return slices.Contains(aff.Emptied, s) })
 	switch {
 	case f.noApply && len(aff.Servers) == 0:
@@ -409,7 +481,7 @@ func noApplyNote(stdout io.Writer, f *editFlags, ep editPlan, aff apply.Affected
 		fmt.Fprintf(stdout, "no servers contacted — %s still %s the old keys; run '%s' to push\n",
 			apply.Plural(len(pushable), "affected server", "affected servers"), pluralWord(len(pushable), "carries", "carry"), applyHint(h, pushable))
 	}
-	if ep.removesKey {
+	if ep.removesKey && check {
 		printCheck(stdout, h)
 	}
 }
@@ -445,16 +517,14 @@ func serialSaveNote(serial uint64, pending bool) string {
 // finishDoc is finish under --json, shared by apply, revoke and rotate:
 // render the one document, then map the run to its exit — StageWithheld
 // (nothing saved or written) and any server not converged are exit 1
-// (out.ExitCode). A declined prompt cannot occur: --json needs --dry-run
-// or --yes.
-func finishDoc(doc editDoc, out workflow.Outcome) error {
-	if err := doc(out.Plans, out.Saved); err != nil {
+// (out.ExitCode), and a sweep's finding raises it to 2; a document is
+// written exactly when the run exits 0, 1 or 2. A declined prompt cannot
+// occur: --json needs --dry-run or --yes.
+func finishDoc(doc editDoc, out workflow.Outcome, rep *apply.SweepReport) error {
+	if err := doc(out.Plans, out.Saved, rep); err != nil {
 		return err
 	}
-	if out.ExitCode() != 0 {
-		return errNonCompliant
-	}
-	return nil
+	return exitFor(max(out.ExitCode(), rep.ExitCode()))
 }
 
 // finishEdit renders step 8's tail (or, under --json, the whole document)
@@ -462,10 +532,10 @@ func finishDoc(doc editDoc, out workflow.Outcome) error {
 // survives) is exit 1 with nothing saved; in text mode the seam already
 // logged why and the plan is shown, so nothing more is printed.
 func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.AffectedSet, h followUp,
-	out workflow.Outcome, ropts apply.RenderOptions, doc editDoc,
+	out workflow.Outcome, ropts apply.RenderOptions, doc editDoc, rep *apply.SweepReport,
 ) error {
 	if doc != nil {
-		return finishDoc(doc, out)
+		return finishDoc(doc, out, rep)
 	}
 	switch out.Stage {
 	case workflow.StageDeclined:
@@ -492,11 +562,8 @@ func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.Affec
 			fmt.Fprint(stdout, overlapHint(*ep.overlap, h, len(aff.Servers), false, len(pending)))
 		}
 	}
-	finishTail(stdout, h, ep, out)
-	if apply.ExitCode(plans) != 0 {
-		return errNonCompliant
-	}
-	return nil
+	finishTail(stdout, h, ep, out, rep)
+	return exitFor(max(apply.ExitCode(plans), rep.ExitCode()))
 }
 
 // printCheck is the follow-up after a key removal when no sweep runs (spec
@@ -507,19 +574,22 @@ func printCheck(w io.Writer, h followUp) {
 }
 
 // checkCommand is JSON edit.check_command: the printed follow-up audit,
-// present whenever the run removes a key ("" otherwise).
-func checkCommand(ep editPlan, h followUp) string {
-	if !ep.removesKey {
+// present whenever the run removes a key and --sweep was not given ("" otherwise).
+func checkCommand(ep editPlan, h followUp, sweep bool) string {
+	if !ep.removesKey || sweep {
 		return ""
 	}
 	return h.command("audit", nil)
 }
 
 // finishTail prints the follow-up after the apply phase's summary: the
-// check line for a run that removed a key, once it planned or wrote (not
-// after a declined prompt). Task 39 adds the sweep report here.
-func finishTail(stdout io.Writer, h followUp, ep editPlan, out workflow.Outcome) {
-	if ep.removesKey && (out.Stage == workflow.StageConfirmed || out.Stage == workflow.StagePlanned) {
+// sweep's report when one ran, else the check line for a run that removed
+// a key, once it planned or wrote.
+func finishTail(stdout io.Writer, h followUp, ep editPlan, out workflow.Outcome, rep *apply.SweepReport) {
+	switch {
+	case rep != nil:
+		renderSweep(stdout, *rep, ep.edited, h, len(ep.edited.Servers))
+	case ep.removesKey && (out.Stage == workflow.StageConfirmed || out.Stage == workflow.StagePlanned):
 		printCheck(stdout, h)
 	}
 }

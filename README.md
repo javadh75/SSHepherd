@@ -985,7 +985,8 @@ the terminal (see [Authentication](#authentication)).
 the text report; logs stay on stderr. It needs `--dry-run` or `--yes` — a script
 cannot answer the prompt — otherwise the run exits `3` before the manifest is read:
 `--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)`.
-A document is written exactly when the run exits `0` or `1` (including an interrupt
+A document is written exactly when the run exits `0`, `1` or (for `revoke`/`rotate
+--sweep`) `2` (including an interrupt
 after the plan, where unstarted servers are `pending` with `"error_kind":
 "canceled"`); exit-`3` tool errors print no document. A write that fails after the
 plan carries `error_kind` when the transport classified the failure (for example
@@ -1268,6 +1269,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | `--operator` | off | Confirm that a target is, or belongs to, an operator user (fleet-wide, protected) |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--reason` | none | Free text recorded with each `revoked:` entry this run adds (printed by every tool; at most 256 bytes) |
+| `--sweep` | off | After the writes, read every other server and report any that still has a key this run revoked (read-only; exit `2` when one is found; skipped with `--dry-run` and `--no-apply`) |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
@@ -1357,9 +1359,9 @@ note: bob has no keys left — 'sshepherd revoke bob' removes the user
 **Scope.** Only servers whose rendered file changes are contacted, and on those the
 full render also converges any other drift (shown in the plan). A revoked key still
 installed on a server that never granted it is drift `revoke` does not reach — every
-run that removes a key ends with `check every server: sshepherd audit` (your own
-non-default flags included), which exits `2` while a revoked key is still installed
-anywhere. An affected server whose keys already match gets a header-only update
+run that removes a key and does not sweep ends with `check every server: sshepherd audit`
+(your own non-default flags included), which exits `2` while a revoked key is still
+installed anywhere. An affected server whose keys already match gets a header-only update
 carrying the new serial, so an older copy of the manifest is refused there too.
 
 **Confirmation.** `revoke` always asks — even when every affected server already
@@ -1392,6 +1394,46 @@ pasted as is; `--no-apply` hints leave out servers that would be emptied.
 `--identity*`, `--known-hosts` and `--parallel` (they would be silently unused).
 `--dry-run --no-apply` prints the header (and the `check every server:` line when a
 key is removed).
+
+**Post-revoke sweep.** With `--sweep`, after the writes revoke reads every other
+server (the run's own known_hosts, keys and `--parallel`; also
+`~/.ssh/authorized_keys2` where the managed path is the default) and reports any that
+still holds a key this run revoked:
+
+```console
+REVOKED KEY STILL INSTALLED: bob SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 on web-2 — run 'sshepherd apply --server web-2'
+swept 1 of 2 servers: 1 still has a revoked key, 0 unreachable
+```
+
+A server the manifest leaves empty gets
+`REVOKED KEY STILL INSTALLED: bob SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 on db-9 — remove it by hand or grant another user there first`,
+and a copy in `authorized_keys2` is named as
+`REVOKED KEY STILL INSTALLED (authorized_keys2): bob SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 on web-2`.
+The sweep only reads. It is skipped under `--dry-run` and `--no-apply`, which print
+the audit command instead. It exits `2` when a revoked key is found and `1` when a
+server could not be read or could not prove the removal
+(`cannot prove removal on web-3 (unreachable)`,
+`cannot prove removal on db-7 (authorized_keys2 unreadable)`). Under `--json` the
+document gains a `sweep` object (from the golden fixture), and `edit.check_command`
+is absent:
+
+```json
+  "sweep": {
+    "checked": 2,
+    "still_installed": [
+      {
+        "server": "db-2",
+        "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+        "user": "bob",
+        "file": "authorized_keys2"
+      }
+    ],
+    "unreachable": [
+      "db-3"
+    ],
+    "unprovable": []
+  }
+```
 
 **JSON.** Under `--json` (see [`apply`](#sshepherd-apply)) the document adds an
 `edit` section — `saved` (the manifest was written: `false` under `--dry-run` and
@@ -1564,6 +1606,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | `--operator` | off | Confirm that the user is an operator (fleet-wide, protected); the flag is kept |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--reason` | none | Free text recorded with the old key's `revoked:` entry (`rotated out` when not given; printed by every tool; at most 256 bytes) |
+| `--sweep` | off | After the writes, read every other server and report any that still has a key this run revoked (read-only; exit `2` when one is found; skipped with `--dry-run` and `--no-apply`) |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
@@ -1589,6 +1632,9 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
   `revoke --key OLD` does — but bumps `serial:` all the same.
 - Confirmation, saving, `--dry-run`, `--no-apply`, operators and the `check every server: sshepherd audit` line work
   exactly as for `revoke` (no check line under `--keep-old`: nothing is removed).
+- `--sweep` works as in [`revoke`'s post-revoke sweep](#sshepherd-revoke): it looks for
+  the rotated-out key on every other server; `--keep-old` revokes nothing, so it has
+  nothing to look for.
 - `rotate` refuses, exit `3`, to save a manifest that would keep a policy conflict —
   in particular `--new` of a revoked key
   (`refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`).
@@ -1881,16 +1927,15 @@ refused (`permissions … are too open`); a file the uid cannot read at all fail
 
 ## Exit codes
 
-Monitoring-style, shared by `audit`, `apply`, `revoke` and `rotate` (code `2` is
-`audit`-only; `adopt` and `import` use `0`, `1` and `3` as their own footers below
-say):
+Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
+(`adopt` and `import` use `0`, `1` and `3` as their own footers below say):
 
-| Code | Meaning |
-| ---- | ------- |
-| `0` | Compliant / converged — nothing to do; a repeated `revoke` whose targets were already revoked; or `revoke`/`rotate --no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift, unreachable servers, or pending changes — compliance not proven |
-| `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply`, `revoke` and `rotate` never return `2` |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save), a failed `apply` serial save |
+| Code | `audit` | `apply` | `revoke` / `rotate` |
+| ---- | ------- | ------- | ------------------- |
+| `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked; or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers | Not converged; `--sweep` could not read a server or prove the removal |
+| `2` | **Critical**: a missing operator key, a host key that **changed** or is `@revoked` in `known_hosts` (possible impersonation), a revoked key still installed, a policy conflict, a forged header serial | — | `--sweep` found a revoked key still installed |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save) |
 
 `--help` shows this summary. `audit --help`:
 
@@ -1915,7 +1960,9 @@ Exit codes:
      were already revoked; or, with revoke/rotate --no-apply, the edit is
      saved but not pushed (run the apply hint it prints)
   1  pending changes, unreachable or refused servers (a newer manifest's
-     serial, a policy conflict), or a declined prompt
+     serial, a policy conflict), or a declined prompt; with --sweep, a server
+     the sweep could not read
+  2  revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written

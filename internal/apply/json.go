@@ -29,6 +29,7 @@ type JSONOptions struct {
 	Saved   bool           // the manifest was written (revoke/rotate)
 	// SerialBump is apply's D4b bump (apply only); nil unless the run would bump.
 	SerialBump *SerialBump
+	Sweep      *SweepReport // revoke/rotate --sweep; nil when no sweep ran
 }
 
 // SerialBump is apply's D4b serial bump (spec §6) for the JSON document:
@@ -57,6 +58,9 @@ type jsonDoc struct {
 	PolicyConflicts  []config.Conflict         `json:"policy_conflicts,omitempty"`
 	ManifestWarnings []config.TombstoneWarning `json:"manifest_warnings,omitempty"`
 	SerialBump       *SerialBump               `json:"serial_bump,omitempty"`
+	// Sweep is additive-optional (schema stays 1): revoke/rotate --sweep
+	// only; omitted when no sweep ran (--dry-run, --no-apply, or no flag).
+	Sweep *SweepReport `json:"sweep,omitempty"`
 }
 
 type jsonSummary struct {
@@ -234,7 +238,8 @@ type jsonNotes struct {
 }
 
 // RenderJSON writes the write-path report as one indented JSON document
-// with a trailing newline. plans may be nil (empty fleet, edit-only run).
+// with a trailing newline. plans may be nil (empty fleet, edit-only run); a
+// document is written for exit 0, 1 or 2 (2: the sweep found a revoked key).
 func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOptions) error {
 	c := countSummary(plans)
 	doc := jsonDoc{
@@ -245,7 +250,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 			Servers: len(plans), Skipped: opts.Skipped,
 			Converged: c.converged, Applied: c.applied, Pending: c.pending,
 			Failed: c.failed, Refused: c.refused, Unreachable: c.unreachable,
-			ExitCode: ExitCode(plans),
+			ExitCode: max(ExitCode(plans), opts.Sweep.ExitCode()),
 		},
 		Servers: make([]jsonServer, 0, len(plans)),
 	}
@@ -254,6 +259,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 	}
 	doc.PolicyConflicts, doc.ManifestWarnings = cleanMemory(cfg)
 	doc.SerialBump = opts.SerialBump
+	doc.Sweep = opts.Sweep.wire()
 	for _, p := range plans {
 		doc.Servers = append(doc.Servers, jsonServerFor(cfg, p, opts))
 	}

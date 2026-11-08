@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": {
+    "saved": true,
+    "edits": [],
+    "affected": 0,
+    "operators": [],
+    "emptied": [],
+    "revoked": []
+  },
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 2
+  },
+  "servers": [],
+  "sweep": {
+    "checked": 2,
+    "still_installed": [
+      {
+        "server": "db-2",
+        "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+        "user": "bob",
+        "file": "authorized_keys2"
+      }
+    ],
+    "unreachable": [
+      "db-3"
+    ],
+    "unprovable": []
+  }
+}

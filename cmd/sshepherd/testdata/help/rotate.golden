@@ -15,7 +15,9 @@ Exit codes:
      were already revoked; or, with revoke/rotate --no-apply, the edit is
      saved but not pushed (run the apply hint it prints)
   1  pending changes, unreachable or refused servers (a newer manifest's
-     serial, a policy conflict), or a declined prompt
+     serial, a policy conflict), or a declined prompt; with --sweep, a server
+     the sweep could not read
+  2  revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written
@@ -49,6 +51,7 @@ Flags:
       --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
       --parallel int                    max concurrent server connections (default 32)
       --reason string                   free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)
+      --sweep                           after the writes, read every other server and report any that still has a key this run revoked (read-only; exit 2 when one is found; skipped with --dry-run and --no-apply)
       --yes                             skip the confirmation prompt (automation)
 
 Global Flags:

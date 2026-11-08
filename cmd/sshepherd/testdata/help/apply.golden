@@ -23,7 +23,9 @@ Exit codes:
      were already revoked; or, with revoke/rotate --no-apply, the edit is
      saved but not pushed (run the apply hint it prints)
   1  pending changes, unreachable or refused servers (a newer manifest's
-     serial, a policy conflict), or a declined prompt
+     serial, a policy conflict), or a declined prompt; with --sweep, a server
+     the sweep could not read
+  2  revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written
