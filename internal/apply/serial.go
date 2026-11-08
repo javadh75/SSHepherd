@@ -27,6 +27,12 @@ const (
 	SerialOlder            SerialCase = "older"              // rows 7 and 8
 )
 
+// newer reports rows 2-4: a real (not forged) header serial above the
+// manifest's.
+func (c SerialCase) newer() bool {
+	return c == SerialNewerConverged || c == SerialNewerRemovalOnly || c == SerialNewerRefused
+}
+
 // SerialPlan is one server's header serial against the manifest's.
 type SerialPlan struct {
 	Header   uint64     // S as the server's header claims it; 0 = no serial (legacy header, hand-written or absent file)

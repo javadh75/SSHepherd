@@ -160,6 +160,9 @@ type editPlan struct {
 	saveNote   string         // the save reminder's tail; "" = serialSaveNote
 	overlap    *overlapFinish // rotate --keep-old: the finish hint to print; nil otherwise
 	noop       bool           // every target was already revoked (D1b/D1c): nothing saved, exit 0
+	// already are the key tombstones behind the already-revoked notes:
+	// --sweep looks for them too.
+	already []config.Tombstone
 }
 
 // remember records the edit's revocation memory: the tombstones (an
@@ -237,7 +240,7 @@ func encodeEdit(mf *manifest.File) ([]byte, *config.Config, error) {
 func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids identities, ep editPlan) error {
 	log := a.logger
 	h := f.run.followUp()
-	if done, err := editPrelude(stdout, f, ep, h, cmd.Name()); done {
+	if done, err := editPrelude(cmd, log, stdout, f, ids, ep, h); done {
 		return err
 	}
 	for _, w := range ep.edited.Warnings {
@@ -316,46 +319,50 @@ func editFinish(cmd *cobra.Command, stdout io.Writer, log *slog.Logger, f *editF
 	h followUp, ropts apply.RenderOptions, doc editDoc,
 ) func(workflow.Outcome, *fleetSession) error {
 	return func(out workflow.Outcome, sess *fleetSession) error {
-		rep, err := sweepAfter(cmd.Context(), f, ep, out, sess)
-		if err != nil {
-			return err
-		}
+		rep := sweepAfter(cmd.Context(), f, ep, out, sess)
 		return finishEdit(stdout, log, ep, aff, h, out, ropts, doc, rep)
 	}
 }
 
 // sweepAfter runs the opt-in post-revoke sweep after a confirmed apply
-// phase; nil when --sweep is off, the run was not confirmed, or it added no
-// key tombstone.
-func sweepAfter(ctx context.Context, f *editFlags, ep editPlan, out workflow.Outcome, sess *fleetSession) (*apply.SweepReport, error) {
-	tombs := keyTombstones(ep.summary.Revoked)
+// phase; nil when --sweep is off, the run was not confirmed, or it names
+// no revoked key.
+func sweepAfter(ctx context.Context, f *editFlags, ep editPlan, out workflow.Outcome, sess *fleetSession) *apply.SweepReport {
+	tombs := ep.sweepTombs()
 	if !f.sweep || out.Stage != workflow.StageConfirmed || len(tombs) == 0 {
-		return nil, nil
+		return nil
 	}
-	rep, err := runSweep(ctx, sess, ep.edited, sweepTargets(ep.edited, out.Plans), tombs)
-	if err != nil {
-		return nil, err
-	}
-	return &rep, nil
+	rep := runSweep(ctx, sess, ep.edited, sweepTargets(ep.edited, out.Plans), tombs)
+	return &rep
 }
 
-// sweepSaved is sweepAfter for the save-only path (no server affected,
-// e.g. D1b): it opens the run's session itself and sweeps every server.
-// --no-apply never sweeps (it contacts no server by contract).
-func sweepSaved(ctx context.Context, log *slog.Logger, f *editFlags, ids identities, ep editPlan) (*apply.SweepReport, error) {
-	tombs := keyTombstones(ep.summary.Revoked)
-	if !f.sweep || f.noApply || len(tombs) == 0 || len(ep.edited.Servers) == 0 {
+// sweepTombs are the key tombstones a --sweep looks for: this run's new
+// ones and those behind its already-revoked notes (a repeated revoke must
+// not report a key that is still installed as done).
+func (ep *editPlan) sweepTombs() []config.Tombstone {
+	return append(keyTombstones(ep.summary.Revoked), ep.already...)
+}
+
+// sweepSession opens the fleet session for a sweep that runs outside the
+// apply phase (the save-only path, a no-op run); nil when none will run.
+// Callers open it before saving, so a failed preflight is exit 3 with
+// nothing saved. --dry-run and --no-apply never sweep (they contact no
+// server by contract).
+func sweepSession(ctx context.Context, log *slog.Logger, f *editFlags, ids identities, cfg *config.Config, tombs []config.Tombstone) (*fleetSession, error) {
+	if !f.sweep || f.noApply || f.run.dryRun || len(tombs) == 0 || len(cfg.Servers) == 0 {
 		return nil, nil
 	}
-	sess, err := openFleet(ctx, log, &f.run.connFlags, ids, false)
-	if err != nil {
-		return nil, err
+	return openFleet(ctx, log, &f.run.connFlags, ids, false)
+}
+
+// sweepAll reads every server of cfg with sess; nil when no sweep runs
+// (sess is nil).
+func sweepAll(ctx context.Context, sess *fleetSession, cfg *config.Config, tombs []config.Tombstone) *apply.SweepReport {
+	if sess == nil {
+		return nil
 	}
-	rep, err := runSweep(ctx, sess, ep.edited, ep.edited.Servers, tombs)
-	if err != nil {
-		return nil, err
-	}
-	return &rep, nil
+	rep := runSweep(ctx, sess, cfg, cfg.Servers, tombs)
+	return &rep
 }
 
 // exitFor maps a run's exit code to run()'s sentinels: 2 critical (the
@@ -374,9 +381,9 @@ func exitFor(code int) error {
 // whose every target was already revoked (D1b/D1c: the notes, exit 0, no
 // save), and the D29 save refusal (exit 3); otherwise it prints a mixed
 // run's already-revoked notes. done: runEdit returns err as is.
-func editPrelude(stdout io.Writer, f *editFlags, ep editPlan, h followUp, command string) (done bool, err error) {
+func editPrelude(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ids identities, ep editPlan, h followUp) (done bool, err error) {
 	if ep.noop {
-		return true, finishNoop(stdout, f, ep, h, command)
+		return true, finishNoop(cmd, log, stdout, f, ids, ep, h)
 	}
 	if err := conflictRefusal(ep.edited); err != nil {
 		return true, err
@@ -388,15 +395,31 @@ func editPrelude(stdout io.Writer, f *editFlags, ep editPlan, h followUp, comman
 }
 
 // finishNoop ends a run whose every target an earlier revoke already
-// recorded (D1b/D1c): nothing saved, no serial bump, exit 0.
-func finishNoop(stdout io.Writer, f *editFlags, ep editPlan, h followUp, command string) error {
-	if f.run.json {
-		return apply.RenderJSON(stdout, ep.former, nil, apply.JSONOptions{ //nolint:wrapcheck // render json: …
-			Command: command, DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary,
-		})
+// recorded (D1b/D1c): nothing saved, no serial bump, exit 0 — unless
+// --sweep finds the revoked key still installed (the sweep is what the
+// repeated run asked for; only --dry-run and --no-apply skip it).
+func finishNoop(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ids identities, ep editPlan, h followUp) error {
+	tombs := ep.sweepTombs()
+	sess, err := sweepSession(cmd.Context(), log, f, ids, ep.former, tombs)
+	if err != nil {
+		return err
 	}
-	printAlready(stdout, ep.summary.AlreadyRevoked, h)
-	return nil
+	if !f.run.json {
+		printAlready(stdout, ep.summary.AlreadyRevoked, h)
+	}
+	rep := sweepAll(cmd.Context(), sess, ep.former, tombs)
+	if f.run.json {
+		if err := apply.RenderJSON(stdout, ep.former, nil, apply.JSONOptions{
+			Command: cmd.Name(), DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary, Sweep: rep,
+		}); err != nil {
+			return err //nolint:wrapcheck // render json: …
+		}
+		return exitFor(rep.ExitCode())
+	}
+	if rep != nil {
+		renderSweep(stdout, *rep, ep.former, h, len(ep.former.Servers))
+	}
+	return exitFor(rep.ExitCode())
 }
 
 // printAlready prints one note per target an earlier revoke recorded.
@@ -435,6 +458,12 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 		}
 		return nil
 	}
+	// The sweep's preflight comes before the save: exit 3 means nothing saved.
+	tombs := ep.sweepTombs()
+	sess, err := sweepSession(cmd.Context(), log, f, ids, ep.edited, tombs)
+	if err != nil {
+		return err
+	}
 	ok, err := confirmGate(cmd.Context(), cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(aff.Servers), f.noApply))
 	if err != nil {
 		return err
@@ -446,10 +475,7 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 	if err := saveEdit(stdout, ep, doc != nil, f.noApply); err != nil {
 		return err
 	}
-	rep, err := sweepSaved(cmd.Context(), log, f, ids, ep)
-	if err != nil {
-		return err
-	}
+	rep := sweepAll(cmd.Context(), sess, ep.edited, tombs)
 	if doc != nil {
 		if err := doc(nil, true, rep); err != nil {
 			return err

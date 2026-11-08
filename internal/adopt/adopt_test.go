@@ -155,6 +155,27 @@ revoked:
 	}
 }
 
+// TestBuildNameAvoidsAccessTombstone: a name surviving only in an access
+// tombstone is not free to claim: the new grant would be the policy
+// conflict the save then refuses, with a hint the operator cannot follow.
+func TestBuildNameAvoidsAccessTombstone(t *testing.T) {
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+revoked:
+  - {user: bob, servers: [db-1], date: 2026-11-08}
+`)
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"db-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 9) + " bob\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Name != "bob-2" {
+		t.Fatalf("NewUsers = %+v, want one user named bob-2", p.NewUsers)
+	}
+}
+
 func TestBuildUnknownKeyBecomesOneUser(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)

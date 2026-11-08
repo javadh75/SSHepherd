@@ -10,6 +10,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 )
 
 // sweepTargets is every server of cfg except the affected ones this run
@@ -46,24 +47,32 @@ func keyTombstones(ts []config.Tombstone) []config.Tombstone {
 
 // runSweep reads targets with the run's session (known_hosts, credentials,
 // --parallel), asking for authorized_keys2 too, and classifies the reads.
-func runSweep(ctx context.Context, sess *fleetSession, cfg *config.Config, targets []config.Server, tombs []config.Tombstone) (apply.SweepReport, error) {
+// A Ctrl-C reaching the sweep is no tool error: the manifest is saved and
+// servers are written, so the run keeps its report and the unread servers
+// count as unprovable (exit 1 at most), never exit 3.
+func runSweep(ctx context.Context, sess *fleetSession, cfg *config.Config, targets []config.Server, tombs []config.Tombstone) apply.SweepReport {
 	if len(targets) == 0 {
-		return classifySweep(nil, tombs), nil // audit.Run would read the whole fleet
+		return classifySweep(nil, tombs) // audit.Run would read the whole fleet
 	}
 	reader := sess.reader(func(s config.Server) []string { return audit.GrantedFingerprints(cfg, s.Name) })
 	reader.ReadKeys2 = true
 	sess.log.Info(fmt.Sprintf("sweeping %s for revoked keys (parallelism %d)…", apply.Plural(len(targets), "server", "servers"), sess.parallel))
 	results := audit.Run(ctx, cfg, reader, audit.Options{Parallel: sess.parallel, PerServerTimeout: perServerTimeout, Servers: targets, Logger: sess.log})
-	if err := interrupted(ctx); err != nil {
-		return apply.SweepReport{}, err
-	}
-	return classifySweep(results, tombs), nil
+	return classifySweep(results, tombs)
 }
+
+// sweepUnparsed and sweepInterrupted are SweepUnprovable reasons.
+const (
+	sweepUnparsed    = "authorized_keys has unparseable lines"
+	sweepInterrupted = "sweep interrupted"
+)
 
 // classifySweep keeps only this run's key tombstones found in
 // authorized_keys (audit's Unauthorized keys) or in a non-empty
-// authorized_keys2; a keys2 that exists but cannot be read or parsed
-// cannot prove the removal (exit 1, never 0).
+// authorized_keys2. A file that cannot be read or fully parsed cannot prove
+// the removal (exit 1, never 0): sshd may read a line this parser refuses.
+// A server the sweep never read because of a Ctrl-C is not unreachable and
+// is not counted as checked.
 func classifySweep(results []audit.ServerResult, tombs []config.Tombstone) apply.SweepReport {
 	label := make(map[string]string, len(tombs))
 	for _, t := range tombs {
@@ -71,11 +80,19 @@ func classifySweep(results []audit.ServerResult, tombs []config.Tombstone) apply
 			label[t.Fingerprint] = t.User
 		}
 	}
-	rep := apply.SweepReport{Checked: len(results)}
+	var rep apply.SweepReport
 	for _, r := range results {
+		if r.Err != nil && fleet.ErrorKindOf(r.Err) == fleet.ErrorKindCanceled {
+			rep.Unprovable = append(rep.Unprovable, apply.SweepUnprovable{Server: r.Server.Name, Reason: sweepInterrupted})
+			continue
+		}
+		rep.Checked++
 		if r.Err != nil {
 			rep.Unreachable = append(rep.Unreachable, r.Server.Name)
 			continue
+		}
+		if len(r.ParseErrs) > 0 {
+			rep.Unprovable = append(rep.Unprovable, apply.SweepUnprovable{Server: r.Server.Name, Reason: sweepUnparsed})
 		}
 		for _, k := range r.Diff.Unauthorized {
 			if user, ok := label[k.Fingerprint]; ok {

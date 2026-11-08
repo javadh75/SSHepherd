@@ -29,7 +29,7 @@ rewrite loosens options").
 | Implementation | **Separate renderer in `internal/apply`** | Mirrors `internal/audit/json.go`: unexported wire structs + `RenderJSON`. Internal types stay free to change. Rejected: json tags on `ServerPlan` (leaks `Rendered`, raw errors); a shared report package (premature). |
 | Prompt rule | **`--json` requires `--dry-run` or `--yes`, always** | Even when nothing would change — predictable. Checked with the other flag validation, before the manifest is read. |
 | Destination | **stdout, exactly one document, at the end** | All text stdout is suppressed (every site listed below); logs on stderr; `--color` has no effect. Passphrase prompts stay on `/dev/tty`. |
-| When a document exists | **Exactly when the run ends without a tool error** (exit 0 or 1) | Exit 3 never writes one. See "Document rule". |
+| When a document exists | **Exactly when the run ends without a tool error** (exit 0, 1 or, for revoke/rotate --sweep, 2) | Exit 3 never writes one. See "Document rule". |
 | Schema marker | **`"schema": 1`** plus **`"command"`** | `command` names the document kind; bump `schema` only on breaking changes. Same field-presence and additive-optional conventions as audit. |
 | Formatting | **2-space indent, trailing newline** | As audit. |
 

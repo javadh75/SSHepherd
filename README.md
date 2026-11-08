@@ -891,7 +891,10 @@ file meanwhile, so a concurrent revoke is never undone. Identical output writes
 nothing. A second hard link to the manifest, under another name, is refused
 (`PATH is a hard link to the manifest M; pass the manifest's own path`). A
 different existing file overwritten with `--force` is still a new file (mode
-`0600`).
+`0600`). A fresh `import -o FILE --force` without `--merge` over a manifest holding
+revocation memory warns
+`FILE holds revocation memory (serial N, M revoked: entries) that this fresh import drops: a revoked key could be re-granted; keep it with --merge FILE`
+and proceeds.
 `--force` refuses a symlinked output path
 (`<path> is a symlink; refusing to replace it — pass the link's target path instead`).
 On filesystems without hard links (exFAT, some SMB/FUSE mounts) the no-`--force`
@@ -1263,7 +1266,12 @@ manifest serial: 0 → 1 (saved; this apply removes keys)
 `--config` (or one the comment-preserving editor cannot save, e.g. with YAML anchors)
 cannot be saved and warns `removing keys without a serial bump: an older copy could re-grant them` —
 under `--dry-run` too — and the write proceeds. A failed save exits `3` with nothing
-written and, under `--json`, no document. `--json` reports the bump as `serial_bump`:
+written and, under `--json`, no document. A run that sees any server written by a newer
+manifest (refused, converged with the `written by newer manifest serial S` note, or a
+removal-only write that keeps S) never bumps: that server proves this copy is stale, and
+lifting it would let the next apply from it re-grant what the newer manifest revoked.
+`--dry-run` prints no would-bump line in that case. A forged header is not evidence.
+`--json` reports the bump as `serial_bump`:
 
 ```json
   "serial_bump": {
@@ -1313,7 +1321,9 @@ fingerprint gets `NAME looks like a key — did you mean --key?`.
 Re-running a revoke for a user already revoked prints a note and exits `0` —
 `bob was already revoked (2026-11-08); run 'sshepherd apply' to converge any server that still has the key`
 (the hint carries your own non-default flags); with several users, the already-revoked
-ones get the note and the rest are revoked as usual. A name that was never revoked
+ones get the note and the rest are revoked as usual. With `--sweep`, a repeat also sweeps
+for the recorded keys on every server and exits `2` if one is still installed. A name
+that was never revoked
 still exits `3` with `not in the manifest (already revoked?)`.
 `revoke --key KEY...` removes each key line from its owner; a user left with no keys
 stays with `keys: []`. A `KEY` is a `SHA256:` fingerprint (pasted `ssh-keygen -lf`
@@ -1343,7 +1353,9 @@ empty is deleted (its comment moves on, as for a removed user). A wildcard grant
 (`servers: ["*"]`) gets the server appended to `except:` — created right after
 `servers:` when absent — so it keeps covering servers added later; a wildcard that
 would then cover no current server is deleted, with a warning that later servers are
-no longer granted automatically. Refused with exit `3` and nothing edited: `--server`
+no longer granted automatically. When a trim deletes a wildcard entry, every server its
+`except:` remembered also gets an access tombstone, because the deleted `except:` was the
+only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--server`
 with `--key` (access is per user), with `--operator`, or on an operator user
 (operators have every server by definition), `--server '*'` (use `revoke USER`), an
 unknown server, and any user × server pair the user has no access to — every problem
@@ -1438,7 +1450,15 @@ The sweep only reads. It is skipped under `--dry-run` and `--no-apply`, which pr
 the audit command instead. It exits `2` when a revoked key is found and `1` when a
 server could not be read or could not prove the removal
 (`cannot prove removal on web-3 (unreachable)`,
-`cannot prove removal on db-7 (authorized_keys2 unreadable)`). Under `--json` the
+`cannot prove removal on db-7 (authorized_keys2 unreadable)`). A repeated revoke whose
+every target was already revoked sweeps too, for the keys already recorded. A server
+whose `authorized_keys` has a line the parser refuses cannot prove the removal:
+`cannot prove removal on db-2 (authorized_keys has unparseable lines)`, exit `1`. A
+Ctrl-C reaching the sweep keeps the report: unread servers show
+`cannot prove removal on db-2 (sweep interrupted)`, are not counted in `swept N of M`,
+and the run exits `1` (or `2` if a key was found), never `3`. On a run that contacts no
+server for its edit (an unowned `--key`), the sweep's known_hosts and credentials check
+runs before the save, so a failure exits `3` with nothing saved. Under `--json` the
 document gains a `sweep` object (from the golden fixture), and `edit.check_command`
 is absent:
 
@@ -1957,7 +1977,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
-| `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked; or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
+| `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers | Not converged; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator key, a host key that **changed** or is `@revoked` in `known_hosts` (possible impersonation), a revoked key still installed, a policy conflict, a forged header serial | — | `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save) |
@@ -2066,9 +2086,11 @@ s-removal (deploy@10.0.0.6:22)
   rather than `--no-apply` followed by `apply`: a plain `apply` cannot tell those servers
   from unaffected ones.
 - A hand edit does not bump the serial by itself. `apply` bumps it only when it writes a
-  removal on a server whose header serial is not below the manifest's, and only the
-  servers that run writes carry the new value, so a copy taken at the same serial can
-  still re-grant on the others.
+  removal on a server whose header serial is not below the manifest's and no server in
+  that run was written by a newer manifest, and only the servers that run writes carry
+  the new value, so a copy taken at the same serial can still re-grant on the others. A
+  stale copy run with `--server` sees only the selected servers, so it can still bump
+  when the newer serial is elsewhere.
 - Two branches that each bumped to the same serial cannot be told apart; git discipline
   is the control for that case.
 - The `--sweep` read of `authorized_keys2` happens only on the default path.

@@ -121,6 +121,24 @@ revoked:
 		"key "+mustFP(t, testkeys.Line(t, 4))+` of "bob" found on "db-1", whose access was revoked (2026-11-08) — not re-granted; audit flags this drift`)
 }
 
+// TestReconcileNameAvoidsAccessTombstone: an incoming user cannot claim a
+// name that survives only in an access tombstone (the merge would keep a
+// policy conflict and be refused).
+func TestReconcileNameAvoidsAccessTombstone(t *testing.T) {
+	cfg := parseCfg(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+revoked:
+  - {user: bob, servers: [db-1], date: 2026-11-08}
+`)
+	p := mustBuild(t, cfg, nil, []identity.User{{Name: "bob", Source: "~/.ssh/id_bob", Key: testkeys.Line(t, 9), Servers: []string{"db-1"}}})
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Name != "bob-2" {
+		t.Fatalf("NewUsers = %+v, want one user named bob-2", p.NewUsers)
+	}
+}
+
 // --- Servers ---
 
 func TestBuildNewServers(t *testing.T) {

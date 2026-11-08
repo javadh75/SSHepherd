@@ -19,6 +19,26 @@ import (
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
+// warnMemoryLost: a fresh import replacing an existing manifest with -o
+// --force drops its serial: and revoked: entries, so every revoked key
+// could be re-granted. --force names the overwrite, so this warns rather
+// than refuses. Best effort: a missing or invalid file has nothing to lose.
+func warnMemoryLost(log *slog.Logger, out string, force bool) {
+	if out == "" || !force {
+		return
+	}
+	raw, err := os.ReadFile(out) // #nosec G304 -- the path the user passed to -o
+	if err != nil {
+		return
+	}
+	cfg, err := config.Parse(raw)
+	if err != nil || (cfg.Serial() == 0 && len(cfg.Tombstones) == 0) {
+		return
+	}
+	log.Warn(fmt.Sprintf("%s holds revocation memory (serial %d, %s) that this fresh import drops: a revoked key could be re-granted; keep it with --merge %s",
+		out, cfg.Serial(), apply.Plural(len(cfg.Tombstones), "revoked: entry", "revoked: entries"), hintArg(out)))
+}
+
 // serverWorthy reports whether a resolved host can become a server entry
 // (the manifest requires user). RunE's identity filter and generateManifest's
 // skip logic must agree on this predicate.
@@ -420,6 +440,9 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			}
 			if err := conflictRefusal(saved); err != nil {
 				return err
+			}
+			if mergePath == "" {
+				warnMemoryLost(log, outPath, force)
 			}
 			return emitManifest(stdout, m, outPath, rendered, force)
 		},

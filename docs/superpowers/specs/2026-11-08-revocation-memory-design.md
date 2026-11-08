@@ -137,7 +137,7 @@ these sections in the same commit, with sample output copied from the goldens.
 | **D2** | A revoked key is still on a server: how loud is audit? | **Critical, exit 2.** | No tombstones (today: exit 1, `(unknown)`). | **`sshepherd audit`** (l.367): the `REVOKED` row, JSON `revoked` and `summary.revoked_keys`, copied from the new goldens; **Exit codes** (l.1481): the audit row for 2. |
 | **D3** | After a revoke, should SSHepherd log in to every server to check the key is gone? | **Only with `--sweep`; otherwise print the exact `sshepherd audit` command** (with D2, a scheduled audit already pages on a revoked key). | Today's `scope:` hint. | **`sshepherd revoke`** (l.880): the `--sweep` flag row, the `scope:` sentences (l.937, l.970-973) replaced by the printed audit command, JSON `sweep` and `check_command`; **`sshepherd rotate`** (l.1157): the same flag, and the scope sentence at l.1193-1194; **Quick start §4. Offboard someone** (l.194): the follow-up audit is the printed command; **Exit codes** (l.1481): revoke/rotate 2 and 1 for an unreachable sweep. |
 | **D4** | Should the manifest carry a serial so an old copy cannot undo newer revokes? | **Yes: apply refuses a server written by a newer serial, except for writes that only remove keys (never blocked); absurd serials count as forged**, and a forged header is rewritten even when the body matches (a header-only write). | Fixed header (today). | **`sshepherd apply`** (l.632): the header serial, the stale-serial refusal and its only override (`serial: S`), header-only writes; **Safety model** (l.1535): the quoted header (l.1540) gains the `(serial N)` form; **The manifest**: new `### Serial` after `### Comment policy` (l.330); **`sshepherd audit`** (l.367): the forged-header row and JSON `forged_header_serial`; **Exit codes** (l.1481): apply 1 for a stale serial, audit 2 for a forged header; **Quick start §4. Offboard someone** (l.194): `revoke` (with its apply phase), then commit and push, then the printed audit (section 3, "Bump scope"). |
-| **D4b** | A hand edit that removes a key does not bump the serial. Should apply bump it when a confirmed write removes keys? | **Yes: a confirmed apply that removes keys bumps the serial once and saves the manifest through the locked store**, when the run writes a removal on a server whose header serial is not below the manifest's (M ≤ S). | No bump (today). | **`sshepherd apply`** (l.632): the `would bump serial: N → N+1` dry-run line, the save point, and the piped `--config` warning; **The manifest** `### Serial`: when apply bumps it, and the limitation. |
+| **D4b** | A hand edit that removes a key does not bump the serial. Should apply bump it when a confirmed write removes keys? | **Yes: a confirmed apply that removes keys bumps the serial once and saves the manifest through the locked store**, when the run writes a removal on a server whose header serial is not below the manifest's (M ≤ S) and no planned server is a newer-serial row (2-4). | No bump (today). | **`sshepherd apply`** (l.632): the `would bump serial: N → N+1` dry-run line, the save point, and the piped `--config` warning; **The manifest** `### Serial`: when apply bumps it, and the limitation. |
 | **D5** | adopt finds an unknown key on every server: should it write `["*"]`? | **No: always list the servers by name.** | Today's wildcard with a warning. | **`sshepherd adopt`** (l.574): its text already says unknown keys become new users "with access to exactly the servers where they were found" (l.576-580), which today's code contradicts (`internal/adopt/adopt.go:249-253` emits `["*"]` with a warning). The answer makes that sentence true; W4 adds a "never a wildcard" note. |
 | **D1a** | Should `revoke bob --server db-1` also be remembered, so a later adopt or import never gives db-1 back? | **Yes: an access tombstone (`user` + `servers`, no fingerprint).** | No trace (today). | **`sshepherd revoke`** (l.880): `--server` records an access tombstone; **The manifest** `### Revoked keys`: access entries; **Validation rules** (l.292): their shape rules; **`sshepherd adopt`** (l.574) and **`sshepherd import`** `--merge` (l.513): a revoked (user, server) pair is never re-extended. |
 | **D1b** | `revoke --key` of a key no user has: record it instead of refusing? | **Yes: record a tombstone; it writes no server.** | Refused, exit 3 (today). | **`sshepherd revoke`** (l.880): an unowned `--key` records a tombstone and writes no server; **Exit codes** (l.1481): "unknown user or key" (3) no longer covers an unowned key. |
@@ -395,7 +395,9 @@ S was 0; `forged serial 9999 → 7` for row 1), and its summary line
   access tombstone per user, `{user, servers: [the servers removed from an explicit
   list], date, reason}`. A server that only gained an `except:` entry needs none
   (the `except:` already remembers it), so a user trimmed only from a wildcard gets
-  no access tombstone.
+  no access tombstone. A wildcard deleted by a trim takes its `except:` with it, so
+  every server only that `except:` remembered gets an access tombstone too, with
+  this run's date.
 - **Plain `rotate`** (`planRotate`, `cmd/sshepherd/rotate.go:107-161`; the
   `ReplaceKey` branch at `:150-152`): tombstones the old key with
   `reason: rotated out` unless `--reason` is given. **`rotate --keep-old`**
@@ -454,7 +456,12 @@ S was 0; `forged serial 9999 → 7` for row 1), and its summary line
   incoming `.pub` is skipped with
   `key SHA256:… from IDENTITY is REVOKED (2026-11-08, alice) — not imported`, and a
   tombstoned (user, server) pair is never extended (the adopt wording). Fresh
-  `import` (no `--merge`) has no manifest and is unchanged.
+  `import` (no `--merge`) reads no manifest and is unchanged, except that
+  `import -o FILE --force` over an existing manifest holding memory warns that it
+  drops it and proceeds.
+- **Name claims.** Generated user names (adopt's `nameUsers` and
+  `reconcile.Build`) avoid names kept only by an access tombstone: a new grant under
+  one would be a policy conflict, refused at save.
 - **audit, classification.** `statusOf` (`internal/audit/report.go:354-366`)
   checks, in this order: unreachable; **critical** — `criticalDrift`
   (`:327-339`, extended: a missing operator key, any `Diff.Unauthorized` key with
@@ -487,7 +494,8 @@ S was 0; `forged serial 9999 → 7` for row 1), and its summary line
 
 When a confirmed `apply` will write, on some server, a body that removes keys
 compared with that server's current body, and the manifest's serial is not above
-that server's header serial (M ≤ S), apply bumps `serial:` once for the run:
+that server's header serial (M ≤ S), and no planned server is a newer-serial row
+(2-4), apply bumps `serial:` once for the run:
 
 - through P12's `manifest.Store` (its lock and compare-and-swap), saved after the
   prompt and before the first write, the same point revoke saves; a failed save is
@@ -530,6 +538,19 @@ that server's header serial (M ≤ S), apply bumps `serial:` once for the run:
     `REVOKED KEY STILL INSTALLED (authorized_keys2)`. A keys2 that exists but
     cannot be read or parsed gives `cannot prove removal on db-2 (authorized_keys2 unreadable)`,
     exit 1, never 0.
+  - **a no-op run (D1b/D1c) sweeps too**: a run in which every target was already
+    revoked saves nothing and sweeps every server for the key tombstones already
+    recorded for those targets (exit 2 if one is found); `--dry-run` and
+    `--no-apply` still skip;
+  - **parse errors in `authorized_keys` are unprovable**:
+    `cannot prove removal on db-2 (authorized_keys has unparseable lines)`, exit 1;
+  - **an interrupted sweep is unprovable, not exit 3**: unread servers report
+    `cannot prove removal on db-2 (sweep interrupted)` and are not counted as
+    checked, so the run keeps its report or JSON document and exits 1, or 2 if a
+    key was found;
+  - **the save-only preflight precedes the save**: a `saveOnly` run opens the sweep
+    session (known_hosts, credentials) before the confirm and save, so a failed
+    preflight is exit 3 with nothing saved.
 - **Output.**
   `REVOKED KEY STILL INSTALLED: alice SHA256:… on db-2, db-7 — run 'sshepherd apply --server db-2 --server db-7'`.
   A sole-grantee (emptied) server gets

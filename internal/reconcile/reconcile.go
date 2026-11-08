@@ -115,6 +115,13 @@ func Build(cfg *config.Config, hosts []sshcfg.Host, users []identity.User) (Plan
 	for _, u := range cfg.Users {
 		b.taken[u.Name] = true
 	}
+	// An access tombstone keeps its user's name: a new grant under it
+	// would be a policy conflict, refused at save.
+	for _, t := range cfg.Tombstones {
+		if !t.IsKey() {
+			b.taken[t.User] = true
+		}
+	}
 	b.servers(hosts)
 	if err := b.users(users); err != nil {
 		return Plan{}, err

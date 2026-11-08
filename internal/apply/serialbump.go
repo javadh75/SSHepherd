@@ -3,6 +3,7 @@ package apply
 import (
 	"bytes"
 	"fmt"
+	"slices"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 )
@@ -11,7 +12,15 @@ import (
 // a key (a remove row) while its header serial S is not below the
 // manifest's serial m (m ≤ S; a forged header counts as no serial).
 // Moving authorized_keys2 aside and collapsing duplicate lines do not count.
+//
+// A server a newer manifest wrote (rows 2-4) proves this manifest is stale:
+// the run must never lift it past the serial that just refused or outranked
+// it, or the next apply from this copy would re-grant what the newer
+// manifest revoked (PRD-2). Staleness wins over any removal elsewhere.
 func NeedsSerialBump(plans []ServerPlan, m uint64) bool {
+	if slices.ContainsFunc(plans, func(p ServerPlan) bool { return p.Serial.Case.newer() }) {
+		return false
+	}
 	for _, p := range plans {
 		s := p.Serial.Header
 		if p.Serial.Case == SerialForged {

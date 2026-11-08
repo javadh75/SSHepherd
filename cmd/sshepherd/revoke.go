@@ -167,6 +167,9 @@ func planRevokeUsers(mf *manifest.File, users []string, operator bool, h followU
 			h.command("apply", []string{"--dry-run"}), h.command("audit", nil))
 	}
 	ep := editPlan{former: cfg, summary: apply.EditSummary{AlreadyRevoked: already}}
+	for _, a := range already {
+		ep.already = append(ep.already, userKeyTombstones(cfg, a.User)...)
+	}
 	if len(live) == 0 {
 		ep.noop = true
 		return ep, nil
@@ -228,6 +231,17 @@ func latestUserTombstone(cfg *config.Config, name string) (config.Tombstone, boo
 	return found, ok
 }
 
+// userKeyTombstones are the key tombstones labelled with name.
+func userKeyTombstones(cfg *config.Config, name string) []config.Tombstone {
+	var out []config.Tombstone
+	for _, t := range cfg.Tombstones {
+		if t.IsKey() && t.User == name {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // userFingerprints lists u's key fingerprints (validated lines).
 func userFingerprints(u config.User) []string {
 	fps := make([]string, 0, len(u.Keys))
@@ -270,6 +284,7 @@ func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, memo editMe
 		default:
 			if t, done := cfg.Revoked(k.Fingerprint); done {
 				ep.summary.AlreadyRevoked = append(ep.summary.AlreadyRevoked, apply.AlreadyRevoked{Fingerprint: k.Fingerprint, Date: t.Date})
+				ep.already = append(ep.already, t)
 			} else {
 				unowned = append(unowned, k.Fingerprint)
 			}
@@ -371,7 +386,7 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 	if err != nil {
 		return editPlan{}, err
 	}
-	if err := ep.remember(mf, accessTombstones(mid, trimmed, trims, memo)); err != nil {
+	if err := ep.remember(mf, accessTombstones(cfg, mid, trimmed, trims, memo)); err != nil {
 		return editPlan{}, err
 	}
 	if ep.encoded, ep.edited, err = encodeEdit(mf); err != nil {
@@ -392,7 +407,12 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 
 // accessTombstones: one entry per user, naming the trimmed servers no
 // wildcard except: remembers in mid (the manifest after the access edit).
-func accessTombstones(mid *config.Config, users []string, trims map[string][]string, memo editMemo) []config.Tombstone {
+// A wildcard this trim deleted took its except: list with it, so a server
+// only that list remembered is tombstoned too, or a later adopt --merge
+// would re-grant it (D1a); the original date is unknown, so this run's is
+// recorded. Only the former manifest's servers are named (a tombstone for
+// a server it does not have would only warn).
+func accessTombstones(former, mid *config.Config, users []string, trims map[string][]string, memo editMemo) []config.Tombstone {
 	var tombs []config.Tombstone
 	for _, name := range users {
 		var lost []string
@@ -401,11 +421,30 @@ func accessTombstones(mid *config.Config, users []string, trims map[string][]str
 				lost = append(lost, s)
 			}
 		}
+		for _, s := range former.Servers {
+			if forgottenCarveOut(former, mid, name, s.Name) && !slices.Contains(lost, s.Name) {
+				lost = append(lost, s.Name)
+			}
+		}
 		if len(lost) > 0 {
 			tombs = append(tombs, config.Tombstone{User: name, Servers: lost, Date: memo.date, Reason: memo.reason})
 		}
 	}
 	return tombs
+}
+
+// forgottenCarveOut reports a server only a deleted wildcard's except:
+// remembered: excluded in former, neither excluded nor covered in mid, and
+// not already recorded by an access tombstone.
+func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
+	if former.Covers(user, server) || !former.ExceptCarveOut(user, server) {
+		return false
+	}
+	if mid.ExceptCarveOut(user, server) || mid.Covers(user, server) {
+		return false
+	}
+	_, recorded := former.AccessRevoked(user, server)
+	return !recorded
 }
 
 // accessProblems lists why 'revoke USER... --server NAME...' cannot run,

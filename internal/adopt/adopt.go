@@ -258,6 +258,14 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []N
 	for _, u := range cfg.Users {
 		taken[u.Name] = true
 	}
+	// A name kept only by an access tombstone is not free either: the new
+	// grant would be a policy conflict, refused at save with a hint the
+	// operator cannot follow.
+	for _, t := range cfg.Tombstones {
+		if !t.IsKey() {
+			taken[t.User] = true
+		}
+	}
 	users := make([]NewUser, 0, len(order))
 	for _, fp := range order {
 		pd := byFP[fp]

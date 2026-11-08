@@ -452,7 +452,7 @@ D14–D19 answered; implementation is W5+ after P14. Audit's claim is narrowed t
 the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
-exactly when the run exits 0 or 1 (specced in
+exactly when the run exits 0, 1 or (for revoke/rotate --sweep) 2 (specced in
 `docs/superpowers/specs/2026-11-07-apply-json-design.md`); remote text in both JSON
 reports passes through the new `internal/sanitize` leaf.
 **`revoke --server` and `rotate --keep-old`** (specced in
@@ -521,6 +521,12 @@ that removes keys bumps the serial (D4b); audit adds REVOKED (critical), access-
 JSON fields; adopt never writes `["*"]` and, like `import --merge`, skips tombstoned keys
 and access. Exit 2 now also means revoke/rotate `--sweep` found a revoked key (one shared
 table, D28).
+W4 repair: apply never bumps from a copy a newer server serial proves stale; a repeated
+`revoke --sweep` sweeps for the recorded keys; an interrupted sweep keeps its report
+(exit 1); unparseable `authorized_keys` lines are unprovable; the save-only sweep's
+preflight runs before the save; a deleted wildcard's `except:` becomes access tombstones;
+generated user names avoid access-tombstone names; a fresh `import -o --force` warns when
+it drops revocation memory.
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one
