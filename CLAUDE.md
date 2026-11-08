@@ -441,14 +441,17 @@ queued servers.
 The write-failure semantics spec (P08: login-check failures sorted by stage, exit 2
 for an unrestored lockout, self-describing locks (owner, age, hand-removal command;
 never removed automatically), interrupts, backup retention; specced in
-`docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`) is drafted
-with D9–D10 answered and D10a, D10b and D9c pending, and awaits approval;
-implementation is W5+.
+`docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`, planned in
+`docs/superpowers/plans/2026-11-08-write-failure-semantics.md`) is approved with D10a, D10b
+and D9c answered; implementation is W5.
 The audit trust posture spec (P09: posture probe, operator cannot-log-in critical
 tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`,
 built-in weak/expired key rules via D29; specced in
-`docs/superpowers/specs/2026-11-08-audit-trust-posture-design.md`) is drafted with
-D14–D19 answered; implementation is W5+ after P14. Audit's claim is narrowed to
+`docs/superpowers/specs/2026-11-08-audit-trust-posture-design.md`, planned in
+`docs/superpowers/plans/2026-11-08-audit-trust-posture.md`) is approved with D14–D19 and
+its open points answered; implementation is W6, after P08. The access-model roadmap spec
+(P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is a draft
+awaiting approval. Audit's claim is narrowed to
 the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written

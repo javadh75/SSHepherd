@@ -131,6 +131,13 @@ Still open: Block 1 (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a,
 
 All decisions answered (D0–D31 incl. sub-decisions, D4c, D1d, D1e).
 
+**Answers recorded 2026-11-08 (at P08, P09 and P10 spec review):**
+
+- P08: **D10a = (2)** exit 2 at once when a rollback's restored file grants a key on the `revoked:` list. **D10b = (2)** exit 2 for the host-key kinds audit exits 2 on (the kept file stays; UNPROVEN at exit 1 for other host-key kinds). **D9c = (2)** additive per-server `warnings` in apply JSON (schema stays 1). All three override the Block 3 recommendations. Spec approved.
+- P09: **OP1** a symlinked managed file is drift (exit 1). **OP2** the posture probe gets its own session. **OP3** an expired operator line is always critical. **OP4** refuse a save only when it adds a weak key. **OP5** plain import and `--merge` skip a weak `.pub` with a warning. **OP6** one no-granted-keys warning (per-server lines drop to debug). Spec approved.
+- P10 (spec still a draft, awaiting approval): **OP1** warning, fails `--strict`. **OP2** fixed at 8. **OP3** YAML inside the JSON. **OP4** still report, still exit 2. **OP5** add, restrictions only. **OP6** refuse only what's affected. **OP7** refuse for now. **OP8** add optional `jump_only`.
+- W5 (P08-impl) and W6 (P09-impl) authorized by the owner 2026-11-08.
+
 **W1 verifier follow-ups (unconfirmed single-lens, triaged by the main session, 2026-11-08):**
 - Fixed in main session: parseExpiry rejected OpenSSH's `UTC` suffix (and lowercase forms) after D27 → valid manifests failed to load (COR-1 regression). README ignored-lines list now names a malformed `expiry-time`.
 - **Test hardening → W3 (P14 runs alone with TST-7's coverage ratchet; add these as mutation-killing tests):** apply.go `applying N servers` pluralization; untested `manifestError` call sites (adopt.go:207 etc.); fleet.go preferKeys/GrantedFingerprints wiring; audit/report.go and apply/report.go owner/former guards for the ` · options:` suffix; connect.go canceled-dial hint suppression; apply/report.go REFUSED-row hint; audit.go COR-7 `ctx.Done()` select; sshcfg differential test vacuity (`sshg_diff_test.go:124`: compare host sets both ways, compare ProxyJump/ProxyCommand, record expected deviations); keyarg_test.go expiry guard tautology (add explicit lowercase-z/UTC rows instead).
