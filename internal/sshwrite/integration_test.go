@@ -6,18 +6,23 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -223,8 +228,10 @@ func TestIntegrationApplyWriteBackupVerify(t *testing.T) {
 	if bak := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys.sshepherd.bak"`); bak != orig {
 		t.Errorf("backup = %q, want the pre-apply bytes %q", bak, orig)
 	}
-	if ls := remoteOut(t, w.Dialer, srv, `ls -a "$HOME/.ssh"`); strings.Contains(ls, ".sshepherd.tmp") || strings.Contains(ls, ".sshepherd.lock") {
-		t.Errorf("temp/lock residue in ~/.ssh: %q", ls)
+	// The success path also proves busybox dd's conv=fsync flushes (WP-4)
+	// do not fail the script, and that the CAS staging copy became .bak.
+	if ls := remoteOut(t, w.Dialer, srv, `ls -a "$HOME/.ssh"`); strings.Contains(ls, tmpSuffix) || strings.Contains(ls, lockSuffix) || strings.Contains(ls, casSuffix) {
+		t.Errorf("temp/lock/CAS residue in ~/.ssh: %q", ls)
 	}
 
 	// Re-apply the identical render: succeeds, the backup now holds the
@@ -511,7 +518,8 @@ func TestIntegrationApplyDisablesAuthorizedKeys2(t *testing.T) {
 }
 
 // TestIntegrationOwnershipRefusals runs the write script's StrictModes-style
-// owner checks (sshwrite.go:160-161, 199, 202) against real sshd fixtures.
+// owner checks (ancestorCheck, and writeCmdFor's directory and file checks)
+// against real sshd fixtures.
 // Each must refuse with *UnsafePathError and leave the target byte-identical,
 // with no backup.
 func TestIntegrationOwnershipRefusals(t *testing.T) {
@@ -584,5 +592,209 @@ func TestIntegrationLoginProbeHonorsWrittenOptions(t *testing.T) {
 				t.Errorf("file = %q, want the pre-write bytes %q", got, before)
 			}
 		})
+	}
+}
+
+// TestIntegrationRefusalCreatesNoDirectory (WP-9): a write under a
+// world-writable ancestor is refused before mkdir runs, so the missing
+// directory is never created — "refusals change nothing" on a real server.
+func TestIntegrationRefusalCreatesNoDirectory(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "wp9", Host: host, Port: port, User: "cas", AuthorizedKeysFile: "~/wp9/dot-ssh/authorized_keys"}
+	remoteOut(t, w.Dialer, srv, `mkdir -p "$HOME/wp9" && chmod 777 "$HOME/wp9"`)
+	t.Cleanup(func() { remoteOut(t, w.Dialer, srv, `rm -rf "$HOME/wp9"`) })
+	req := Request{Content: itRendered(t), Expect: Snapshot{Absent: true}, Survivors: itSurvivors(t)}
+	var uns *UnsafePathError
+	if err := w.Apply(itCtx(t), srv, req); !errors.As(err, &uns) {
+		t.Fatalf("Apply = %v, want *UnsafePathError", err)
+	}
+	if out := remoteOut(t, w.Dialer, srv, `if [ -e "$HOME/wp9/dot-ssh" ]; then echo created; fi`); strings.TrimSpace(out) != "" {
+		t.Error("a refused write created ~/wp9/dot-ssh")
+	}
+}
+
+// remoteTry is remoteOut for goroutines other than the test's: it returns
+// the error instead of failing the test.
+func remoteTry(d *sshconn.Dialer, srv config.Server, cmd string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := d.Connect(ctx, srv)
+	if err != nil {
+		return "", fmt.Errorf("connect %s: %w", srv.User, err)
+	}
+	defer func() { _ = conn.Close() }()
+	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, cmd, nil)
+	if err != nil {
+		return "", fmt.Errorf("exec %q: %w", cmd, err)
+	}
+	if code != 0 {
+		return "", fmt.Errorf("exec %q: exit %d (stderr %q)", cmd, code, stderr.String())
+	}
+	return stdout.String(), nil
+}
+
+// editMidUpload delivers data[:half], then — before handing out another
+// byte — runs edit once (the concurrent editor), then delivers the rest.
+type editMidUpload struct {
+	data   []byte
+	half   int
+	off    int
+	edited bool
+	edit   func() error
+
+	mu  sync.Mutex
+	err error
+}
+
+func (r *editMidUpload) Read(p []byte) (int, error) {
+	if r.off == len(r.data) {
+		return 0, io.EOF
+	}
+	if r.off == r.half && !r.edited {
+		r.edited = true
+		err := r.edit()
+		r.mu.Lock()
+		r.err = err
+		r.mu.Unlock()
+	}
+	end := len(r.data)
+	if r.off < r.half {
+		end = r.half
+	}
+	n := copy(p, r.data[r.off:end])
+	r.off += n
+	return n, nil
+}
+
+func (r *editMidUpload) editErr() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
+// TestIntegrationConcurrentEditDuringUploadRefused (WP-3): a lock-less
+// editor (ssh-copy-id, Ansible, a human) appends a key while the upload is
+// in flight. The compare-and-swap runs after the upload, so the write is
+// refused, the edit survives and the backup does not rotate. Before the
+// fix the CAS ran before the upload: the write succeeded and the appended
+// key vanished from both the file and the backup.
+func TestIntegrationConcurrentEditDuringUploadRefused(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "cas", Host: host, Port: port, User: "cas"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
+	t.Cleanup(func() { reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")}) })
+	before := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
+	bak := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys`+bakSuffix+`" 2>/dev/null || true`)
+	// ~130 KB: many channel packets, yet inside OpenSSH's 2 MB window — so
+	// the reader must wait for the temp to fill before it edits.
+	content := append(itRendered(t), bytes.Repeat([]byte("# padding padding padding padding\n"), 3800)...)
+	half := len(content) / 2
+	r := &editMidUpload{data: content, half: half, edit: func() error {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			out, err := remoteTry(w.Dialer, srv, `wc -c < "$HOME/.ssh/authorized_keys`+tmpSuffix+`" 2>/dev/null || echo 0`)
+			if err != nil {
+				return err
+			}
+			if n, _ := strconv.Atoi(strings.TrimSpace(out)); n >= half {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("upload temp never reached %d bytes (last %q)", half, strings.TrimSpace(out))
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		_, err := remoteTry(w.Dialer, srv, `printf '# concurrent edit\n' >> "$HOME/.ssh/authorized_keys"`)
+		return err
+	}}
+	w.exec = func(ctx context.Context, client *ssh.Client, cmd string, stdin io.Reader) (int, *sshconn.CappedBuffer, *sshconn.CappedBuffer, error) {
+		if stdin != nil {
+			stdin = r
+		}
+		return sshconn.Exec(ctx, client, cmd, stdin)
+	}
+	req := itRequest(t, w.Dialer, srv, content)
+	err := w.Apply(itCtx(t), srv, req)
+	if e := r.editErr(); e != nil {
+		t.Fatalf("concurrent editor: %v", e)
+	}
+	var chg *ChangedError
+	if !errors.As(err, &chg) {
+		t.Fatalf("Apply = %v, want *ChangedError (a key added mid-upload must refuse, not vanish)", err)
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != before+"# concurrent edit\n" {
+		t.Errorf("file = %q, want the concurrent edit kept", got)
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys`+bakSuffix+`" 2>/dev/null || true`); got != bak {
+		t.Errorf(".bak = %q, want it unchanged (%q): a refused write takes no backup", got, bak)
+	}
+}
+
+// itKeyFile loads one of the harness's unencrypted headless key files
+// (scripts/integration.sh: ci_old) as a held --identity key.
+func itKeyFile(t *testing.T, name string) keyfile.Identity {
+	t.Helper()
+	dir := os.Getenv("SSHEPHERD_IT_KEYS")
+	if dir == "" {
+		t.Skip("integration env not set; run via make integration")
+	}
+	path := filepath.Join(dir, name)
+	raw, err := os.ReadFile(path) // #nosec G304 G703 -- harness key dir (SSHEPHERD_IT_KEYS)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	signer, err := ssh.ParsePrivateKey(raw)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return keyfile.Identity{Path: path, Fingerprint: ssh.FingerprintSHA256(signer.PublicKey()), Signer: signer}
+}
+
+// TestIntegrationProbeOrderMatchesNextRun (WP-5): the render lists a
+// forced-command line first (for the key file, which the default signer
+// order offers first) and a plain line second (the agent key); both keys
+// are held. The probe offers the survivors in audit.OfferOrder, so it
+// proves the plain key — and the next run, offering the same order, reads
+// the real file instead of running the forced command.
+func TestIntegrationProbeOrderMatchesNextRun(t *testing.T) {
+	plain, host, port := itDialer(t) // agent only: its key stays a plain line, so reseed works
+	srv := config.Server{Name: "cas", Host: host, Port: port, User: "cas"}
+	reseed(t, plain, srv, fixture{keys: strp(itPub(t) + "\n")})
+	t.Cleanup(func() { reseed(t, plain, srv, fixture{keys: strp(itPub(t) + "\n")}) })
+
+	ci := itKeyFile(t, "ci_old")
+	forced := `command="echo forced" ` + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(ci.Signer.PublicKey())))
+	content := []byte(authkeys.ManagedHeader + "\n" + forced + "\n" + itPub(t) + "\n")
+	var desired []authkeys.Key
+	for _, line := range []string{forced, itPub(t)} {
+		k, err := authkeys.ParseLine(line)
+		if err != nil || k == nil {
+			t.Fatalf("parse %q: %v", line, err)
+		}
+		desired = append(desired, *k)
+	}
+	order := audit.OfferOrder(desired)
+	if len(order) != 2 || order[0] != itSurvivors(t)[0] {
+		t.Fatalf("OfferOrder = %v, want the plain agent key first", order)
+	}
+
+	creds := &sshconn.Credentials{Files: []keyfile.Identity{ci}, AgentSock: os.Getenv("SSH_AUTH_SOCK")}
+	w := &FleetWriter{Dialer: &sshconn.Dialer{KnownHostsPath: plain.KnownHostsPath, Creds: creds, DialTimeout: plain.DialTimeout}}
+	req := itRequest(t, plain, srv, content)
+	req.Survivors = order
+	if err := w.Apply(itCtx(t), srv, req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	next := &sshconn.Dialer{KnownHostsPath: plain.KnownHostsPath, Creds: creds, DialTimeout: plain.DialTimeout,
+		PreferKeys: func(config.Server) []string { return order }}
+	if got := remoteOut(t, next, srv, `cat "$HOME/.ssh/authorized_keys"`); got != string(content) {
+		t.Errorf("next run read %q, want the written file (a forced command captured the session)", got)
+	}
+	// Control: without the offer order the key file goes first and its
+	// forced command captures the session — the hazard this order prevents.
+	unordered := &sshconn.Dialer{KnownHostsPath: plain.KnownHostsPath, Creds: creds, DialTimeout: plain.DialTimeout}
+	if got := remoteOut(t, unordered, srv, `cat "$HOME/.ssh/authorized_keys"`); got != "forced\n" {
+		t.Errorf("default order read %q, want %q — the control no longer exercises the hazard", got, "forced\n")
 	}
 }

@@ -125,6 +125,53 @@ func runShEnv(t *testing.T, shell []string, script, home string, stdin []byte, e
 	return -1
 }
 
+// runShConcurrent runs script with stdin on a real pipe: it writes first,
+// waits until the upload temp has received it (the upload is in flight),
+// runs mid (a concurrent, lock-less editor), then writes rest and closes.
+func runShConcurrent(t *testing.T, sh []string, script, home, target string, first, rest []byte, mid func()) int {
+	t.Helper()
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := append(append([]string{}, sh[1:]...), "-c", script)
+	c := exec.CommandContext(t.Context(), sh[0], argv...) // #nosec G204 -- the package's own script
+	c.Env = append(os.Environ(), "HOME="+home)
+	c.Stdin = pr
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = pr.Close()
+	if _, err := pw.Write(first); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if fi, err := os.Stat(target + tmpSuffix); err == nil && fi.Size() >= int64(len(first)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = pw.Close()
+			t.Fatalf("upload temp never received %d bytes", len(first))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mid()
+	if _, err := pw.Write(rest); err != nil {
+		t.Fatal(err)
+	}
+	_ = pw.Close()
+	err = c.Wait()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return 0
+}
+
 // forEachShell runs fn as a subtest per available shell.
 func forEachShell(t *testing.T, fn func(t *testing.T, sh []string)) {
 	t.Helper()
@@ -203,32 +250,32 @@ func linkedAncestor(t *testing.T, home string) (link, realDir, target string) {
 }
 
 var ownerCases = []ownerCase{
-	{name: "target dir owned by root (non-root login)", uid: "0", mutant: "dir", // sshwrite.go:199 only: the walks accept root
+	{name: "target dir owned by root (non-root login)", uid: "0", mutant: "dir", // the directory check only: the walks accept root
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			d, target := dotSSHWithFile(t, home)
 			return target, d, SnapshotOf(false, []byte("k\n"))
 		}},
-	{name: "target dir owned by another user", uid: foreignUID, // :199 and the as-written walk both catch it
+	{name: "target dir owned by another user", uid: foreignUID, // the directory check and the as-written walk both catch it
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			d, target := dotSSHWithFile(t, home)
 			return target, d, SnapshotOf(false, []byte("k\n"))
 		}},
-	{name: "target file owned by another user", uid: foreignUID, mutant: "file", // :202 only
+	{name: "target file owned by another user", uid: foreignUID, mutant: "file", // the file check under the lock only
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			_, target := dotSSHWithFile(t, home)
 			return target, target, SnapshotOf(false, []byte("k\n"))
 		}},
-	{name: "target file owned by root (non-root login)", uid: "0", mutant: "file", // :202 has no root exemption
+	{name: "target file owned by root (non-root login)", uid: "0", mutant: "file", // the file check has no root exemption
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			_, target := dotSSHWithFile(t, home)
 			return target, target, SnapshotOf(false, []byte("k\n"))
 		}},
-	{name: "symlinked ancestor owned by another user", uid: foreignUID, mutant: "ancestor-written", // :160 only
+	{name: "symlinked ancestor owned by another user", uid: foreignUID, mutant: "ancestor-written", // the as-written walk only
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			link, _, target := linkedAncestor(t, home)
 			return target, link, Snapshot{Absent: true}
 		}},
-	{name: "resolved ancestor owned by another user", uid: foreignUID, mutant: "ancestor-resolved", // :161 only
+	{name: "resolved ancestor owned by another user", uid: foreignUID, mutant: "ancestor-resolved", // the resolved walk only
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			_, realDir, target := linkedAncestor(t, home)
 			phys, err := filepath.EvalSymlinks(realDir) // what pwd -P prints (macOS: /private/var/…)
@@ -288,6 +335,7 @@ func assertNoResidue(t *testing.T, target string) {
 	t.Helper()
 	assertAbsent(t, target+tmpSuffix, "temp residue left behind")
 	assertAbsent(t, target+lockSuffix, "lock directory left behind")
+	assertAbsent(t, target+casSuffix, "CAS staging copy left behind")
 }
 
 func ptr(s string) *string { return &s }
@@ -475,6 +523,61 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 				t.Fatalf("exit = %d, want the %d unsafe-path sentinel", code, unsafePathExit)
 			}
 			assertAbsent(t, target, "nothing may be written under a writable ancestor")
+			assertAbsent(t, filepath.Join(sub, "dot-ssh"), "a refused write must not create the missing directory")
+		})
+
+		t.Run("refusal creates no directory (group-writable home, no ~/.ssh)", func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.Chmod(home, 0o775); err != nil { // #nosec G302 -- the unsafe home under test
+				t.Fatal(err)
+			}
+			code := runSh(t, sh, writeCmdFor("~/.ssh/authorized_keys", Snapshot{Absent: true}, len(managed)), home, []byte(managed))
+			if code != unsafePathExit {
+				t.Fatalf("exit = %d, want %d", code, unsafePathExit)
+			}
+			assertAbsent(t, filepath.Join(home, ".ssh"), "IsRefusal promises nothing changed — no ~/.ssh may be created")
+		})
+
+		t.Run("dotdot through a foreign symlink refuses and leaves nothing", func(t *testing.T) {
+			home := t.TempDir()
+			shared := filepath.Join(home, "shared")
+			if err := os.Mkdir(filepath.Join(home, "real-shared"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(home, "real-shared"), shared); err != nil {
+				t.Fatal(err)
+			}
+			// Built by hand: filepath.Join would clean the ".." away. The ls
+			// stub matches the string the script lists, so foreign is the
+			// as-written spelling the post-mkdir walk passes to ls.
+			path := home + "/new/../shared/dot-ssh/auth"
+			env, called, _ := lsStub(t, home+"/new/../shared", foreignUID)
+			code := runShEnv(t, sh, writeCmdFor(path, Snapshot{Absent: true}, len(managed)), home, []byte(managed), env...)
+			if !called() {
+				t.Skip("ls runs as an applet; the stub cannot fake an owner")
+			}
+			if code != unsafePathExit {
+				t.Fatalf("exit = %d, want %d", code, unsafePathExit)
+			}
+			assertAbsent(t, filepath.Join(home, "new"), "a refused write must remove the directory it created")
+			assertAbsent(t, filepath.Join(home, "real-shared", "dot-ssh"), "a refused write must remove the directory it created")
+		})
+
+		t.Run("dotdot through a world-writable directory refuses and leaves nothing", func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.Mkdir(filepath.Join(home, "shared"), 0o777); err != nil { // #nosec G301 -- the unsafe directory under test
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(home, "shared"), 0o777); err != nil { // #nosec G302 -- beat the umask
+				t.Fatal(err)
+			}
+			path := home + "/new/../shared/dot-ssh/auth" // literal "..": filepath.Join would clean it
+			code := runSh(t, sh, writeCmdFor(path, Snapshot{Absent: true}, len(managed)), home, []byte(managed))
+			if code != unsafePathExit {
+				t.Fatalf("exit = %d, want %d", code, unsafePathExit)
+			}
+			assertAbsent(t, filepath.Join(home, "new"), "a refused write must remove the directory it created")
+			assertAbsent(t, filepath.Join(home, "shared", "dot-ssh"), "a refused write must remove the directory it created")
 		})
 
 		t.Run("ancestor symlink into a writable directory refuses", func(t *testing.T) {
@@ -577,6 +680,35 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 			}
 		})
 
+		t.Run("a key added during the upload refuses and survives", func(t *testing.T) {
+			home := t.TempDir()
+			target := filepath.Join(home, "auth")
+			const hand = "hand\n"
+			writeFile(t, target, hand)
+			writeFile(t, target+bakSuffix, "previous\n")
+			content := []byte(managed + strings.Repeat("# pad\n", 64))
+			half := len(content) / 2
+			code := runShConcurrent(t, sh, writeCmdFor(target, SnapshotOf(false, []byte(hand)), len(content)), home, target,
+				content[:half], content[half:], func() {
+					f, err := os.OpenFile(target, os.O_APPEND|os.O_WRONLY, 0) // #nosec G304 -- the sandboxed target
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, _ = f.WriteString("copyid bob\n")
+					_ = f.Close()
+				})
+			if code != changedExit {
+				t.Fatalf("exit = %d, want %d — a key added mid-upload must refuse, not vanish", code, changedExit)
+			}
+			if got := readFile(t, target); got != hand+"copyid bob\n" {
+				t.Errorf("file = %q, want the concurrent edit kept", got)
+			}
+			if got := readFile(t, target+bakSuffix); got != "previous\n" {
+				t.Errorf(".bak = %q, a refused write must not rotate the backup", got)
+			}
+			assertNoResidue(t, target)
+		})
+
 		t.Run("hostile path with single quote", func(t *testing.T) {
 			home := t.TempDir()
 			target := filepath.Join(home, "o'brien keys")
@@ -587,6 +719,74 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 				t.Fatalf("file = %q, want content at the literal path", got)
 			}
 		})
+	})
+}
+
+// TestWriteCmdOrder pins the protocol order: nothing is created before the
+// walk, the target directory is walked again after mkdir, the upload is
+// flushed before the CAS, and only forks separate the CAS from the mv
+// (WP-3/4/9). No global sync appears anywhere (Task 3).
+func TestWriteCmdOrder(t *testing.T) {
+	cmd := writeCmdFor("~/.ssh/authorized_keys", SnapshotOf(false, []byte("old\n")), 10)
+	at := -1
+	for _, step := range []string{
+		`while [ ! -e "$e" ]`, `mkdir -p "$d"`, `( set -- $(ls -ldn "$d")`, `mkdir "$l"`, `command -v cksum`,
+		`cat > "$t"`, `wc -c < "$t"`, `of="$t" conv=notrunc,fsync`,
+		`cat "$p" > "$c"`, `cksum < "$c"`, `cat "$c" > "$o"`, `mv -f "$c" "$b"`, `of="$b" conv=notrunc,fsync`,
+		`mv -f "$t" "$p"`,
+	} {
+		i := strings.Index(cmd, step)
+		if i <= at {
+			t.Fatalf("step %q at %d, want after %d in:\n%s", step, i, at, cmd)
+		}
+		at = i
+	}
+}
+
+func TestWriteCmdFlushesPerFileNeverGlobalSync(t *testing.T) {
+	forEachShell(t, func(t *testing.T, sh []string) {
+		home := t.TempDir()
+		target := filepath.Join(home, "auth")
+		writeFile(t, target, "old\n")
+		stub := t.TempDir()
+		ddLog, syncLog, wcMark := filepath.Join(stub, "dd.log"), filepath.Join(stub, "sync.log"), filepath.Join(stub, "wc.called")
+		ddBin, err := exec.LookPath("dd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		wcBin, err := exec.LookPath("wc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(stub, "dd"), "#!/bin/sh\nprintf '%s|%s\\n' \"$*\" \"$(head -n 1 '"+target+"')\" >> '"+ddLog+"'\nexec "+ddBin+" \"$@\"\n")
+		writeFile(t, filepath.Join(stub, "sync"), "#!/bin/sh\necho \"$*\" >> '"+syncLog+"'\n")
+		writeFile(t, filepath.Join(stub, "wc"), "#!/bin/sh\n: > '"+wcMark+"'\nexec "+wcBin+" \"$@\"\n")
+		for _, n := range []string{"dd", "sync", "wc"} {
+			if err := os.Chmod(filepath.Join(stub, n), 0o700); err != nil { // #nosec G302 -- test stub
+				t.Fatal(err)
+			}
+		}
+		code := runShEnv(t, sh, writeCmdFor(target, SnapshotOf(false, []byte("old\n")), len(managed)), home, []byte(managed), "PATH="+stub+":"+os.Getenv("PATH"))
+		if code != 0 {
+			t.Fatalf("exit = %d", code)
+		}
+		if _, err := os.Stat(wcMark); os.IsNotExist(err) {
+			t.Skipf("%v runs coreutils as built-in applets; a PATH stub cannot observe them", sh)
+		}
+		if raw, err := os.ReadFile(syncLog); err == nil { // #nosec G304 -- the test's own stub log
+			t.Errorf("the script ran sync (%q); a global sync can hang on NFS while holding the lock", raw)
+		}
+		raw, _ := os.ReadFile(ddLog) // #nosec G304 -- the test's own stub log
+		lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+		if len(lines) != 2 || lines[0] == "" {
+			t.Fatalf("dd calls = %q, want 2 (temp before mv, .bak before mv)", lines)
+		}
+		if want := "if=/dev/null of=" + target + tmpSuffix + " conv=notrunc,fsync|old"; lines[0] != want {
+			t.Errorf("first flush = %q, want %q (temp flushed while the old file is still live)", lines[0], want)
+		}
+		if want := "if=/dev/null of=" + target + bakSuffix + " conv=notrunc,fsync|old"; lines[1] != want {
+			t.Errorf("second flush = %q, want %q (.bak flushed before the rename)", lines[1], want)
+		}
 	})
 }
 
@@ -711,8 +911,10 @@ func TestRestoreCmdThroughRealSh(t *testing.T) {
 }
 
 const (
-	dirFileOwnerCheck  = `if [ "$3" != "$u" ]; then exit 48; fi`                  // sshwrite.go:199 (1st), :202 (2nd)
-	ancestorOwnerCheck = `if [ "$3" != "$u" ] && [ "$3" != 0 ]; then exit 48; fi` // :160 (1st), :161 (2nd)
+	// writeCmdFor: the directory check after mkdir (1st), the file check under the lock (2nd).
+	dirFileOwnerCheck = `if [ "$3" != "$u" ]; then exit 48; fi`
+	// ancestorCheck: the as-written walk (1st), the resolved walk (2nd).
+	ancestorOwnerCheck = `if [ "$3" != "$u" ] && [ "$3" != 0 ]; then exit 48; fi`
 )
 
 // replaceNth replaces the n-th (1-based) occurrence of old in s. It fails
@@ -739,15 +941,24 @@ func replaceNth(t *testing.T, s, old string, n int, repl string) string {
 // check alone, not only all of them together, and that removing a check
 // is not caught by some other, unrelated failure.
 func TestOwnerChecksBite(t *testing.T) {
+	// An ancestor mutant edits the ancestorCheck constant itself, so it
+	// reaches every walk that uses it (the pre-mkdir walk of the nearest
+	// existing ancestor and the full walk after mkdir) — the way a real
+	// edit of that constant would.
 	ownerMutants := map[string]struct {
-		needle string
-		n      int
+		needle   string
+		n        int
+		ancestor bool
 	}{
-		"dir": {dirFileOwnerCheck, 1}, "file": {dirFileOwnerCheck, 2},
-		"ancestor-written": {ancestorOwnerCheck, 1}, "ancestor-resolved": {ancestorOwnerCheck, 2},
+		"dir": {dirFileOwnerCheck, 1, false}, "file": {dirFileOwnerCheck, 2, false},
+		"ancestor-written": {ancestorOwnerCheck, 1, true}, "ancestor-resolved": {ancestorOwnerCheck, 2, true},
 	}
-	if got := strings.Count(writeCmdFor("/x/y", Snapshot{Absent: true}, 1), dirFileOwnerCheck); got != 2 {
+	script := writeCmdFor("/x/y", Snapshot{Absent: true}, 1)
+	if got := strings.Count(script, dirFileOwnerCheck); got != 2 {
 		t.Fatalf("dir/file owner checks = %d, want 2 — update the mutation table", got)
+	}
+	if got := strings.Count(script, ancestorCheck); got != 2 {
+		t.Fatalf("ancestor walks = %d, want 2 (before and after mkdir) — update the mutation table", got)
 	}
 	forEachShell(t, func(t *testing.T, sh []string) {
 		for _, c := range ownerCases {
@@ -759,7 +970,12 @@ func TestOwnerChecksBite(t *testing.T) {
 				t.Fatalf("row %q names mutant %q, which is not in ownerMutants", c.name, c.mutant)
 			}
 			t.Run(c.name, func(t *testing.T) {
-				code, target, _ := runOwnerCase(t, sh, c, func(s string) string { return replaceNth(t, s, m.needle, m.n, ":") })
+				mutate := func(s string) string { return replaceNth(t, s, m.needle, m.n, ":") }
+				if m.ancestor {
+					mutated := replaceNth(t, ancestorCheck, m.needle, m.n, ":")
+					mutate = func(s string) string { return strings.ReplaceAll(s, ancestorCheck, mutated) }
+				}
+				code, target, _ := runOwnerCase(t, sh, c, mutate)
 				if code != 0 {
 					t.Fatalf("with the %s owner check removed the script exits %d, want 0 — the row does not isolate that check", c.mutant, code)
 				}
@@ -944,6 +1160,25 @@ func TestApplyStageFailures(t *testing.T) {
 				t.Errorf("connects = %d, want 1 (no login probe after a failed write/verify)", len(c.opts))
 			}
 		})
+	}
+}
+
+// TestStageFailureBoundsStderr (SEC-8): a remote stage failure carries the
+// server's stderr into the error line; a hostile server must not be able to
+// pad it with blank-looking runes to forge report rows, or flood the
+// report with a megabyte per server.
+func TestStageFailureBoundsStderr(t *testing.T) {
+	huge := strings.Repeat("⠀", 1<<18) + "web-3  ✓ present & authorized"
+	s := &scriptedExec{responses: []execResp{{code: 1, stderr: huge}}}
+	err := seamedWriter(s, &seamedConnect{}).Apply(context.Background(), config.Server{Name: "w"}, req("rendered\n"))
+	if err == nil {
+		t.Fatal("Apply succeeded on a failing write")
+	}
+	if msg := err.Error(); len(msg) > 512 || strings.ContainsRune(msg, '⠀') {
+		t.Errorf("err = %.80q… (%d bytes), want ≤ 512 bytes with no blank padding", msg, len(msg))
+	}
+	if !strings.Contains(err.Error(), "write on w failed (exit 1)") {
+		t.Errorf("err = %.120q, want the stage, server and exit code kept", err.Error())
 	}
 }
 

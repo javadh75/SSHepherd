@@ -1577,7 +1577,7 @@ reinstalling a revoked key. A manifest piped in (`--config /dev/stdin`,
 `--config <(...)`) cannot be re-read, so the check is skipped for it.
 
 **Refusals, not guesses.** A server is skipped — loudly, with a `REFUSED:` line, and
-nothing changed — when:
+nothing changed (no file, backup or directory is created) — when:
 
 - the manifest grants nobody but keys are installed (refusing to wipe);
 - the file contains unparseable lines (refusing to rewrite a file it could not fully
@@ -1598,13 +1598,20 @@ nothing changed — when:
   racing for the lock never leave one behind.
 
 **One guarded write per server.** Each write is a single remote script in one
-session, which in order: refuses an unsafe path; takes the per-file lock
-`<path>.sshepherd.lock`; compares the file with the plan's snapshot (byte length plus
-POSIX `cksum`, or absent vs. present) so *what you reviewed is what gets replaced*;
-takes the backups; uploads to `<path>.sshepherd.tmp` under `umask 077`; checks the
-received byte count; and only then `mv`s it into place. Readers never see a
-half-written file, and a dropped connection leaves the original untouched
-(`upload incomplete … original left untouched`).
+session, which in order: refuses an unsafe path — walking the nearest existing
+ancestor *before* creating any missing directory and the full path again after,
+removing anything it created on a refusal, so a refusal leaves nothing behind; takes
+the per-file lock `<path>.sshepherd.lock`; uploads to `<path>.sshepherd.tmp` under
+`umask 077`, checks the received byte count and flushes it to disk; then, in one
+tight step, copies the current file aside, compares that copy with the plan's
+snapshot (byte length plus POSIX `cksum`, or absent vs. present) so *what you
+reviewed is what gets replaced* — a key another tool added during the upload refuses
+the write (`changed since the plan was read`) instead of vanishing — keeps that same
+copy as `.sshepherd.bak` (flushed too), and `mv`s the upload into place. Flushes are
+per file (`dd conv=fsync`, never a global `sync`); the directory entry is not
+flushed, so after a crash you see either the old or the new complete file. Readers
+never see a half-written file, and a dropped connection leaves the original
+untouched (`upload incomplete … original left untouched`).
 
 **Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced on
 every apply. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written

@@ -17,13 +17,13 @@ import (
 	"io"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sanitize"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
@@ -54,6 +54,9 @@ const (
 	bakSuffix  = ".sshepherd.bak"
 	origSuffix = ".sshepherd.orig"
 	lockSuffix = ".sshepherd.lock"
+	// casSuffix names the staging copy the compare-and-swap checks and
+	// that then becomes the backup (writeCmdFor's casBackupBlock).
+	casSuffix = ".sshepherd.cas"
 
 	// Keys2DisabledSuffix is appended to ~/.ssh/authorized_keys2 when a
 	// write disables it (Request.DisableKeys2).
@@ -137,14 +140,14 @@ func Cksum(b []byte) uint32 {
 
 // lockPrologue takes the per-target lock (mkdir is atomic on every POSIX
 // filesystem) and arranges its removal on every exit path, together with
-// the temp file only the lock holder may use (a successful mv has already
-// consumed it). A lost race or a stale lock exits 47; any other mkdir
+// the temp file and the CAS staging copy only the lock holder may use (a
+// successful run has already renamed both). A lost race or a stale lock exits 47; any other mkdir
 // failure re-runs mkdir to surface its real error and exits 1. That re-run
 // happens before the EXIT trap exists, so if it succeeds (the holder
 // released the lock in between) it removes the directory it just made and
 // exits 47 — a retryable lost race, never a stale lock. Signals route
 // through exit so the EXIT trap runs.
-const lockPrologue = `l="$p"` + lockSuffix + `; mkdir "$l" 2>/dev/null || { [ -d "$l" ] && exit 47; if mkdir "$l"; then rmdir "$l"; exit 47; fi; exit 1; }; trap 'rm -f "$p"` + tmpSuffix + `; rmdir "$l" 2>/dev/null' EXIT; trap 'exit 1' HUP INT TERM PIPE`
+const lockPrologue = `l="$p"` + lockSuffix + `; mkdir "$l" 2>/dev/null || { [ -d "$l" ] && exit 47; if mkdir "$l"; then rmdir "$l"; exit 47; fi; exit 1; }; trap 'rm -f "$p"` + tmpSuffix + ` "$p"` + casSuffix + `; rmdir "$l" 2>/dev/null' EXIT; trap 'exit 1' HUP INT TERM PIPE`
 
 // ancestorCheck walks the target directory "$d" up to the login user's
 // home (or /, for a path outside it) twice — as written, and resolved with
@@ -164,49 +167,103 @@ const ancestorCheck = `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
 //
 //  1. set -f (no globbing of ls output); umask 077 pins every file and
 //     directory created below to owner-only before a byte is written.
-//  2. Refuse a symlinked target (45) or a symlinked parent directory (48);
-//     mkdir -p covers first-contact servers (~/.ssh comes out 0700).
-//  3. Refuse a directory — and, below, a file — not owned by the login user
-//     (48), like sshd's StrictModes: running as root against another user's
-//     file must not write through anything that user controls. Then walk
-//     every ancestor up to the home directory, as written and resolved
-//     (ancestorCheck): each must be owned by the login user or root and not
-//     group/other-writable (48).
-//  4. Take the per-target lock (47), then re-check the target under it.
-//  5. Compare-and-swap (46): the file must still be absent, or still be
-//     exactly the phase-1 bytes (length + POSIX cksum).
-//  6. Back up: .sshepherd.bak is the previous version, replaced every apply;
-//     .sshepherd.orig is written once, only while the file is not yet
-//     SSHepherd-managed, so a retry after a failed apply never loses the
-//     hand-maintained original. Both are created fresh with rm -f + set -C
-//     (noclobber), so a symlink planted at either name is removed or
-//     refused, never written through.
-//  7. Upload to a fixed temp name created fresh the same way (stale temps
-//     from dropped connections are reclaimed), check the byte count equals
-//     the render before renaming (a cut stream gives cat EOF and exit 0;
-//     the length check turns that into 49 with the original untouched),
-//     then mv — an atomic rename in the same directory, so sshd never
-//     observes a partial file.
+//  2. Refuse a symlinked target (45) or a symlinked parent directory (48).
+//     Walk the nearest existing ancestor of the target directory
+//     (ancestorCheck) before creating anything, then create what is missing
+//     with mkdir -p (first contact: ~/.ssh comes out 0700).
+//  3. Walk the target directory as written and resolved: refuse it when it
+//     is not owned by the login user (48) — like sshd's StrictModes,
+//     running as root against another user's file must not write through
+//     anything that user controls — and walk every ancestor up to the home
+//     directory (ancestorCheck): each must be owned by the login user or
+//     root and not group/other-writable (48). This second walk catches what
+//     the textual pre-walk cannot see (a ".." component that mkdir -p
+//     followed into a foreign symlink or a writable directory); a refusal
+//     here removes, deepest first, the directories this run created.
+//  4. Take the per-target lock (47), then re-check the target under it
+//     (symlink 45, foreign-owned file 48) and, when the compare-and-swap
+//     needs it, that cksum exists — all before the upload.
+//  5. Upload to a fixed temp name created fresh with rm -f + set -C
+//     (noclobber; stale temps from dropped connections are reclaimed),
+//     check the byte count equals the render (a cut stream gives cat EOF
+//     and exit 0; the length check turns that into 49 with the original
+//     untouched), and flush the temp to disk (dd conv=fsync, per file —
+//     never a global sync, which can hang on a dead NFS mount while the
+//     lock is held).
+//  6. In one tight step (casBackupBlock): copy the live file to a fresh
+//     staging name, compare-and-swap that copy (46): the file must still be
+//     absent, or still be exactly the phase-1 bytes (length + POSIX cksum)
+//     — so a key another tool added during the upload refuses the write
+//     instead of vanishing. .sshepherd.orig is derived from the copy once,
+//     only while the file is not yet SSHepherd-managed, so a retry after a
+//     failed apply never loses the hand-maintained original; the copy then
+//     becomes .sshepherd.bak (the previous version, replaced every apply,
+//     holding exactly the bytes the CAS validated) and is flushed too. Every
+//     scratch name is created fresh with rm -f + set -C, so a symlink
+//     planted at any of them is removed or refused, never written through.
+//  7. mv the temp over the target — an atomic rename in the same directory,
+//     so sshd never observes a partial file. The directory entry is not
+//     flushed (best effort): after a crash the rename may be lost, which
+//     leaves the old complete file, never an empty one.
+//
+// The script creates no file or directory before its last refusal point
+// except the lock, the upload temp, the CAS staging copy and directories it
+// removes again on refusal; its EXIT trap removes the lock, the temp and
+// the staging copy.
 //
 // Content arrives on stdin — key material is never shell-encoded. The
 // script is a single line (sshconn.Exec runs it under /bin/sh -c) and
 // POSIX-only: it is exercised under dash, bash and busybox ash.
 func writeCmdFor(path string, expect Snapshot, size int) string {
-	cas := casCheck(expect)
 	return sshconn.PathAssign(path) +
-		`; set -f; umask 077; u=$(id -u); d=$(dirname "$p")` +
-		`; if [ -L "$p" ]; then exit 45; fi; if [ -L "$d" ]; then exit 48; fi; mkdir -p "$d" || exit 1` +
-		`; set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi` +
-		`; ` + ancestorCheck +
+		`; set -f; umask 077; u=$(id -u); d=$(dirname "$p"); b="$p"` + bakSuffix + `; o="$p"` + origSuffix + `; t="$p"` + tmpSuffix + `; c="$p"` + casSuffix +
+		`; if [ -L "$p" ]; then exit 45; fi; if [ -L "$d" ]; then exit 48; fi` +
+		// WP-9: walk the nearest EXISTING ancestor before creating anything,
+		// so a refusal (48) leaves the tree exactly as it was.
+		`; m=; e="$d"; while [ ! -e "$e" ] && [ ! -L "$e" ]; do m="$e"; e=$(dirname "$e"); done; D="$d"; d="$e"; ` + ancestorCheck + `; d="$D"` +
+		`; if [ -n "$m" ]; then mkdir -p "$d" || exit 1; fi` +
+		// The full walk of $d after mkdir: catches ".." and symlinks the
+		// textual pre-walk could not see. On refusal, undo what mkdir created.
+		`; ( set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi; ` + ancestorCheck + ` ) || { r=$?; if [ -n "$m" ]; then q="$d"; while :; do rmdir "$q" 2>/dev/null; if [ "$q" = "$m" ] || [ "$q" = / ] || [ "$q" = . ]; then break; fi; q=$(dirname "$q"); done; fi; exit $r; }` +
 		`; ` + lockPrologue +
 		`; if [ -L "$p" ]; then exit 45; fi; if [ -e "$p" ]; then set -- $(ls -ldn "$p"); if [ "$3" != "$u" ]; then exit 48; fi; fi` +
-		`; ` + cas +
-		`; b="$p"` + bakSuffix + `; o="$p"` + origSuffix +
-		`; if [ -e "$p" ]; then rm -f "$b" || exit 1; (set -C; cat "$p" > "$b") || exit 1; if [ ! -e "$o" ] && [ ! -L "$o" ] && [ "$(head -n 1 "$p")" != ` +
-		sshconn.ShQuote(authkeys.ManagedHeader) + ` ]; then (set -C; cat "$p" > "$o") || exit 1; fi; fi` +
-		`; t="$p"` + tmpSuffix + `; rm -f "$t"; (set -C; cat > "$t") || { rm -f "$t"; exit 1; }` +
+		cksumPresent(expect) +
+		// Upload and length-check first (the slow part), then flush it.
+		`; rm -f "$t"; (set -C; cat > "$t") || { rm -f "$t"; exit 1; }` +
 		`; set -- $(wc -c < "$t"); if [ "$1" != ` + strconv.Itoa(size) + ` ]; then rm -f "$t"; exit 49; fi` +
+		`; dd if=/dev/null of="$t" conv=notrunc,fsync 2>/dev/null || :` + // WP-4: the temp's data is on disk before the rename; never a global sync
+		`; ` + casBackupBlock(expect) +
+		`; if [ -e "$b" ]; then dd if=/dev/null of="$b" conv=notrunc,fsync 2>/dev/null || :; fi` +
 		`; mv -f "$t" "$p" || { rm -f "$t"; exit 1; }`
+}
+
+// cksumPresent fails fast (before the upload) when the CAS needs cksum and
+// the server has none.
+func cksumPresent(expect Snapshot) string {
+	if expect.Absent {
+		return ""
+	}
+	return `; command -v cksum >/dev/null 2>&1 || { echo "sshepherd: cksum not found on the server" >&2; exit 1; }`
+}
+
+// casBackupBlock is the tight step between the completed upload and the mv
+// (WP-3): copy the live file to a fresh staging name, compare-and-swap the
+// COPY (46 on mismatch), derive .orig from it, and rename it to .bak — so
+// .bak holds exactly the bytes the CAS validated, and a lock-less editor
+// that changed the file during the upload refuses the write instead of
+// losing its edit. rm -f + set -C keep the staging name from following a
+// planted symlink; rm -f "$b" fails (exit 1) on a directory planted at .bak.
+func casBackupBlock(expect Snapshot) string {
+	if expect.Absent {
+		return `if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi`
+	}
+	return `if [ -L "$p" ]; then exit 45; fi; if [ ! -f "$p" ]; then exit 46; fi` +
+		`; rm -f "$c" || exit 1; (set -C; cat "$p" > "$c") || exit 1` +
+		`; set -- $(cksum < "$c"); if [ "$1" != ` + strconv.FormatUint(uint64(expect.Cksum), 10) +
+		` ] || [ "$2" != ` + strconv.Itoa(expect.Size) + ` ]; then rm -f "$c"; exit 46; fi` +
+		`; if [ ! -e "$o" ] && [ ! -L "$o" ] && [ "$(head -n 1 "$c")" != ` + sshconn.ShQuote(authkeys.ManagedHeader) +
+		` ]; then (set -C; cat "$c" > "$o") || exit 1; fi` +
+		`; rm -f "$b" || exit 1; mv -f "$c" "$b" || exit 1`
 }
 
 // casCheck is the compare-and-swap test (exit 46): the file must be absent
@@ -411,7 +468,8 @@ func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request)
 	}
 
 	// Stage 3: prove the lockout guard's prediction — a fresh login offering
-	// only the surviving held keys (key files first), running probeCmd. Every write is probed,
+	// only the surviving held keys (in req.Survivors order, which the caller
+	// sets to the production offer order), running probeCmd. Every write is probed,
 	// not only those that drop the session key: an options rewrite on the
 	// survivor (from= fails the handshake, command= the probe command), or
 	// sshd rejecting the survivor's algorithm, locks out just as surely, and
@@ -604,8 +662,11 @@ func (w *FleetWriter) probe(ctx context.Context, srv config.Server, survivors []
 	return nil
 }
 
-// stageFailure wraps a nonzero remote exit with its sanitized stderr.
+// stageFailure wraps a nonzero remote exit with its stderr, bounded by
+// sanitize.RemoteSnippet (SEC-8): one line, at most sanitize.MaxSnippet
+// safe runes, so a hostile server can neither forge report rows with
+// blank-looking padding nor flood the report.
 func stageFailure(stage, server string, code int, stderr *sshconn.CappedBuffer) error {
 	return fmt.Errorf("%s on %s failed (exit %d): %s",
-		stage, server, code, strings.TrimSpace(sshconn.SanitizeRemote(stderr.String())))
+		stage, server, code, sanitize.RemoteSnippet(stderr.String()))
 }
