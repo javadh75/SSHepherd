@@ -19,6 +19,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/manifest"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/workflow"
 )
 
 // editFlags are revoke's and rotate's flags: apply's shared set plus the
@@ -182,7 +183,7 @@ func encodeEdit(mf *manifest.File) ([]byte, *config.Config, error) {
 
 // runEdit is steps 4–8: the affected set and header, then either the
 // save-only path (zero affected, or --no-apply) or apply's pipeline over
-// the affected servers with the save in beforeWrite.
+// the affected servers with the save as the workflow's commit.
 func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids identities, ep editPlan) error {
 	log := a.logger
 	for _, w := range ep.edited.Warnings {
@@ -215,11 +216,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 		}
 		return saveOnly(cmd, log, stdout, f, ep, aff, doc, h)
 	}
-	// saved is set by beforeWrite after a successful save and read by
-	// finish, which runs after it: false under --dry-run and on the
-	// withheld paths.
-	saved := false
-	return runApply(cmd, a, stdout, &f.run, ids, applyRun{
+	return runWorkflow(cmd, a, stdout, &f.run, ids, applySpec{
 		cfg:        ep.edited,
 		former:     ep.former,
 		formerNote: ep.formerNote,
@@ -231,30 +228,31 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 		},
 		header:        header,
 		alwaysConfirm: true,
-		prompt: func(plans []apply.ServerPlan, toWrite int) (string, error) {
-			if nothingCanLand(plans) {
+		question: func(plans []apply.ServerPlan, toWrite int) (string, error) {
+			if apply.NothingCanLand(plans) {
 				log.Error(fmt.Sprintf("nothing saved — %s access on %s; fix the refusals and re-run, or record the change without touching servers with --no-apply",
 					ep.stillHas, apply.Plural(len(plans), "server", "servers")))
-				return "", errNonCompliant
+				return "", workflow.ErrWithheld
 			}
 			return apply.EditPrompt(ep.summary.Operators, toWrite, len(plans), false), nil
 		},
-		beforeWrite: func(ctx context.Context, plans []apply.ServerPlan, fresh []fleet.HeldKey) error {
+		// The save: after confirmation (and the held-key re-list when a
+		// server will be written), before the first write.
+		commit: func(ctx context.Context, plans []apply.ServerPlan, fresh []fleet.HeldKey) (bool, error) {
 			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("interrupted: %w — manifest not saved, nothing written", err)
+				return false, fmt.Errorf("interrupted: %w — manifest not saved, nothing written", err)
 			}
-			if countChanges(plans) > 0 && !anySurvivor(plans, fresh) && !anyConverged(plans) {
+			if apply.CountChanges(plans) > 0 && !apply.AnySurvivor(plans, fresh) && !apply.AnyConverged(plans) {
 				log.Error("nothing saved — none of the keys you hold would survive on any server (did a key expire after the plan?)")
-				return errNonCompliant
+				return false, workflow.ErrWithheld
 			}
 			if err := saveEdit(stdout, ep, doc != nil); err != nil {
-				return err
+				return false, err
 			}
-			saved = true
-			return nil
+			return true, nil
 		},
-		finish: func(plans []apply.ServerPlan, stage applyStage) error {
-			return finishEdit(stdout, log, ep, aff, h, plans, stage, ropts, doc, saved)
+		finish: func(out workflow.Outcome) error {
+			return finishEdit(stdout, log, ep, aff, h, out, ropts, doc)
 		},
 	})
 }
@@ -275,7 +273,7 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 		}
 		return nil
 	}
-	ok, err := confirmGate(cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(aff.Servers), f.noApply))
+	ok, err := confirmGate(cmd.Context(), cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(aff.Servers), f.noApply))
 	if err != nil {
 		return err
 	}
@@ -334,38 +332,40 @@ func saveEdit(stdout io.Writer, ep editPlan, quiet bool) error {
 }
 
 // finishDoc is finish under --json, shared by apply, revoke and rotate:
-// render the one document, then map the run to its exit — stageWithheld
-// (nothing saved or written) and any server not converged are exit 1. A
-// declined prompt cannot occur: --json needs --dry-run or --yes.
-func finishDoc(doc editDoc, plans []apply.ServerPlan, stage applyStage, saved bool) error {
-	if err := doc(plans, saved); err != nil {
+// render the one document, then map the run to its exit — StageWithheld
+// (nothing saved or written) and any server not converged are exit 1
+// (out.ExitCode). A declined prompt cannot occur: --json needs --dry-run
+// or --yes.
+func finishDoc(doc editDoc, out workflow.Outcome) error {
+	if err := doc(out.Plans, out.Saved); err != nil {
 		return err
 	}
-	if stage == stageWithheld || apply.ExitCode(plans) != 0 {
+	if out.ExitCode() != 0 {
 		return errNonCompliant
 	}
 	return nil
 }
 
 // finishEdit renders step 8's tail (or, under --json, the whole document)
-// and maps the exit code. stageWithheld (nothing can land, or no held key
-// survives) is exit 1 with nothing saved; in text mode the hook already
+// and maps the exit code. StageWithheld (nothing can land, or no held key
+// survives) is exit 1 with nothing saved; in text mode the seam already
 // logged why and the plan is shown, so nothing more is printed.
 func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.AffectedSet, h followUp,
-	plans []apply.ServerPlan, stage applyStage, ropts apply.RenderOptions, doc editDoc, saved bool,
+	out workflow.Outcome, ropts apply.RenderOptions, doc editDoc,
 ) error {
 	if doc != nil {
-		return finishDoc(doc, plans, stage, saved)
+		return finishDoc(doc, out)
 	}
-	switch stage {
-	case stageDeclined:
+	switch out.Stage {
+	case workflow.StageDeclined:
 		log.Error("aborted; manifest not changed, nothing written")
 		return errNonCompliant
-	case stageWithheld:
+	case workflow.StageWithheld:
 		return errNonCompliant
 	}
+	plans := out.Plans
 	apply.RenderSummary(stdout, plans, ropts)
-	if stage == stageConfirmed {
+	if out.Stage == workflow.StageConfirmed {
 		var pending []string
 		for _, p := range plans {
 			converged := p.Class == apply.ClassConverged || (p.Class == apply.ClassChange && p.Outcome == apply.OutcomeApplied)
@@ -424,40 +424,6 @@ func applyHint(h followUp, servers []string) string {
 		tail = append(tail, "--server "+hintArg(s))
 	}
 	return h.command("apply", nil, tail...)
-}
-
-// nothingCanLand: no affected server is change-planned or converged, and
-// at least one is refused (unreachable servers can converge later).
-func nothingCanLand(plans []apply.ServerPlan) bool {
-	refused := false
-	for _, p := range plans {
-		switch p.Class {
-		case apply.ClassChange, apply.ClassConverged:
-			return false
-		case apply.ClassRefused:
-			refused = true
-		}
-	}
-	return refused
-}
-
-// anySurvivor: some change-planned server keeps a key held under the
-// post-prompt listing.
-func anySurvivor(plans []apply.ServerPlan, fresh []fleet.HeldKey) bool {
-	held := make(map[string]bool, len(fresh))
-	for _, k := range fresh {
-		held[k.Fingerprint] = true
-	}
-	for _, p := range plans {
-		if p.Class == apply.ClassChange && len(apply.Survivors(p.Desired, held)) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func anyConverged(plans []apply.ServerPlan) bool {
-	return slices.ContainsFunc(plans, func(p apply.ServerPlan) bool { return p.Class == apply.ClassConverged })
 }
 
 // emptiedServers details each emptied server for the header: the former

@@ -174,8 +174,7 @@ func openFleet(ctx context.Context, log *slog.Logger, f *connFlags, ids identiti
 func (s *fleetSession) Read(ctx context.Context, verb string, cfg *config.Config, servers []config.Server,
 	preferKeys func(config.Server) []string,
 ) ([]audit.ServerResult, error) {
-	reader := &sshread.Client{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds,
-		DialTimeout: dialTimeout, PreferKeys: preferKeys, Log: s.log}
+	reader := s.reader(preferKeys)
 	s.log.Info(fmt.Sprintf("%s %s (parallelism %d)…", verb, apply.Plural(len(servers), "server", "servers"), s.parallel))
 	start := time.Now()
 	results := audit.Run(ctx, cfg, reader, audit.Options{Parallel: s.parallel, PerServerTimeout: perServerTimeout,
@@ -185,6 +184,13 @@ func (s *fleetSession) Read(ctx context.Context, verb string, cfg *config.Config
 		return nil, err
 	}
 	return results, nil
+}
+
+// reader is phase 1's reader: the run's known_hosts snapshot and
+// credentials, offering preferKeys first on each dial.
+func (s *fleetSession) reader(preferKeys func(config.Server) []string) *sshread.Client {
+	return &sshread.Client{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds,
+		DialTimeout: dialTimeout, PreferKeys: preferKeys, Log: s.log}
 }
 
 // dialer is phase 2's dialer: the same known_hosts snapshot and credentials.

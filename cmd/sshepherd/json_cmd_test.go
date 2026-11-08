@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -65,7 +63,7 @@ func oneJSONDoc(t *testing.T, stdout string) map[string]any {
 	return doc
 }
 
-// TestApplyJSONEmptyFleet: zero targets (apply returns before runApply)
+// TestApplyJSONEmptyFleet: zero targets (apply returns before runWorkflow)
 // still writes the empty-fleet document, exit 0, and no text report.
 func TestApplyJSONEmptyFleet(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
@@ -166,7 +164,7 @@ access:
 }
 
 // TestApplyJSONInterruptedAfterPlan: Ctrl-C after the plan (here: as --yes
-// reaches the gate) — apply's beforeWrite does not check the context, so
+// reaches the gate) — apply's commit does not check the context, so
 // Execute marks the server not started and finish still writes the
 // document: exit 1, the server pending, nothing written.
 func TestApplyJSONInterruptedAfterPlan(t *testing.T) {
@@ -240,22 +238,6 @@ func TestApplyJSONToolErrorsLeaveStdoutEmpty(t *testing.T) {
 			t.Errorf("exit = %d, stdout = %q\nstderr: %s", code, out.String(), errBuf.String())
 		}
 	})
-}
-
-// TestApplyRunWithheldRoutesNonCompliant: a hook's errNonCompliant goes
-// through finish as stageWithheld (so the run still reports); any other
-// error is a tool error and passes through without finish.
-func TestApplyRunWithheldRoutesNonCompliant(t *testing.T) {
-	var got applyStage = -1
-	ar := applyRun{finish: func(_ []apply.ServerPlan, s applyStage) error { got = s; return errNonCompliant }}
-	if err := ar.withheld(nil, errNonCompliant); !errors.Is(err, errNonCompliant) || got != stageWithheld {
-		t.Errorf("errNonCompliant: err=%v stage=%v", err, got)
-	}
-	got = -1
-	boom := errors.New("boom")
-	if err := ar.withheld(nil, boom); !errors.Is(err, boom) || got != -1 {
-		t.Errorf("tool error must pass through without finish: err=%v stage=%v", err, got)
-	}
 }
 
 // runJSONDoc runs a command and returns its one JSON document after
@@ -369,7 +351,7 @@ func TestRevokeJSONNothingCanLand(t *testing.T) {
 }
 
 // TestRevokeJSONSaveWithheld: the agent vanishes between the plan and the
-// write (here: as --yes reaches the gate) — beforeWrite's errNonCompliant
+// write (here: as --yes reaches the gate) — the commit's workflow.ErrWithheld
 // (no held key survives anywhere) still writes the document: saved false,
 // the change server pending, exit 1.
 func TestRevokeJSONSaveWithheld(t *testing.T) {

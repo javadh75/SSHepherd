@@ -545,3 +545,12 @@ the stdlib-only `internal/fleet`. sshwrite keeps the `Request`/`Snapshot` aliase
 `SnapshotOf` wrapper, and wraps its four typed refusals in `fleet.Refused`.
 `go list -deps ./internal/apply` names no sshconn/sshread/sshwrite/keyfile/x/term/agent/
 knownhosts/x/sys/unix.
+P14 S4 (ARC-2): the write workflow's ordering (read and plan → confirm → re-list held keys
+when a server will be written → commit the manifest exactly once → write) lives in the new
+`internal/workflow` (`Apply(ctx, Request)` → `Outcome{Stage, Saved, Plans}`, `Outcome.ExitCode()`;
+seams `audit.KeyReader`, `apply.Writer`, `HeldLister`, `Confirmer`, `ManifestCommitter`,
+`Reporter`; `ErrWithheld`/`ErrInterrupted`), unit-tested with fakes. cmd keeps preflight,
+the confirm gate and `fleetSession`, builds the transport seams in `runWorkflow(applySpec)`
+and prints the edit header before the preflight, as before. The plan predicates
+(`CountChanges`, `NothingCanLand`, `AnySurvivor`, `AnyConverged`) are exported from
+`internal/apply`. `go list -deps ./internal/workflow` names no transport, cobra or x/term.

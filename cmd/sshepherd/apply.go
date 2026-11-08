@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -20,6 +21,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshread"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
+	"github.com/javadh75/SSHepherd/internal/workflow"
 )
 
 // The transport implementations of the domain seams, checked at compile time.
@@ -94,36 +96,36 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				apply.Render(stdout, cfg, nil, ropts)
 				return nil
 			}
-			return runApply(cmd, a, stdout, &rf, ids, applyRun{
+			return runWorkflow(cmd, a, stdout, &rf, ids, applySpec{
 				cfg:     cfg,
 				servers: targets,
 				// Offer each server's granted keys first (operators first),
 				// so many held keys cannot exhaust sshd's MaxAuthTries
 				// before the key that matters is tried.
 				preferKeys: func(s config.Server) []string { return audit.GrantedFingerprints(cfg, s.Name) },
-				prompt: func(_ []apply.ServerPlan, toWrite int) (string, error) {
+				question: func(_ []apply.ServerPlan, toWrite int) (string, error) {
 					return fmt.Sprintf("apply %d of %s?", toWrite, apply.Plural(len(targets), "server", "servers")), nil
 				},
 				// A concurrent revoke may have replaced the manifest while
 				// this run planned against the old one: writing that plan
-				// would reinstall the revoked key.
-				beforeWrite: func(context.Context, []apply.ServerPlan, []fleet.HeldKey) error {
-					return m.Unchanged()
+				// would reinstall the revoked key. Plain apply saves nothing.
+				commit: func(context.Context, []apply.ServerPlan, []fleet.HeldKey) (bool, error) {
+					return false, m.Unchanged()
 				},
-				finish: func(plans []apply.ServerPlan, stage applyStage) error {
-					if stage == stageDeclined {
+				finish: func(out workflow.Outcome) error {
+					if out.Stage == workflow.StageDeclined {
 						log.Error("aborted; no changes made")
 					}
 					if rf.json {
 						return finishDoc(func(plans []apply.ServerPlan, _ bool) error {
 							return apply.RenderJSON(stdout, cfg, plans, apply.JSONOptions{Command: "apply", DryRun: rf.dryRun, Skipped: skipped})
-						}, plans, stage, false)
+						}, out)
 					}
-					apply.RenderSummary(stdout, plans, ropts)
+					apply.RenderSummary(stdout, out.Plans, ropts)
 					if skipped > 0 {
 						fmt.Fprintf(stdout, "(%s skipped by --server)\n", apply.Plural(skipped, "server", "servers"))
 					}
-					if apply.ExitCode(plans) != 0 {
+					if out.ExitCode() != 0 {
 						return errNonCompliant
 					}
 					return nil
@@ -136,20 +138,11 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 	return cmd
 }
 
-// applyStage tells an applyRun's finish how far the run got.
-type applyStage int
-
-const (
-	stagePlanned   applyStage = iota // plan shown, nothing confirmed: --dry-run, or nothing to confirm
-	stageDeclined                    // the confirmation prompt was declined
-	stageConfirmed                   // confirmed: beforeWrite passed and the writes (if any) ran
-	stageWithheld                    // planned, but the prompt hook or beforeWrite withheld the run (errNonCompliant): nothing saved or written
-)
-
-// applyRun parameterizes runApply: plain apply passes the loaded config
-// and its whole selection; revoke/rotate pass the edited config, the
-// affected servers and the edit's hooks.
-type applyRun struct {
+// applySpec is what apply, revoke and rotate vary: plain apply passes the
+// loaded config and its whole selection; revoke/rotate pass the edited
+// config, the affected servers and the edit's seams. runWorkflow maps it to
+// a workflow.Request and the Outcome to finish.
+type applySpec struct {
 	cfg        *config.Config               // the config the plan renders (the edited one for revoke/rotate)
 	former     *config.Config               // the as-loaded config before an edit; nil for plain apply
 	formerNote string                       // label note for keys only former owns: "" (revoked) or "rotated out"
@@ -159,130 +152,86 @@ type applyRun struct {
 	// alwaysConfirm asks even when no server needs a write (the manifest
 	// edit is itself a change).
 	alwaysConfirm bool
-	// prompt returns the confirmation question (confirm appends " [y/N] "),
-	// or an error that ends the run before any prompt.
-	prompt func(plans []apply.ServerPlan, toWrite int) (string, error)
-	// beforeWrite runs once after confirmation and before any write: inside
-	// writePhase after the post-prompt held-key re-list when a server will
-	// be written (fresh is that listing), else straight after the prompt
-	// (fresh nil). An error ends the run with nothing written.
-	beforeWrite func(ctx context.Context, plans []apply.ServerPlan, fresh []fleet.HeldKey) error
+	// question returns the confirmation question (confirm appends
+	// " [y/N] "), workflow.ErrWithheld to withhold the run before any
+	// prompt, or a tool error.
+	question func(plans []apply.ServerPlan, toWrite int) (string, error)
+	// commit runs once after confirmation and before any write (see
+	// workflow.ManifestCommitter); workflow.ErrWithheld withholds the run,
+	// any other error is a tool error. Either way nothing is written.
+	commit workflow.CommitFunc
 	// finish renders the tail of the report (or, under --json, the whole
-	// document) and maps the run to its exit; stageWithheld always maps to
-	// exit 1.
-	finish func(plans []apply.ServerPlan, stage applyStage) error
+	// document) and maps the outcome to its exit; StageWithheld always maps
+	// to exit 1.
+	finish func(out workflow.Outcome) error
 }
 
-// withheld routes a hook's errNonCompliant (nothing can land, no held key
-// survives) through finish so the run still reports — under --json that
-// is the document; any other error is a tool error and passes through.
-// writePhase returns beforeWrite's error before any worker starts, so the
-// plans are untouched.
-func (run applyRun) withheld(plans []apply.ServerPlan, err error) error {
-	if errors.Is(err, errNonCompliant) {
-		return run.finish(plans, stageWithheld)
-	}
-	return err
-}
-
-// runApply is apply's run body over run.servers: preflight (known_hosts,
-// key files, credentials, held keys), phase-1 read and plan, the report,
-// the confirmation gate, beforeWrite, the writes, finish. Under --json no
-// text reaches stdout: finish renders the one document.
-func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids identities, run applyRun) error {
+// runWorkflow is apply's run body over s.servers: the header, preflight
+// (known_hosts, key files, credentials, held keys), then the write
+// workflow over the transport seams built here, then finish. Under --json
+// no text reaches stdout: finish renders the one document.
+func runWorkflow(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids identities, s applySpec) error {
 	ctx, log := cmd.Context(), a.logger
-	if run.header != nil && !rf.json {
-		run.header(stdout)
+	if s.header != nil && !rf.json {
+		s.header(stdout) // before the preflight, which may prompt for a passphrase
 	}
 	pre, err := applyPreflight(ctx, log, &rf.connFlags, ids)
 	if err != nil {
 		return err
 	}
-	plans, err := planFleet(ctx, pre, run)
-	if err != nil {
-		return err
-	}
-	if !rf.json {
-		apply.Render(stdout, run.cfg, plans, apply.RenderOptions{Color: a.reportColor, Former: run.former, FormerNote: run.formerNote})
-	}
-
-	toWrite := countChanges(plans)
-	if rf.dryRun || (toWrite == 0 && !run.alwaysConfirm) {
-		return run.finish(plans, stagePlanned) // a preview, or nothing to confirm
-	}
-	question, err := run.prompt(plans, toWrite)
-	if err != nil {
-		return run.withheld(plans, err)
-	}
-	ok, err := confirmGate(cmd, rf.yes, question)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return run.finish(plans, stageDeclined)
-	}
-	if toWrite == 0 {
-		if err := run.beforeWrite(ctx, plans, nil); err != nil {
-			return run.withheld(plans, err)
-		}
-		return run.finish(plans, stageConfirmed)
-	}
-	log.Info(fmt.Sprintf("applying %s (parallelism %d)…", apply.Plural(toWrite, "server", "servers"), rf.parallel))
-	if err := writePhase(ctx, pre, run.preferKeys, plans, run.beforeWrite); err != nil {
-		return run.withheld(plans, err)
-	}
-	return run.finish(plans, stageConfirmed)
-}
-
-// planFleet is phase 1: audit's pipeline over run.servers, then the plan
-// from run.cfg.
-func planFleet(ctx context.Context, pre preflight, run applyRun) ([]apply.ServerPlan, error) {
-	results, err := pre.Read(ctx, "planning", run.cfg, run.servers, run.preferKeys)
-	if err != nil {
-		return nil, err // interrupted; nothing written: phase 2 never started
-	}
-	plans, err := apply.Build(run.cfg, results, pre.held)
-	if err != nil {
-		return nil, fmt.Errorf("plan: %w", err) // wrapcheck: wrap at package boundary
-	}
-	return plans, nil
-}
-
-// writePhase runs phase 2 over the drifted servers. The prompt can wait
-// indefinitely: agent keys may expire (ssh-add -t) or be removed, or the
-// agent vanish, meanwhile — so the held keys are re-listed first and the
-// per-server guard re-check and the post-write login probe use what is
-// held now. A degraded listing (agent gone, key files left) is used as is,
-// never replaced; only a failed listing (no key files, agent gone) leaves
-// it empty, which fails every write through the guard rather than
-// guessing. beforeWrite (the manifest re-check or save) runs after the
-// re-list and before any worker starts; its error writes nothing.
-func writePhase(ctx context.Context, pre preflight, preferKeys func(config.Server) []string,
-	plans []apply.ServerPlan,
-	beforeWrite func(context.Context, []apply.ServerPlan, []fleet.HeldKey) error,
-) error {
-	log := pre.log
-	fresh, err := pre.creds.Held(ctx)
-	if err != nil {
-		log.Error(fmt.Sprintf("%s: %v — no server will be written", relistPrefix(pre.creds), err))
-		fresh = nil
-	}
-	if beforeWrite != nil {
-		if err := beforeWrite(ctx, plans, fresh); err != nil {
-			return err
-		}
-	}
-	writer := &sshwrite.FleetWriter{Dialer: pre.dialer(preferKeys), Log: log}
-	apply.Execute(ctx, plans, writer, apply.ExecOptions{
+	out, err := workflow.Apply(ctx, workflow.Request{
+		Cfg:              s.cfg,
+		Servers:          s.servers,
+		Held:             pre.held,
+		Reader:           pre.reader(s.preferKeys),
+		Writer:           &sshwrite.FleetWriter{Dialer: pre.dialer(s.preferKeys), Log: log},
+		Relister:         pre.creds,
+		RelistLabel:      relistPrefix(pre.creds),
 		Parallel:         pre.parallel,
 		PerServerTimeout: perServerTimeout,
-		Held:             fresh,
-		Logger:           log,
+		DryRun:           rf.dryRun,
+		AlwaysConfirm:    s.alwaysConfirm,
+		Question:         s.question,
+		Confirmer: workflow.ConfirmFunc(func(ctx context.Context, q string) (bool, error) {
+			return confirmGate(ctx, cmd, rf.yes, q)
+		}),
+		Committer: s.commit,
+		Reporter: textReporter{json: rf.json, stdout: stdout, log: log, cfg: s.cfg,
+			ropts: apply.RenderOptions{Color: a.reportColor, Former: s.former, FormerNote: s.formerNote}},
+		Log: log,
 	})
-	if n := apply.Interrupted(plans); n > 0 {
-		log.Error("interrupted: " + apply.Plural(n, "server", "servers") + " not started (nothing written there); started writes finished")
+	if errors.Is(err, workflow.ErrInterrupted) {
+		if ierr := interrupted(ctx); ierr != nil {
+			return ierr // nothing rendered, saved or written: phase 2 never started
+		}
 	}
-	return nil
+	if err != nil {
+		return err //nolint:wrapcheck // our own seams' errors (confirm gate, manifest commit), returned verbatim: their exit-3 text is user-facing
+	}
+	return s.finish(out)
+}
+
+// textReporter is the workflow's report seam: the phase-1 done line in
+// every mode, the plan report outside --json. runWorkflow prints the
+// header itself, before the preflight, so Header is a no-op here.
+type textReporter struct {
+	json   bool
+	stdout io.Writer
+	log    *slog.Logger
+	cfg    *config.Config
+	ropts  apply.RenderOptions
+}
+
+func (textReporter) Header() {}
+
+func (r textReporter) ReadDone(results []audit.ServerResult, start time.Time) {
+	logFleetReadDone(r.log, r.cfg, results, start)
+}
+
+func (r textReporter) Planned(plans []apply.ServerPlan) {
+	if !r.json {
+		apply.Render(r.stdout, r.cfg, plans, r.ropts)
+	}
 }
 
 // preflight is what apply's pre-dial checks hand to both phases: the
@@ -317,17 +266,6 @@ func relistPrefix(creds *sshconn.Credentials) string {
 		return "re-listing agent keys after confirmation"
 	}
 	return "re-listing the keys you hold after confirmation"
-}
-
-// countChanges tallies the servers phase 2 would write.
-func countChanges(plans []apply.ServerPlan) int {
-	n := 0
-	for _, p := range plans {
-		if p.Class == apply.ClassChange {
-			n++
-		}
-	}
-	return n
 }
 
 // selectServers resolves --server names to manifest servers, preserving
@@ -370,12 +308,12 @@ var promptStreams = func(cmd *cobra.Command) (io.Reader, io.Writer, bool) {
 // stderr and the answer comes from stdin, so `apply > plan.txt` captures
 // exactly the report. Ctrl-C at the prompt is an interrupted run (exit 3,
 // nothing written).
-func confirmGate(cmd *cobra.Command, yes bool, question string) (bool, error) {
+func confirmGate(ctx context.Context, cmd *cobra.Command, yes bool, question string) (bool, error) {
 	in, errW, tty := promptStreams(cmd)
-	ok, err := confirm(cmd.Context(), in, errW, tty, yes, question)
+	ok, err := confirm(ctx, in, errW, tty, yes, question)
 	if errors.Is(err, context.Canceled) {
 		fmt.Fprintln(errW)
-		return false, interrupted(cmd.Context())
+		return false, interrupted(ctx)
 	}
 	return ok, err
 }

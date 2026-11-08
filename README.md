@@ -1873,6 +1873,7 @@ internal/audit/      fan-out, diffing, text/JSON reports, exit codes
 internal/adopt/      pure fleet-discovery plan
 internal/apply/      plan computation, self-lockout guard, phase-2 fan-out behind the Writer seam, plan/JSON reports — no transport imports
 internal/fleet/      shared leaf vocabulary: error kinds, read result, held keys, write request — stdlib only
+internal/workflow/   the write workflow for apply/revoke/rotate: plan → confirm → commit manifest → write, behind seams
 internal/sshconn/    shared connection glue (dial, credentials: key files + agent, host keys)
 internal/sshconn/sshtest/  in-process SSH server + agent + key-file helpers for hermetic tests
 internal/keyfile/    --identity key files: permission rule, format checks, passphrases, /dev/tty prompt

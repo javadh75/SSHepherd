@@ -5,10 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/apply"
-	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
-	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -51,43 +48,6 @@ func TestHintArg(t *testing.T) {
 		if got := hintArg(tt.in); got != tt.want {
 			t.Errorf("hintArg(%q) = %s, want %s", tt.in, got, tt.want)
 		}
-	}
-}
-
-func TestNothingCanLand(t *testing.T) {
-	p := func(c apply.Class) apply.ServerPlan { return apply.ServerPlan{Class: c} }
-	for _, tt := range []struct {
-		name  string
-		plans []apply.ServerPlan
-		want  bool
-	}{
-		{"all refused", []apply.ServerPlan{p(apply.ClassRefused), p(apply.ClassRefused)}, true},
-		{"refused + unreachable", []apply.ServerPlan{p(apply.ClassRefused), p(apply.ClassUnreachable)}, true},
-		{"all unreachable can converge later", []apply.ServerPlan{p(apply.ClassUnreachable)}, false},
-		{"one change lands", []apply.ServerPlan{p(apply.ClassRefused), p(apply.ClassChange)}, false},
-		{"one converged lands", []apply.ServerPlan{p(apply.ClassRefused), p(apply.ClassConverged)}, false},
-	} {
-		if got := nothingCanLand(tt.plans); got != tt.want {
-			t.Errorf("%s: nothingCanLand = %v, want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-func TestAnySurvivor(t *testing.T) {
-	k1, err := authkeys.ParseLine(testkeys.Line(t, 1))
-	if err != nil || k1 == nil {
-		t.Fatal(err)
-	}
-	desired := []apply.ServerPlan{{Class: apply.ClassChange, Desired: []authkeys.Key{*k1}}}
-	if anySurvivor(desired, nil) {
-		t.Error("no held keys cannot survive")
-	}
-	if !anySurvivor(desired, []fleet.HeldKey{{Fingerprint: fpOf(t, 1), Source: fleet.SourceAgent}}) {
-		t.Error("a held desired key survives")
-	}
-	if anySurvivor([]apply.ServerPlan{{Class: apply.ClassRefused, Desired: desired[0].Desired}},
-		[]fleet.HeldKey{{Fingerprint: fpOf(t, 1)}}) {
-		t.Error("only change plans count")
 	}
 }
 
