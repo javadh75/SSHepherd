@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,70 @@ import (
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// TestBuildSkipsWeakKey: an unknown 1024-bit RSA key is skipped with a
+// warning, not adopted and not an Issue (the strict gate does not move).
+func TestBuildSkipsWeakKey(t *testing.T) {
+	line := testkeys.RSALine(t, 7, 1024)
+	k, err := authkeys.ParseLine(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testCfg(t)
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(line + "\n")}}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 0 || len(p.Issues) != 0 {
+		t.Fatalf("plan = %+v, want no new user and no issue", p)
+	}
+	want := "key " + k.Fingerprint + " on web-1: rsa_under_2048 key not adopted"
+	if !slices.Contains(p.Warnings, want) {
+		t.Errorf("warnings = %q, want %q", p.Warnings, want)
+	}
+}
+
+// TestBuildDoesNotExtendWeakOwnerKey: a known owner's weak key found on one
+// more server is not granted there.
+func TestBuildDoesNotExtendWeakOwnerKey(t *testing.T) {
+	line := testkeys.DSALine(t, 7)
+	cfg := parseConfig(t, `users:
+  - {name: old, keys: ["`+line+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+access:
+  - {user: old, servers: [web-1]}
+`)
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {Content: []byte(line + "\n")}, "web-2": {Content: []byte(line + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Extensions) != 0 {
+		t.Errorf("extensions = %+v, want none", p.Extensions)
+	}
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "dsa key not adopted") {
+		t.Errorf("warnings = %q", p.Warnings)
+	}
+}
+
+// TestBuildRevokedWeakKeyWarnsOnce: tombstones run first, so a key that is
+// both revoked and weak gets only the REVOKED warning.
+func TestBuildRevokedWeakKeyWarnsOnce(t *testing.T) {
+	line := testkeys.DSALine(t, 7)
+	k, err := authkeys.ParseLine(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := parseConfig(t, `servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+revoked:
+  - {fingerprint: `+k.Fingerprint+`, user: old, date: 2026-11-08}
+`)
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(line + "\n")}}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "REVOKED") {
+		t.Errorf("warnings = %q, want only the REVOKED one", p.Warnings)
+	}
+}
 
 func TestSanitizeName(t *testing.T) {
 	tests := []struct{ in, want string }{

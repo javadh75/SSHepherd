@@ -133,12 +133,30 @@ func removalOnly(r audit.ServerResult, entries []authkeys.RenderEntry) bool {
 	return true
 }
 
-// conflictRefusal is the refusal text for a server a policy conflict names
-// (D29): each conflict's message, joined; "" when none names it.
+// conflictRefusal is the refusal text for a server a revoked-kind policy
+// conflict names (D29): each conflict's message, joined; "" when none names
+// it. Weak-key conflicts have their own rule, weakRefusal.
 func conflictRefusal(cfg *config.Config, server string) string {
+	return conflictMessages(cfg, server, func(kind string) bool { return kind != config.ConflictWeakKey })
+}
+
+// weakRefusal is the refusal text for a server a weak-key conflict names, ""
+// when none does. Unlike the revoked kinds it has one exception: a write
+// that grants nothing and removes at least one key cannot install or widen
+// the weak key, and without it an unrelated revoke would save but leave the
+// revoked key installed on every server granting a weak key (OP4).
+func weakRefusal(cfg *config.Config, r audit.ServerResult, entries []authkeys.RenderEntry) string {
+	msgs := conflictMessages(cfg, r.Server.Name, func(kind string) bool { return kind == config.ConflictWeakKey })
+	if msgs == "" || (removalOnly(r, entries) && len(r.Diff.Unauthorized) > 0) {
+		return ""
+	}
+	return msgs
+}
+
+func conflictMessages(cfg *config.Config, server string, match func(kind string) bool) string {
 	var msgs []string
 	for _, c := range cfg.Conflicts() {
-		if slices.Contains(c.Servers, server) {
+		if match(c.Kind) && slices.Contains(c.Servers, server) {
 			msgs = append(msgs, c.Message)
 		}
 	}

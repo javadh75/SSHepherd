@@ -19,6 +19,10 @@ type Key struct {
 	Options     []string // leading options, e.g. ["no-port-forwarding"]
 	Fingerprint string   // SHA256 fingerprint, e.g. "SHA256:abc..."
 	Raw         string   // the original line, whitespace-trimmed: options, key material, comment
+	// Weak is StrengthIssue's verdict ("" for an acceptable key) and WeakBits
+	// the RSA modulus size it found, set by ParseLine so the line is parsed once.
+	Weak     string
+	WeakBits int
 }
 
 // ParseLine parses a single authorized_keys line. Blank lines and comment lines
@@ -56,7 +60,10 @@ func ParseLine(line string) (*Key, error) {
 			declared, pub.Type())
 	}
 
+	weak, bits := StrengthIssue(pub)
 	return &Key{
+		Weak:        weak,
+		WeakBits:    bits,
 		Type:        pub.Type(),
 		Comment:     comment,
 		Options:     options,

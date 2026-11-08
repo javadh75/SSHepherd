@@ -82,8 +82,9 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 		for _, first := range r.Diff.Unauthorized {
 			// Revocation memory first (D2a): a tombstoned key is never
 			// adopted — not even as an Issue that would move adopt's exit
-			// code — whatever its lines look like.
-			if w, revoked := revokedWarning(cfg, r.Server.Name, first.Fingerprint); revoked {
+			// code — whatever its lines look like. A weak key likewise: a
+			// warning, and it is neither adopted nor granted to more servers.
+			if w, skip := skipKey(cfg, r.Server.Name, first); skip {
 				p.Warnings = append(p.Warnings, w)
 				continue
 			}
@@ -147,6 +148,19 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	return p
 }
 
+// skipKey reports a key adopt never takes: one the manifest's revoked: list
+// remembers (first, so a key that is both warns only as REVOKED), or a weak
+// one (emitting it would produce a manifest with a policy conflict).
+func skipKey(cfg *config.Config, server string, k authkeys.Key) (string, bool) {
+	if w, revoked := revokedWarning(cfg, server, k.Fingerprint); revoked {
+		return w, true
+	}
+	if k.Weak != "" {
+		return fmt.Sprintf("key %s on %s: %s key not adopted", k.Fingerprint, server, k.Weak), true
+	}
+	return "", false
+}
+
 // revokedWarning reports a key the manifest's revoked: list remembers.
 func revokedWarning(cfg *config.Config, server, fp string) (string, bool) {
 	t, ok := cfg.Revoked(fp)
@@ -177,11 +191,7 @@ func ownerSkip(cfg *config.Config, owner, server, fp string) (string, bool) {
 // fingerprint; sshd reads them all.
 func linesByFingerprint(content []byte) map[string][]authkeys.Key {
 	keys, _ := authkeys.ParseFile(content) // parse errors are already Issues (r.ParseErrs)
-	m := make(map[string][]authkeys.Key, len(keys))
-	for _, k := range keys {
-		m[k.Fingerprint] = append(m[k.Fingerprint], k)
-	}
-	return m
+	return authkeys.LinesByFingerprint(keys)
 }
 
 // honoredLine returns the first of a key's lines that sshd honors (sshd

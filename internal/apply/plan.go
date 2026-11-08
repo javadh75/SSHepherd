@@ -96,6 +96,10 @@ type ServerPlan struct {
 	Class   Class
 	Err     error  // unreachable detail
 	Refusal string // refused detail
+	// WeakRefused marks a refusal by a weak-key conflict alone. It never
+	// withholds an edit's save (OP4): an unrelated edit and the weak key's
+	// own remediation save, and the push is refused at this server.
+	WeakRefused bool
 
 	Desired  []authkeys.Key // rendered key set, DesiredFor order
 	Rendered []byte         // the exact bytes a write installs
@@ -230,8 +234,9 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opt
 		p.Err = r.Err
 		return p, nil //nolint:nilerr // an unreachable server is a plan class, not a Build failure
 	}
-	// A policy conflict names this server (D29): nothing is written here —
-	// a revoked key is never installed, a revoked grant never restored.
+	// A revoked-kind policy conflict names this server (D29): nothing is
+	// written here — a revoked key is never installed, a revoked grant never
+	// restored. The weak-key kind is checked below, once entries exist.
 	if refusal := conflictRefusal(cfg, r.Server.Name); refusal != "" {
 		p.Class, p.Refusal = ClassRefused, refusal
 		return p, nil
@@ -243,6 +248,10 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opt
 	}
 	if len(entries) == 0 {
 		return planNoGrants(p, r), nil
+	}
+	if refusal := weakRefusal(cfg, r, entries); refusal != "" {
+		p.Class, p.Refusal, p.WeakRefused = ClassRefused, refusal, true
+		return p, nil
 	}
 
 	// Unparseable lines: a full-file render would destroy content we could

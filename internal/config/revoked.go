@@ -102,13 +102,14 @@ type TombstoneWarning struct {
 const (
 	ConflictRevokedKey    = "revoked_key"
 	ConflictRevokedAccess = "revoked_access"
+	ConflictWeakKey       = "weak_key"
 )
 
-// Conflict is a manifest that breaks its own revocation memory: a
-// tombstoned key still listed, or a grant over an access tombstone. It is
-// not a load error (D29): audit reports it critical, apply refuses Servers,
-// and a command that saves the manifest refuses while one remains. The json
-// tags are the wire shape of policy_conflicts.
+// Conflict is a manifest that breaks its own policy: a tombstoned key still
+// listed, a grant over an access tombstone, or a weak key granted on a
+// server. It is not a load error (D29): audit reports it critical, apply
+// refuses Servers, and a saving command refuses per conflictRefusal in
+// cmd/sshepherd. The json tags are the wire shape of policy_conflicts.
 type Conflict struct {
 	Kind        string   `json:"kind"`
 	Message     string   `json:"message"`
@@ -284,7 +285,7 @@ func (c *Config) computeConflicts() []Conflict {
 		}
 		out = append(out, c.accessConflicts(m, t)...)
 	}
-	return out
+	return append(out, c.weakConflicts()...)
 }
 
 // accessConflicts: an access: entry for t's user that renders on one of

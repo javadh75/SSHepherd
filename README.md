@@ -297,6 +297,8 @@ needed — and marks their keys as protected management keys:
 - `apply` writes operator keys **first** in every rendered file.
 - `import --operator <key-file>` marks a key's owner as an operator at import time.
 
+A weak operator key freezes every grant on every server: apply refuses each one until `rotate` replaces it. Removals still land.
+
 ### Wildcard access
 
 `servers: ["*"]` grants every server currently in the manifest *and* every server
@@ -404,6 +406,12 @@ A refused save reads, for example:
 ```console
 error: refusing to write the manifest — it would keep 1 policy conflict: key SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8 of user "alice" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately
 ```
+
+Weak and expired keys:
+
+- A weak key (DSA, or RSA under 2048 bits) that renders on at least one server is a policy conflict, not a load error: `audit` reports it critical (exit 2) and `apply` refuses those servers. A weak key granted on no server is a load warning. A desired key whose `expiry-time` has passed is a load warning.
+- OpenSSH 9.8 and later build sshd without DSA by default, so a DSA key usually cannot log in on a current server anyway; the rule makes that visible instead of silent.
+- **On upgrade:** a manifest holding a weak key keeps loading, but every server granting that key goes critical, so a scheduled `audit` that passed before now exits 2 and `apply` skips those servers. `rotate` and `revoke --key` are the way out and always save.
 
 ### Comment policy
 
@@ -843,6 +851,8 @@ revoked (user, server) pair is never re-extended:
 A `--merge` manifest that would keep a policy conflict is refused (exit 3; see
 [Validation rules](#validation-rules)).
 
+A weak `.pub` identity (DSA, RSA under 2048 bits) is skipped with a warning, in plain `import` and under `--merge`. `--operator` naming a weak key is an error (exit 3).
+
 How the ssh config is read — matching OpenSSH (`ssh -G`):
 
 - A trailing `# comment` after arguments (`Host web1 # prod`) is ignored.
@@ -918,6 +928,8 @@ and so is a known key on a server whose access was revoked; adopt's exit code is
 unchanged. Adopt keeps `serial:` and `revoked:` in both modes (regenerate and
 `--merge`), and refuses (exit 3) to write a manifest that would keep a policy
 conflict (see [Validation rules](#validation-rules)).
+
+A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in both modes and never granted to more servers; audit keeps showing it as `UNAUTHORIZED`.
 
 | Flag | Default | Description |
 | ---- | ------- | ----------- |
@@ -1283,6 +1295,8 @@ and exits `3`. In `audit` and `adopt`, an interrupt at any point closes in-fligh
 sessions and exits `3` without rendering a report or writing a manifest (servers cut
 short are never passed off as unreachable).
 
+**Weak keys.** A server that grants a weak key (DSA, RSA under 2048 bits) is refused and the rest of the plan proceeds, exit 1, except a write that grants nothing and removes at least one key: it cannot install or widen the weak key, so it proceeds. A server already holding exactly its keys stays refused until the weak key is gone. A refusal for a weak key never stops `revoke` or `rotate` from saving their edit.
+
 **Serial bump.** A confirmed apply that removes a key from a server whose header serial
 is not below the manifest's bumps `serial:` once, saving it under the manifest lock
 after the prompt and before the first write:
@@ -1372,6 +1386,8 @@ an explicit list (a wildcard's new `except:` already remembers its server) — a
 exit `3`, nothing saved —
 `refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`;
 `revoke --key` of the conflicting key is the fix.
+
+A save that would **add** a weak key (DSA, or RSA under 2048 bits) is refused, exit `3`, with nothing saved or written. Any other save goes through while the manifest still holds a weak key: an unrelated edit is never blocked, and a weak key's own `rotate` or `revoke --key` always saves. A server that still grants a weak key after the edit is refused in the push (exit `1`), and the edit is saved anyway.
 
 **One server, not the whole user (`--server`).** `revoke USER... --server NAME...`
 takes the named servers away from each user and changes nothing else — the user
@@ -1715,6 +1731,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 - `rotate` refuses, exit `3`, to save a manifest that would keep a policy conflict —
   in particular `--new` of a revoked key
   (`refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`).
+- A save that would **add** a weak key (DSA, or RSA under 2048 bits) is refused, exit `3`, with nothing saved or written. Any other save goes through while the manifest still holds a weak key: an unrelated edit is never blocked, and a weak key's own `rotate` or `revoke --key` always saves. A server that still grants a weak key after the edit is refused in the push (exit `1`), and the edit is saved anyway.
 - Under `--json` the document carries the same `edit` section as `revoke`'s, with a
   `rotate` entry (`user`, `fingerprint`, `new_fingerprint`, `keeps_expiry` when
   an `expiry-time=` carries over, and `keep_old` (always present on `rotate` entries;
@@ -2012,9 +2029,9 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator key, a host key that **changed** or is `@revoked` in `known_hosts` (possible impersonation), a revoked key still installed, a policy conflict, a forged header serial | **Lockout not restored** (`lockout_unrestored`: the restore after a rejected login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save) |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 `--help` shows this summary. `audit --help`:
 
@@ -2048,8 +2065,8 @@ Exit codes:
      changed or @revoked host key at the post-write login check, or
      revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
-     that would keep a policy conflict, a failed serial save, or refused
-     before anything was saved or written
+     that would keep a policy conflict or add a weak key, a failed serial
+     save, or refused before anything was saved or written
 ```
 
 `adopt --help`:
@@ -2062,7 +2079,8 @@ Exit codes:
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
      --output without --force, an in-place save refused, a manifest that
-     would keep a policy conflict, --partial with no server read, interrupted
+     would keep a policy conflict or add a weak key, --partial with no server
+     read, interrupted
 ```
 
 `import --help`:
@@ -2072,7 +2090,7 @@ Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
      existing --output without --force, an in-place save refused, a --merge
-     manifest that would keep a policy conflict
+     manifest that would keep a policy conflict or add a weak key
 ```
 
 ## Safety model
@@ -2114,7 +2132,7 @@ s-removal (deploy@10.0.0.6:22)
   → 2 keys desired · 0 add · 1 remove · 0 rewrite
 ```
 
-**Policy conflicts.** A server a policy conflict names is refused with the conflict message (exit 1); the rest of the fleet is planned normally.
+**Policy conflicts.** A server a policy conflict names is refused with the conflict message (exit 1); the rest of the fleet is planned normally. A weak-key conflict has one exception: a write that grants nothing and removes at least one key proceeds.
 
 **Known limitations of the serial.**
 

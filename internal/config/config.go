@@ -80,6 +80,7 @@ type Config struct {
 	operators  []string                  // operator user names, users order
 	ignored    map[int]map[string]bool   // revoked index -> unknown servers it names (D1e)
 	conflicts  []Conflict                // policy conflicts (D29), computed after validation
+	weak       []WeakKey                 // every key failing the strength policy, granted or not
 }
 
 // Load reads and parses the manifest at path.
@@ -114,6 +115,7 @@ func Parse(data []byte) (*Config, error) {
 		return nil, err
 	}
 	c.conflicts = c.computeConflicts()
+	c.warnExpired()
 	return &c, nil
 }
 

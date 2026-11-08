@@ -385,7 +385,7 @@ func editPrelude(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *edit
 	if ep.noop {
 		return true, finishNoop(cmd, log, stdout, f, ids, ep, h)
 	}
-	if err := conflictRefusal(ep.edited); err != nil {
+	if err := conflictRefusal(ep.former, ep.edited); err != nil {
 		return true, err
 	}
 	if !f.run.json {

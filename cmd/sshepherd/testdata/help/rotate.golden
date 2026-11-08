@@ -24,8 +24,8 @@ Exit codes:
      changed or @revoked host key at the post-write login check, or
      revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
-     that would keep a policy conflict, a failed serial save, or refused
-     before anything was saved or written
+     that would keep a policy conflict or add a weak key, a failed serial
+     save, or refused before anything was saved or written
 
 Usage:
   sshepherd rotate USER --old KEY --new KEY [flags]

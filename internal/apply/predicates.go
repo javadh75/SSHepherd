@@ -21,8 +21,9 @@ func CountChanges(plans []ServerPlan) int {
 }
 
 // NothingCanLand reports that no affected server is change-planned or
-// converged, and at least one is refused (unreachable servers can converge
-// later).
+// converged, and at least one is refused for a reason other than a weak-key
+// conflict. Unreachable servers can converge later, and a weak-key refusal
+// must not withhold the save that remediates it (OP4).
 func NothingCanLand(plans []ServerPlan) bool {
 	refused := false
 	for _, p := range plans {
@@ -30,7 +31,7 @@ func NothingCanLand(plans []ServerPlan) bool {
 		case ClassChange, ClassConverged:
 			return false
 		case ClassRefused:
-			refused = true
+			refused = refused || !p.WeakRefused
 		}
 	}
 	return refused

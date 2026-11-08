@@ -232,6 +232,13 @@ func (res *resolution) grant(c candidate, alias string) bool {
 		}
 		return false
 	}
+	if k.Weak != "" {
+		// Importing it would produce a manifest with a policy conflict.
+		res.failed[c.path] = true
+		shown, _ := pubPaths(c.source) // as written, so a ~ path reads as the user spelled it
+		res.warnf("identity %s: %s key not imported", shown, k.Weak)
+		return false
+	}
 	if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
 		// The manifest rejects such an inline comment; skipping here keeps
 		// one odd .pub from failing the whole import's self-check.
@@ -316,6 +323,9 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 		}
 		if k == nil {
 			return nil, fmt.Errorf("operator key %q: %s is not a valid public key", raw, pubPath)
+		}
+		if k.Weak != "" {
+			return nil, fmt.Errorf("operator key %q: %s is a weak key (%s); generate a stronger one", raw, pubPath, k.Weak)
 		}
 		if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
 			return nil, fmt.Errorf("operator key %q: %s comment %s", raw, pubPath, issue)

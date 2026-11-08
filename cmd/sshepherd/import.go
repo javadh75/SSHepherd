@@ -438,7 +438,7 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
 			}
-			if err := conflictRefusal(saved); err != nil {
+			if err := conflictRefusal(formerManifest(m), saved); err != nil {
 				return err
 			}
 			if mergePath == "" {

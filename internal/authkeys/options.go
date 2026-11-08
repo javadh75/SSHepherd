@@ -239,6 +239,30 @@ func ExpiryTime(opt string, local *time.Location) (time.Time, error) {
 	return parseExpiry(strings.Trim(v, `"`), local)
 }
 
+// EarliestExpiry returns the earliest parseable expiry-time="…" clause of a
+// line (sshd honours the earliest of a repeated clause), verbatim and as a
+// time; ok is false when the line carries none. Malformed clauses are
+// skipped: IgnoredBySSHD and manifest validation own that verdict.
+func EarliestExpiry(opts []string, local *time.Location) (opt string, t time.Time, ok bool) {
+	for _, o := range opts {
+		if nameOf(o) != "expiry-time" {
+			continue
+		}
+		when, err := ExpiryTime(o, local)
+		if err == nil && (!ok || when.Before(t)) {
+			opt, t, ok = o, when, true
+		}
+	}
+	return opt, t, ok
+}
+
+// Expired reports whether a line's expiry-time has been reached: true when
+// any clause is at or before now.
+func Expired(opts []string, now time.Time, local *time.Location) bool {
+	_, t, ok := EarliestExpiry(opts, local)
+	return ok && !t.After(now)
+}
+
 func validExpiry(v string) error { _, err := parseExpiry(v, time.UTC); return err }
 
 func parseExpiry(v string, loc *time.Location) (time.Time, error) {

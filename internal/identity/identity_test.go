@@ -4,12 +4,50 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// writeWeakPub writes a DSA public key as dir/old.pub and returns the
+// private-key path ssh config would name.
+func writeWeakPub(t *testing.T, dir string) string {
+	t.Helper()
+	key := filepath.Join(dir, "old")
+	if err := os.WriteFile(key+".pub", []byte(testkeys.DSALine(t, 7)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return key
+}
+
+// TestResolveSkipsWeakIdentity (OP5): a weak .pub is skipped with a warning,
+// in the one code path plain import and --merge share.
+func TestResolveSkipsWeakIdentity(t *testing.T) {
+	key := writeWeakPub(t, t.TempDir())
+	r := Resolver{Home: "/home/j", LocalUser: "javad"}
+	users, warns := r.Resolve([]sshcfg.Host{{Alias: "web", HostName: "web", User: "deploy", Identities: []string{key}}})
+	if len(users) != 0 {
+		t.Fatalf("users = %+v, want the weak identity skipped", users)
+	}
+	want := "identity " + key + ".pub: dsa key not imported"
+	if !slices.Contains(warns, want) {
+		t.Errorf("warnings = %q, want %q", warns, want)
+	}
+}
+
+// TestMarkOperatorsRefusesWeakKey: --operator names a key explicitly, so a
+// weak one is an error rather than a skip.
+func TestMarkOperatorsRefusesWeakKey(t *testing.T) {
+	key := writeWeakPub(t, t.TempDir())
+	r := Resolver{Home: "/home/j", LocalUser: "javad"}
+	_, err := r.MarkOperators(nil, []string{key})
+	if err == nil || !strings.Contains(err.Error(), "weak key (dsa)") {
+		t.Fatalf("err = %v, want a weak-key refusal", err)
+	}
+}
 
 func TestExpand(t *testing.T) {
 	r := Resolver{Home: "/home/j", LocalUser: "javad"}
