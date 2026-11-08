@@ -2151,6 +2151,7 @@ nothing changed (no file, backup or directory is created) — when:
   read);
 - the rendered file would exceed the 1 MiB the read path accepts
   (`rendered file is N bytes, over the 1048576-byte limit the read path accepts — refusing to write a file that could never be verified or audited`);
+- a serial bump would push a rendered file over that limit: the whole run is withheld before the prompt, nothing saved or written, exit 1. Its message is `<server>: the serial bump to N would make the rendered file B bytes, over the L-byte limit the read path accepts — nothing saved or written (split the grant across accounts)`, and under `--json` it is `serial_bump.warning`;
 - the target is a symlink, its directory is a symlink, or the file or directory is
   not owned by the login user (log in as the owning user — managing another user's
   file as `root` is refused);

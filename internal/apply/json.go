@@ -34,7 +34,8 @@ type JSONOptions struct {
 
 // SerialBump is apply's D4b serial bump (spec §6) for the JSON document:
 // From → To, saved or not. To is nil and Warning set when the manifest
-// cannot be saved (a piped --config).
+// cannot be saved (a piped --config) or when the bump would push a render
+// over the read path's limit (ReserialOversize; the run is withheld).
 type SerialBump struct {
 	From    uint64  `json:"from"`
 	To      *uint64 `json:"to"`

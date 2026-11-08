@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/manifest"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -102,4 +104,96 @@ func TestApplySerialSaveFailsExit3(t *testing.T) {
 			t.Errorf("--json wrote a document on exit 3:\n%s", out.String())
 		}
 	}
+}
+
+// bumpOverLimit is a hermetic fleet where one extra installed key forces a
+// D4b bump and alice's comment leaves the render 5 bytes under the limit,
+// so the bump's 11-byte header growth would overflow it.
+func bumpOverLimit(t *testing.T) (cfg, kh, target string) {
+	t.Helper()
+	home := shortHome(t)
+	srv, hostKey, c := hermeticFleet(t, home)
+	kh = sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+	target = filepath.Join(home, ".ssh", "authorized_keys")
+	line := strings.TrimSpace(string(fileBytes(t, target)))
+	k, err := authkeys.ParseLine(line)
+	if err != nil || k == nil {
+		t.Fatalf("ParseLine: %v", err)
+	}
+	base, err := authkeys.RenderSerial([]authkeys.RenderEntry{{Key: *k, Comment: "x"}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("x", 1+fleet.MaxRemoteOutput-5-len(base))
+	text := strings.Replace(string(fileBytes(t, c)), `keys: ["`+line+`"]`, `keys: ["`+line+` `+pad+`"]`, 1)
+	if err := os.WriteFile(c, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(line+"\n"+testkeys.Line(t, 9)+" handed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return c, kh, target
+}
+
+// TestReserialOversizeWithholdsBeforeSave (spec §7): nothing saved or
+// written, exit 1, the message on stderr and in serial_bump.warning; a dry
+// run reports the same warning.
+func TestReserialOversizeWithholdsBeforeSave(t *testing.T) {
+	const wantMsg = "web-1: the serial bump to 1 would make the rendered file"
+	cfg, kh, target := bumpOverLimit(t)
+	manifestBefore, serverBefore := fileBytes(t, cfg), fileBytes(t, target)
+	unchanged := func(t *testing.T) {
+		t.Helper()
+		if !bytes.Equal(fileBytes(t, cfg), manifestBefore) || !bytes.Equal(fileBytes(t, target), serverBefore) {
+			t.Error("a withheld run changed the manifest or the server")
+		}
+	}
+	warning := func(t *testing.T, out []byte) {
+		t.Helper()
+		var doc struct {
+			SerialBump struct {
+				To      *uint64 `json:"to"`
+				Warning string  `json:"warning"`
+			} `json:"serial_bump"`
+		}
+		if err := json.Unmarshal(out, &doc); err != nil {
+			t.Fatalf("json: %v", err)
+		}
+		if doc.SerialBump.To != nil || !strings.Contains(doc.SerialBump.Warning, wantMsg) {
+			t.Errorf("serial_bump = %+v", doc.SerialBump)
+		}
+	}
+	t.Run("text", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"apply", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+			t.Fatalf("exit = %d\n%s", code, errBuf.String())
+		}
+		if !strings.Contains(errBuf.String(), wantMsg) || !strings.Contains(errBuf.String(), "nothing saved or written") {
+			t.Errorf("stderr = %.400s", errBuf.String())
+		}
+		unchanged(t)
+	})
+	t.Run("json", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"apply", "--json", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+			t.Fatalf("exit = %d\n%s", code, errBuf.String())
+		}
+		warning(t, out.Bytes())
+		unchanged(t)
+	})
+	t.Run("dry run", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"apply", "--dry-run", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+			t.Fatalf("exit = %d\n%s", code, errBuf.String())
+		}
+		if !strings.Contains(errBuf.String(), wantMsg) || strings.Contains(out.String(), "would bump serial") {
+			t.Errorf("a dry run must warn instead of promising the bump\nstdout %.400s\nstderr %.400s", out.String(), errBuf.String())
+		}
+		out.Reset()
+		if code := run([]string{"apply", "--json", "--dry-run", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+			t.Fatalf("json dry run exit = %d", code)
+		}
+		warning(t, out.Bytes())
+		unchanged(t)
+	})
 }

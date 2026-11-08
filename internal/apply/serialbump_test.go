@@ -1,6 +1,8 @@
 package apply
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
@@ -73,4 +75,51 @@ func TestReserial(t *testing.T) {
 	if want := authkeys.Header(20) + "\n" + web1Body(t, cfg); string(plans[1].Rendered) != want {
 		t.Errorf("a removal-only write keeps its higher S: %q", plans[1].Rendered)
 	}
+}
+
+func TestReserialOversize(t *testing.T) {
+	cfg := serialCfg(t)
+	plain := planWeb1(t, cfg, authkeys.Header(7)+"\n"+web1Body(t, cfg)+testkeys.Line(t, 9)+"\n", false, false)
+	higher := planWeb1(t, cfg, authkeys.Header(20)+"\n"+web1Body(t, cfg)+testkeys.Line(t, 9)+"\n", false, false)
+	size := func(serial uint64) int { return len(authkeys.Header(serial)) + 1 + len(web1Body(t, cfg)) }
+	saved := maxRender
+	t.Cleanup(func() { maxRender = saved })
+
+	t.Run("exactly at the limit passes", func(t *testing.T) {
+		maxRender = size(100)
+		if got := ReserialOversize([]ServerPlan{plain}, 100); got != nil {
+			t.Errorf("got %q, want nil", got)
+		}
+	})
+	t.Run("over the limit names the server and the numbers", func(t *testing.T) {
+		maxRender = size(100) - 1
+		got := ReserialOversize([]ServerPlan{plain}, 100)
+		want := fmt.Sprintf("web-1: the serial bump to 100 would make the rendered file %d bytes, over the %d-byte limit the read path accepts — nothing saved or written (split the grant across accounts)", size(100), maxRender)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+	})
+	t.Run("a removal-only write is measured at its higher serial", func(t *testing.T) {
+		maxRender = size(20) - 1 // serial 8 would fit; the 20 it writes does not
+		got := ReserialOversize([]ServerPlan{higher}, 8)
+		if len(got) != 1 || !strings.Contains(got[0], "the serial bump to 20 ") {
+			t.Errorf("got %q, want one message at max(to, Writes) = 20", got)
+		}
+	})
+	t.Run("other classes are ignored", func(t *testing.T) {
+		maxRender = 1
+		refused := plain
+		refused.Class = ClassRefused
+		if got := ReserialOversize([]ServerPlan{refused}, 100); got != nil {
+			t.Errorf("got %q, want nil", got)
+		}
+	})
+	t.Run("a render with no header line is left to Reserial", func(t *testing.T) {
+		maxRender = 1
+		bad := plain
+		bad.Rendered = []byte("no newline")
+		if got := ReserialOversize([]ServerPlan{bad}, 100); got != nil {
+			t.Errorf("got %q, want nil", got)
+		}
+	})
 }

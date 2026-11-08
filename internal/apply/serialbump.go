@@ -53,3 +53,27 @@ func Reserial(plans []ServerPlan, to uint64) error {
 	}
 	return nil
 }
+
+// ReserialOversize reports every change plan the bumped header would push
+// over maxRender (one message per server, nil when none). It mirrors
+// Reserial's arithmetic and runs before the prompt: a file over the limit
+// could be installed but never verified or read again, and Commit may
+// re-render headers only, so the run is withheld here rather than one
+// server refused after the plan was shown.
+func ReserialOversize(plans []ServerPlan, to uint64) []string {
+	var msgs []string
+	for _, p := range plans {
+		if p.Class != ClassChange {
+			continue
+		}
+		_, body, ok := bytes.Cut(p.Rendered, []byte("\n"))
+		if !ok {
+			continue // Reserial reports this bug
+		}
+		w := max(to, p.Serial.Writes)
+		if size := len(authkeys.Header(w)) + 1 + len(body); size > maxRender {
+			msgs = append(msgs, fmt.Sprintf("%s: the serial bump to %d would make the rendered file %d bytes, over the %d-byte limit the read path accepts — nothing saved or written (split the grant across accounts)", p.Server.Name, w, size, maxRender))
+		}
+	}
+	return msgs
+}

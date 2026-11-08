@@ -97,7 +97,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				apply.Render(stdout, cfg, nil, ropts)
 				return nil
 			}
-			pa := &plainApply{m: m, cfg: cfg, log: log, stdout: stdout, rf: &rf, skipped: skipped, ropts: ropts}
+			pa := &plainApply{m: m, cfg: cfg, log: log, stdout: stdout, rf: &rf, skipped: skipped, targets: len(targets), ropts: ropts}
 			return runWorkflow(cmd, a, stdout, &rf, ids, applySpec{
 				cfg:     cfg,
 				servers: targets,
@@ -105,11 +105,9 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				// so many held keys cannot exhaust sshd's MaxAuthTries
 				// before the key that matters is tried.
 				preferKeys: func(s config.Server) []string { return audit.GrantedFingerprints(cfg, s.Name) },
-				question: func(_ []apply.ServerPlan, toWrite int) (string, error) {
-					return fmt.Sprintf("apply %d of %s?", toWrite, apply.Plural(len(targets), "server", "servers")), nil
-				},
-				commit: pa.commit,
-				finish: pa.finish,
+				question:   pa.question,
+				commit:     pa.commit,
+				finish:     pa.finish,
 			})
 		},
 	}
@@ -127,8 +125,36 @@ type plainApply struct {
 	stdout  io.Writer
 	rf      *runFlags
 	skipped int
+	targets int
 	ropts   apply.RenderOptions
 	bump    *apply.SerialBump // D4b: what this run bumped (or would), for the text and JSON reports
+}
+
+// question is plain apply's confirmation question. A bump that would push
+// a render over the limit withholds the run here, before the prompt and the
+// save (spec §7): a plan's class may not change after it is shown.
+func (pa *plainApply) question(plans []apply.ServerPlan, toWrite int) (string, error) {
+	if msgs := pa.oversizedBump(plans); len(msgs) > 0 {
+		for _, m := range msgs {
+			pa.log.Error(m)
+		}
+		pa.bump = &apply.SerialBump{From: pa.cfg.Serial(), Warning: strings.Join(msgs, "; ")}
+		return "", fmt.Errorf("%w: a serial bump would exceed the render limit", workflow.ErrWithheld)
+	}
+	return fmt.Sprintf("apply %d of %s?", toWrite, apply.Plural(pa.targets, "server", "servers")), nil
+}
+
+// oversizedBump is ReserialOversize for a run that will bump and can save:
+// a pipe or an anchored manifest gets no bump, so no growth and no check.
+func (pa *plainApply) oversizedBump(plans []apply.ServerPlan) []string {
+	from := pa.cfg.Serial()
+	if !apply.NeedsSerialBump(plans, from) {
+		return nil
+	}
+	if _, err := serialEditable(pa.m); err != nil {
+		return nil // the commit reports a manifest it cannot edit
+	}
+	return apply.ReserialOversize(plans, from+1)
 }
 
 // commit runs after the prompt, before the first write. A concurrent
@@ -247,6 +273,9 @@ func dryRunBump(m manifestTarget, cfg *config.Config, plans []apply.ServerPlan) 
 	}
 	if _, err := serialEditable(m); err != nil {
 		return &apply.SerialBump{From: from, Warning: noBumpWarning}
+	}
+	if msgs := apply.ReserialOversize(plans, from+1); len(msgs) > 0 {
+		return &apply.SerialBump{From: from, Warning: strings.Join(msgs, "; ")}
 	}
 	to := from + 1
 	return &apply.SerialBump{From: from, To: &to}
