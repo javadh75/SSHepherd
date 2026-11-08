@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 1,
+    "compliant": 0,
+    "drift": 1,
+    "critical": 1,
+    "unreachable": 0,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "operator": true,
+            "cannot_log_in": "expired",
+            "key_issues": [
+              "expired"
+            ]
+          },
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:S7W0wWKoAYK3zmBPSPe/2zvxl1kZKp9tk2LXlXIliMU",
+            "type": "ssh-dss",
+            "key_issues": [
+              "dsa"
+            ]
+          },
+          {
+            "owner": null,
+            "fingerprint": "SHA256:cqcZ3vi/yOOaDFNtRYf6/1lahzlffXDFaze4HmSibwQ",
+            "type": "ssh-rsa",
+            "key_issues": [
+              "rsa_under_2048"
+            ]
+          }
+        ]
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false,
+      "critical_reasons": [
+        "operator_cannot_log_in"
+      ]
+    }
+  ]
+}

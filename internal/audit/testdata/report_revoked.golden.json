@@ -81,7 +81,11 @@
       "parse_errors": [],
       "file_absent": false,
       "no_users_granted": false,
-      "header_serial": 7
+      "header_serial": 7,
+      "critical_reasons": [
+        "policy_conflict",
+        "revoked_key"
+      ]
     },
     {
       "name": "web-2",
@@ -126,7 +130,11 @@
       "parse_errors": [],
       "file_absent": false,
       "no_users_granted": false,
-      "header_serial": 7
+      "header_serial": 7,
+      "critical_reasons": [
+        "policy_conflict",
+        "revoked_key"
+      ]
     }
   ]
 }

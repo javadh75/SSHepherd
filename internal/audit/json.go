@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -79,6 +80,18 @@ type jsonServer struct {
 	HeaderSerial        uint64 `json:"header_serial,omitempty"`
 	ManifestSerialAhead uint64 `json:"manifest_serial_ahead,omitempty"`
 	ForgedHeaderSerial  uint64 `json:"forged_header_serial,omitempty"`
+	// Posture and CriticalReasons are additive-optional (schema stays 1):
+	// the posture probe's findings, and exactly when status is critical why,
+	// sorted and de-duplicated.
+	Posture         []jsonPosture `json:"posture,omitempty"`
+	CriticalReasons []string      `json:"critical_reasons,omitempty"`
+}
+
+type jsonPosture struct {
+	Path  string `json:"path"`
+	Issue string `json:"issue"`
+	Mode  string `json:"mode"`
+	UID   string `json:"uid"`
 }
 
 type jsonDuplicate struct {
@@ -95,7 +108,8 @@ type jsonKeySets struct {
 
 // jsonKey field presence is deliberately mixed: owner is always emitted
 // (null = unknown key), while comment (identity hint, often empty) and
-// operator (exception marker, missing keys only) are omitted when unset.
+// operator (exception marker: missing keys, and present keys that cannot
+// log in) are omitted when unset.
 type jsonKey struct {
 	Owner       *string `json:"owner"`
 	Comment     string  `json:"comment,omitempty"`
@@ -119,6 +133,11 @@ type jsonKey struct {
 	// additive-optional (schema stays 1).
 	Revoked       *jsonRevoked       `json:"revoked,omitempty"`
 	AccessRevoked *jsonAccessRevoked `json:"access_revoked,omitempty"`
+	// CannotLogIn (a present operator key that is critical) and KeyIssues
+	// (dsa, rsa_under_2048, expired; never on a revoked key) are
+	// additive-optional (schema stays 1).
+	CannotLogIn string   `json:"cannot_log_in,omitempty"`
+	KeyIssues   []string `json:"key_issues,omitempty"`
 }
 
 type jsonRevoked struct {
@@ -212,6 +231,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		return s
 	}
 	s.AuthorizedKeys2 = r.AuthorizedKeys2
+	s.Posture, s.CriticalReasons = postureJSON(r), criticalReasons(cfg, r)
 	serialFields(&s, cfg, r)
 	for _, d := range r.Duplicates {
 		jd := jsonDuplicate{Fingerprint: d.Key.Fingerprint, Count: d.Count}
@@ -222,14 +242,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		s.Duplicates = append(s.Duplicates, jd)
 	}
 	for _, k := range r.Diff.OK {
-		jk := jsonKeyFor(cfg, k, false)
-		if actual, desired, drifted := r.optionsDrift(k); drifted {
-			jk.OptionsDrift = &jsonOptionsDrift{Actual: sanitizeAll(actual), Desired: sanitizeAll(desired)}
-		}
-		if actual, desired, drifted := commentDrift(cfg, r, k); opts.Comments && drifted {
-			jk.CommentDrift = &jsonCommentDrift{Actual: sanitize.Remote(actual), Desired: sanitize.Remote(desired)}
-		}
-		s.Keys.Present = append(s.Keys.Present, jk)
+		s.Keys.Present = append(s.Keys.Present, jsonPresentKey(cfg, r, k, opts))
 	}
 	for _, k := range r.Diff.Missing {
 		s.Keys.Missing = append(s.Keys.Missing, jsonKeyFor(cfg, k, true))
@@ -240,6 +253,9 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 			jk.Options = sanitizeAll(k.Options)
 		}
 		memoryKey(&jk, cfg, r.Server.Name, k)
+		if jk.Revoked == nil {
+			jk.KeyIssues = keyIssues(k, false)
+		}
 		s.Keys.Unauthorized = append(s.Keys.Unauthorized, jk)
 	}
 	for _, pe := range r.ParseErrs {
@@ -248,6 +264,45 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		s.ParseErrors = append(s.ParseErrors, jsonParseError{Line: pe.Line, Error: sanitize.Remote(pe.Error())})
 	}
 	return s
+}
+
+// jsonPresentKey is one matched key, with its drift, cannot_log_in and
+// key_issues findings.
+func jsonPresentKey(cfg *config.Config, r ServerResult, k authkeys.Key, opts JSONOptions) jsonKey {
+	jk := jsonKeyFor(cfg, k, false)
+	if actual, desired, drifted := r.optionsDrift(k); drifted {
+		jk.OptionsDrift = &jsonOptionsDrift{Actual: sanitizeAll(actual), Desired: sanitizeAll(desired)}
+	}
+	if actual, desired, drifted := commentDrift(cfg, r, k); opts.Comments && drifted {
+		jk.CommentDrift = &jsonCommentDrift{Actual: sanitize.Remote(actual), Desired: sanitize.Remote(desired)}
+	}
+	if reason, _ := r.cannotLogIn(cfg, k); reason != "" {
+		jk.CannotLogIn, jk.Operator = reason, true
+	}
+	jk.KeyIssues = keyIssues(k, true)
+	return jk
+}
+
+// keyIssues lists a key's strength finding and, for a desired key, whether
+// its expiry-time has passed; nil when there are none (omitted).
+func keyIssues(k authkeys.Key, desired bool) []string {
+	var out []string
+	if k.Weak != "" {
+		out = append(out, k.Weak)
+	}
+	if desired && authkeys.Expired(k.Options, now(), time.Local) {
+		out = append(out, cannotLogInExpired)
+	}
+	return out
+}
+
+// postureJSON is the server's posture findings; nil when clean (omitted).
+func postureJSON(r ServerResult) []jsonPosture {
+	var out []jsonPosture
+	for _, p := range r.Posture {
+		out = append(out, jsonPosture{Path: sanitize.Remote(p.Path), Issue: p.Issue, Mode: p.Mode, UID: p.UID})
+	}
+	return out
 }
 
 // serialFields sets the server's header-serial fields (spec §9): the
@@ -298,8 +353,8 @@ func memoryJSON(cfg *config.Config) ([]config.Conflict, []config.TombstoneWarnin
 }
 
 // jsonKeyFor renders one key. markOperator is true only for missing keys:
-// operator: true is the JSON twin of the CRITICAL rendering and appears
-// nowhere else.
+// operator: true is the JSON twin of the CRITICAL rendering, and appears
+// otherwise only on a present key that cannot log in (set in jsonPresentKey).
 func jsonKeyFor(cfg *config.Config, k authkeys.Key, markOperator bool) jsonKey {
 	jk := jsonKey{Comment: sanitize.Remote(k.Comment), Fingerprint: k.Fingerprint, Type: k.Type}
 	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {

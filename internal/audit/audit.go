@@ -49,6 +49,13 @@ type ServerResult struct {
 	// only the post-revoke sweep's reader asks for it.
 	Keys2    []byte
 	Keys2Err error
+	// Posture is the posture probe's findings (fleet.ReadResult): anything
+	// here is drift, and a world-writable path is critical.
+	Posture []fleet.PostureIssue
+	// Lines holds every parsed line per fingerprint, in file order. sshd
+	// tries each line, so grading whether a key can still log in looks at
+	// all of them; Diff.Actual keeps only the first.
+	Lines map[string][]authkeys.Key
 }
 
 // Duplicate is one fingerprint installed on Count (>= 2) lines; Key is its
@@ -61,9 +68,9 @@ type Duplicate struct {
 // Compliant reports whether this server fully matches the source of truth.
 // An unreadable (Err != nil) or partially-parsed (ParseErrs) server is never
 // compliant, and neither is one whose matched keys carry options other than
-// the manifest's, whose file repeats a fingerprint, or which has an
-// unmanaged authorized_keys2. A file-absent server with no desired keys is
-// treated as compliant: nothing should be there and nothing is. Comment
+// the manifest's, whose file repeats a fingerprint, which has an unmanaged
+// authorized_keys2, or whose path has a posture finding. A file-absent
+// server with no desired keys is treated as compliant: nothing should be there and nothing is. Comment
 // drift is cosmetic and never counts.
 func (r ServerResult) Compliant() bool {
 	return r.Err == nil &&
@@ -72,6 +79,7 @@ func (r ServerResult) Compliant() bool {
 		len(r.Diff.Unauthorized) == 0 &&
 		len(r.Duplicates) == 0 &&
 		!r.AuthorizedKeys2 &&
+		len(r.Posture) == 0 &&
 		!r.anyOptionsDrift()
 }
 
@@ -151,6 +159,7 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res.SessionKeyFP = read.SessionKeyFP
 	res.AuthorizedKeys2 = read.AuthorizedKeys2
 	res.Keys2, res.Keys2Err = read.Keys2, read.Keys2Err
+	res.Posture = read.Posture
 	if !read.FileAbsent {
 		res.HeaderSerial, res.HeaderManaged = authkeys.ParseHeaderOf(read.Content)
 	}
@@ -159,6 +168,7 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res.ParseErrs = parseErrs
 	res.Diff = authkeys.Diff(desired, actual)
 	res.Duplicates = duplicatesOf(actual)
+	res.Lines = authkeys.LinesByFingerprint(actual)
 	log.Debug("audited", "server", srv.Name, "dur", time.Since(start).Round(time.Millisecond))
 	return res
 }

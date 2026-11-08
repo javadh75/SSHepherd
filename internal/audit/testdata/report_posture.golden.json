@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 1,
+    "compliant": 0,
+    "drift": 1,
+    "critical": 1,
+    "unreachable": 0,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false,
+      "posture": [
+        {
+          "path": "/home/deploy/.ssh",
+          "issue": "world_writable",
+          "mode": "drwxrwxrwx",
+          "uid": "1001"
+        },
+        {
+          "path": "/home/deploy/.ssh/authorized_keys",
+          "issue": "group_writable",
+          "mode": "-rw-rw-r--",
+          "uid": "1001"
+        },
+        {
+          "path": "/srv/keys",
+          "issue": "foreign_owner",
+          "mode": "drwxr-xr-x",
+          "uid": "1002"
+        },
+        {
+          "path": "/home/deploy/.ssh/authorized_keys2",
+          "issue": "symlink",
+          "mode": "lrwxrwxrwx",
+          "uid": "1001"
+        }
+      ],
+      "critical_reasons": [
+        "world_writable"
+      ]
+    }
+  ]
+}

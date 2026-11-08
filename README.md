@@ -329,6 +329,8 @@ equivalent spelling, checks `authorized_keys2`). It does not see sshd's other ke
 other accounts on the same host. Point `authorized_keys_file` at the file sshd
 actually reads.
 
+Audit's permission check walks an override path outside `$HOME` up to `/`. A symlinked managed file is drift (exit 1), and a root-owned override audits clean although `apply` refuses to write it.
+
 ### Validation rules
 
 The loader fails the whole manifest (exit 3) on any of these:
@@ -498,15 +500,20 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
-**Drift classes.** Besides missing, unauthorized and unparseable entries, three
-security-relevant classes make a server non-compliant (exit 1), always on:
+**Drift classes.** Besides missing, unauthorized and unparseable entries, these
+security-relevant classes make a server non-compliant, always on (exit 1 unless the
+entry says otherwise):
 
 - a matched key whose **options differ** from the manifest's (e.g. the server lost a
   `from=` or `command=` restriction);
 - a **duplicate entry** — one key on several lines, where sshd tries each line and
   the least restricted copy wins;
 - a non-empty, unmanaged **`~/.ssh/authorized_keys2`** (checked when the audited
-  path is the default or resolves to it).
+  path is the default or resolves to it);
+- **Unsafe permissions** — audit checks what sshd's StrictModes checks: the managed file and its directories up to `$HOME` (up to `/` for an override path outside it). A group-writable path, a path owned by neither the login user nor root, or a symlinked managed file is drift (exit 1); a world-writable path is critical (exit 2), since anyone on the host can add a key. The report says to fix by hand (`chmod go-w`, `chown`); `apply` refuses to write through these paths (exit 48 in the write script; 45 for a symlinked managed file). A root-owned file audits clean, though `apply` refuses to write it. The probe is evidence about an honest server: a compromised one can print nothing and look clean.
+- **Operator key that cannot log in** — a present operator key on a line sshd will not honour (a `cert-authority`/`principals=` line the manifest does not declare, a passed `expiry-time` whether declared or not, or every line ignored) is critical. Audit checks every line of a key, as sshd does: a working second line keeps it non-critical.
+
+Rows are annotated ` · WEAK (dsa)`, ` · WEAK (rsa 1024)` and ` · EXPIRED`; annotations alone do not change the exit code.
 
 ```console
 web-1 (deploy@10.0.0.1:22)
@@ -523,6 +530,20 @@ web-2 (deploy@10.0.0.2:22)
   → 2 authorized · 2 present · 0 missing · 0 unauthorized
 
 Summary: 0/2 servers compliant · 2 with drift (0 critical) · 0 unreachable  → exit 1
+```
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ✓  op (op@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice              SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ‼ unsafe permissions: /home/deploy/.ssh is world-writable (drwxrwxrwx, uid 1001) — anyone on the host can add a key; sshd's StrictModes would ignore this file
+  ⚠ unsafe permissions: /home/deploy/.ssh/authorized_keys is group-writable (-rw-rw-r--, uid 1001) — sshd's StrictModes would ignore this file
+  ⚠ unsafe permissions: /srv/keys is owned by uid 1002, not the login user or root — sshd's StrictModes would ignore this file
+  ⚠ unsafe permissions: /home/deploy/.ssh/authorized_keys2 is a symlink — apply refuses to write through it
+  note: fix by hand (chmod go-w / chown); a login that succeeded here came through another key source or with StrictModes off
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2
 ```
 
 Comment drift (`--comments`) stays cosmetic and never affects the exit code.
@@ -596,6 +617,7 @@ Summary: 0/2 servers compliant · 2 with drift (1 critical) · 0 unreachable  �
 that **changed** or is marked `@revoked` in `known_hosts` (possible impersonation)
 counts as a host-key alert and makes the run exit `2`.
 `host_key_type_changed` (exit 2): `known_hosts` records a key type x/crypto can verify and the server presented a different type, or a certificate from a signer no `@cert-authority` line for this host vouches for. `host_key_type_unrecorded` (exit 1) now remains only when every recorded type is unsupported. A certificate from a vouched CA that fails validation stays `host_key` (exit 1).
+A failed or malformed posture probe makes the server unreachable with `error_kind: remote` (exit 1), so a server cannot be graded clean while hiding its posture.
 When a failure has a remediation, it prints on its own `hint:` line under the first
 server that needs it; a hint shared by many servers prints once:
 
@@ -822,6 +844,58 @@ Optional fields, present only when they apply: `servers[].error_kind` (exactly w
 `servers[].hint` (remediation text, present only when the failure has one; `error`
 never contains it) and `keys.unauthorized[].options` (on-server options of a key the
 manifest does not own).
+
+The trust posture adds these, also present only when they apply:
+
+- Server: `posture`: `[{"path", "issue", "mode", "uid"}]`; `critical_reasons`: sorted list from `forged_serial`, `operator_cannot_log_in`, `operator_missing`, `policy_conflict`, `revoked_key`, `world_writable`, present exactly when `status` is `critical`. A host-key alert is `status: unreachable` and carries no reason; `error_kind` and `summary.host_key_alerts` say why.
+- Key: `cannot_log_in` (`cert_only`, `expired`, `ignored`) on a present operator key that is critical, with `operator: true`; `key_issues` (`dsa`, `rsa_under_2048`, `expired`), never on a key with `revoked`.
+- `policy_conflicts` carries the new `kind: "weak_key"`. New `error_kind`: `host_key_type_changed`.
+
+```json
+      "posture": [
+        {
+          "path": "/home/deploy/.ssh",
+          "issue": "world_writable",
+          "mode": "drwxrwxrwx",
+          "uid": "1001"
+        },
+        {
+          "path": "/home/deploy/.ssh/authorized_keys",
+          "issue": "group_writable",
+          "mode": "-rw-rw-r--",
+          "uid": "1001"
+        },
+        {
+          "path": "/srv/keys",
+          "issue": "foreign_owner",
+          "mode": "drwxr-xr-x",
+          "uid": "1002"
+        },
+        {
+          "path": "/home/deploy/.ssh/authorized_keys2",
+          "issue": "symlink",
+          "mode": "lrwxrwxrwx",
+          "uid": "1001"
+        }
+      ],
+      "critical_reasons": [
+        "world_writable"
+      ]
+```
+
+```json
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "operator": true,
+            "cannot_log_in": "expired",
+            "key_issues": [
+              "expired"
+            ]
+          }
+```
+
 See `internal/audit/testdata/*.golden.json` for every shape.
 
 On-server comments, options and error text are sanitized — control characters

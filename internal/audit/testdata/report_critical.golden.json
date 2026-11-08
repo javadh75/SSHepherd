@@ -36,7 +36,10 @@
       },
       "parse_errors": [],
       "file_absent": false,
-      "no_users_granted": false
+      "no_users_granted": false,
+      "critical_reasons": [
+        "operator_missing"
+      ]
     },
     {
       "name": "web-2",
@@ -59,7 +62,10 @@
       },
       "parse_errors": [],
       "file_absent": true,
-      "no_users_granted": false
+      "no_users_granted": false,
+      "critical_reasons": [
+        "operator_missing"
+      ]
     }
   ]
 }

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -19,10 +20,13 @@ import (
 // empty fleet is trivially compliant; a header serial below the manifest's
 // is not drift); 1 drift and/or unreachable servers — including a server
 // written by a newer manifest (D4a) and a key installed where its access
-// was revoked (D1d); 2 critical — a missing operator key, a revoked key
-// still installed (D2), a forged header serial, a policy conflict in the
-// manifest (D29, even with no server read), or a host key that changed (or
-// is @revoked). Tool errors (exit 3) are the caller's domain.
+// was revoked (D1d) or a posture finding short of world-writable; 2 critical
+// — any of criticalReasons (a missing operator key or one that cannot log
+// in, a revoked key still installed (D2), a forged header serial, a
+// world-writable path, a policy conflict naming the server), a policy
+// conflict in the manifest (D29, even with no server read), or a host key
+// that changed, changed type or is @revoked. Tool errors (exit 3) are the
+// caller's domain.
 func ExitCode(cfg *config.Config, results []ServerResult) int {
 	if len(cfg.Conflicts()) > 0 {
 		return 2
@@ -198,9 +202,9 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 		if _, ok := cfg.OwnerOf(k.Fingerprint); !ok {
 			suffix = UnknownOptions(k)
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s%s\n",
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s%s%s\n",
 			pal.paint(codeYellow, "⚠"), unauthorizedLabel(cfg, r.Server.Name, k), k.Fingerprint, k.Type,
-			pal.paint(codeYellow, "UNAUTHORIZED"), suffix)
+			pal.paint(codeYellow, "UNAUTHORIZED"), suffix, weakNote(k))
 	}
 	_ = tw.Flush()
 
@@ -216,6 +220,7 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 		fmt.Fprintln(w, "    sshd's default AuthorizedKeysFile accepts its keys too — this audit does not")
 		fmt.Fprintln(w, "    list them; apply moves the file aside when it writes this server")
 	}
+	renderPosture(w, r, pal)
 	renderMemoryNotes(w, cfg, r, pal)
 	renderFileNotes(w, r)
 	if r.NoUsersGranted {
@@ -225,6 +230,26 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 	fmt.Fprintf(w, "  → %d authorized · %d present · %d missing · %d unauthorized\n",
 		len(r.Diff.OK)+len(r.Diff.Missing), len(r.Diff.OK),
 		len(r.Diff.Missing), len(r.Diff.Unauthorized))
+}
+
+// renderPosture prints one line per posture finding, then the shared note.
+func renderPosture(w io.Writer, r ServerResult, pal palette) {
+	const ignored = "sshd's StrictModes would ignore this file"
+	for _, p := range r.Posture {
+		switch p.Issue {
+		case fleet.PostureWorldWritable:
+			fmt.Fprintf(w, "  %s unsafe permissions: %s is world-writable (%s, uid %s) — anyone on the host can add a key; %s\n", pal.paint(codeBoldRed, "‼"), p.Path, p.Mode, p.UID, ignored)
+		case fleet.PostureGroupWritable:
+			fmt.Fprintf(w, "  ⚠ unsafe permissions: %s is group-writable (%s, uid %s) — %s\n", p.Path, p.Mode, p.UID, ignored)
+		case fleet.PostureForeignOwner:
+			fmt.Fprintf(w, "  ⚠ unsafe permissions: %s is owned by uid %s, not the login user or root — %s\n", p.Path, p.UID, ignored)
+		case fleet.PostureSymlink:
+			fmt.Fprintf(w, "  ⚠ unsafe permissions: %s is a symlink — apply refuses to write through it\n", p.Path)
+		}
+	}
+	if len(r.Posture) > 0 {
+		fmt.Fprintln(w, "  note: fix by hand (chmod go-w / chown); a login that succeeded here came through another key source or with StrictModes off")
+	}
 }
 
 // renderMemoryNotes prints the server's serial and conflict findings: a
@@ -265,14 +290,22 @@ func unauthorizedLabel(cfg *config.Config, server string, k authkeys.Key) string
 	return label(cfg, k)
 }
 
-// okStatus renders a matched key's glyph and status cell.
+// okStatus renders a matched key's glyph and status cell. An operator key
+// that cannot log in outranks every other cell: it is the same class as a
+// missing operator key.
 func okStatus(cfg *config.Config, r ServerResult, k authkeys.Key, pal palette, comments bool) (glyph, status string) {
 	glyph = pal.paint(codeGreen, "✓")
 	status = "present & authorized"
-	// Options drift is security drift (a stripped from=/command=/restrict
-	// widens the key's power), so it changes the glyph and the verdict; %q
-	// keeps hostile option text on one inert line.
-	if actual, desired, drifted := r.optionsDrift(k); drifted {
+	reason, expired := r.cannotLogIn(cfg, k)
+	switch actual, desired, drifted := r.optionsDrift(k); {
+	case reason != "":
+		glyph = pal.paint(codeBoldRed, "‼")
+		status = fmt.Sprintf("present but %s (%s: operator key; %s)",
+			pal.paint(codeRed, "CANNOT LOG IN"), pal.paint(codeBoldRed, "CRITICAL"), cannotLogInText(reason, expired))
+	case drifted:
+		// Options drift is security drift (a stripped from=/command=/restrict
+		// widens the key's power), so it changes the glyph and the verdict;
+		// %q keeps hostile option text on one inert line.
 		glyph = pal.paint(codeYellow, "⚠")
 		status = fmt.Sprintf("present but %s (server: %s · manifest: %s)",
 			pal.paint(codeYellow, "OPTIONS DIFFER"), quoteOptions(actual), quoteOptions(desired))
@@ -282,7 +315,34 @@ func okStatus(cfg *config.Config, r ServerResult, k authkeys.Key, pal palette, c
 	if actual, desired, drifted := commentDrift(cfg, r, k); comments && drifted {
 		status += fmt.Sprintf(" · comment differs: %q → %q", actual, desired)
 	}
+	status += weakNote(k)
+	if reason == "" && authkeys.Expired(k.Options, now(), time.Local) {
+		status += " · EXPIRED"
+	}
 	return glyph, status
+}
+
+// weakNote is a key's WEAK annotation; "" for an acceptable key.
+func weakNote(k authkeys.Key) string {
+	switch k.Weak {
+	case authkeys.WeakDSA:
+		return " · WEAK (dsa)"
+	case authkeys.WeakRSAUnder2K:
+		return fmt.Sprintf(" · WEAK (rsa %d)", k.WeakBits)
+	}
+	return ""
+}
+
+// cannotLogInText ends a CANNOT LOG IN row with the reason.
+func cannotLogInText(reason string, expired time.Time) string {
+	switch reason {
+	case cannotLogInCertOnly:
+		return "server line is cert-only"
+	case cannotLogInExpired:
+		return "server line expired " + expired.Format(time.DateOnly)
+	default:
+		return "sshd ignores every line holding it"
+	}
 }
 
 // renderFileNotes writes the absent/empty-file paradox notes.
@@ -389,24 +449,106 @@ func commentDrift(cfg *config.Config, r ServerResult, k authkeys.Key) (actual, d
 	return actual, desired, actual != desired
 }
 
-// criticalDrift reports drift that threatens the fleet: a missing operator
-// key, a revoked key still installed (D2), a forged header serial, or a
-// policy conflict naming this server (D29).
+// The critical_reasons values: why a server is critical.
+const (
+	reasonForgedSerial  = "forged_serial"
+	reasonCannotLogIn   = "operator_cannot_log_in"
+	reasonMissing       = "operator_missing"
+	reasonPolicy        = "policy_conflict"
+	reasonRevokedKey    = "revoked_key"
+	reasonWorldWritable = "world_writable"
+)
+
+// The cannot_log_in values on a present operator key.
+const (
+	cannotLogInCertOnly = "cert_only"
+	cannotLogInExpired  = "expired"
+	cannotLogInIgnored  = "ignored"
+)
+
+// now is the expiry clock, a seam so tests pin it.
+var now = time.Now
+
+// criticalDrift reports drift that threatens the fleet: criticalReasons in
+// short. Every status, count and exit code goes through it.
 func criticalDrift(cfg *config.Config, r ServerResult) bool {
+	return len(criticalReasons(cfg, r)) > 0
+}
+
+// cannotLogIn grades a matched key owned by an operator over every line sshd
+// honours: a key with one usable line can log in, whatever its other lines
+// say. It returns the first dead-line reason sshd honoured (expired or
+// cert_only), else "ignored" when sshd ignores all of them, and the expiry
+// when that is the reason. A manifest that declares cert-authority does not
+// make the key cert_only. "" means the key can log in, or the owner is not
+// an operator.
+func (r ServerResult) cannotLogIn(cfg *config.Config, k authkeys.Key) (reason string, expired time.Time) {
+	if u, ok := cfg.OwnerOf(k.Fingerprint); !ok || !u.Operator {
+		return "", time.Time{}
+	}
+	lines := r.Lines[k.Fingerprint]
+	if len(lines) == 0 {
+		return "", time.Time{} // only a hand-built result: auditOne fills Lines
+	}
+	for _, line := range lines {
+		switch {
+		case authkeys.IgnoredBySSHD(line.Options) != nil:
+			continue
+		case authkeys.Expired(line.Options, now(), time.Local):
+			if reason == "" {
+				_, expired, _ = authkeys.EarliestExpiry(line.Options, time.Local)
+				reason = cannotLogInExpired
+			}
+		case authkeys.CertOnly(line.Options) && !authkeys.CertOnly(k.Options):
+			if reason == "" {
+				reason = cannotLogInCertOnly
+			}
+		default:
+			return "", time.Time{} // this line can log in
+		}
+	}
+	if reason == "" {
+		reason = cannotLogInIgnored
+	}
+	return reason, expired
+}
+
+// criticalReasons lists why this server is critical, sorted and without
+// duplicates; nil when it is not. A missing operator key and a present one
+// that cannot log in are the same emergency. An unreachable server has no
+// reasons: nothing is knowable about its keys.
+func criticalReasons(cfg *config.Config, r ServerResult) []string {
 	if r.Err != nil {
-		return false // unreachable: nothing knowable about its keys
+		return nil
+	}
+	found := map[string]bool{
+		reasonForgedSerial:  r.forged(cfg.Serial()),
+		reasonPolicy:        inConflict(cfg, r.Server.Name),
+		reasonWorldWritable: slices.ContainsFunc(r.Posture, func(p fleet.PostureIssue) bool { return p.Issue == fleet.PostureWorldWritable }),
 	}
 	for _, k := range r.Diff.Missing {
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
-			return true
+			found[reasonMissing] = true
+		}
+	}
+	for _, k := range r.Diff.OK {
+		if reason, _ := r.cannotLogIn(cfg, k); reason != "" {
+			found[reasonCannotLogIn] = true
 		}
 	}
 	for _, k := range r.Diff.Unauthorized {
 		if _, revoked := cfg.Revoked(k.Fingerprint); revoked {
-			return true
+			found[reasonRevokedKey] = true
 		}
 	}
-	return r.forged(cfg.Serial()) || inConflict(cfg, r.Server.Name)
+	var out []string
+	for reason, on := range found {
+		if on {
+			out = append(out, reason)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // forged: the header claims a serial more than authkeys.ForgedMargin above

@@ -1,0 +1,6 @@
+web-1 (deploy@10.0.0.1:22)
+  ‼  op (op@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present but CANNOT LOG IN (CRITICAL: operator key; server line is cert-only)
+  ✓  alice              SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2

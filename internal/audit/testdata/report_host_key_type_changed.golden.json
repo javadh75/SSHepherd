@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 2,
+    "compliant": 1,
+    "drift": 0,
+    "critical": 0,
+    "unreachable": 1,
+    "host_key_alerts": 1,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "unreachable",
+      "error": "ssh deploy@10.0.0.1:22: presented ecdsa-sha2-nistp256 key SHA256:abc: knownhosts: key mismatch",
+      "error_kind": "host_key_type_changed",
+      "hint": "HOST KEY TYPE CHANGED for 10.0.0.1:22 — the server no longer presents any recorded key type (recorded: ssh-ed25519); possible impersonation",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "compliant",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    }
+  ]
+}

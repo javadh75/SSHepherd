@@ -1,0 +1,8 @@
+web-1 (deploy@10.0.0.1:22)  ERROR [host_key_type_changed]: ssh deploy@10.0.0.1:22: presented ecdsa-sha2-nistp256 key SHA256:abc: knownhosts: key mismatch
+  hint: HOST KEY TYPE CHANGED for 10.0.0.1:22 — the server no longer presents any recorded key type (recorded: ssh-ed25519); possible impersonation
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  alice (alice@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 1/2 servers compliant · 0 with drift (0 critical) · 1 unreachable (1 HOST KEY ALERT)  → exit 2

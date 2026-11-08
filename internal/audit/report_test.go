@@ -141,6 +141,8 @@ func TestRenderColorStrippedEqualsPlain(t *testing.T) {
 	forgedCfg := memoryConfig(t, "")
 	serialResults := memoryRun(t, forgedCfg, memFiles(t, authkeys.Header(8), []byte{1, 2, 3}, []byte{1, 2}))
 	serialResults[1].HeaderSerial = 9999
+	trustCfg := trustConfig(t, testkeys.Line(t, 1), "")
+	certOnly := runOne(t, trustCfg, fleet.ReadResult{Content: content("cert-authority "+testkeys.Line(t, 1), testkeys.Line(t, 2))})
 	for _, fix := range []struct {
 		name     string
 		cfg      *config.Config
@@ -152,6 +154,8 @@ func TestRenderColorStrippedEqualsPlain(t *testing.T) {
 		{"comment drift", driftCfg, commentDriftResults(t, driftCfg), true},
 		{"revocation memory", memCfg, memoryRun(t, memCfg, memFiles(t, authkeys.Header(7), []byte{1, 2, 3, 9}, []byte{1, 2, 3, 8})), false},
 		{"serial notes", forgedCfg, serialResults, false},
+		{"posture", trustCfg, postureResults(t, trustCfg), false},
+		{"operator cannot log in", trustCfg, []ServerResult{certOnly}, false},
 	} {
 		t.Run(fix.name, func(t *testing.T) {
 			var plain, colored bytes.Buffer

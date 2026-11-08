@@ -453,7 +453,11 @@ its open points answered; implementation is W6, after P08. Landed so far: every 
 runs a fail-closed posture probe in its own session in place of the keys2 probe, still
 two sessions per read (`sshconn.PostureCmdFor`/`FinishPosture`, sharing `AncestorWalk`
 with the write scripts, now pinned by `scripts_golden_test.go`); `ReadResult.Posture`
-carries the findings, which audit does not grade yet. DSA and RSA<2048 keys that render
+carries the findings. Audit grades them: a symlink, group-writable or foreign-owned path
+is drift (exit 1) and a world-writable path critical (exit 2), a present operator key on no
+line sshd honours is critical (`cert_only`, `expired`, `ignored`, checked over every line),
+rows carry ` · WEAK`/` · EXPIRED` annotations that never change the exit code, and JSON (still
+schema 1) gains `posture`, `critical_reasons`, `cannot_log_in` and `key_issues`. DSA and RSA<2048 keys that render
 on a server are D29 policy conflicts (`config.WeakKeys`, kind `weak_key`): audit exits 2,
 apply refuses those servers (`ServerPlan.WeakRefused`, which never withholds a save)
 except a write that grants nothing and removes a key, a save is refused only when it adds

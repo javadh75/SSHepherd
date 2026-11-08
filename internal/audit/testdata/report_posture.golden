@@ -1,0 +1,11 @@
+web-1 (deploy@10.0.0.1:22)
+  ✓  op (op@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice              SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ‼ unsafe permissions: /home/deploy/.ssh is world-writable (drwxrwxrwx, uid 1001) — anyone on the host can add a key; sshd's StrictModes would ignore this file
+  ⚠ unsafe permissions: /home/deploy/.ssh/authorized_keys is group-writable (-rw-rw-r--, uid 1001) — sshd's StrictModes would ignore this file
+  ⚠ unsafe permissions: /srv/keys is owned by uid 1002, not the login user or root — sshd's StrictModes would ignore this file
+  ⚠ unsafe permissions: /home/deploy/.ssh/authorized_keys2 is a symlink — apply refuses to write through it
+  note: fix by hand (chmod go-w / chown); a login that succeeded here came through another key source or with StrictModes off
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2

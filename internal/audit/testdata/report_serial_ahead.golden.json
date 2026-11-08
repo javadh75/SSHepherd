@@ -71,7 +71,10 @@
       "file_absent": false,
       "no_users_granted": false,
       "header_serial": 9999,
-      "forged_header_serial": 9999
+      "forged_header_serial": 9999,
+      "critical_reasons": [
+        "forged_serial"
+      ]
     }
   ]
 }
