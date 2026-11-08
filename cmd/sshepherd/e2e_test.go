@@ -693,3 +693,68 @@ func TestE2EStaleManifestAfterHandEdit(t *testing.T) {
 		t.Errorf("handed changed under a stale apply:\n%s", got)
 	}
 }
+
+// TestE2ERevokeRollbackRestoresRevokedKey: revoke drops tmp's key and, in
+// the same edit, the surviving op line carries a from= no client matches,
+// so the login check is refused. The rollback puts the revoked key back:
+// exit 2, the JSON and the text report's FAILED line name the key, and the
+// next audit agrees (D10a, D2).
+func TestE2ERevokeRollbackRestoresRevokedKey(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	stale := itPubLine(t, itKeys(t), "stale")
+	k, err := authkeys.ParseLine(stale)
+	if err != nil || k == nil {
+		t.Fatalf("parse the stale key: %v", err)
+	}
+	body := `
+users:
+  - {name: op, keys: ["from=\"10.255.255.1\" ` + pub + `"]}
+  - {name: tmp, keys: ["` + stale + `"]}
+servers:
+  - {name: roll, host: ` + host + `, port: ` + port + `, user: e2eroll}
+access:
+  - {user: op, servers: [roll]}
+  - {user: tmp, servers: [roll]}
+`
+	m := writeE2EManifest(t, t.TempDir(), "roll.yaml", body)
+	code, out, stderr := runBin(t, bin, "revoke", "tmp", "--json", "--yes", "--config", m, "--known-hosts", kh)
+	if code != 2 {
+		t.Fatalf("revoke exit = %d, want 2 (stderr: %s)\n%s", code, stderr, out)
+	}
+	var doc struct {
+		Summary struct {
+			ExitCode int `json:"exit_code"`
+		} `json:"summary"`
+		Servers []struct {
+			Outcome             string   `json:"outcome"`
+			Error               string   `json:"error"`
+			RestoredRevokedKeys []string `json:"restored_revoked_keys"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Servers) != 1 {
+		t.Fatalf("json: %v\n%s", err, out)
+	}
+	s := doc.Servers[0]
+	if s.Outcome != "failed" || doc.Summary.ExitCode != 2 || len(s.RestoredRevokedKeys) != 1 || s.RestoredRevokedKeys[0] != k.Fingerprint {
+		t.Errorf("doc = %+v", doc)
+	}
+	if !strings.Contains(s.Error, "tmp ("+k.Fingerprint+", on the revoked: list)") {
+		t.Errorf("error = %q, want the tombstoned key named", s.Error)
+	}
+	if got := e2eRemoteCat(t, host, port, kh, "e2eroll"); !strings.Contains(got, strings.Fields(stale)[1]) {
+		t.Errorf("the rollback did not put the file back:\n%s", got)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 2 {
+		t.Errorf("audit after the rollback exit = %d, want 2 (a revoked key is installed) (stderr: %s)\n%s", code, stderr, out)
+	}
+	// The rollback put the file back, so a fresh copy of the manifest drives
+	// the same revoke in text mode: the FAILED line names the key too.
+	m2 := writeE2EManifest(t, t.TempDir(), "roll-text.yaml", body)
+	code, out, stderr = runBin(t, bin, "revoke", "tmp", "--yes", "--config", m2, "--known-hosts", kh)
+	if code != 2 {
+		t.Fatalf("text revoke exit = %d, want 2 (stderr: %s)\n%s", code, stderr, out)
+	}
+	if !strings.Contains(out, "FAILED:") || !strings.Contains(out, "tmp ("+k.Fingerprint+", on the revoked: list)") {
+		t.Errorf("text report does not name the tombstoned key:\n%s", out)
+	}
+}

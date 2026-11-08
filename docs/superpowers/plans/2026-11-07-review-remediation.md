@@ -57,7 +57,7 @@
 | W3 | P14 (fixed order) | 5 | — | 5 |
 | W4 | P04-impl (the 4 W0 spec findings are built here) — **Done** 2026-11-08 | — | (4) | — |
 | after W4 | P10 spec (roadmap) | — | 8 | 8 |
-| W5+ | P08-impl, P09-impl, P10 slices (the 19 W1/P10 spec findings are built here) | — | (19) | — |
+| W5+ | P08-impl — **Done** 2026-11-08; P09-impl, P10 slices (the 19 W1/P10 spec findings are built here) | — | (19) | — |
 | **All** | 14 packages | **55** | **23** | **78** |
 
 Severity: 2 HIGH (PRD-1, TST-1), 21 MEDIUM, 55 LOW. The full map is in "Finding → package coverage".

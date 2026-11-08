@@ -1,7 +1,7 @@
 # Design: write-path failure semantics (login-check failures, unrestored lockouts, stale locks, interrupts, backup retention)
 
 - **Date:** 2026-11-08 (drafted in wave W1 of the review-remediation plan; approved and re-anchored to `4390667` the same day)
-- **Status:** Approved (owner, 2026-11-08).
+- **Status:** Implemented (W5, 2026-11-08).
 - **Owner decisions:** **D9 = (1)**, **D9b = yes**, **D10 = yes** (2026-11-07); **D10a = (2)**, **D10b = (2)**, **D9c = (2)** (2026-11-08). D11, D12 and D13 are stated defaults the owner left standing at approval. The implementation plan (P08-impl, W5+) is written against the tree this spec is anchored to.
 - **Findings:** WP-1 (MEDIUM), WP-2, WP-6, WP-7, WP-8 (LOW) from the 2026-11-07 whole-repo
   review. Section 7 also closes a W4 follow-up (`apply.Reserial` has no size check).

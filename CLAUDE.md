@@ -191,6 +191,7 @@ test that fails before the fix and passes after.
   `adopt --merge` skips the revoked key → audit exit 2 → `apply --server` → audit 0),
   `TestE2EStaleManifestRefused` (an old copy refused on every affected server, including
   a header-only one) and `TestE2EStaleManifestAfterHandEdit` (D4b).
+  `TestE2ERevokeRollbackRestoresRevokedKey` drives a refused login check to a rollback that puts a revoked key back (exit 2).
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
   `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
@@ -438,12 +439,7 @@ hint once after the per-server lines), a write-phase failure keeps its transport
 reserved for `pending` servers), apply
 JSON's rewrites gain `widens`, and Ctrl-C stops audit's fan-out without dialing
 queued servers.
-The write-failure semantics spec (P08: login-check failures sorted by stage, exit 2
-for an unrestored lockout, self-describing locks (owner, age, hand-removal command;
-never removed automatically), interrupts, backup retention; specced in
-`docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`, planned in
-`docs/superpowers/plans/2026-11-08-write-failure-semantics.md`) is approved with D10a, D10b
-and D9c answered; implementation is W5.
+Write-failure semantics (P08, specced in `docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`): the post-write login check is sorted by the stage it reached (`classifyProbe`); a login that never got past authentication is retried and then reported UNPROVEN with the file kept, a refused login or anything after a successful one restores it. Exit 2 now also covers an unrestored lockout, a rollback that puts back a key on the `revoked:` list and a post-write changed or `@revoked` host key. Locks record owner and age and print their removal command (never removed automatically); a dropped connection reconnects once and re-checks under the lock; moved-aside `authorized_keys2` copies are never overwritten and a keys2-only write leaves `authorized_keys` and `.bak` alone; a mixed-source run proves an unrestricted `--identity` key on its own, warn-only; a serial bump that would overflow the read limit withholds the run.
 The audit trust posture spec (P09: posture probe, operator cannot-log-in critical
 tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`,
 built-in weak/expired key rules via D29; specced in
@@ -565,7 +561,7 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
-Fuzz oracles and corpus (P13, round 2): every one of the 20 `Fuzz*` targets has a
+Fuzz oracles and corpus (P13, round 2): every one of the 21 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on

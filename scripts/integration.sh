@@ -82,7 +82,7 @@ FIXTURE_A='
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll; do
       mkuser "$u"
       mkdir -p "/home/$u/.ssh"
     done
@@ -91,7 +91,7 @@ FIXTURE_A='
     # (revoke --server and rotate --keep-old E2E); stala/stalb/handed: the
     # agent key alone (revocation-memory E2E); unparse: plus a line apply
     # cannot parse.
-    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed; do
+    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed maxauth; do
       cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
     done
     { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
@@ -109,6 +109,8 @@ FIXTURE_A='
     # TestE2ERevokeNoResurrect (revocation-memory E2E).
     cat /seed/key.pub /seed/stale.pub > /home/nra/.ssh/authorized_keys
     cat /seed/key.pub /seed/stale.pub > /home/nrb/.ssh/authorized_keys
+    # e2eroll: the agent key + the stale key the rollback E2E revokes.
+    cat /seed/key.pub /seed/stale.pub > /home/e2eroll/.ssh/authorized_keys
     # virgin: logs in via authorized_keys2; the default file stays absent
     # until apply creates it (first-contact case).
     cp /seed/key.pub /home/virgin/.ssh/authorized_keys2
@@ -116,7 +118,7 @@ FIXTURE_A='
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
@@ -149,6 +151,11 @@ FIXTURE_A='
     sshd_expect "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2"
     sshd_expect "permitrootlogin (prohibit-password|without-password)"
     sshd_expect "persourcepenalties no"
+    # maxauth: refuses after two failed keys, for the MaxAuthTries login-check
+    # test. A Match block must end the file, so it is appended (sshd_set
+    # prepends).
+    printf "Match User maxauth\n  MaxAuthTries 2\n" >> /etc/ssh/sshd_config
+    sshd -T -C user=maxauth,host=x,addr=127.0.0.1 | grep -Eqix "maxauthtries 2" || { echo "sshd -T lacks MaxAuthTries 2 for maxauth" >&2; exit 1; }
     exec /usr/sbin/sshd -D -e
 '
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -413,6 +415,9 @@ func TestIntegrationConcurrentApplyLocked(t *testing.T) {
 	if !errors.As(err, &locked) {
 		t.Fatalf("Apply = %v, want *LockedError", err)
 	}
+	if locked.Known || locked.Owner != ownerUnknown {
+		t.Errorf("bare lock = %+v, want the unknown owner", locked)
+	}
 	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != before {
 		t.Errorf("file = %q, want it untouched", got)
 	}
@@ -458,8 +463,9 @@ func TestIntegrationInterruptedWriteLeavesOriginal(t *testing.T) {
 		}
 		return sshconn.Exec(ctx, client, cmd, stdin)
 	}
-	if err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, content)); err == nil {
-		t.Fatal("Apply over a dropped connection succeeded")
+	err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, content))
+	if err == nil || !strings.Contains(err.Error(), "connection dropped before the rename; original untouched") {
+		t.Fatalf("Apply over a dropped connection = %v, want the re-check's verdict", err)
 	}
 	// The remote script finishes asynchronously after the drop.
 	deadline := time.Now().Add(10 * time.Second)
@@ -824,5 +830,180 @@ func TestIntegrationProbeOrderMatchesNextRun(t *testing.T) {
 	unordered := &sshconn.Dialer{KnownHostsPath: plain.KnownHostsPath, Creds: creds, DialTimeout: plain.DialTimeout}
 	if got := remoteOut(t, unordered, srv, `cat "$HOME/.ssh/authorized_keys"`); got != "forced\n" {
 		t.Errorf("default order read %q, want %q — the control no longer exercises the hazard", got, "forced\n")
+	}
+}
+
+// closedPort returns a TCP port on 127.0.0.1 nothing listens on.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// TestIntegrationProbeTransientKeepsFile: the write lands, every login
+// check dial is refused: UNPROVEN, and the new file stays.
+func TestIntegrationProbeTransientKeepsFile(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "probeok", Host: host, Port: port, User: "probeok"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
+	closed := closedPort(t)
+	w.sleep = func(context.Context, time.Duration) error { return nil } // no 17 s of real waits
+	w.connect = func(ctx context.Context, s config.Server, o sshconn.ConnectOptions) (*sshconn.Conn, error) {
+		if len(o.Only) > 0 {
+			s.Port = closed
+		}
+		return w.Dialer.ConnectWith(ctx, s, o)
+	}
+	content := itRendered(t)
+	err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, content))
+	var un *fleet.UnprovenError
+	if !errors.As(err, &un) || un.Attempts != 4 || fleet.ErrorKindOf(err) != fleet.ErrorKindDial {
+		t.Fatalf("Apply = %v, want UNPROVEN after 4 dial attempts", err)
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != string(content) {
+		t.Errorf("file = %q, want the new file kept", got)
+	}
+}
+
+// TestIntegrationStaleLockReportsOwnerAndAge: a held lock's record reaches
+// the refusal; the printed removal script clears it; nothing else does.
+func TestIntegrationStaleLockReportsOwnerAndAge(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "locked", Host: host, Port: port, User: "locked"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
+	lock := `"$HOME/.ssh/authorized_keys.sshepherd.lock"`
+	remoteOut(t, w.Dialer, srv, `mkdir `+lock+` && printf 'v1 ci-runner-3 4121 99 %s\n' "$(($(date +%s) - 192))" > `+lock+`/owner`)
+	t.Cleanup(func() { remoteOut(t, w.Dialer, srv, `rm -f `+lock+`/owner; rmdir `+lock+` 2>/dev/null || :`) })
+
+	err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, itRendered(t)))
+	var locked *LockedError
+	if !errors.As(err, &locked) || !locked.Known || locked.Owner != "ci-runner-3 pid 4121" {
+		t.Fatalf("Apply = %v, want a known *LockedError", err)
+	}
+	if locked.Age < 190*time.Second || locked.Age > 5*time.Minute {
+		t.Errorf("Age = %v, want about 192s", locked.Age)
+	}
+	if !strings.Contains(locked.RemoveCmd, srv.User+"@"+srv.Host) {
+		t.Errorf("RemoveCmd = %q", locked.RemoveCmd)
+	}
+	if out := remoteOut(t, w.Dialer, srv, `if [ -d `+lock+` ]; then echo held; fi`); strings.TrimSpace(out) != "held" {
+		t.Fatal("the lock must never be removed automatically")
+	}
+	remoteOut(t, w.Dialer, srv, lockRemovalScript(sshconn.DefaultAuthorizedKeysPath))
+	if out := remoteOut(t, w.Dialer, srv, `if [ -d `+lock+` ]; then echo held; fi`); strings.TrimSpace(out) == "held" {
+		t.Error("the printed removal script did not clear the lock")
+	}
+}
+
+// TestIntegrationKeys2DisabledNeverOverwritten: an earlier disabled copy
+// survives the next disable, and the new copy gets its own name.
+func TestIntegrationKeys2DisabledNeverOverwritten(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "writer", Host: host, Port: port, User: "writer"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itDrifted(t))})
+	disabled := `"$HOME/.ssh/authorized_keys2` + fleet.Keys2DisabledSuffix + `"`
+	t.Cleanup(func() {
+		remoteOut(t, w.Dialer, srv, `rm -f "$HOME"/.ssh/authorized_keys2`+fleet.Keys2DisabledSuffix+`*`)
+	})
+	line := testkeys.Line(t, 9) + " revoked@example"
+	remoteOut(t, w.Dialer, srv, `printf 'earlier\n' > `+disabled+` && printf '%s\n' '`+line+`' > "$HOME/.ssh/authorized_keys2"`)
+
+	req := itRequest(t, w.Dialer, srv, itRendered(t))
+	req.DisableKeys2 = true
+	if err := w.Apply(itCtx(t), srv, req); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat `+disabled); got != "earlier\n" {
+		t.Errorf("earlier copy = %q, want it kept", got)
+	}
+	ls := remoteOut(t, w.Dialer, srv, `ls -a "$HOME/.ssh"`)
+	var stamped string
+	for f := range strings.FieldsSeq(ls) {
+		if name, ok := parseKeys2Name("sshepherd-keys2 " + f); ok && name != "" && name != "authorized_keys2"+fleet.Keys2DisabledSuffix {
+			stamped = name
+		}
+	}
+	if stamped == "" {
+		t.Fatalf("no timestamped copy in %q", ls)
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/`+stamped+`"`); got != line+"\n" {
+		t.Errorf("new copy = %q", got)
+	}
+}
+
+// TestIntegrationProbeHostKeyChangedKeepsFileExits2: the login check meets
+// a changed host key (its known_hosts records another key): UNPROVEN, not
+// retried, the file kept, and the kind is one the exit-2 rule reads.
+func TestIntegrationProbeHostKeyChangedKeepsFileExits2(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "probefrom", Host: host, Port: port, User: "probefrom"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
+	swappedFile := sshtest.KnownHostsFile(t, fmt.Sprintf("[%s]:%d %s", host, port, testkeys.Line(t, 7)))
+	swapped := &sshconn.Dialer{KnownHostsPath: swappedFile, Creds: w.Dialer.Creds, DialTimeout: w.Dialer.DialTimeout}
+	onlyDials := 0
+	w.connect = func(ctx context.Context, s config.Server, o sshconn.ConnectOptions) (*sshconn.Conn, error) {
+		if len(o.Only) > 0 {
+			onlyDials++
+			return swapped.ConnectWith(ctx, s, o)
+		}
+		return w.Dialer.ConnectWith(ctx, s, o)
+	}
+	content := itRendered(t)
+	err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, content))
+	var un *fleet.UnprovenError
+	if !errors.As(err, &un) || !un.HostKey || onlyDials != 1 {
+		t.Fatalf("Apply = %v, only dials = %d; want a host-key UNPROVEN with no retry", err, onlyDials)
+	}
+	if !fleet.HostKeyAlert(fleet.ErrorKindOf(err)) {
+		t.Errorf("kind = %q, want one apply.ExitCode maps to 2", fleet.ErrorKindOf(err))
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != string(content) {
+		t.Errorf("file = %q, want the new file kept", got)
+	}
+}
+
+// TestIntegrationProbeMaxAuthTriesRestores: more refused survivors than
+// sshd's MaxAuthTries: the disconnect is REJECTED, with no retry, and the
+// previous file comes back.
+func TestIntegrationProbeMaxAuthTriesRestores(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "maxauth", Host: host, Port: port, User: "maxauth"}
+	reseed(t, w.Dialer, srv, fixture{keys: strp(itPub(t) + "\n")})
+	before := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`)
+	var files []keyfile.Identity
+	var survivors []string
+	for i := byte(0); i < 4; i++ {
+		k := sshtest.Key(100 + i)
+		files = append(files, sshtest.Identity(t, "/k/refused", k))
+		survivors = append(survivors, sshtest.Fingerprint(t, k))
+	}
+	agentFP := itSurvivors(t)[0]
+	w.Dialer.Creds = &sshconn.Credentials{Files: files, AgentSock: os.Getenv("SSH_AUTH_SOCK")}
+	w.Dialer.PreferKeys = func(config.Server) []string { return []string{agentFP} } // the write login must not exhaust MaxAuthTries
+	onlyDials := 0
+	w.connect = func(ctx context.Context, s config.Server, o sshconn.ConnectOptions) (*sshconn.Conn, error) {
+		if len(o.Only) > 0 {
+			onlyDials++
+		}
+		return w.Dialer.ConnectWith(ctx, s, o)
+	}
+	req := Request{Content: itRendered(t), Expect: itSnapshot(t, w.Dialer, srv), Survivors: survivors}
+	err := w.Apply(itCtx(t), srv, req)
+	var lo *LockoutError
+	if !errors.As(err, &lo) || lo.Restore != nil || onlyDials != 1 {
+		t.Fatalf("Apply = %v, only dials = %d; want a restored *LockoutError with no retry", err, onlyDials)
+	}
+	if !sshconn.AuthExhausted(lo.Probe) || fleet.ErrorKindOf(lo.Probe) != fleet.ErrorKindHandshake {
+		t.Errorf("probe = %v (kind %q), want the MaxAuthTries signal", lo.Probe, fleet.ErrorKindOf(lo.Probe))
+	}
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != before {
+		t.Errorf("file = %q, want the previous version restored", got)
 	}
 }
