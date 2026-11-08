@@ -370,6 +370,10 @@ their remediation as a separate `hint` (text: once per distinct hint; JSON:
 additive `hint`), a write-phase failure keeps its transport `error_kind`, apply
 JSON's rewrites gain `widens`, and Ctrl-C stops audit's fan-out without dialing
 queued servers.
+The write-failure semantics spec (P08: login-check failures sorted by stage, exit 2
+for an unrestored lockout, stale-lock removal, interrupts, backup retention; specced in
+`docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`) is drafted
+with D9–D10 answered and awaits approval; implementation is W5+.
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0 or 1 (specced in
