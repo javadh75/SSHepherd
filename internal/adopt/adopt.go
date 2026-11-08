@@ -31,8 +31,9 @@ type Extension struct {
 	Servers []string // sorted
 }
 
-// Issue is a server whose keys could not be (fully) read; the cmd layer
-// enforces the strict/--partial gate on these. Detail can embed
+// Issue is a server whose keys could not be (fully) read, or that holds a
+// line sshd ignores; the cmd layer enforces the strict/--partial gate on
+// these. Detail can embed
 // remote-influenced text, but the sshread and authkeys layers control-strip
 // it at the source, so it is safe to print.
 type Issue struct {
@@ -74,6 +75,17 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: pe.Error()})
 		}
 		for _, k := range r.Diff.Unauthorized {
+			// sshd rejects a line with an unknown option, an unquoted value
+			// or a bad expiry-time, so this key never logged in here. Adopting
+			// it would fail the manifest's own validation (the generated
+			// manifest is self-checked); report it like an unparseable line
+			// so the strict gate / --partial decide. err quotes the option
+			// with %q, so remote control bytes are escaped.
+			if err := authkeys.OptionIssue(k.Options); err != nil {
+				p.Issues = append(p.Issues, Issue{Server: r.Server.Name,
+					Detail: fmt.Sprintf("key %s: sshd ignores this line: %v", k.Fingerprint, err)})
+				continue
+			}
 			if owner, known := cfg.OwnerOf(k.Fingerprint); known {
 				if cfg.ExceptCarveOut(owner.Name, r.Server.Name) {
 					p.Warnings = append(p.Warnings, fmt.Sprintf(
@@ -110,7 +122,18 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			}
 		}
 	}
-	for _, u := range cfg.Users { // manifest order keeps output deterministic
+	p.Extensions = extensions(cfg, extByUser)
+	var nameWarnings []string
+	p.NewUsers, nameWarnings = nameUsers(cfg, byFP, order)
+	p.Warnings = append(p.Warnings, nameWarnings...)
+	return p
+}
+
+// extensions turns the per-user found-on sets into Extensions, in manifest
+// user order (deterministic output) with each server list sorted.
+func extensions(cfg *config.Config, extByUser map[string]map[string]bool) []Extension {
+	var out []Extension
+	for _, u := range cfg.Users {
 		srvSet := extByUser[u.Name]
 		if len(srvSet) == 0 {
 			continue
@@ -120,12 +143,9 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			srvs = append(srvs, s)
 		}
 		sort.Strings(srvs)
-		p.Extensions = append(p.Extensions, Extension{User: u.Name, Servers: srvs})
+		out = append(out, Extension{User: u.Name, Servers: srvs})
 	}
-	var nameWarnings []string
-	p.NewUsers, nameWarnings = nameUsers(cfg, byFP, order)
-	p.Warnings = append(p.Warnings, nameWarnings...)
-	return p
+	return out
 }
 
 // stripComment returns k's line without its trailing comment: options (as

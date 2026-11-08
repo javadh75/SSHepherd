@@ -580,3 +580,51 @@ access:
 		t.Errorf("names = %v, want %v", names, want)
 	}
 }
+
+// A found key whose options sshd rejects never logs in: it is an Issue (strict
+// gate / --partial), never an adopted user or an access extension.
+func TestBuildBadOptionLineIsAnIssue(t *testing.T) {
+	for _, prefix := range []string{"zzz ", "no-ptty ", "from=1.2.3.4 "} {
+		t.Run(prefix, func(t *testing.T) {
+			cfg := testCfg(t)
+			op := testkeys.Line(t, 1)
+			bad := prefix + testkeys.Line(t, 7) + " carol@laptop"
+			good := testkeys.Line(t, 8) + " dave@x"
+			r := &fakeReader{byName: map[string]audit.ReadResult{
+				"db-1":  {Content: []byte(op + "\n" + bad + "\n" + good + "\n")},
+				"web-1": {Content: []byte(op + "\n")},
+				"web-2": {Content: []byte(op + "\n")},
+			}}
+			p := Build(cfg, runAudit(t, cfg, r))
+			if len(p.Issues) != 1 || p.Issues[0].Server != "db-1" ||
+				!strings.Contains(p.Issues[0].Detail, "sshd ignores this line: option ") {
+				t.Fatalf("Issues = %+v, want one 'sshd ignores this line' issue on db-1", p.Issues)
+			}
+			if len(p.NewUsers) != 1 || p.NewUsers[0].Name != "dave-x" {
+				t.Errorf("NewUsers = %+v, want only dave-x (the bad line is not adopted)", p.NewUsers)
+			}
+		})
+	}
+}
+
+// A known user's key on a line sshd ignores is not access: no extension.
+func TestBuildBadOptionKnownKeyNotExtended(t *testing.T) {
+	cfg := extCfg(t) // existing helper (adopt_test.go:264): alice granted web-1 only
+	op, al := testkeys.Line(t, 1), testkeys.Line(t, 2)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + "zzz " + al + "\n")}, // outside alice's grants, line sshd ignores
+		"web-1": {Content: []byte(op + "\n" + al + "\n")},          // granted: not an extension
+		"web-2": {Content: []byte(op + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Extensions) != 0 {
+		t.Errorf("Extensions = %+v, want none (sshd ignores the db-1 line, so it grants nothing)", p.Extensions)
+	}
+	if len(p.Issues) != 1 || p.Issues[0].Server != "db-1" ||
+		!strings.Contains(p.Issues[0].Detail, "sshd ignores this line: option ") {
+		t.Errorf("Issues = %+v, want one 'sshd ignores this line' issue on db-1", p.Issues)
+	}
+	if len(p.NewUsers) != 0 {
+		t.Errorf("NewUsers = %+v, want none (the key is alice's)", p.NewUsers)
+	}
+}

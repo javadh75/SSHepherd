@@ -2,6 +2,7 @@ package sshcfg
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,11 @@ type parser struct {
 	guards     [][]string // Include context new Host blocks inherit (see block)
 	warnings   []string
 	skipping   bool // inside a Match block: drop lines until the next Host
+
+	chain        []string        // canonical paths of the files being parsed, outermost first
+	reads        int             // included files read so far
+	budgetWarned bool            // the read-budget warning was emitted
+	cycleWarned  map[string]bool // "from:line -> target" cycles already warned
 }
 
 func newParser(includeDir, home string) *parser {
@@ -107,6 +113,7 @@ func (p *parser) parseFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("read ssh config: %w", err)
 	}
+	p.chain = []string{canonical(path)}
 	p.parseBytes(data, path, 0)
 	return nil
 }
@@ -300,8 +307,40 @@ func expandHostName(raw, alias string) (string, error) {
 	return b.String(), nil
 }
 
-// maxIncludeDepth mirrors OpenSSH's cap on nested Include directives.
-const maxIncludeDepth = 16
+const (
+	maxIncludeDepth = 16      // mirrors OpenSSH's cap on nested Include
+	maxIncludeReads = 1024    // total included-file reads per Load
+	maxIncludeBytes = 1 << 20 // per included file
+)
+
+// canonical resolves symlinks so a cycle through a link is still a cycle;
+// a path that cannot be resolved falls back to its cleaned absolute form.
+func canonical(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
+// readCapped reads at most limit bytes; a larger file is an error.
+func readCapped(path string, limit int) ([]byte, error) {
+	f, err := os.Open(path) // #nosec G304 -- path comes from the user's own config/Include
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read: %w", err)
+	}
+	if len(data) > limit {
+		return nil, fmt.Errorf("larger than %d bytes", limit)
+	}
+	return data, nil
+}
 
 // include expands one Include pattern. A leading ~/ resolves against the home
 // directory and other relative patterns against includeDir (~/.ssh in
@@ -310,7 +349,10 @@ const maxIncludeDepth = 16
 // opens inherit the enclosing block as a guard, and once each file returns
 // the enclosing block and Match-skip state are restored, as OpenSSH
 // restores its active flag. Reading errors only warn; nesting is capped
-// like OpenSSH.
+// like OpenSSH. Unlike OpenSSH, a file already on the current Include chain
+// (a cycle, also through a symlink) is skipped with a warning, the whole
+// Load reads at most maxIncludeReads included files, and an included file
+// over maxIncludeBytes is skipped as unreadable.
 func (p *parser) include(pattern, fromPath string, line, depth int) {
 	if depth+1 > maxIncludeDepth {
 		p.warnf("%s:%d: Include depth exceeds %d, skipping %q", fromPath, line, maxIncludeDepth, pattern)
@@ -332,13 +374,45 @@ func (p *parser) include(pattern, fromPath string, line, depth int) {
 		return
 	}
 	for _, m := range matches {
-		data, err := os.ReadFile(m) // #nosec G304 -- path comes from the user's own config/Include
+		c := canonical(m)
+		if slices.Contains(p.chain, c) {
+			// OpenSSH has no cycle check (it dies at depth 16); re-reading a
+			// file already on the chain adds nothing and is exponential with
+			// several self-including fragments.
+			p.warnCycle(fromPath, line, m, c)
+			continue
+		}
+		if p.reads >= maxIncludeReads {
+			if !p.budgetWarned {
+				p.budgetWarned = true
+				p.warnf("%s:%d: more than %d Include file reads, skipping the rest", fromPath, line, maxIncludeReads)
+			}
+			return
+		}
+		p.reads++
+		data, err := readCapped(m, maxIncludeBytes)
 		if err != nil {
 			p.warnf("%s:%d: Include %s: unreadable: %v", fromPath, line, m, err)
 			continue
 		}
+		p.chain = append(p.chain, c)
 		p.parseIncluded(data, m, fromPath, line, depth+1)
+		p.chain = p.chain[:len(p.chain)-1]
 	}
+}
+
+// warnCycle warns once per Include line and target that the target is
+// already being read.
+func (p *parser) warnCycle(fromPath string, line int, match, canon string) {
+	key := fmt.Sprintf("%s:%d -> %s", fromPath, line, canon)
+	if p.cycleWarned[key] {
+		return
+	}
+	if p.cycleWarned == nil {
+		p.cycleWarned = make(map[string]bool)
+	}
+	p.cycleWarned[key] = true
+	p.warnf("%s:%d: Include cycle: %s is already being read, skipping", fromPath, line, match)
 }
 
 // parseIncluded parses one included file within the enclosing block's

@@ -52,11 +52,14 @@ type RewriteRow struct {
 	ActualOptions  []string // on-server options, replaced by Key.Options
 	CommentDiffers bool
 	OptionsDiffer  bool
-	// Loosens lists restrictive on-server options (from=, command=,
-	// restrict, no-*, expiry-time=, permitopen=, permitlisten=,
-	// cert-authority, principals=) the rewrite drops — the key gains access
-	// it does not have today.
+	// Loosens lists restrictive on-server options the rewrite drops (from=,
+	// command=, restrict, the no-* restrictions, verify-required,
+	// expiry-time=, permitopen=, permitlisten=, cert-authority, principals=).
 	Loosens []string
+	// Widens lists relaxing options the rewrite adds (no-touch-required;
+	// pty/port-/agent-/X11-forwarding/user-rc when both lines carry restrict).
+	// Together with Loosens: the key gains access it does not have today.
+	Widens []string
 }
 
 // Normalize captures byte drift the per-key rows don't explain.
@@ -271,7 +274,7 @@ func rewriteRows(r audit.ServerResult, entries []authkeys.RenderEntry) []Rewrite
 			OptionsDiffer:  !slices.Equal(actual.Options, e.Key.Options),
 		}
 		if row.OptionsDiffer {
-			row.Loosens = droppedRestrictions(actual.Options, e.Key.Options)
+			row.Loosens, row.Widens = authkeys.Loosening(actual.Options, e.Key.Options)
 		}
 		if row.CommentDiffers || row.OptionsDiffer {
 			rows = append(rows, row)
@@ -514,44 +517,8 @@ func Survivors(desired []authkeys.Key, held map[string]bool) []authkeys.Key {
 }
 
 // certOnly reports whether options make the line a certificate-authority
-// entry that does not log in with the bare key.
-func certOnly(options []string) bool {
-	for _, o := range options {
-		lo := strings.ToLower(o)
-		if lo == "cert-authority" || strings.HasPrefix(lo, "principals=") {
-			return true
-		}
-	}
-	return false
-}
-
-// droppedRestrictions lists the restrictive options in actual that desired
-// does not carry verbatim (a changed from= value counts as dropped: the old
-// restriction no longer applies).
-func droppedRestrictions(actual, desired []string) []string {
-	var out []string
-	for _, o := range actual {
-		if isRestriction(o) && !slices.Contains(desired, o) {
-			out = append(out, o)
-		}
-	}
-	return out
-}
-
-// isRestriction reports whether an authorized_keys option narrows what the
-// key may do: removing it widens access.
-func isRestriction(o string) bool {
-	lo := strings.ToLower(o)
-	if lo == "restrict" || lo == "cert-authority" || strings.HasPrefix(lo, "no-") {
-		return true
-	}
-	for _, prefix := range []string{"from=", "command=", "expiry-time=", "permitopen=", "permitlisten=", "principals="} {
-		if strings.HasPrefix(lo, prefix) {
-			return true
-		}
-	}
-	return false
-}
+// entry that does not log in with the bare key (see authkeys.CertOnly).
+func certOnly(options []string) bool { return authkeys.CertOnly(options) }
 
 func fpInEntries(entries []authkeys.RenderEntry, fp string) bool {
 	for _, e := range entries {
@@ -572,19 +539,10 @@ func survivorLabel(cfg *config.Config, k authkeys.Key) string {
 	return k.Fingerprint
 }
 
-// restrictive authorized_keys options can limit whether a future
-// non-interactive SSHepherd login works at all: from= (source filter),
-// command= (no shell), restrict (everything off), expiry-time=.
-func hasRestrictiveOption(options []string) bool {
-	for _, o := range options {
-		lo := strings.ToLower(o)
-		if lo == "restrict" || strings.HasPrefix(lo, "from=") ||
-			strings.HasPrefix(lo, "command=") || strings.HasPrefix(lo, "expiry-time=") {
-			return true
-		}
-	}
-	return false
-}
+// hasRestrictiveOption: options that can stop a future non-interactive
+// SSHepherd login outright (see authkeys.BlocksLogin). Name kept: exec.go
+// orders probe survivors with it.
+func hasRestrictiveOption(options []string) bool { return authkeys.BlocksLogin(options) }
 
 // ExitCode maps plans to the process exit code (monitoring-style, mirroring
 // audit): 0 when every targeted server is converged — already, or applied

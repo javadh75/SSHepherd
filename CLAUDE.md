@@ -355,6 +355,13 @@ saves nothing, `--no-apply` saves without connecting. Apply's run body is now
 (skipped for a piped `--config`, which edits refuse).
 Report count strings are pluralized. The E2E loop is adopt → apply → revoke
 --key → audit → rotate → audit, plus a headless `rotate`.
+Review remediation W1: authorized_keys option meaning lives in one table
+(`internal/authkeys/options.go`) used by manifest validation (a malformed
+`expiry-time` now fails the load), apply's loosening highlight (`verify-required`
+restricts; added relaxations flagged via `RewriteRow.Widens`), the lockout-guard
+warning and rotate's expiry check; adopt turns server lines sshd would ignore into
+strict/`--partial` issues. sshcfg `Include` skips cycles and caps reads (1024 files,
+1 MiB each), and a `ssh -G` differential test checks sshcfg.
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0 or 1 (specced in

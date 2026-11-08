@@ -266,30 +266,15 @@ func certError(arg string) error {
 // expiryOption returns the expiry-time= option of a key line's options,
 // verbatim ("" when none).
 func expiryOption(options []string) string {
-	for _, o := range options {
-		if strings.HasPrefix(strings.ToLower(o), "expiry-time=") {
-			return o
-		}
-	}
-	return ""
+	o, _ := authkeys.FindOption(options, "expiry-time")
+	return o
 }
 
 // expiryPassed reports whether an expiry-time="…" option (sshd's
 // YYYYMMDD[HHMM[SS]] format, local time unless suffixed Z for UTC) is at
-// or before now.
+// or before now. Parsing is authkeys' option table, the manifest's rule.
 func expiryPassed(option string, now time.Time) (bool, error) {
-	_, v, _ := strings.Cut(option, "=")
-	v = strings.Trim(v, `"`)
-	loc := time.Local
-	if strings.HasSuffix(v, "Z") || strings.HasSuffix(v, "z") {
-		v, loc = v[:len(v)-1], time.UTC
-	}
-	layouts := map[int]string{8: "20060102", 12: "200601021504", 14: "20060102150405"}
-	layout, ok := layouts[len(v)]
-	if !ok {
-		return false, fmt.Errorf("cannot read %s (want YYYYMMDD[HHMM[SS]][Z])", option)
-	}
-	t, err := time.ParseInLocation(layout, v, loc)
+	t, err := authkeys.ExpiryTime(option, time.Local)
 	if err != nil {
 		return false, fmt.Errorf("cannot read %s (want YYYYMMDD[HHMM[SS]][Z])", option)
 	}

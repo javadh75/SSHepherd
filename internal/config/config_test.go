@@ -331,6 +331,15 @@ users:
 users:
   - {name: alice, keys: ["no-pty=\"yes\" KEYA"]}
 `, "does not take a value"},
+		// expiry-time with a value sshd cannot parse: sshd skips the line, so the manifest must not hold it.
+		{"bad expiry value", `
+users:
+  - {name: alice, keys: ['expiry-time="2027" KEYA']}
+`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
+		{"bad expiry date", `
+users:
+  - {name: alice, keys: ['expiry-time="2027xx01" KEYA']}
+`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
 		{"key type mismatch", `
 users:
   - {name: alice, keys: ["ssh-rsa BLOBA"]}
@@ -448,6 +457,26 @@ func TestKeyOptionsAccepted(t *testing.T) {
 				t.Errorf("options not parsed for %q", tt.opts)
 			}
 		})
+	}
+}
+
+// TestOptionAllowListIsAuthkeysTable pins that the manifest allow-list is
+// authkeys' option table (one model with apply and rotate), and that the
+// error text README quotes is unchanged.
+func TestOptionAllowListIsAuthkeysTable(t *testing.T) {
+	if got := optionIssue("verify-required"); got != "" {
+		t.Errorf(`optionIssue("verify-required") = %q, want ""`, got)
+	}
+	if got, want := optionIssue("no-ptty"), "is not a recognized authorized_keys option"; got != want {
+		t.Errorf(`optionIssue("no-ptty") = %q, want %q`, got, want)
+	}
+	if got, want := optionIssue(`expiry-time="2027"`), authkeys.CheckOption(`expiry-time="2027"`); got != want || got == "" {
+		t.Errorf(`optionIssue(expiry-time="2027") = %q, want authkeys' %q`, got, want)
+	}
+	_, err := Parse([]byte("users:\n  - {name: alice, keys: ['zzz " + testkeys.Line(t, 1) + "']}\n"))
+	want := `user "alice" key 1: option "zzz" is not a recognized authorized_keys option`
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want %q", err, want)
 	}
 }
 

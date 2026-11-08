@@ -1,0 +1,122 @@
+package authkeys
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestCheckOption(t *testing.T) {
+	tests := []struct{ opt, want string }{
+		{"no-pty", ""},
+		{"No-PTY", ""}, // sshd matches names case-insensitively
+		{`from="10.0.0.0/8,!10.0.0.1"`, ""},
+		{"verify-required", ""},
+		{"no-touch-required", ""},
+		{"zzz", "is not a recognized authorized_keys option"},
+		{"no-ptty", "is not a recognized authorized_keys option"}, // typo
+		{"from=1.2.3.4", `requires a quoted value (name="...")`},
+		{`no-pty="x"`, "does not take a value"},
+		{"no-pty\x1b[31m", "contains control or format characters"},
+		{`expiry-time="20270101"`, ""},
+		{`expiry-time="202701011200Z"`, ""},
+		{`expiry-time="2027"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
+		{`expiry-time="2027xx01"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
+	}
+	for _, tt := range tests {
+		if got := CheckOption(tt.opt); got != tt.want {
+			t.Errorf("CheckOption(%q) = %q, want %q", tt.opt, got, tt.want)
+		}
+	}
+}
+
+func TestOptionIssue(t *testing.T) {
+	if err := OptionIssue([]string{"restrict", `command="/bin/true"`}); err != nil {
+		t.Errorf("clean options: err = %v", err)
+	}
+	err := OptionIssue([]string{"no-pty", "zzz", "no-ptty"})
+	if err == nil || err.Error() != `option "zzz" is not a recognized authorized_keys option` {
+		t.Errorf("err = %v, want the first bad option named", err)
+	}
+	// %q keeps remote control bytes out of the message.
+	if err := OptionIssue([]string{"a\x1bb"}); err == nil || strings.ContainsRune(err.Error(), 0x1b) {
+		t.Errorf("err = %q, want an escaped option", err)
+	}
+}
+
+func TestLoosening(t *testing.T) {
+	tests := []struct {
+		name                    string
+		actual, desired         []string
+		wantDropped, wantWidens []string
+	}{
+		{"none on server", nil, []string{"no-pty"}, nil, nil},
+		{"all dropped", []string{`from="10.0.0.5"`, `command="/x"`, "no-pty", "tty"}, nil,
+			[]string{`from="10.0.0.5"`, `command="/x"`, "no-pty"}, nil},
+		{"kept verbatim", []string{"restrict", `expiry-time="20270101"`}, []string{"restrict", `expiry-time="20270101"`}, nil, nil},
+		{"changed value counts", []string{`from="10.0.0.5"`}, []string{`from="0.0.0.0/0"`}, []string{`from="10.0.0.5"`}, nil},
+		{"forwarding and ca", []string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}, nil,
+			[]string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}, nil},
+		// COR-4
+		{"verify-required dropped loosens", []string{"verify-required"}, nil, []string{"verify-required"}, nil},
+		{"no-touch-required dropped tightens", []string{"no-touch-required"}, nil, nil, nil},
+		{"no-touch-required added loosens", nil, []string{"no-touch-required"}, nil, []string{"no-touch-required"}},
+		{"re-enabler added under restrict", []string{"restrict"}, []string{"restrict", "port-forwarding"}, nil, []string{"port-forwarding"}},
+		{"re-enabler without restrict is a no-op", nil, []string{"pty"}, nil, nil},
+		{"restrict newly added with pty", nil, []string{"restrict", "pty"}, nil, nil},
+		{"restrict dropped", []string{"restrict", "pty"}, []string{"pty"}, []string{"restrict"}, nil},
+		{"unknown server option not classified", []string{"no-ptty"}, nil, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, w := Loosening(tt.actual, tt.desired)
+			if strings.Join(d, "|") != strings.Join(tt.wantDropped, "|") || strings.Join(w, "|") != strings.Join(tt.wantWidens, "|") {
+				t.Errorf("Loosening = (%q, %q), want (%q, %q)", d, w, tt.wantDropped, tt.wantWidens)
+			}
+		})
+	}
+}
+
+func TestBlocksLoginAndCertOnly(t *testing.T) {
+	for _, o := range []string{"restrict", `from="1.2.3.4"`, `command="/bin/true"`, `expiry-time="20270101"`, `FROM="10.0.0.1"`} {
+		if !BlocksLogin([]string{o}) {
+			t.Errorf("BlocksLogin(%q) = false, want true", o)
+		}
+	}
+	for _, o := range []string{"no-pty", "no-agent-forwarding", "verify-required", "no-ptty"} {
+		if BlocksLogin([]string{o}) {
+			t.Errorf("BlocksLogin(%q) = true, want false", o)
+		}
+	}
+	if !CertOnly([]string{"cert-authority"}) || !CertOnly([]string{`Principals="a"`}) || CertOnly([]string{"restrict"}) {
+		t.Error("CertOnly: want true for cert-authority/principals= only")
+	}
+}
+
+func TestExpiryTime(t *testing.T) {
+	got, err := ExpiryTime(`expiry-time="202701021504Z"`, time.Local)
+	if err != nil || !got.Equal(time.Date(2027, 1, 2, 15, 4, 0, 0, time.UTC)) {
+		t.Errorf("ExpiryTime = %v, %v", got, err)
+	}
+	if opt, ok := FindOption([]string{"no-pty", `Expiry-Time="20270101"`}, "expiry-time"); !ok || opt != `Expiry-Time="20270101"` {
+		t.Errorf("FindOption = %q, %v, want the option verbatim", opt, ok)
+	}
+}
+
+func FuzzCheckOption(f *testing.F) {
+	for _, s := range []string{"no-pty", `from="x"`, "zzz", `expiry-time="2027"`, "a=b=c", `command="\"x\""`} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, opt string) {
+		if CheckOption(opt) == "" {
+			name, _, _ := strings.Cut(opt, "=")
+			if _, ok := options[strings.ToLower(name)]; !ok {
+				t.Errorf("accepted unknown option %q", opt)
+			}
+		}
+		d, w := Loosening([]string{opt}, []string{opt})
+		if len(d) != 0 || len(w) != 0 {
+			t.Errorf("identical lines reported loosening for %q", opt)
+		}
+	})
+}

@@ -192,3 +192,15 @@ func TestExpiry(t *testing.T) {
 		}
 	}
 }
+
+// expiryPassed and the manifest loader accept exactly the same expiry values.
+func TestExpiryAgreesWithManifestRule(t *testing.T) {
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	for _, v := range []string{"20270101", "202701011200", "20270101120000Z", "2027", "2027xx01", "20271301", "202701011200z"} {
+		opt := `expiry-time="` + v + `"`
+		_, err := expiryPassed(opt, now)
+		if (err == nil) != (authkeys.CheckOption(opt) == "") {
+			t.Errorf("%s: expiryPassed err=%v but CheckOption=%q", opt, err, authkeys.CheckOption(opt))
+		}
+	}
+}

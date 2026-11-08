@@ -286,6 +286,9 @@ The loader fails the whole manifest (exit 3) on any of these:
   are case-insensitive. Valued options need `name="..."` (double-quoted, as sshd
   requires); flag options must not carry a value. Errors read e.g.
   `user "alice" key 1: option "no-ptty" is not a recognized authorized_keys option`.
+  `expiry-time` must be `YYYYMMDD[HHMM[SS]]` (optional `Z` for UTC): sshd skips a
+  line it cannot read. A bad value fails with e.g.
+  `user "alice" key 1: option "expiry-time=\"2027\"" has an invalid value (want YYYYMMDD[HHMM[SS]][Z])`.
 - **Server `name`, `host` and `user`** may not contain whitespace or control, format
   or line-separator characters (U+2028/U+2029 included).
 - **One entry per remote file.** Two servers that resolve to the same host
@@ -501,6 +504,10 @@ How the ssh config is read — matching OpenSSH (`ssh -G`):
   not swallow later lines, and `Host` blocks inside a file included from a `Host`
   block apply only to aliases that block also matches (others are skipped with a
   warning).
+- An `Include` that would re-read a file already being read (directly or through a
+  symlink) is skipped with `Include cycle: <file> is already being read, skipping`.
+  import reads at most 1024 included files and skips any included file over 1 MiB.
+  OpenSSH itself has no cycle check and fails at depth 16.
 - `HostName` expands `%h` (the alias) and `%%`; any other token skips the host with
   a warning.
 - `IdentityFile` expands `%d`, `%u`, `%%`, `%n` (alias), `%h` (resolved HostName),
@@ -562,6 +569,16 @@ Comment-less keys are named `adopted-key-<n>` from the first free `n`, so
 `adopt --merge` re-runs continue the numbering (`adopted-key-2`, not
 `adopted-key-1-2`). A line whose type token does not match its key material counts
 as unparseable.
+
+A found key line that sshd would ignore (an unknown option such as `no-ptty`, an
+unquoted value such as `from=1.2.3.4`, or a flag that has a value) is not access.
+adopt reports it like an unparseable line and does not adopt it. Strict mode aborts
+with exit 1, and `--partial` skips the line and keeps the server's other keys:
+
+```console
+error: server web-1: key SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE: sshd ignores this line: option "no-ptty" is not a recognized authorized_keys option
+error: 1 server(s) could not be fully read — nothing written; fix the errors above or re-run with --partial
+```
 
 ### `sshepherd apply`
 
@@ -752,9 +769,13 @@ fleet:
 See `internal/apply/testdata/json_*.golden.json` for every shape.
 
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
-restrictive option** (`from=`, `command=`, `restrict`, `no-*`, `expiry-time=`,
-`permitopen=`, `permitlisten=`, `cert-authority`, `principals=`) is painted red and
-followed by a warning — highlighted, not refused:
+restrictive option** (`from=`, `command=`, `restrict`, `no-agent-forwarding`,
+`no-port-forwarding`, `no-pty`, `no-user-rc`, `no-X11-forwarding`, `verify-required`,
+`expiry-time=`, `permitopen=`, `permitlisten=`, `cert-authority`, `principals=`) or
+**adds a relaxing option** (`no-touch-required` always, and `pty`,
+`port-forwarding`, `agent-forwarding`, `X11-forwarding`, `user-rc` when both lines
+carry `restrict`) is painted red and followed by a warning — highlighted, not
+refused. Dropping `no-touch-required` tightens access and is not flagged:
 
 ```console
 web-1 (deploy@10.0.0.1:22)

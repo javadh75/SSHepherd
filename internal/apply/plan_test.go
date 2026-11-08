@@ -442,22 +442,43 @@ func TestPlanDuplicatesAreNamed(t *testing.T) {
 	}
 }
 
-func TestDroppedRestrictions(t *testing.T) {
+// COR-4: FIDO options are classified by meaning, and added relaxations are seen.
+func TestPlanRewriteLooseningByMeaning(t *testing.T) {
 	tests := []struct {
-		name            string
-		actual, desired []string
-		want            []string
+		name, manifestOpts, serverOpts string
+		wantLoosens, wantWidens        []string
 	}{
-		{"none on server", nil, []string{"no-pty"}, nil},
-		{"all dropped", []string{`from="10.0.0.5"`, `command="/x"`, "no-pty", "tty"}, nil, []string{`from="10.0.0.5"`, `command="/x"`, "no-pty"}},
-		{"kept verbatim", []string{"restrict", `expiry-time="20270101"`}, []string{"restrict", `expiry-time="20270101"`}, nil},
-		{"changed value counts", []string{`from="10.0.0.5"`}, []string{`from="0.0.0.0/0"`}, []string{`from="10.0.0.5"`}},
-		{"forwarding and ca", []string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}, nil, []string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}},
+		{"verify-required dropped", "", "verify-required ", []string{"verify-required"}, nil},
+		{"no-touch-required dropped is tightening", "", "no-touch-required ", nil, nil},
+		{"no-touch-required added", "no-touch-required ", "", nil, []string{"no-touch-required"}},
+		{"port-forwarding added under restrict", "restrict,port-forwarding ", "restrict ", nil, []string{"port-forwarding"}},
+		{"pty added without restrict is a no-op", "pty ", "", nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := droppedRestrictions(tt.actual, tt.desired); strings.Join(got, "|") != strings.Join(tt.want, "|") {
-				t.Errorf("droppedRestrictions = %q, want %q", got, tt.want)
+			cfg, err := config.Parse([]byte(`
+users:
+  - {name: op, operator: true, keys: ["` + testkeys.Line(t, 1) + `"]}
+  - {name: bob, keys: ["` + tt.manifestOpts + testkeys.Line(t, 3) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: bob, servers: [web-1]}
+`))
+			if err != nil {
+				t.Fatalf("config: %v", err)
+			}
+			// Comments match the render, so bob's options are the only drift.
+			content := testkeys.Line(t, 1) + " op\n" + tt.serverOpts + testkeys.Line(t, 3) + " bob\n"
+			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+			p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
+			if len(p.Rewrites) != 1 {
+				t.Fatalf("Rewrites = %+v, want bob's options rewrite", p.Rewrites)
+			}
+			rw := p.Rewrites[0]
+			if strings.Join(rw.Loosens, "|") != strings.Join(tt.wantLoosens, "|") ||
+				strings.Join(rw.Widens, "|") != strings.Join(tt.wantWidens, "|") {
+				t.Errorf("Loosens=%q Widens=%q, want %q / %q", rw.Loosens, rw.Widens, tt.wantLoosens, tt.wantWidens)
 			}
 		})
 	}

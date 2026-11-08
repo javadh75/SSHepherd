@@ -196,56 +196,10 @@ func parseUserKey(u User, i int, line string) (*authkeys.Key, error) {
 	return k, nil
 }
 
-// keyOptions is the OpenSSH authorized_keys option allow-list (sshd(8)
-// AUTHORIZED_KEYS FILE FORMAT), lower-cased; true marks options that take a
-// quoted value (name="..."). sshd rejects the whole line on any other
-// option, so a typo would make apply write — and the lockout guard count —
-// a key that can never log in.
-var keyOptions = map[string]bool{
-	"agent-forwarding":    false,
-	"cert-authority":      false,
-	"command":             true,
-	"environment":         true,
-	"expiry-time":         true,
-	"from":                true,
-	"no-agent-forwarding": false,
-	"no-port-forwarding":  false,
-	"no-pty":              false,
-	"no-touch-required":   false,
-	"no-user-rc":          false,
-	"no-x11-forwarding":   false,
-	"permitlisten":        true,
-	"permitopen":          true,
-	"port-forwarding":     false,
-	"principals":          true,
-	"pty":                 false,
-	"restrict":            false,
-	"tunnel":              true,
-	"user-rc":             false,
-	"verify-required":     false,
-	"x11-forwarding":      false,
-}
-
-// optionIssue reports why one key option is unsafe or unknown to sshd;
-// empty means acceptable. Names match case-insensitively, as sshd does.
-// Unsafe runes are rejected first: option values are rendered verbatim into
-// the file and into plan/diff output.
-func optionIssue(opt string) string {
-	if strings.ContainsFunc(opt, authkeys.IsUnsafeRune) {
-		return "contains control or format characters"
-	}
-	name, value, hasValue := strings.Cut(opt, "=")
-	wantsValue, known := keyOptions[strings.ToLower(name)]
-	switch {
-	case !known:
-		return "is not a recognized authorized_keys option"
-	case wantsValue && (!hasValue || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"'):
-		return `requires a quoted value (name="...")`
-	case !wantsValue && hasValue:
-		return "does not take a value"
-	}
-	return ""
-}
+// optionIssue reports why one key option is unsafe or unknown to sshd; empty
+// means acceptable. The meaning table lives in authkeys (one model for
+// manifest validation, apply's loosening highlight and rotate's expiry check).
+func optionIssue(opt string) string { return authkeys.CheckOption(opt) }
 
 // defaultAuthorizedKeysFile is the file read when a server sets no
 // authorized_keys_file override.
