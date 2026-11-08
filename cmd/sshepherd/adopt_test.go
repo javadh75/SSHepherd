@@ -585,6 +585,31 @@ func TestAdoptOutputFileNoClobber(t *testing.T) {
 	}
 }
 
+// TestAdoptInPlaceKeepsConcurrentRevoke: adopt regenerating its own
+// --config in place. An empty fleet needs no SSH; the generated header makes
+// the bytes differ, so Save runs and the seam can race it: the concurrent
+// revoke is kept and the run refuses (exit 3).
+func TestAdoptInPlaceKeepsConcurrentRevoke(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	cfg := writeConfig(t, "users: []\nservers: []\naccess: []\n")
+	revoked := []byte("users: []\nservers: []\naccess: []\n# revoked meanwhile\n")
+	saved := beforeManifestSave
+	beforeManifestSave = func(mt manifestTarget) {
+		if err := os.WriteFile(mt.Resolved, revoked, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { beforeManifestSave = saved })
+	var out, errBuf bytes.Buffer
+	code := run([]string{"adopt", "--config", cfg, "-o", cfg, "--force"}, &out, &errBuf)
+	if code != 3 || !strings.Contains(errBuf.String(), "changed since it was read; re-run") {
+		t.Fatalf("exit = %d, stderr = %q; want 3 and the changed-since-read refusal", code, errBuf.String())
+	}
+	if got, _ := os.ReadFile(cfg); !bytes.Equal(got, revoked) {
+		t.Errorf("manifest = %q, want the concurrent revoke kept", got)
+	}
+}
+
 // fakeAgent satisfies the agent preflight without a real ssh-agent: a real
 // in-memory keyring holding one generated key, served over a unix socket.
 // The socket lives in a short os.MkdirTemp dir, not t.TempDir(): this test's
@@ -673,8 +698,10 @@ servers:
   - {name: web-2, host: 127.0.0.1, port: `+strconv.Itoa(closedPort(t))+`, user: deploy}
 `)
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"adopt", "--config", path, "--known-hosts", kh, "--partial"}, &out, &errBuf); code == 3 {
-		t.Fatalf("exit = 3, want a partial run (stderr: %s)", errBuf.String())
+	// Both down is a zero-read --partial run (exit 3), but the issue and hint
+	// lines come first, before the refusal.
+	if code := run([]string{"adopt", "--config", path, "--known-hosts", kh, "--partial"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 for a zero-read --partial run (stderr: %s)", code, errBuf.String())
 	}
 	stderr := errBuf.String()
 	if n := strings.Count(stderr, "hint:"); n != 1 {
@@ -729,14 +756,71 @@ func TestAdoptUnreachableStrictGateAndPartial(t *testing.T) {
 		t.Errorf("stderr = %q, want the dial hint as an error: line under -q", errBuf.String())
 	}
 
+	// With its single server unreachable, --partial read nothing at all:
+	// that is a refusal (exit 3, D8a), not an adopted fleet. The partial
+	// manifest itself is covered by TestAdoptPartialSomeRead.
 	out.Reset()
 	errBuf.Reset()
 	code = run([]string{"adopt", "--config", path, "--known-hosts", kh, "--partial"}, &out, &errBuf)
-	if code != 0 {
-		t.Fatalf("--partial exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	if code != 3 {
+		t.Fatalf("--partial exit = %d, want 3 (stderr: %s)", code, errBuf.String())
 	}
-	if !strings.Contains(out.String(), "# WARNING: server web-1 unreadable") {
-		t.Errorf("stdout = %q, want the unreadable-server comment", out.String())
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want no manifest when nothing was read", out.String())
+	}
+}
+
+// adoptPartialExit is adopt --partial's exit code when some, but not all,
+// servers were read: 1 like audit (D8 = yes), with the manifest written.
+const adoptPartialExit = 1
+
+// TestAdoptPartialNothingRead: every server unreadable — --partial refuses
+// (exit 3, D8a) and nothing reaches stdout.
+func TestAdoptPartialNothingRead(t *testing.T) {
+	path, kh := unreachableFleet(t)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"adopt", "--config", path, "--known-hosts", kh, "--partial"}, &out, &errBuf)
+	if code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want no manifest when nothing was read", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "read 0 of 1 server — nothing could be adopted") {
+		t.Errorf("stderr = %q, want the zero-read refusal", errBuf.String())
+	}
+}
+
+// TestAdoptPartialNothingReadWritesNoFile: the zero-read refusal comes
+// before rendering, so -o is never created either.
+func TestAdoptPartialNothingReadWritesNoFile(t *testing.T) {
+	path, kh := unreachableFleet(t)
+	dst := filepath.Join(t.TempDir(), "adopted.yaml")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "--config", path, "--known-hosts", kh, "--partial", "-o", dst}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		t.Errorf("%s was written although no server was read", dst)
+	}
+}
+
+// TestAdoptPartialSomeRead: one of two read — the manifest is written with
+// the gap marked, stderr says "read 1 of 2 servers", and the exit code says
+// the result is incomplete (D8).
+func TestAdoptPartialSomeRead(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1")
+	hosts["web-1"].install(t, []byte{1})
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\nservers:\n"+hosts["web-1"].line("web-1")+
+		"  - {name: web-2, host: 127.0.0.1, port: "+strconv.Itoa(closedPort(t))+", user: deploy}\naccess:\n  - {user: alice, servers: [web-1]}\n")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"adopt", "--config", cfg, "--known-hosts", kh, "--partial"}, &out, &errBuf)
+	if code != adoptPartialExit {
+		t.Fatalf("exit = %d, want %d (stderr: %s)", code, adoptPartialExit, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "read 1 of 2 servers — access on the others is NOT in the output") ||
+		!strings.Contains(out.String(), "# WARNING: server web-2 unreadable") {
+		t.Errorf("stderr = %q / stdout = %q, want the read count and the gap marker", errBuf.String(), out.String())
 	}
 	if _, err := config.Parse(out.Bytes()); err != nil {
 		t.Errorf("stdout is not a valid manifest: %v", err)
@@ -745,5 +829,21 @@ func TestAdoptUnreachableStrictGateAndPartial(t *testing.T) {
 	// when a server went unread.
 	if !strings.Contains(errBuf.String(), "on the readable servers") {
 		t.Errorf("stderr = %q, want the nothing-to-adopt note qualified for the unread server", errBuf.String())
+	}
+}
+
+// TestAdoptFullReadCount: a fully read fleet reports its read count at info
+// and exits 0.
+func TestAdoptFullReadCount(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1")
+	hosts["web-1"].install(t, []byte{1})
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\nservers:\n"+hosts["web-1"].line("web-1")+
+		"access:\n  - {user: alice, servers: [web-1]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "read 1 of 1 server\n") {
+		t.Errorf("stderr = %q, want the full read count", errBuf.String())
 	}
 }

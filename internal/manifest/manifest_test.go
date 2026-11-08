@@ -482,7 +482,7 @@ func TestGenerateEmptySections(t *testing.T) {
 }
 
 // TestAppendServerOptionalFields: an appended server carries Description and
-// AuthorizedKeysFile (the old ServerEntry could not), in struct field order.
+// AuthorizedKeysFile (the old per-type entry struct could not), in struct field order.
 func TestAppendServerOptionalFields(t *testing.T) {
 	f, err := Load([]byte(commentedFixture(t)))
 	if err != nil {

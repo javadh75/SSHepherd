@@ -490,12 +490,14 @@ manifest order) now feeds `GrantedFingerprints` and the post-write probe, so the
 probe proves the key the next run logs in with (no `--identity` preference, D31,
 WP-5); a no-grant server whose `authorized_keys2` holds keys is refused (exit 1),
 agreeing with audit (D30, COR-2).
-Manifest store and revoke names (P12, round 1): `internal/manifest` now holds the
-manifest store (`Read`/`Store.Save`/`WriteFile`; lock sidecar opened no-follow and
-owner-checked; mode, owner and group kept) and one encoder from the config types
-(`Append` takes `config.User/Server/Access`; `Generate`); cmd/sshepherd is rewired
-onto it in W2 round 2 (P12-C), until then deadcode lists the unwired store
-functions. `revoke NAME` resolves manifest users first.
+Manifest store and revoke names (P12): every manifest write goes through
+`internal/manifest`'s store (`Store.Save` for revoke/rotate and in-place
+`adopt`/`import -o FILE --force`: lock with a no-follow, owner-checked sidecar,
+changed-since-read refusal, mode and owner kept; `WriteFile` for new files); fresh
+and merged manifests share one encoder from the config types, guarded by a
+reflection round-trip test; `revoke NAME` resolves manifest users first;
+`adopt --partial` refuses a zero-read fleet (exit 3), exits 1 when some servers
+went unread, and reports `read X of N`.
 CI and gate hygiene (P13, round 1): `make fuzz` discovers every `Fuzz*` target and the
 daily CI fuzz keeps its corpus; `make check` adds `go-licenses`, and CI scans each push's
 commits with `gitleaks git` (`make secrets-history`); `make build`/`dist` and

@@ -3,15 +3,19 @@ the actual authorized_keys, and emits a complete new manifest in which
 every installed key is accounted for: keys of known users found beyond
 their grants extend that user's access; unknown keys become new users
 with access to exactly the servers where they were found. The input
-file is never modified — review the output, then adopt it as your
-manifest. Any unreadable server aborts the run unless --partial is set.
+file is modified only when --output names it (with --force); it is then
+saved in place under the manifest lock, like revoke. Review the output,
+then adopt it as your manifest. Any unreadable server aborts the run
+unless --partial is set.
 
 Exit codes:
   0  manifest emitted
-  1  a server could not be fully read and --partial was not given; nothing
-     emitted
+  1  a server could not be fully read and --partial was not given (nothing
+     emitted), or --partial could not read some servers (the partial manifest
+     is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
-     --output without --force, interrupted
+     --output without --force, an in-place save refused, --partial with no
+     server read, interrupted
 
 Usage:
   sshepherd adopt [flags]

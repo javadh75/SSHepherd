@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/javadh75/SSHepherd/internal/manifest"
 )
 
 // runFlags are the flags apply, revoke and rotate share, registered with
@@ -52,118 +49,33 @@ func (f *runFlags) checkModes() error {
 	return nil
 }
 
-// manifestTarget is the manifest as a run read it: the path given, the
-// resolved file (symlinks followed — the save writes there and leaves the
-// link intact), and the exact bytes read, which the save's compare-and-swap
-// and plain apply's pre-write re-check compare against. A manifest that is
-// not a regular file (a pipe: --config /dev/stdin or <(...)) is a Stream:
-// it has no resolved path, nothing to re-read and nothing to save to.
-type manifestTarget struct {
-	Path     string
-	Resolved string
-	Loaded   []byte
-	Stream   bool
-}
+// manifestTarget is the manifest as a run read it (manifest.Store: path,
+// resolved file, exact bytes, stream flag) plus this package's test seam.
+// apply, revoke, rotate, and adopt/import in-place output all save through it.
+type manifestTarget struct{ manifest.Store }
 
-// readManifest reads the manifest once and, for a regular file, resolves
-// its real path. The type comes from the opened descriptor, so a /dev/fd
-// path whose /proc link target does not resolve (Linux) still loads.
+// readManifest reads the manifest once through the store (see manifest.Read).
 func readManifest(path string) (manifestTarget, error) {
-	f, err := os.Open(path) // #nosec G304 -- path is the user's own --config flag
+	s, err := manifest.Read(path)
 	if err != nil {
-		return manifestTarget{}, fmt.Errorf("read manifest: %w", err)
+		return manifestTarget{}, err //nolint:wrapcheck // Store errors already read "read manifest: …"; a prefix would stutter
 	}
-	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
-	if err != nil {
-		return manifestTarget{}, fmt.Errorf("read manifest: %w", err)
-	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return manifestTarget{}, fmt.Errorf("read manifest: %w", err)
-	}
-	m := manifestTarget{Path: path, Loaded: data, Stream: !fi.Mode().IsRegular()}
-	if m.Stream {
-		return m, nil
-	}
-	if m.Resolved, err = filepath.EvalSymlinks(path); err != nil {
-		return manifestTarget{}, fmt.Errorf("read manifest: %w", err)
-	}
-	return m, nil
+	return manifestTarget{s}, nil
 }
 
-// Unchanged re-reads the resolved file: a manifest that changed since it
-// was read (a concurrent revoke, a hand edit, a git pull) must not be
-// planned against or overwritten. A stream passes: it cannot be re-read,
-// and nothing can replace it under this run.
-func (m manifestTarget) Unchanged() error {
-	if m.Stream {
-		return nil
-	}
-	now, err := os.ReadFile(m.Resolved)
-	if err != nil {
-		return fmt.Errorf("re-read manifest %s: %w", m.Path, err)
-	}
-	if !bytes.Equal(now, m.Loaded) {
-		return fmt.Errorf("manifest %s changed since it was read; re-run", m.Path)
-	}
-	return nil
-}
-
-// beforeManifestSave is a test seam: it runs at the start of Save, before
-// the lock and the compare-and-swap.
+// beforeManifestSave is a test seam: it runs at the start of Save on a
+// regular file, before the lock and the compare-and-swap.
 var beforeManifestSave = func(manifestTarget) {}
 
-// Save replaces the manifest with data, once: under an exclusive
-// non-blocking flock on a persistent sidecar (.NAME.sshepherd-lock next to
-// the resolved file, never deleted, so the lock outlives the rename's inode
-// change), after a compare-and-swap against the bytes read, through an
-// O_EXCL temp file in the same directory carrying the original's permission
-// bits and owner, fsynced, renamed over the resolved path, directory
-// fsynced.
+// Save replaces the manifest with data through manifest.Store.Save: under
+// the manifest lock, after the changed-since-read compare-and-swap, keeping
+// the file's mode and owner.
 func (m manifestTarget) Save(data []byte) error {
-	if m.Stream {
-		return fmt.Errorf("save manifest %s: not a regular file", m.Path)
+	if !m.Stream {
+		beforeManifestSave(m)
 	}
-	beforeManifestSave(m)
-	unlock, err := lockManifest(m.Resolved)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if err := m.Unchanged(); err != nil {
-		return err
-	}
-	fi, err := os.Stat(m.Resolved)
-	if err != nil {
-		return fmt.Errorf("save manifest %s: %w", m.Path, err)
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(m.Resolved), "."+filepath.Base(m.Resolved)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("save manifest %s: %w", m.Path, err)
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }() // no-op once renamed
-	if err := tmp.Chmod(fi.Mode().Perm()); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("save manifest %s: %w", m.Path, err)
-	}
-	if err := keepOwner(tmp, fi); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("save manifest %s: %w", m.Path, err)
-	}
-	if err := writeSynced(tmp, m.Path, data); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), m.Resolved); err != nil {
-		return fmt.Errorf("save manifest %s: %w", m.Path, err)
-	}
-	return syncDir(m.Resolved)
-}
-
-// lockPath is the persistent lock sidecar for a resolved manifest path.
-func lockPath(resolved string) string {
-	return filepath.Join(filepath.Dir(resolved), "."+filepath.Base(resolved)+".sshepherd-lock")
+	return m.Store.Save(data) //nolint:wrapcheck // "save manifest PATH: …" / "changed since it was read" are the user-facing text
 }
 
 // errManifestLocked is returned when another run holds the manifest lock.
-var errManifestLocked = errors.New("manifest is being updated by another sshepherd run; re-run")
+var errManifestLocked = manifest.ErrLocked

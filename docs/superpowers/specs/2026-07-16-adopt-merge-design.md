@@ -3,6 +3,7 @@
 - **Date:** 2026-07-16
 - **Status:** Implemented (2026-07-16)
 - **Amended by:** [`revoke` / `rotate`](2026-10-23-revoke-rotate-design.md) (2026-10-23) — `internal/manifest` also removes and replaces entries; Load's rejection texts are command-neutral.
+- **Amended 2026-11 (P12):** in-place `-o FILE --force` saves through `manifest.Store` (lock, changed-since-read refusal, mode/owner kept; identical bytes write nothing). The lock sidecar is opened no-follow and must be a regular file owned by the user or the manifest's owner; `-o` naming the manifest without `--force` is refused as an in-place update.
 - **Prior art:** `docs/superpowers/specs/2026-07-16-manifest-merge-memo.md`
   (the decided memo this slice executes),
   `docs/superpowers/specs/2026-07-10-adopt-fleet-discovery-design.md`

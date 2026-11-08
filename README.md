@@ -588,6 +588,18 @@ What gets skipped or merged, always with a warning on stderr:
 
 **Output files** (`-o`, shared with `adopt`): written mode `0600`, fsynced, and
 published without ever clobbering an existing file unless `--force` is given.
+When `-o` names the manifest the run read (`adopt --config`, `adopt --merge`,
+`import --merge FILE`, symlinks followed), it is an in-place update. Without
+`--force` it is refused with
+`PATH is the manifest this run read; pass --force to update it in place`. With
+`--force` it is saved exactly as `revoke` saves: under the manifest lock, keeping
+the file's mode and owner, and refused with
+`manifest PATH changed since it was read; re-run` (exit 3) if anything changed the
+file meanwhile, so a concurrent revoke is never undone. Identical output writes
+nothing. A hard link to the manifest under another name is refused
+(`PATH is a hard link to the manifest M; pass the manifest's own path`). A
+different existing file overwritten with `--force` is still a new file (mode
+`0600`).
 `--force` refuses a symlinked output path
 (`<path> is a symlink; refusing to replace it — pass the link's target path instead`).
 On filesystems without hard links (exFAT, some SMB/FUSE mounts) the no-`--force`
@@ -600,7 +612,8 @@ Connect to every server in the manifest (same SSH path as `audit`), read the act
 `authorized_keys`, and emit a complete new manifest in which every installed key is
 accounted for: keys of known users found beyond their grants **extend** that user's
 access; unknown keys become **new users** with access to exactly the servers where
-they were found. The input file is never modified.
+they were found. The input file is never modified unless `-o` names it (with
+`--force`; see Output files).
 
 | Flag | Default | Description |
 | ---- | ------- | ----------- |
@@ -620,6 +633,17 @@ half-read fleet would silently drop real access. Each unreadable server gets its
 own `server <name>: …` line; a connection failure's remediation follows as a
 `hint:` line, printed once however many servers share it (`warn:` under
 `--partial`, `error:` in strict mode, so it survives `-q`).
+
+Once the fleet has been read, adopt logs `read X of N servers`. When some servers
+went unread under `--partial`, it logs this as a warning
+(`read 1 of 2 servers — access on the others is NOT in the output`), writes the
+partial manifest with a
+`# WARNING: server NAME unreadable — its access is NOT represented` line for each
+gap, and exits 1 so scripts notice the result is incomplete. A server whose only
+problem is a line sshd ignores still counts as read, and adopt exits 0. When
+`--partial` could read no server at all, adopt refuses before rendering, writes
+nothing to stdout or `-o`, and exits 3 with
+`read 0 of N servers — nothing could be adopted; fix the errors above`.
 
 An on-server key whose comment has tabs or control/format characters is adopted
 **without** its comment (options + type + key are kept), with the warning
@@ -1544,10 +1568,12 @@ Exit codes:
 ```console
 Exit codes:
   0  manifest emitted
-  1  a server could not be fully read and --partial was not given; nothing
-     emitted
+  1  a server could not be fully read and --partial was not given (nothing
+     emitted), or --partial could not read some servers (the partial manifest
+     is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
-     --output without --force, interrupted
+     --output without --force, an in-place save refused, --partial with no
+     server read, interrupted
 ```
 
 `import --help`:
@@ -1594,6 +1620,16 @@ before any edit, since there is no file to save). The worst crash leaves the man
 reported by `audit`, finished by any `apply` — never a revoked key the next `apply`
 reinstalls. **Commit and push the manifest afterwards**: an `apply` run from a copy
 without the edit grants the removed key again.
+
+**The manifest lock file must be yours.** The lock sidecar
+`.NAME.sshepherd-lock` must be a regular file owned by you or by the manifest's
+owner. A symlink, FIFO or foreign-owned file is refused and never followed
+(`lock manifest: PATH is a symlink; refusing to follow it — remove it and re-run`,
+`… is not a regular file — remove it and re-run`,
+`… is owned by uid U, not by you (uid V) or the manifest's owner — remove it and re-run`).
+A save also keeps the manifest's group when the directory would hand new files
+another group (BSD or setgid-directory inheritance). The same lock and rules cover
+an in-place `adopt`/`import -o FILE --force` (see Output files).
 
 **Plain `apply` re-checks the manifest.** Just before its first write, `apply`
 re-reads the manifest; if a concurrent `revoke` (or anything else) changed it since

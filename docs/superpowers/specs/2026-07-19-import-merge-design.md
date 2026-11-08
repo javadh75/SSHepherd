@@ -223,6 +223,12 @@ rewritten to or from wildcard (strictly additive).
   FILE's bytes are fully read up front and the write is temp-file + rename;
   without `--force` the no-clobber link fails with the normal
   "already exists" error.
+  Amended 2026-11 (P12): in-place `-o FILE --force` saves through
+  `manifest.Store` (lock, changed-since-read refusal, mode/owner kept;
+  identical bytes write nothing). The lock sidecar is opened no-follow and
+  must be a regular file owned by the user or the manifest's owner; without
+  `--force` the run is refused with `FILE is the manifest this run read;
+  pass --force to update it in place`.
 - **Nothing to merge (idempotency adjudication)** — an empty reconciliation
   returns the original bytes **byte-identical** and logs
   `nothing to merge: the manifest already covers <src>`; the summary line

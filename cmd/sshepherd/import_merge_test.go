@@ -237,8 +237,9 @@ func TestImportMergeConflictOnlyByteIdentical(t *testing.T) {
 }
 
 // TestImportMergeInPlaceForce: FILE == -o target is the spelled-out in-place
-// merge — refused without --force (no-clobber), safe with it because FILE is
-// fully read before the temp-file + rename write.
+// merge — refused without --force ("M is the manifest this run read; pass
+// --force to update it in place"), saved through the manifest store with it,
+// and a re-run that merges nothing writes nothing at all.
 func TestImportMergeInPlaceForce(t *testing.T) {
 	hermeticHome(t)
 	m := writeMergeManifest(t)
@@ -274,6 +275,87 @@ func TestImportMergeInPlaceForce(t *testing.T) {
 		!strings.Contains(string(after), "# merged by sshepherd import from "+cfg) ||
 		!strings.Contains(string(after), "name: app-1") {
 		t.Errorf("in-place merge = %q, want original comment + marker + appended server", after)
+	}
+
+	// Re-running the same in-place merge finds nothing new: identical bytes
+	// write nothing (same inode, same mtime) and leave no temp file.
+	before, err := os.Stat(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errBuf.Reset()
+	if code := run([]string{"import", cfg, "--merge", m, "--servers-only", "-o", m, "--force"}, &out, &errBuf); code != 0 {
+		t.Fatalf("no-op in-place re-run: exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	now, err := os.Stat(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, now) || !now.ModTime().Equal(before.ModTime()) {
+		t.Errorf("no-op re-run rewrote the manifest (inode or mtime changed)")
+	}
+	entries, err := os.ReadDir(filepath.Dir(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+// TestImportMergeInPlaceKeepsConcurrentRevoke: a revoke saved while the
+// merge runs must survive — the in-place write is refused (exit 3) instead
+// of restoring the old copy.
+func TestImportMergeInPlaceKeepsConcurrentRevoke(t *testing.T) {
+	hermeticHome(t)
+	m := writeMergeManifest(t)
+	cfg := writeSSHConfig(t, "Host app-1\n  HostName 10.0.0.5\n  User deploy\n")
+	revoked := []byte("users: []\nservers: []\naccess: []\n# revoked meanwhile\n")
+	saved := beforeManifestSave
+	beforeManifestSave = func(mt manifestTarget) {
+		if err := os.WriteFile(mt.Resolved, revoked, 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { beforeManifestSave = saved })
+	var out, errBuf bytes.Buffer
+	code := run([]string{"import", cfg, "--merge", m, "--servers-only", "-o", m, "--force"}, &out, &errBuf)
+	if code != 3 || !strings.Contains(errBuf.String(), "changed since it was read; re-run") {
+		t.Fatalf("exit = %d, stderr = %q; want 3 and the changed-since-read refusal", code, errBuf.String())
+	}
+	if got, _ := os.ReadFile(m); !bytes.Equal(got, revoked) {
+		t.Errorf("manifest = %q, want the concurrent revoke kept", got)
+	}
+}
+
+// TestImportMergeInPlaceKeepsMode: an in-place merge keeps a group-readable
+// mode (it used to be forced to 0600) and goes through the store's lock.
+func TestImportMergeInPlaceKeepsMode(t *testing.T) {
+	hermeticHome(t)
+	m := writeMergeManifest(t)
+	if err := os.Chmod(m, 0o640); err != nil { // #nosec G302 -- a group-shared manifest under test
+		t.Fatal(err)
+	}
+	cfg := writeSSHConfig(t, "Host app-1\n  HostName 10.0.0.5\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--merge", m, "--servers-only", "-o", m, "--force"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, errBuf.String())
+	}
+	st, err := os.Stat(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %o, want 0640 kept (was forced to 0600)", st.Mode().Perm())
+	}
+	resolved, err := filepath.EvalSymlinks(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(manifest.LockPath(resolved)); err != nil {
+		t.Errorf("lock sidecar %s missing: the in-place write did not go through the store (%v)", manifest.LockPath(resolved), err)
 	}
 }
 

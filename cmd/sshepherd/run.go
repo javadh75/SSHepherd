@@ -209,10 +209,12 @@ const exitCodesWrite = `Exit codes:
 
 const exitCodesAdopt = `Exit codes:
   0  manifest emitted
-  1  a server could not be fully read and --partial was not given; nothing
-     emitted
+  1  a server could not be fully read and --partial was not given (nothing
+     emitted), or --partial could not read some servers (the partial manifest
+     is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
-     --output without --force, interrupted`
+     --output without --force, an in-place save refused, --partial with no
+     server read, interrupted`
 
 const exitCodesImport = `Exit codes:
   0  manifest emitted
