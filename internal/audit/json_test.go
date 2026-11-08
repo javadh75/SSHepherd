@@ -339,12 +339,15 @@ func TestRenderJSONHintField(t *testing.T) {
 }
 
 // TestRenderJSONUnauthorizedOptions: on-server options of an unowned key are
-// additive `options` (sanitized), absent when the key has none.
+// additive `options` (sanitized), absent when the key has none \u2014 and absent
+// on a key the manifest owns (bob's on web-2, where he has no grant) even
+// when it carries options: `options` is only for a key nobody owns.
 func TestRenderJSONUnauthorizedOptions(t *testing.T) {
 	cfg := reportConfig(t)
 	reader := &fakeReader{byName: map[string]ReadResult{
 		"web-1": {Content: []byte(`no-pty,command="x` + "\u202e" + `" ` + testkeys.Line(t, 9) + " a@b\n" + testkeys.Line(t, 8) + "\n")},
-	}, errs: map[string]error{"web-2": errors.New("boom")}}
+		"web-2": {Content: []byte("no-pty " + testkeys.Line(t, 2) + " bob@laptop\n")},
+	}}
 	var rep jsonReport
 	if err := json.Unmarshal(renderJSON(t, cfg, Run(context.Background(), cfg, reader, Options{Parallel: 1})), &rep); err != nil {
 		t.Fatal(err)
@@ -352,5 +355,9 @@ func TestRenderJSONUnauthorizedOptions(t *testing.T) {
 	u := rep.Servers[0].Keys.Unauthorized
 	if len(u) != 2 || !slices.Equal(u[0].Options, []string{"no-pty", `command="x"`}) || u[1].Options != nil {
 		t.Errorf("unauthorized = %+v, want options on the first key only, U+202E stripped", u)
+	}
+	owned := rep.Servers[1].Keys.Unauthorized
+	if len(owned) != 1 || owned[0].Owner == nil || *owned[0].Owner != "bob" || owned[0].Options != nil {
+		t.Errorf("web-2 unauthorized = %+v, want bob's owned key without options", owned)
 	}
 }

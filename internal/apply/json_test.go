@@ -2,17 +2,23 @@ package apply
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
+	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -482,6 +488,48 @@ func TestRenderJSONHintAndRemoveOptions(t *testing.T) {
 	}
 }
 
+// TestRenderJSONRemoveOptionsOnlyUnowned: changes.remove[].options is only
+// for a key neither the manifest nor the pre-edit manifest owns. A key the
+// rendered manifest owns (bob's key, removed here) and one the edit removed
+// (former_owner carol) carry no options even when the on-server line has
+// them.
+func TestRenderJSONRemoveOptionsOnlyUnowned(t *testing.T) {
+	cfg := planCfg(t) // op (operator, k1), alice (k2), bob (k3)
+	former, err := config.Parse([]byte(`
+users:
+  - {name: carol, keys: ["` + testkeys.Line(t, 6) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: carol, servers: [web-1]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := func(seed byte) authkeys.Key {
+		return authkeys.Key{Fingerprint: fp(t, seed), Type: "ssh-ed25519", Options: []string{"no-pty"}}
+	}
+	plans := []ServerPlan{{
+		Server: config.Server{Name: "web-1", Host: "10.0.0.1", Port: 22, User: "deploy"},
+		Class:  ClassChange, Outcome: OutcomePending,
+		Remove: []authkeys.Key{key(3), key(6), key(9)},
+	}}
+	var doc jsonDoc
+	if err := json.Unmarshal(renderJSONCfg(t, cfg, plans, JSONOptions{Command: "revoke", Former: former}), &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{fp(t, 3): nil, fp(t, 6): nil, fp(t, 9): {"no-pty"}}
+	rm := doc.Servers[0].Changes.Remove
+	if len(rm) != len(want) {
+		t.Fatalf("remove = %+v, want 3 keys", rm)
+	}
+	for _, k := range rm {
+		if w, ok := want[k.Fingerprint]; !ok || !slices.Equal(k.Options, w) {
+			t.Errorf("remove %s options = %q, want %q", k.Fingerprint, k.Options, w)
+		}
+	}
+}
+
 func TestRenderJSONDryRunAllPending(t *testing.T) {
 	cfg, plans := mixedPlans(t)
 	d := decodeDoc(t, renderJSONCfg(t, cfg, plans, JSONOptions{Command: "apply", DryRun: true}))
@@ -612,6 +660,8 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 			OutcomeErr: errors.New("target is a symlink")}, ""},
 		{"interrupted pending", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomePending,
 			OutcomeErr: errInterrupted}, "canceled"},
+		{"per-server deadline at write connect", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
+			OutcomeErr: writeKindErr{audit.ErrorKindCanceled}}, "timeout"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -620,5 +670,33 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 				t.Errorf("jsonErrorFor = (%v, %q), want kind %q", msg, kind, tt.want)
 			}
 		})
+	}
+}
+
+// TestJSONWriteConnectTimeoutIsTimeout: the per-server timeout firing
+// during the write connect is a started server that failed — "timeout",
+// never "canceled", which the document reserves for a pending server that
+// never started. The write connect's AfterFunc cancels its detached ctx
+// when the per-server deadline expires, so the transport sees a plain
+// cancellation and classifies it "canceled" (ARC-3 repair).
+func TestJSONWriteConnectTimeoutIsTimeout(t *testing.T) {
+	hostKey := sshtest.Signer(t, sshtest.Key(200))
+	s := sshtest.NewServer(t, sshtest.ServerConfig{HostKeys: []ssh.Signer{hostKey}, Stall: true})
+	w := &sshwrite.FleetWriter{Dialer: &sshconn.Dialer{
+		KnownHostsPath: sshtest.KnownHostsFile(t, s.KnownHostsLine(hostKey.PublicKey())),
+		Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, sshtest.Key(1))},
+		DialTimeout:    5 * time.Second,
+	}}
+	held := testKey(t, 1)
+	p := changePlan("web-1", held)
+	p.Server = config.Server{Name: "web-1", Host: s.Host, Port: s.Port, User: "deploy"}
+	plans := []ServerPlan{p}
+	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, PerServerTimeout: 200 * time.Millisecond, Held: agentHeld(held.Fingerprint)})
+
+	if plans[0].Outcome != OutcomeFailed {
+		t.Fatalf("Outcome = %s (err %v), want failed", plans[0].Outcome, plans[0].OutcomeErr)
+	}
+	if msg, kind, _ := jsonErrorFor(plans[0]); msg == nil || kind != string(audit.ErrorKindTimeout) {
+		t.Errorf("jsonErrorFor = (%v, %q), want kind timeout", msg, kind)
 	}
 }

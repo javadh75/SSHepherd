@@ -324,7 +324,8 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 // server phase 2 never started, so "not started" is detectable without
 // parsing English; otherwise the kind the transport attached (ARC-3: e.g.
 // host_key_changed when the host key changed between plan and write, auth,
-// timeout), none for refusals and unclassified write/verify errors. A
+// timeout — a started server's "canceled" is its per-server deadline, so it
+// reads "timeout"), none for refusals and unclassified write/verify errors. A
 // LockoutError unwraps to its probe error, so a refused probe reports
 // "auth". The hint is the error's remediation (audit.CleanHint), never part
 // of the message.
@@ -348,10 +349,19 @@ func jsonErrorFor(p ServerPlan) (msg *string, kind, hint string) {
 			// write connect, auth, timeout…) keeps its kind; refusals and
 			// unclassified write/verify errors carry none, as before.
 			hint := audit.CleanHint(p.OutcomeErr)
-			if k := audit.ErrorKindOf(p.OutcomeErr); k != audit.ErrorKindUnknown {
+			switch k := audit.ErrorKindOf(p.OutcomeErr); k {
+			case audit.ErrorKindUnknown:
+				return &m, "", hint
+			case audit.ErrorKindCanceled:
+				// "canceled" marks a pending server that never started. A
+				// started server's write connect is canceled only by the
+				// per-server deadline (Ctrl-C there leaves it pending, and
+				// nothing after the connect is cancelable), which the
+				// transport sees as a plain cancellation.
+				return &m, string(audit.ErrorKindTimeout), hint
+			default:
 				return &m, string(k), hint
 			}
-			return &m, "", hint
 		}
 	}
 	return nil, "", ""

@@ -251,3 +251,30 @@ access:
 	}
 	t.Logf("README sample source:\n%s", out.String())
 }
+
+// TestAdoptStrictQuietKeepsHint: in strict mode adopt's connection hint is
+// part of the error verdict, so it survives -q (README: "`error:` in strict
+// mode, so it survives `-q`") — printed once at error level, however many
+// servers share it.
+func TestAdoptStrictQuietKeepsHint(t *testing.T) {
+	fakeAgent(t)
+	kh := writeEmptyKnownHosts(t)
+	path := writeConfig(t, fmt.Sprintf(`
+servers:
+  - {name: web-1, host: 127.0.0.1, port: %d, user: deploy}
+  - {name: web-2, host: 127.0.0.1, port: %d, user: deploy}
+`, closedPort(t), closedPort(t)))
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "-q", "--config", path, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr: %s)", code, errBuf.String())
+	}
+	stderr := errBuf.String()
+	if n := strings.Count(stderr, "hint: "+sshconn.DialHint); n != 1 {
+		t.Errorf("stderr has %d dial hint lines under -q, want exactly 1:\n%s", n, stderr)
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.Contains(line, "hint:") && !strings.HasPrefix(line, "error:") {
+			t.Errorf("strict-mode hint line %q, want it at error level", line)
+		}
+	}
+}
