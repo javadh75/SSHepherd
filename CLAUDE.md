@@ -21,7 +21,9 @@ SSHepherd centralizes and automates this.
 - **Distribute** — push the correct `authorized_keys` to every server in the fleet.
 - **Revoke** — remove keys everywhere in one command (e.g. offboarding).
 - **Rotate** — replace/rotate keys on a schedule.
-- **Audit** — answer "who can log into which server?" at any time.
+- **Audit** — check that every managed `authorized_keys` file holds exactly the
+  manifest's keys; other accounts and sshd's other key sources are not seen (a
+  deeper opt-in check is a later slice).
 
 ## Design intent
 
@@ -374,6 +376,12 @@ The write-failure semantics spec (P08: login-check failures sorted by stage, exi
 for an unrestored lockout, stale-lock removal, interrupts, backup retention; specced in
 `docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`) is drafted
 with D9–D10 answered and awaits approval; implementation is W5+.
+The audit trust posture spec (P09: posture probe, operator cannot-log-in critical
+tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`,
+built-in weak/expired key rules via D29; specced in
+`docs/superpowers/specs/2026-11-08-audit-trust-posture-design.md`) is drafted with
+D14–D19 answered; implementation is W5+ after P14. Audit's claim is narrowed to
+the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0 or 1 (specced in

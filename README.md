@@ -35,7 +35,9 @@ to what, and revoking a departed colleague's access reliably is painful.
 SSHepherd centralizes and automates this:
 
 - **Central source of truth** — users, keys, and grants live in one manifest.
-- **Audit** — answer "who can log into which server?" at any time, in text or JSON.
+- **Audit** — check that every managed `authorized_keys` file holds exactly the
+  manifest's keys, in text or JSON. It does not see other accounts on the host or
+  sshd's other key sources (see [Per-server `authorized_keys_file`](#per-server-authorized_keys_file)).
 - **Apply** — make every server match the manifest, atomically and reversibly.
 - **Revoke / rotate** — `sshepherd revoke alice` or `sshepherd rotate alice --old … --new …`
   edits the manifest (comments kept) and pushes the change to exactly the servers it
@@ -279,9 +281,12 @@ When the effective path is the default, `audit` also checks whether
 exists and is non-empty, and reports it as drift. SSHepherd never reads its keys;
 `apply` moves it aside to `~/.ssh/authorized_keys2.sshepherd.disabled` whenever it
 writes that server (see [Safety model](#safety-model)), so a revoked key cannot keep
-logging in from it. Other sshd `AuthorizedKeysFile` layouts (a custom list in
-`sshd_config`, `AuthorizedKeysCommand`) are not detected — point
-`authorized_keys_file` at the file sshd actually reads.
+logging in from it. Audit reads only the managed file (and, on the default path, checks
+`authorized_keys2`). It does not see sshd's other key sources — a custom
+`AuthorizedKeysFile` list in `sshd_config`, `AuthorizedKeysCommand`,
+`TrustedUserCAKeys`, `AuthorizedPrincipalsFile`/`AuthorizedPrincipalsCommand` — or
+other accounts on the same host. Point `authorized_keys_file` at the file sshd
+actually reads.
 
 ### Validation rules
 
