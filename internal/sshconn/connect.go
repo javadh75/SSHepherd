@@ -56,9 +56,22 @@ type ConnectOptions struct {
 	// Only, when non-empty, offers exactly the held keys (key files or
 	// agent) with these fingerprints (in this order) and nothing else — the
 	// IdentitiesOnly posture. A login that succeeds therefore proves the
-	// server accepts one of them (apply's post-write login probe); none
-	// held is an auth failure, never a fallback to other keys.
+	// server accepts one of them (apply's post-write login probe). Holding
+	// none of them is an ErrorKindAgent error before any dial, never a
+	// fallback to other keys, and a login refused with some of them not
+	// offered is ErrorKindAgent too: an incomplete offer proves nothing
+	// about the keys it left out.
 	Only []string
+	// RequireOffer refuses to dial with no key to offer: that is an
+	// ErrorKindAgent error before any connection. Only the reconnect after a
+	// dropped write sets it, where a handshake with nothing to offer would
+	// otherwise fail as auth and read as "this server refused you".
+	RequireOffer bool
+	// SessionTimeout, when positive, replaces the dial deadline as the
+	// socket deadline once the handshake finishes: now + SessionTimeout.
+	// Without it a handshake that finished late in the dial bound would
+	// leave the caller's sessions almost no time.
+	SessionTimeout time.Duration
 }
 
 // log returns the configured logger or a discard logger, so call sites never
@@ -130,8 +143,9 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 // so an agent problem fails (or, with key files, degrades) without touching
 // the server. The ctx deadline bounds agent I/O, dial, and handshake, and
 // is installed as the socket deadline, so it keeps bounding whatever
-// sessions the caller runs on the returned connection; ctx cancellation
-// aborts the handshake. Callers without a ctx deadline get a hard floor:
+// sessions the caller runs on the returned connection unless
+// ConnectOptions.SessionTimeout replaces it after the handshake; ctx
+// cancellation aborts the handshake. Callers without a ctx deadline get a hard floor:
 // 3×DialTimeout (30s when DialTimeout is zero). The agent connection lives
 // only until ConnectWith returns — signing happens during auth, never
 // after. Every error is an *Error carrying its fleet.ErrorKind.
@@ -164,20 +178,16 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	// server actually presented — hostKeyHint needs it to tell a changed key
 	// apart from an unrecorded key type. The verdict is also captured here:
 	// x/crypto may not keep it in the chain NewClientConn returns.
-	var (
-		hkMu  sync.Mutex
-		hkErr error
-	)
+	hk := &hostKeyState{}
 	cb := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-		if khErr := kh.callback(hostname, remote, key); khErr != nil {
-			err := hostKeyHint(khErr, key, srv, kh.Path)
-			hkMu.Lock()
-			hkErr = err
-			hkMu.Unlock()
-			return err
+		err := kh.callback(hostname, remote, key)
+		if err != nil {
+			err = hostKeyHint(err, key, srv, kh.Path)
+		} else {
+			log.Debug("host key verified", "server", srv.Name)
 		}
-		log.Debug("host key verified", "server", srv.Name)
-		return nil
+		hk.record(err)
+		return err
 	}
 
 	prefer, only := opts.Prefer, opts.Only
@@ -185,7 +195,12 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 		prefer = d.PreferKeys(srv)
 	}
 	rec := &sessionKey{}
-	offered := wrapSigners(orderSigners(signers, prefer, only), rec)
+	ordered := orderSigners(signers, prefer, only)
+	if err := emptyOffer(opts, ordered); err != nil {
+		return nil, err
+	}
+	missing := notOffered(only, ordered)
+	offered := wrapSigners(ordered, rec)
 	auth := ssh.PublicKeysCallback(func() ([]ssh.Signer, error) { return offered, nil })
 
 	dialer := net.Dialer{Timeout: d.DialTimeout}
@@ -193,14 +208,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	dialStart := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		kind, hint := fleet.ErrorKindDial, DialHint
-		if ctx.Err() != nil {
-			kind = ctxKind(ctx)
-			if kind == fleet.ErrorKindCanceled {
-				hint = "" // the operator interrupted; there is nothing to fix
-			}
-		}
-		return nil, classifyHint(kind, hint, dialErr(addr, err))
+		return nil, dialFailure(ctx, addr, err)
 	}
 	log.Debug("dial ok", "server", srv.Name, "addr", addr,
 		"dur", time.Since(dialStart).Round(time.Millisecond))
@@ -218,21 +226,69 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	})
 	if err != nil {
 		_ = conn.Close()
-		hkMu.Lock()
-		verdict := hkErr
-		hkMu.Unlock()
-		if verdict != nil {
-			return nil, fmt.Errorf("ssh %s@%s: %w", srv.User, addr, verdict)
-		}
-		return nil, classify(handshakeKind(ctx, err), fmt.Errorf("ssh %s@%s: %w", srv.User, addr, remoteText{err}))
+		return nil, dialFacts{user: srv.User, addr: addr, hk: hk, rec: rec, asked: len(only), missing: missing}.failure(ctx, err)
 	}
 	if !stopCancel() {
 		// ctx ended exactly as the handshake completed: the socket is closed.
 		_ = sshConn.Close()
 		return nil, classify(ctxKind(ctx), fmt.Errorf("ssh %s@%s: %w", srv.User, addr, ctx.Err()))
 	}
+	if opts.SessionTimeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(opts.SessionTimeout))
+	}
 	log.Debug("auth ok", "server", srv.Name, "user", srv.User)
 	return &Conn{Client: ssh.NewClient(sshConn, chans, reqs), session: rec}, nil
+}
+
+// hostKeyState is what the host-key callback saw during one dial: its
+// failing verdict (kept here because x/crypto may not keep it in the chain
+// NewClientConn returns), or that the key verified.
+type hostKeyState struct {
+	mu       sync.Mutex
+	verdict  error
+	verified bool
+}
+
+func (h *hostKeyState) record(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.verdict, h.verified = err, err == nil
+}
+
+func (h *hostKeyState) get() (verified bool, verdict error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.verified, h.verdict
+}
+
+// dialFacts is what one dial knows when its handshake fails.
+type dialFacts struct {
+	user, addr string
+	hk         *hostKeyState
+	rec        *sessionKey
+	asked      int // len(ConnectOptions.Only)
+	missing    int // how many of those fingerprints were not offered
+}
+
+// failure classifies a failed ssh.NewClientConn. An incomplete Only offer
+// never reports auth or the MaxAuthTries signal: a rollback needs every held
+// survivor actually tried, so it is an agent failure naming what was not
+// offered. A signer that failed during auth is an agent failure too.
+func (f dialFacts) failure(ctx context.Context, err error) error {
+	verified, verdict := f.hk.get()
+	if verdict != nil {
+		return fmt.Errorf("ssh %s@%s: %w", f.user, f.addr, verdict)
+	}
+	wrapped := fmt.Errorf("ssh %s@%s: %w", f.user, f.addr, remoteText{err})
+	kind := handshakeKind(ctx, err, verified)
+	exhausted := kind == fleet.ErrorKindHandshake && authExhausted(err, verified)
+	switch {
+	case f.missing > 0 && (kind == fleet.ErrorKindAuth || exhausted):
+		return classify(fleet.ErrorKindAgent, fmt.Errorf("%w; %d of the %d surviving keys not offered (agent locked, or keys removed since the plan)", wrapped, f.missing, f.asked))
+	case kind == fleet.ErrorKindHandshake && f.rec.signFailed():
+		return classify(fleet.ErrorKindAgent, wrapped)
+	}
+	return &Error{Kind: kind, Err: wrapped, AuthExhausted: exhausted}
 }
 
 // remoteText bounds server-controlled transport text (disconnect reasons,
@@ -249,6 +305,18 @@ func (e remoteText) Unwrap() error { return e.err }
 // carried in Error.Hint, never in the message, so reports print it once per
 // run and JSON keeps it in a separate `hint` field.
 const DialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+
+// dialFailure classifies a TCP connect that failed.
+func dialFailure(ctx context.Context, addr string, err error) error {
+	kind, hint := fleet.ErrorKindDial, DialHint
+	if ctx.Err() != nil {
+		kind = ctxKind(ctx)
+		if kind == fleet.ErrorKindCanceled {
+			hint = "" // the operator interrupted; there is nothing to fix
+		}
+	}
+	return classifyHint(kind, hint, dialErr(addr, err))
+}
 
 // dialErr names addr only when the net error does not already: a refused or
 // timed-out dial reads "dial tcp 10.0.0.1:22: connect: connection refused",
@@ -292,6 +360,37 @@ func orderSigners(signers []ssh.Signer, prefer, only []string) []ssh.Signer {
 	return out
 }
 
+// notOffered counts the distinct fingerprints in only that ordered does not
+// hold.
+func notOffered(only []string, ordered []ssh.Signer) int {
+	held := make(map[string]bool, len(ordered))
+	for _, s := range ordered {
+		held[ssh.FingerprintSHA256(s.PublicKey())] = true
+	}
+	missing := make(map[string]bool)
+	for _, fp := range only {
+		if !held[fp] {
+			missing[fp] = true
+		}
+	}
+	return len(missing)
+}
+
+// emptyOffer reports a dial that has no key to offer although its caller
+// needs one. An empty offer proves nothing about the server, so it is an
+// agent failure before any connection, not an auth verdict.
+func emptyOffer(opts ConnectOptions, ordered []ssh.Signer) error {
+	switch {
+	case len(ordered) > 0:
+		return nil
+	case len(opts.Only) > 0:
+		return classify(fleet.ErrorKindAgent, fmt.Errorf("none of the %d surviving keys is offered (agent locked, or keys removed since the plan)", len(opts.Only)))
+	case opts.RequireOffer:
+		return classify(fleet.ErrorKindAgent, errors.New("no key to offer (agent locked, or keys removed since the plan)"))
+	}
+	return nil
+}
+
 // remoteCommand wraps a POSIX-sh script so it runs under /bin/sh whatever
 // the account's login shell is: sshd hands the command string to
 // "$SHELL -c", and fish or csh/tcsh would misparse the scripts' POSIX
@@ -318,6 +417,10 @@ func remoteCommand(script string) string {
 	return b.String()
 }
 
+// ErrSessionNotOpened marks an Exec whose SSH session never opened, so the
+// script cannot have started. Its text is the failure message's prefix.
+var ErrSessionNotOpened = errors.New("open session")
+
 // Exec runs the single-line POSIX-sh script in one session over client
 // (as exec /bin/sh -c, see remoteCommand), optionally feeding stdin, and
 // returns the remote exit code with capped stdout/stderr. A nonzero exit is
@@ -337,7 +440,7 @@ func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reade
 	if err != nil {
 		// A rejected channel (*ssh.OpenChannelError) carries the server's
 		// free-text message: bounded like stderr (SEC-8).
-		return 0, nil, nil, classify(fleet.ErrorKindRemote, fmt.Errorf("open session: %w", remoteText{err}))
+		return 0, nil, nil, classify(fleet.ErrorKindRemote, fmt.Errorf("%w: %w", ErrSessionNotOpened, remoteText{err}))
 	}
 	defer func() { _ = sess.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = sess.Close() })

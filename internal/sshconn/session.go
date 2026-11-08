@@ -11,8 +11,23 @@ import (
 // the transport may try several signers; the last successful Sign is the one
 // the server accepted.
 type sessionKey struct {
-	mu sync.Mutex
-	fp string
+	mu      sync.Mutex
+	fp      string
+	signErr bool
+}
+
+// fail records that a signer failed during auth.
+func (s *sessionKey) fail() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.signErr = true
+}
+
+// signFailed reports whether any signer failed during auth.
+func (s *sessionKey) signFailed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.signErr
 }
 
 func (s *sessionKey) record(pub ssh.PublicKey) {
@@ -39,6 +54,8 @@ func (r recordingSigner) Sign(rand io.Reader, data []byte) (*ssh.Signature, erro
 	sig, err := r.Signer.Sign(rand, data)
 	if err == nil {
 		r.rec.record(r.PublicKey())
+	} else {
+		r.rec.fail()
 	}
 	//nolint:wrapcheck // the wrapper's contract is transparency: the transport must see the signer's error verbatim.
 	return sig, err
@@ -56,6 +73,8 @@ func (r recordingAlgorithmSigner) SignWithAlgorithm(rand io.Reader, data []byte,
 	sig, err := r.alg.SignWithAlgorithm(rand, data, algorithm)
 	if err == nil {
 		r.rec.record(r.PublicKey())
+	} else {
+		r.rec.fail()
 	}
 	//nolint:wrapcheck // the wrapper's contract is transparency: the transport must see the signer's error verbatim.
 	return sig, err

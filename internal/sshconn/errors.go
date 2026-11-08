@@ -18,6 +18,11 @@ type Error struct {
 	Kind fleet.ErrorKind
 	Err  error
 	Hint string // operator remediation, never part of Error()
+	// AuthExhausted reports that a server whose host key verified
+	// disconnected after too many refused keys (MaxAuthTries). The kind
+	// stays ErrorKindHandshake, so audit's error_kind does not change;
+	// apply's login check reads this flag.
+	AuthExhausted bool
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
@@ -48,11 +53,17 @@ func classifyHint(kind fleet.ErrorKind, hint string, err error) error {
 	return &Error{Kind: kind, Err: err, Hint: hint}
 }
 
+// tooManyAuthText is the disconnect text sshd sends once it has refused as
+// many keys as MaxAuthTries allows.
+const tooManyAuthText = "Too many authentication failures"
+
 // handshakeKind classifies an ssh.NewClientConn failure that was not a
 // host-key verdict (those are captured from the callback directly). The
 // auth case has no typed error in x/crypto, so its fixed message prefix is
-// the only signal.
-func handshakeKind(ctx context.Context, err error) fleet.ErrorKind {
+// the only signal, and it counts only after the host key verified: a
+// disconnect sent before key exchange can carry any text, and an auth
+// verdict rolls a server back.
+func handshakeKind(ctx context.Context, err error, hostVerified bool) fleet.ErrorKind {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return fleet.ErrorKindCanceled
@@ -63,10 +74,17 @@ func handshakeKind(ctx context.Context, err error) fleet.ErrorKind {
 	if errors.As(err, &ne) && ne.Timeout() {
 		return fleet.ErrorKindTimeout
 	}
-	if strings.Contains(err.Error(), "unable to authenticate") {
+	if hostVerified && strings.Contains(err.Error(), "unable to authenticate") {
 		return fleet.ErrorKindAuth
 	}
 	return fleet.ErrorKindHandshake
+}
+
+// authExhausted reports sshd's MaxAuthTries disconnect from a server whose
+// host key verified. x/crypto turns any msgDisconnect into a transport
+// error, so the text is the only signal.
+func authExhausted(err error, hostVerified bool) bool {
+	return hostVerified && strings.Contains(err.Error(), tooManyAuthText)
 }
 
 // ctxKind classifies a ctx that ended an exchange.
