@@ -448,6 +448,117 @@ func TestReportPlanPositiveOutcome(t *testing.T) {
 	}
 }
 
+// TestReportUnreadable pins reportUnreadable's whole output, line for line:
+// every per-server issue line first, then each distinct hint once in
+// first-seen order, then the strict verdict; no hint line for an issue
+// without a remediation; and, in strict mode, every line at error level so
+// the hint survives -q.
+func TestReportUnreadable(t *testing.T) {
+	const (
+		dial    = "check the host, port, and firewall"
+		hostkey = "add the host key to known_hosts"
+		ignored = `key SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE: sshd ignores this line: option "no-ptty" is not a recognized authorized_keys option`
+		verdict = " could not be fully read — nothing written; fix the errors above or re-run with --partial"
+	)
+	threeDown := adopt.Plan{Issues: []adopt.Issue{
+		{Server: "web-1", Detail: "dial: connection refused", Hint: dial},
+		{Server: "web-2", Detail: "host key unknown", Hint: hostkey},
+		{Server: "web-3", Detail: "dial: connection refused", Hint: dial},
+	}}
+	tests := []struct {
+		name       string
+		plan       adopt.Plan
+		unreadable []string
+		partial    bool
+		level      slog.Level
+		want       []string
+		wantErr    bool
+	}{
+		{
+			name:       "strict: issues, then distinct hints in order, then verdict",
+			plan:       threeDown,
+			unreadable: []string{"web-1", "web-2", "web-3"},
+			level:      slog.LevelInfo,
+			want: []string{
+				"error: server web-1: dial: connection refused",
+				"error: server web-2: host key unknown",
+				"error: server web-3: dial: connection refused",
+				"error: hint: " + dial,
+				"error: hint: " + hostkey,
+				"error: 3 servers" + verdict,
+			},
+			wantErr: true,
+		},
+		{
+			name:       "strict under -q: every line survives, the hint included",
+			plan:       threeDown,
+			unreadable: []string{"web-1", "web-2", "web-3"},
+			level:      slog.LevelError,
+			want: []string{
+				"error: server web-1: dial: connection refused",
+				"error: server web-2: host key unknown",
+				"error: server web-3: dial: connection refused",
+				"error: hint: " + dial,
+				"error: hint: " + hostkey,
+				"error: 3 servers" + verdict,
+			},
+			wantErr: true,
+		},
+		{
+			name:       "partial: same order at warn level, no verdict",
+			plan:       threeDown,
+			unreadable: []string{"web-1", "web-2", "web-3"},
+			partial:    true,
+			level:      slog.LevelInfo,
+			want: []string{
+				"warn: server web-1: dial: connection refused",
+				"warn: server web-2: host key unknown",
+				"warn: server web-3: dial: connection refused",
+				"warn: hint: " + dial,
+				"warn: hint: " + hostkey,
+			},
+		},
+		{
+			// The README console sample for a line sshd would ignore: the
+			// issue has no remediation, so no hint: line at all.
+			name:       "hintless issue prints no hint line (README sample)",
+			plan:       adopt.Plan{Issues: []adopt.Issue{{Server: "web-1", Detail: ignored}}},
+			unreadable: []string{"web-1"},
+			level:      slog.LevelInfo,
+			want: []string{
+				"error: server web-1: " + ignored,
+				"error: 1 server" + verdict,
+			},
+			wantErr: true,
+		},
+		{
+			name:  "nothing unreadable prints nothing",
+			plan:  adopt.Plan{},
+			level: slog.LevelInfo,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			log := slog.New(clog.NewHandler(&buf, clog.Options{Level: tt.level}))
+			err := reportUnreadable(log, tt.plan, tt.unreadable, tt.partial)
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && !errors.Is(err, errFleetUnreadable) {
+				t.Errorf("err = %v, want errFleetUnreadable", err)
+			}
+			want := ""
+			if len(tt.want) > 0 {
+				want = strings.Join(tt.want, "\n") + "\n"
+			}
+			if got := buf.String(); got != want {
+				t.Errorf("output mismatch\ngot:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
 func TestAdoptOutputFileNoClobber(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	src := writeConfig(t, "")
@@ -611,6 +722,11 @@ func TestAdoptUnreachableStrictGateAndPartial(t *testing.T) {
 	}
 	if strings.Contains(errBuf.String(), "reading") {
 		t.Errorf("stderr = %q, phase lines must be suppressed under -q", errBuf.String())
+	}
+	// The remediation is an error line in strict mode precisely so it
+	// survives -q (README: "error: in strict mode, so it survives -q").
+	if !strings.Contains(errBuf.String(), "error: hint: "+sshconn.DialHint) {
+		t.Errorf("stderr = %q, want the dial hint as an error: line under -q", errBuf.String())
 	}
 
 	out.Reset()
