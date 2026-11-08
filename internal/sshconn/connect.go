@@ -17,6 +17,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
 // Dialer holds the per-fleet connection settings shared by every server
@@ -223,7 +224,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 		if verdict != nil {
 			return nil, fmt.Errorf("ssh %s@%s: %w", srv.User, addr, verdict)
 		}
-		return nil, classify(handshakeKind(ctx, err), fmt.Errorf("ssh %s@%s: %w", srv.User, addr, err))
+		return nil, classify(handshakeKind(ctx, err), fmt.Errorf("ssh %s@%s: %w", srv.User, addr, remoteText{err}))
 	}
 	if !stopCancel() {
 		// ctx ended exactly as the handshake completed: the socket is closed.
@@ -233,6 +234,15 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	log.Debug("auth ok", "server", srv.Name, "user", srv.User)
 	return &Conn{Client: ssh.NewClient(sshConn, chans, reqs), session: rec}, nil
 }
+
+// remoteText bounds server-controlled transport text (disconnect reasons,
+// version and kex failures, sent before the host key is verified) for error
+// lines via sanitize.RemoteSnippet (SEC-8); Unwrap keeps errors.Is/As and
+// the kind classification on the original error.
+type remoteText struct{ err error }
+
+func (e remoteText) Error() string { return sanitize.RemoteSnippet(e.err.Error()) }
+func (e remoteText) Unwrap() error { return e.err }
 
 // DialHint is the operator remediation for a TCP connect that failed. It is
 // carried in Error.Hint, never in the message, so reports print it once per

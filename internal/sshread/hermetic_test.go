@@ -59,6 +59,8 @@ func TestReadReportsAuthorizedKeys2(t *testing.T) {
 		{"default path, planted authorized_keys2", "ssh-ed25519 AAAA planted\n", "", true},
 		{"explicit default path is still probed", "ssh-ed25519 AAAA planted\n", "~/.ssh/authorized_keys", true},
 		{"override path is not probed", "ssh-ed25519 AAAA planted\n", "~/keys/deploy", false},
+		{"absolute default path is probed", "ssh-ed25519 AAAA planted\n", "$HOME/.ssh/authorized_keys", true},
+		{"absolute non-default path is not flagged", "ssh-ed25519 AAAA planted\n", "$HOME/keys/deploy", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,7 +75,7 @@ func TestReadReportsAuthorizedKeys2(t *testing.T) {
 				writeHomeFile(t, home, ".ssh/authorized_keys2", tt.ak2)
 			}
 			c, fake, srv := hermeticClient(t, home)
-			srv.AuthorizedKeysFile = tt.override
+			srv.AuthorizedKeysFile = strings.ReplaceAll(tt.override, "$HOME", home)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			res, err := c.ReadAuthorizedKeys(ctx, srv)

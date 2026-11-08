@@ -78,15 +78,34 @@ func AuthorizedKeysCmdFor(path string) string {
 }
 
 // SecondaryKeysCmd builds the probe for SecondaryAuthorizedKeysPath: exit
-// 46 when it exists and is non-empty, 0 otherwise. Only meaningful when the
-// managed path is the default one.
+// 46 when it exists and is non-empty, 0 otherwise. It is the probe for the
+// default spelling (DefaultAuthorizedKeysPath); see SecondaryKeysCmdFor for
+// any other spelling of the managed path.
 func SecondaryKeysCmd() string {
 	return PathAssign(SecondaryAuthorizedKeysPath) + `; if [ -s "$p" ]; then exit 46; fi`
 }
 
+// SecondaryKeysCmdFor builds the authorized_keys2 probe for a server whose
+// managed file is path: exit 46 when path is — on the server, resolving
+// symlinks with cd -P — the login user's ~/.ssh/authorized_keys (sshd's
+// compiled-in first AuthorizedKeysFile entry, which keeps .ssh/authorized_keys2
+// beside it) and ~/.ssh/authorized_keys2 is non-empty; 0 otherwise. A
+// directory that does not resolve never matches, so two missing
+// directories cannot both collapse to "/authorized_keys".
+func SecondaryKeysCmdFor(path string) string {
+	if path == DefaultAuthorizedKeysPath {
+		return SecondaryKeysCmd()
+	}
+	return PathAssign(path) + `; h="${HOME:?}"` +
+		`; a=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || exit 0` +
+		`; s=$(cd -P "$h/.ssh" 2>/dev/null && pwd -P) || exit 0` +
+		`; if [ "$a/${p##*/}" != "$s/authorized_keys" ]; then exit 0; fi` +
+		`; if [ -s "$h/.ssh/authorized_keys2" ]; then exit 46; fi`
+}
+
 // FinishSecondaryProbe maps SecondaryKeysCmd's outcome: present reports a
 // non-empty authorized_keys2; any other nonzero exit is a remote error
-// (sanitized stderr embedded).
+// (stderr embedded as a bounded sanitize.RemoteSnippet).
 func FinishSecondaryProbe(code int, stderr *CappedBuffer) (present bool, err error) {
 	switch code {
 	case 0:
@@ -95,12 +114,13 @@ func FinishSecondaryProbe(code int, stderr *CappedBuffer) (present bool, err err
 		return true, nil
 	default:
 		return false, classify(audit.ErrorKindRemote, fmt.Errorf("authorized_keys2 probe failed (exit %d): %s",
-			code, strings.TrimSpace(SanitizeRemote(stderr.String()))))
+			code, sanitize.RemoteSnippet(stderr.String())))
 	}
 }
 
 // interpretExit maps the remote command's exit status to read semantics.
-// Remote stderr is sanitized before it is embedded in an error message.
+// Remote stderr is embedded as a sanitize.RemoteSnippet: one line, at most
+// sanitize.MaxSnippet safe runes (SEC-8).
 func interpretExit(code int, stderr string) (fileAbsent bool, err error) {
 	switch code {
 	case 0:
@@ -108,7 +128,7 @@ func interpretExit(code int, stderr string) (fileAbsent bool, err error) {
 	case FileAbsentExit:
 		return true, nil
 	default:
-		return false, fmt.Errorf("remote read failed (exit %d): %s", code, strings.TrimSpace(SanitizeRemote(stderr)))
+		return false, fmt.Errorf("remote read failed (exit %d): %s", code, sanitize.RemoteSnippet(stderr))
 	}
 }
 

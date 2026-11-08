@@ -153,9 +153,14 @@ func (c *Client) getDialer() *sshconn.Dialer {
 
 // readAuthorizedKeys connects through sshconn.Dialer and reads the server's
 // authorized_keys — srv.AuthorizedKeysFile when set, ~/.ssh/authorized_keys
-// otherwise — via a one-shot session. For the default path it also probes
-// ~/.ssh/authorized_keys2 (a second session on the same connection), which
-// sshd's default AuthorizedKeysFile consults too. Deadline semantics live
+// otherwise — via a one-shot session. When that path is the default one —
+// ~/.ssh/authorized_keys or an equivalent spelling that resolves to it on
+// the server, such as /home/alice/.ssh/authorized_keys — it also reports a
+// non-empty ~/.ssh/authorized_keys2, which sshd's default
+// AuthorizedKeysFile consults too. The probe (sshconn.SecondaryKeysCmdFor)
+// is a second short session on the same connection and runs for every
+// read: for a non-default path it costs that one extra session to decide
+// that the path is not equivalent. Deadline semantics live
 // in Connect: the ctx deadline (or the derived 3×DialTimeout floor) bounds
 // the whole exchange, not just the dial; ctx cancellation ends it at once.
 func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
@@ -182,16 +187,14 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (aud
 	}
 	res.SessionKeyFP = conn.SessionKeyFP()
 
-	if path == sshconn.DefaultAuthorizedKeysPath {
-		code, _, stderr, err := sshconn.Exec(ctx, conn.Client, sshconn.SecondaryKeysCmd(), nil)
-		if err != nil {
-			return zero, fmt.Errorf("authorized_keys2 probe on %s: %w", addr, err)
-		}
-		present, err := sshconn.FinishSecondaryProbe(code, stderr)
-		if err != nil {
-			return zero, fmt.Errorf("on %s: %w", addr, err)
-		}
-		res.AuthorizedKeys2 = present
+	code, _, stderr, err = sshconn.Exec(ctx, conn.Client, sshconn.SecondaryKeysCmdFor(path), nil)
+	if err != nil {
+		return zero, fmt.Errorf("authorized_keys2 probe on %s: %w", addr, err)
 	}
+	present, err := sshconn.FinishSecondaryProbe(code, stderr)
+	if err != nil {
+		return zero, fmt.Errorf("on %s: %w", addr, err)
+	}
+	res.AuthorizedKeys2 = present
 	return res, nil
 }

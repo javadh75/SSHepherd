@@ -277,13 +277,15 @@ absolute (`/...`) or home-relative with an explicit `~/` prefix, must name a fil
 (a trailing `/` is rejected), and may not contain control, format or line-separator
 characters. It is POSIX-single-quote escaped before it reaches a remote shell.
 
-When the effective path is the default, `audit` also checks whether
+When the effective path is the default — or any spelling that resolves on the server
+to the login user's `~/.ssh/authorized_keys`, such as `/home/alice/.ssh/authorized_keys`
+— `audit` also checks whether
 `~/.ssh/authorized_keys2` — OpenSSH's compiled-in second `AuthorizedKeysFile` —
 exists and is non-empty, and reports it as drift. SSHepherd never reads its keys;
 `apply` moves it aside to `~/.ssh/authorized_keys2.sshepherd.disabled` whenever it
 writes that server (see [Safety model](#safety-model)), so a revoked key cannot keep
-logging in from it. Audit reads only the managed file (and, on the default path, checks
-`authorized_keys2`). It does not see sshd's other key sources — a custom
+logging in from it. Audit reads only the managed file (and, on the default path or an
+equivalent spelling, checks `authorized_keys2`). It does not see sshd's other key sources — a custom
 `AuthorizedKeysFile` list in `sshd_config`, `AuthorizedKeysCommand`,
 `TrustedUserCAKeys`, `AuthorizedPrincipalsFile`/`AuthorizedPrincipalsCommand` — or
 other accounts on the same host. Point `authorized_keys_file` at the file sshd
@@ -386,8 +388,8 @@ security-relevant classes make a server non-compliant (exit 1), always on:
   `from=` or `command=` restriction);
 - a **duplicate entry** — one key on several lines, where sshd tries each line and
   the least restricted copy wins;
-- a non-empty, unmanaged **`~/.ssh/authorized_keys2`** (checked only when the audited
-  path is the default).
+- a non-empty, unmanaged **`~/.ssh/authorized_keys2`** (checked when the audited
+  path is the default or resolves to it).
 
 ```console
 web-1 (deploy@10.0.0.1:22)
@@ -1610,7 +1612,7 @@ once, the first time an unmanaged file is replaced, and never overwritten — us
 undo the first apply. A symlink planted at either name is never written through.
 
 **`authorized_keys2`.** When phase 1 found a non-empty `~/.ssh/authorized_keys2`
-(default path only), the plan shows
+(default path or an equivalent spelling), the plan shows
 `disable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2.sshepherd.disabled` and the
 write moves it aside after the verify and before the login probe — even when
 `authorized_keys` itself already matches. A server apply does not write (refused,
@@ -1640,6 +1642,10 @@ with many held keys. Remote commands always run under `/bin/sh`.
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.
+Server-supplied text in error lines (remote stderr, and disconnect or handshake text a
+server sends while connecting) is further reduced to printable ASCII plus Latin
+letters (anything else shows as `?`), collapsed to one line, and cut at 256
+characters (`…(truncated)`).
 
 ## Development
 

@@ -472,3 +472,75 @@ func TestFinishReadErrorsAreRemoteKind(t *testing.T) {
 		t.Errorf("kind = %q, want remote", got)
 	}
 }
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSecondaryKeysCmdFor (WP-10) runs the path-aware authorized_keys2
+// probe through a real sh: any spelling that resolves on the server to the
+// login user's ~/.ssh/authorized_keys is probed; everything else is not.
+func TestSecondaryKeysCmdFor(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  func(home string) string
+		setup func(t *testing.T, home string)
+		ak2   bool
+		want  bool
+	}{
+		{"default spelling", func(string) string { return DefaultAuthorizedKeysPath }, nil, true, true},
+		{"absolute default", func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") }, nil, true, true},
+		{"through a symlinked dir", func(h string) string { return filepath.Join(h, "link", "authorized_keys") },
+			func(t *testing.T, h string) { must(t, os.Symlink(filepath.Join(h, ".ssh"), filepath.Join(h, "link"))) }, true, true},
+		{"absolute default, no keys2", func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") }, nil, false, false},
+		{"other file in ~/.ssh", func(h string) string { return filepath.Join(h, ".ssh", "other") }, nil, true, false},
+		{"tilde override elsewhere", func(string) string { return "~/keys/deploy" }, nil, true, false},
+		{"missing dir never matches", func(h string) string { return filepath.Join(h, "nodir", "authorized_keys") }, nil, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir() // on macOS /var → /private/var: cd -P must resolve both sides
+			must(t, os.MkdirAll(filepath.Join(home, ".ssh"), 0o700))
+			if tt.ak2 {
+				must(t, os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys2"), []byte("ssh-ed25519 AAAA planted\n"), 0o600))
+			}
+			if tt.setup != nil {
+				tt.setup(t, home)
+			}
+			c := exec.CommandContext(t.Context(), "sh", "-c", SecondaryKeysCmdFor(tt.path(home))) // #nosec G204 -- the probe under test
+			c.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+			code := 0
+			var exitErr *exec.ExitError
+			if err := c.Run(); errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if present, err := FinishSecondaryProbe(code, NewCappedBuffer(10)); err != nil || present != tt.want {
+				t.Errorf("probe = (%v, %v), want (%v, nil)", present, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestRemoteErrorsBoundStderr (SEC-8): remote stderr embedded in a read or
+// keys2-probe error is bounded and carries no blank-looking padding runes.
+func TestRemoteErrorsBoundStderr(t *testing.T) {
+	huge := strings.Repeat("\u2800", 1<<18) + "web-3  \u2713 present & authorized"
+	_, err := interpretExit(1, huge)
+	stderr := NewCappedBuffer(MaxRemoteOutput)
+	_, _ = stderr.Write([]byte(huge))
+	_, err2 := FinishSecondaryProbe(2, stderr)
+	for _, e := range []error{err, err2} {
+		if e == nil {
+			t.Error("err = nil, want a remote error")
+			continue
+		}
+		if len(e.Error()) > 512 || strings.ContainsRune(e.Error(), '\u2800') {
+			t.Errorf("err = %.80q… (%d bytes), want ≤ 512 bytes with no blank padding", e, len(e.Error()))
+		}
+	}
+}

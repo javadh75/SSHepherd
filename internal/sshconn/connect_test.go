@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -552,5 +553,60 @@ func TestRemoteCommandUnderLoginShells(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestHandshakeDisconnectTextIsBounded (SEC-8): a server that sends
+// SSH_MSG_DISCONNECT during kex controls the error text; it must come back
+// bounded and without blank-looking runes, still classified as a handshake
+// failure.
+func TestHandshakeDisconnectTextIsBounded(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	t.Cleanup(func() { <-done })         // runs last: the peer goroutine has exited
+	t.Cleanup(func() { _ = ln.Close() }) // runs first: unblocks a pending Accept
+	desc := strings.Repeat("\u2800", 1<<14) + "\n\u2713 present & authorized"
+	go func() {
+		defer close(done)
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_, _ = io.WriteString(c, "SSH-2.0-evil\r\n")
+		// payload: byte 1 (disconnect), uint32 reason 2, string desc, string lang ""
+		payload := []byte{1, 0, 0, 0, 2}
+		payload = binary.BigEndian.AppendUint32(payload, uint32(len(desc))) // #nosec G115 -- small test constant
+		payload = append(payload, desc...)
+		payload = binary.BigEndian.AppendUint32(payload, 0)
+		pad := 8 - (5+len(payload))%8
+		if pad < 4 {
+			pad += 8
+		}
+		pkt := binary.BigEndian.AppendUint32(nil, uint32(1+len(payload)+pad)) // #nosec G115 -- small test constant
+		pkt = append(pkt, byte(pad))
+		pkt = append(pkt, payload...)
+		pkt = append(pkt, make([]byte, pad)...)
+		_, _ = c.Write(pkt)
+		_, _ = io.Copy(io.Discard, c) // keep reading the client's KEXINIT until it hangs up
+	}()
+	port := ln.Addr().(*net.TCPAddr).Port
+	d := &Dialer{KnownHostsPath: sshtest.KnownHostsFile(t), Creds: &Credentials{AgentSock: sshtest.Agent(t, sshtest.Key(1))}, DialTimeout: time.Second}
+	_, err = d.Connect(ctxTimeout(t, 5*time.Second), config.Server{Name: "evil", Host: "127.0.0.1", Port: port, User: "u"})
+	if err == nil {
+		t.Fatal("dial succeeded against a disconnecting server")
+	}
+	msg := err.Error()
+	if len(msg) > 512 || strings.ContainsRune(msg, '\u2800') || strings.Contains(msg, "\n") {
+		t.Errorf("handshake error not bounded: %d bytes, %q…", len(msg), msg[:min(len(msg), 120)])
+	}
+	if !strings.Contains(msg, "ssh u@127.0.0.1:"+strconv.Itoa(port)) || !strings.Contains(msg, "disconnect") {
+		t.Errorf("message %q lost its prefix or the disconnect reason", msg)
+	}
+	if got := kindOf(t, err); got != audit.ErrorKindHandshake {
+		t.Errorf("kind = %q, want handshake", got)
 	}
 }

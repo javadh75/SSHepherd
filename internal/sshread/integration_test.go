@@ -95,3 +95,21 @@ func TestIntegrationUnknownHostKey(t *testing.T) {
 		t.Errorf("kind = %q, want host_key_unknown", audit.ErrorKindOf(err))
 	}
 }
+
+// TestIntegrationKeys2OnAbsoluteDefaultPath (WP-10): the absolute spelling
+// of the default file still probes authorized_keys2 on a real sshd. User
+// "absent" has a non-empty authorized_keys2 and no default file.
+func TestIntegrationKeys2OnAbsoluteDefaultPath(t *testing.T) {
+	c, host, port := itClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := c.ReadAuthorizedKeys(ctx, config.Server{
+		Name: "it", Host: host, Port: port, User: "absent", AuthorizedKeysFile: "/home/absent/.ssh/authorized_keys",
+	})
+	if err != nil {
+		t.Fatalf("ReadAuthorizedKeys: %v", err)
+	}
+	if !res.FileAbsent || !res.AuthorizedKeys2 {
+		t.Errorf("FileAbsent=%v AuthorizedKeys2=%v, want both true (the absolute spelling of the default file)", res.FileAbsent, res.AuthorizedKeys2)
+	}
+}
