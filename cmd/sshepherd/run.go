@@ -41,6 +41,7 @@ var errCriticalDrift = errors.New("fleet has critical drift")
 // (PersistentPreRunE) to the subcommands and to run()'s fatal-error path.
 type app struct {
 	logger      *slog.Logger // stderr logger; nil until flags are parsed
+	errColor    bool         // whether stderr may color; false until flags are parsed
 	reportColor bool         // whether stdout renderers may color
 }
 
@@ -54,10 +55,16 @@ func (a *app) log(stderr io.Writer) *slog.Logger {
 	if a.logger != nil {
 		return a.logger
 	}
-	return slog.New(clog.NewHandler(stderr, clog.Options{
-		Level: slog.LevelInfo,
-		Color: clog.Enabled(stderr, clog.ColorNever),
-	}))
+	return a.plainLog(stderr)
+}
+
+// plainLog is the "error: …" format with no timestamp, whatever -v says:
+// the pre-parse fallback, and how runContext prints a usageError. It
+// colors as --color resolved for stderr (never, before flags are parsed).
+// Like the fallback, it is a second handler on stderr, used only after
+// Execute returns.
+func (a *app) plainLog(stderr io.Writer) *slog.Logger {
+	return slog.New(clog.NewHandler(stderr, clog.Options{Level: slog.LevelInfo, Color: a.errColor}))
 }
 
 // fmtDur renders durations at operator resolution: whole milliseconds under
@@ -152,13 +159,25 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	err := root.ExecuteContext(ctx)
 	code := exitCodeFor(err)
 	if code == 3 {
-		a.log(stderr).Error(err.Error())
+		log := a.log(stderr)
+		if errors.As(err, new(usageError)) {
+			log = a.plainLog(stderr)
+		}
+		log.Error(err.Error())
 	}
 	return code
 }
 
-// exitCodesAudit and exitCodesWrite end the --help description of audit and
-// of apply/revoke/rotate; README's Exit codes section carries both verbatim.
+// usageError is a bad invocation found after flag parsing (an unknown
+// command, contradictory run modes). runContext prints it through plainLog,
+// the format cobra's own flag errors get, so -v never timestamps it.
+type usageError struct{ error }
+
+func (e usageError) Unwrap() error { return e.error }
+
+// The exitCodes* footers end each subcommand's --help description (audit;
+// apply/revoke/rotate; adopt; import); README's Exit codes section carries
+// every one verbatim.
 const exitCodesAudit = `Exit codes:
   0  compliant
   1  drift or unreachable servers (compliance not proven)
@@ -166,10 +185,23 @@ const exitCodesAudit = `Exit codes:
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted`
 
 const exitCodesWrite = `Exit codes:
-  0  converged: nothing left to do
+  0  converged: nothing left to do; or, with revoke/rotate --no-apply, the
+     edit is saved but not pushed (run the apply hint it prints)
   1  pending changes, unreachable or refused servers, or a declined prompt
   3  tool error: bad flags, unloadable manifest, failed preflight, or refused
      before anything was saved or written`
+
+const exitCodesAdopt = `Exit codes:
+  0  manifest emitted
+  1  a server could not be fully read and --partial was not given; nothing
+     emitted
+  3  tool error: bad flags, unloadable manifest, failed preflight, an existing
+     --output without --force, interrupted`
+
+const exitCodesImport = `Exit codes:
+  0  manifest emitted
+  3  tool error: bad flags, unreadable ssh config or --merge manifest, an
+     existing --output without --force`
 
 // exitCodeFor maps Execute's error to the monitoring-style process exit code
 // (see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md).
@@ -223,9 +255,10 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 			case verbose:
 				level = slog.LevelDebug
 			}
+			a.errColor = clog.Enabled(stderr, mode)
 			a.logger = slog.New(clog.NewHandler(stderr, clog.Options{
 				Level:   level,
-				Color:   clog.Enabled(stderr, mode),
+				Color:   a.errColor,
 				Verbose: verbose,
 			}))
 			a.reportColor = clog.Enabled(stdout, mode)
@@ -233,12 +266,12 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return errors.New("no command given (try --help)")
+				return usageError{errors.New("no command given (try --help)")}
 			}
 			if s := cmd.SuggestionsFor(args[0]); len(s) > 0 {
-				return fmt.Errorf("unknown command %q (did you mean %s?); see 'sshepherd --help'", args[0], strings.Join(s, ", "))
+				return usageError{fmt.Errorf("unknown command %q (did you mean %s?); see 'sshepherd --help'", args[0], strings.Join(s, ", "))}
 			}
-			return fmt.Errorf("unknown command %q; see 'sshepherd --help'", args[0])
+			return usageError{fmt.Errorf("unknown command %q; see 'sshepherd --help'", args[0])}
 		},
 	}
 	root.SetOut(stdout)

@@ -20,12 +20,36 @@ func TestApplyHint(t *testing.T) {
 	}{
 		{"sshepherd.yaml", defaultKnownHosts, []string{"web-1"}, "sshepherd apply --server web-1"},
 		{"/etc/fleet.yaml", defaultKnownHosts, []string{"web-1", "db-1"}, "sshepherd apply --config /etc/fleet.yaml --server web-1 --server db-1"},
-		{"my fleet.yaml", defaultKnownHosts, []string{"web-1"}, "sshepherd apply --config 'my fleet.yaml' --server web-1"},
+		{"my fleet.yaml", defaultKnownHosts, []string{"web-1"}, "sshepherd apply --config \"my fleet.yaml\" --server web-1"},
 		{"/etc/fleet.yaml", "/kh", []string{"web-1", "db-1"}, "sshepherd apply --config /etc/fleet.yaml --known-hosts /kh --server web-1 --server db-1"},
 	} {
 		cf := connFlags{cfgPath: tt.cfg, knownHosts: tt.kh}
 		if got := applyHint(cf.followUp(), tt.servers); got != tt.want {
 			t.Errorf("applyHint(%q, %q, %v) = %q, want %q", tt.cfg, tt.kh, tt.servers, got, tt.want)
+		}
+	}
+}
+
+// TestHintArg: hints are printed inside '…', so an argument that needs
+// quoting gets double quotes whenever they are safe (nothing the shell
+// expands inside them), which keeps the hint's own end unambiguous; only
+// the rest falls back to POSIX single quotes.
+func TestHintArg(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"/etc/fleet.yaml", "/etc/fleet.yaml"},
+		{"my fleet.yaml", `"my fleet.yaml"`},
+		{"~/.ssh/ci", `"~/.ssh/ci"`},
+		{"don't.yaml", `"don't.yaml"`},
+		{"$HOME/f.yaml", `'$HOME/f.yaml'`},
+		{"a`b`", "'a`b`'"},
+		{`a"b`, `'a"b'`},
+		{`a\b`, `'a\b'`},
+		{"wow!.yaml", "'wow!.yaml'"},
+		{"a\tb", "'a\tb'"},
+		{"it's $x", `'it'\''s $x'`},
+	} {
+		if got := hintArg(tt.in); got != tt.want {
+			t.Errorf("hintArg(%q) = %s, want %s", tt.in, got, tt.want)
 		}
 	}
 }
@@ -118,7 +142,7 @@ func TestOverlapHint(t *testing.T) {
 		{"incomplete, many", bob, "/etc/fleet.yaml", defaultKnownHosts, 3, 2, false,
 			"overlap incomplete — 2 servers do not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key SHA256:old+/= --config /etc/fleet.yaml\n"},
 		{"not pushed", bob, "my fleet.yaml", defaultKnownHosts, 3, 0, true,
-			"overlap recorded, not pushed — run the apply hint above, then, once every client uses the new key, finish with: sshepherd revoke --key SHA256:old+/= --config 'my fleet.yaml'\n"},
+			"overlap recorded, not pushed — run the apply hint above, then, once every client uses the new key, finish with: sshepherd revoke --key SHA256:old+/= --config \"my fleet.yaml\"\n"},
 		{"no grants", bob, "sshepherd.yaml", defaultKnownHosts, 0, 0, true,
 			"new key recorded — bob has no grants yet, so no server was contacted; finish the overlap with: sshepherd revoke --key SHA256:old+/=\n"},
 		{"operator", ops, "sshepherd.yaml", defaultKnownHosts, 2, 0, false,

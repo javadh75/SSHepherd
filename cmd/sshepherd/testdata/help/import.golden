@@ -11,8 +11,23 @@ intact — and only what is genuinely new is appended; on any conflict the
 manifest wins and the incoming entry is dropped with a warning.
 Warnings about skipped entries go to stderr.
 
+Exit codes:
+  0  manifest emitted
+  3  tool error: bad flags, unreadable ssh config or --merge manifest, an
+     existing --output without --force
+
 Usage:
   sshepherd import [ssh-config-path] [flags]
+
+Examples:
+  # Servers only, as the starting point for adopt
+  sshepherd import --servers-only -o sshepherd.yaml
+
+  # Servers and users from one config, with an operator key
+  sshepherd import ~/.ssh/config --operator ~/.ssh/ops.pub -o sshepherd.yaml
+
+  # Add hosts that are new in the ssh config to an existing manifest
+  sshepherd import --merge sshepherd.yaml -o merged.yaml
 
 Flags:
       --force                  allow --output to overwrite an existing file

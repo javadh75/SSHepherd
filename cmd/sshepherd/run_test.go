@@ -93,6 +93,13 @@ func TestUsageErrorsArePlain(t *testing.T) {
 		{[]string{"revoke", "bob", "--dry-run", "--yes", "--config", path}, "error: --dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking\n"},
 		{[]string{"audti"}, "error: unknown command \"audti\" (did you mean audit?); see 'sshepherd --help'\n"},
 		{[]string{"zzz"}, "error: unknown command \"zzz\"; see 'sshepherd --help'\n"},
+		// -v builds the timestamped logger before these checks run (root's
+		// RunE, the run modes); usage errors still print plain.
+		{[]string{"-v", "audti"}, "error: unknown command \"audti\" (did you mean audit?); see 'sshepherd --help'\n"},
+		{[]string{"--verbose", "zzz"}, "error: unknown command \"zzz\"; see 'sshepherd --help'\n"},
+		{[]string{"-v"}, "error: no command given (try --help)\n"},
+		{[]string{"apply", "-v", "--dry-run", "--yes", "--config", path}, "error: --dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking\n"},
+		{[]string{"revoke", "bob", "-v", "--json", "--config", path}, "error: --json needs --dry-run or --yes (a script cannot answer the confirmation prompt)\n"},
 	} {
 		var out, errBuf bytes.Buffer
 		if code := run(tt.args, &out, &errBuf); code != 3 {
@@ -104,20 +111,28 @@ func TestUsageErrorsArePlain(t *testing.T) {
 	}
 }
 
-// TestHelpExamplesAndExitCodes: every write/monitoring command shows
-// examples and its exit-code footer, every example line parses against the
-// real flag set, and README's Exit codes section carries both footers verbatim.
+// TestHelpExamplesAndExitCodes: every subcommand shows examples and its
+// exit-code footer, every example line parses against the real flag set,
+// and README's Exit codes section carries every footer verbatim.
 func TestHelpExamplesAndExitCodes(t *testing.T) {
 	raw, err := os.ReadFile("../../README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{exitCodesAudit, exitCodesWrite} {
+	for _, f := range []string{exitCodesAudit, exitCodesWrite, exitCodesAdopt, exitCodesImport} {
 		if !strings.Contains(string(raw), f) {
 			t.Errorf("README lacks the --help footer:\n%s", f)
 		}
 	}
-	for name, footer := range map[string]string{"audit": exitCodesAudit, "apply": exitCodesWrite, "revoke": exitCodesWrite, "rotate": exitCodesWrite} {
+	// revoke/rotate --no-apply exit 0 with servers still to push; the footer
+	// must not let a script read 0 as "converged" there.
+	if !strings.Contains(exitCodesWrite, "--no-apply") {
+		t.Errorf("exitCodesWrite does not say what exit 0 means under --no-apply:\n%s", exitCodesWrite)
+	}
+	for name, footer := range map[string]string{
+		"audit": exitCodesAudit, "apply": exitCodesWrite, "revoke": exitCodesWrite, "rotate": exitCodesWrite,
+		"adopt": exitCodesAdopt, "import": exitCodesImport,
+	} {
 		var out, errBuf bytes.Buffer
 		if code := run([]string{name, "--help"}, &out, &errBuf); code != 0 {
 			t.Fatalf("%s --help exit = %d", name, code)
@@ -178,6 +193,14 @@ func TestRunColorAlwaysFatal(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "\x1b[31merror:\x1b[0m") {
 		t.Errorf("stderr = %q, want a red error: prefix", errBuf.String())
+	}
+	// A usage error under -v keeps the plain format and still honors --color.
+	errBuf.Reset()
+	if code := run([]string{"--color", "always", "-v", "audti"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit code = %d, want 3", code)
+	}
+	if !strings.HasPrefix(errBuf.String(), "\x1b[31merror:\x1b[0m unknown command") {
+		t.Errorf("stderr = %q, want a red error: prefix and no timestamp", errBuf.String())
 	}
 }
 

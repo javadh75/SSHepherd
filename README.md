@@ -129,17 +129,18 @@ SSHepherd deliberately has a narrow, strict connection posture:
 
 Bootstrap from the fleet you already run, into one manifest. `adopt` reads the
 servers from a manifest, so list them first — `import --servers-only` takes them from
-your SSH client config — then let `adopt --merge` add every key actually installed on
-them to that same file:
+your SSH client config — then let `adopt --merge` write a copy of that file with every
+key actually installed on them added, review the difference, and keep the copy:
 
 ```console
 $ sshepherd import --servers-only -o sshepherd.yaml         # servers from ~/.ssh/config
-$ sshepherd adopt --merge -o sshepherd.yaml --force         # adds every installed key to sshepherd.yaml
-$ git diff sshepherd.yaml                                   # review what adopt added
+$ sshepherd adopt --merge -o adopted.yaml                   # sshepherd.yaml plus every installed key
+$ diff -u sshepherd.yaml adopted.yaml                       # review what adopt added
+$ mv adopted.yaml sshepherd.yaml
 ```
 
 `adopt --merge` keeps the manifest's text (comments intact) and appends the
-discovered users and grants under a dated marker. Without a manifest, every command
+discovered users and grants under a dated marker; it never modifies its input. Without a manifest, every command
 says so and points here:
 `no manifest at sshepherd.yaml — create one with 'sshepherd import --servers-only -o sshepherd.yaml', or pass --config PATH`.
 
@@ -1479,11 +1480,12 @@ refused (`permissions … are too open`); a file the uid cannot read at all fail
 ## Exit codes
 
 Monitoring-style, shared by `audit`, `apply`, `revoke` and `rotate` (code `2` is
-`audit`-only):
+`audit`-only; `adopt` and `import` use `0`, `1` and `3` as their own footers below
+say):
 
 | Code | Meaning |
 | ---- | ------- |
-| `0` | Compliant / converged — nothing to do |
+| `0` | Compliant / converged — nothing to do; or `revoke`/`rotate --no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift, unreachable servers, or pending changes — compliance not proven |
 | `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply`, `revoke` and `rotate` never return `2` |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a concurrent save) |
@@ -1502,10 +1504,31 @@ Exit codes:
 
 ```console
 Exit codes:
-  0  converged: nothing left to do
+  0  converged: nothing left to do; or, with revoke/rotate --no-apply, the
+     edit is saved but not pushed (run the apply hint it prints)
   1  pending changes, unreachable or refused servers, or a declined prompt
   3  tool error: bad flags, unloadable manifest, failed preflight, or refused
      before anything was saved or written
+```
+
+`adopt --help`:
+
+```console
+Exit codes:
+  0  manifest emitted
+  1  a server could not be fully read and --partial was not given; nothing
+     emitted
+  3  tool error: bad flags, unloadable manifest, failed preflight, an existing
+     --output without --force, interrupted
+```
+
+`import --help`:
+
+```console
+Exit codes:
+  0  manifest emitted
+  3  tool error: bad flags, unreadable ssh config or --merge manifest, an
+     existing --output without --force
 ```
 
 ## Safety model

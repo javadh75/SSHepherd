@@ -32,11 +32,11 @@ func (f *runFlags) register(cmd *cobra.Command) {
 
 // errJSONNeedsMode: a script cannot answer the [y/N] prompt, so --json
 // must say up front whether this run previews or writes.
-var errJSONNeedsMode = errors.New("--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)")
+var errJSONNeedsMode = usageError{errors.New("--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)")}
 
 // errDryRunYes: the two modes contradict each other; said in our own words
 // rather than cobra's flag-group wording.
-var errDryRunYes = errors.New("--dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking")
+var errDryRunYes = usageError{errors.New("--dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking")}
 
 // checkModes: --dry-run and --yes exclude each other, and --json needs one
 // of them (errJSONNeedsMode — even when nothing would change, so the rule

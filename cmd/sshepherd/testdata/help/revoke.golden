@@ -13,7 +13,8 @@ without contacting any server. A server whose only grantee is revoked is
 never emptied: the key stays installed there (a warning says so).
 
 Exit codes:
-  0  converged: nothing left to do
+  0  converged: nothing left to do; or, with revoke/rotate --no-apply, the
+     edit is saved but not pushed (run the apply hint it prints)
   1  pending changes, unreachable or refused servers, or a declined prompt
   3  tool error: bad flags, unloadable manifest, failed preflight, or refused
      before anything was saved or written

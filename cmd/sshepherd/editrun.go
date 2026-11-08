@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -399,9 +400,17 @@ func printScope(w io.Writer, h followUp, contacted, fleet int) {
 // shellSafe matches arguments that need no quoting in a hint.
 var shellSafe = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
 
+// hintArg quotes one argument of a hint. Hints are printed inside '…', so a
+// single-quoted argument would nest quotes and blur where the command ends;
+// double quotes are used instead whenever nothing in s is special inside
+// them ($ ` \ " and bash's history !) and s has no control characters.
+// Only the rest falls back to POSIX single quotes.
 func hintArg(s string) string {
 	if shellSafe.MatchString(s) {
 		return s
+	}
+	if !strings.ContainsAny(s, "$`\\\"!") && !strings.ContainsFunc(s, unicode.IsControl) {
+		return `"` + s + `"`
 	}
 	return sshconn.ShQuote(s)
 }

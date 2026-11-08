@@ -186,7 +186,12 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			"their grants extend that user's access; unknown keys become new users\n" +
 			"with access to exactly the servers where they were found. The input\n" +
 			"file is never modified — review the output, then adopt it as your\n" +
-			"manifest. Any unreadable server aborts the run unless --partial is set.",
+			"manifest. Any unreadable server aborts the run unless --partial is set.\n\n" +
+			exitCodesAdopt,
+		Example: "  # Bootstrap: append every installed key to a servers-only manifest\n" +
+			"  sshepherd adopt --merge -o adopted.yaml\n\n" +
+			"  # Regenerate from scratch, even if some servers are down\n" +
+			"  sshepherd adopt --partial -o adopted.yaml",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ids, err := cf.validate()

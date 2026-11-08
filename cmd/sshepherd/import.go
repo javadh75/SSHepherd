@@ -354,7 +354,13 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			"With --merge FILE the existing manifest FILE is preserved — comments\n" +
 			"intact — and only what is genuinely new is appended; on any conflict the\n" +
 			"manifest wins and the incoming entry is dropped with a warning.\n" +
-			"Warnings about skipped entries go to stderr.",
+			"Warnings about skipped entries go to stderr.\n\n" + exitCodesImport,
+		Example: "  # Servers only, as the starting point for adopt\n" +
+			"  sshepherd import --servers-only -o sshepherd.yaml\n\n" +
+			"  # Servers and users from one config, with an operator key\n" +
+			"  sshepherd import ~/.ssh/config --operator ~/.ssh/ops.pub -o sshepherd.yaml\n\n" +
+			"  # Add hosts that are new in the ssh config to an existing manifest\n" +
+			"  sshepherd import --merge sshepherd.yaml -o merged.yaml",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if serversOnly && len(operators) > 0 {
@@ -386,7 +392,7 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("load ssh config: %w", err) // wrapcheck: wrap at package boundary
 			}
-			log.Info(fmt.Sprintf("parsed %s: %d hosts", src, len(hosts)))
+			log.Info("parsed " + src + ": " + apply.Plural(len(hosts), "host", "hosts"))
 			for _, w := range warnings {
 				log.Warn(w)
 			}

@@ -49,7 +49,7 @@ func TestFollowUp(t *testing.T) {
 		want string
 	}{
 		{"defaults", def, "sshepherd apply --server web-1"},
-		{"all", all, "sshepherd apply --config 'my fleet.yaml' --known-hosts /tmp/kh --identity '~/.ssh/ci' " +
+		{"all", all, "sshepherd apply --config \"my fleet.yaml\" --known-hosts /tmp/kh --identity \"~/.ssh/ci\" " +
 			"--identity-passphrase-file /run/pp --identity-passphrase /k/a=/k/a.pass --server web-1"},
 	} {
 		if got := tt.f.followUp().command("apply", nil, "--server web-1"); got != tt.want {
@@ -59,7 +59,7 @@ func TestFollowUp(t *testing.T) {
 	if got := def.followUp().suffix(); got != "" {
 		t.Errorf("default suffix = %q, want empty", got)
 	}
-	if got, want := all.followUp().suffix(), " --config 'my fleet.yaml' --known-hosts /tmp/kh --identity '~/.ssh/ci' "+
+	if got, want := all.followUp().suffix(), " --config \"my fleet.yaml\" --known-hosts /tmp/kh --identity \"~/.ssh/ci\" "+
 		"--identity-passphrase-file /run/pp --identity-passphrase /k/a=/k/a.pass"; got != want {
 		t.Errorf("suffix:\n got %q\nwant %q", got, want)
 	}

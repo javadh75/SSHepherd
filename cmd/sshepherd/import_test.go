@@ -437,8 +437,16 @@ func TestImportPhaseLogs(t *testing.T) {
 	if code := run([]string{"import", cfg, "--servers-only"}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
 	}
-	if !strings.Contains(errBuf.String(), "parsed") || !strings.Contains(errBuf.String(), "hosts") {
-		t.Errorf("stderr = %q, want a parsed-hosts phase line", errBuf.String())
+	if want := "parsed " + cfg + ": 1 host\n"; !strings.Contains(errBuf.String(), want) {
+		t.Errorf("stderr = %q, want the pluralized phase line %q", errBuf.String(), want)
+	}
+	two := writeSSHConfig(t, "Host web-1\n  User deploy\nHost web-2\n  User deploy\n")
+	errBuf.Reset()
+	if code := run([]string{"import", two, "--servers-only"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
+	}
+	if want := "parsed " + two + ": 2 hosts\n"; !strings.Contains(errBuf.String(), want) {
+		t.Errorf("stderr = %q, want %q", errBuf.String(), want)
 	}
 }
 

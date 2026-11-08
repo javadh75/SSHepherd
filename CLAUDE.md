@@ -355,8 +355,11 @@ with a compare-and-swap and an atomic rename keeping mode and owner; `--dry-run`
 saves nothing, `--no-apply` saves without connecting. Apply's run body is now
 `runApply(applyRun)`, and plain `apply` re-checks the manifest before writing
 (skipped for a piped `--config`, which edits refuse).
-Count strings in logs, reports and prompts are pluralized; follow-up hints carry the
-run's own flags; `--help` has examples and exit codes; audit, adopt and apply share
+Count strings in CLI messages are pluralized (three report strings still are not:
+audit's `HOST KEY ALERT`, apply's `option(s)` and the guard's `none of the %d keys`);
+follow-up hints carry the run's own flags and are paste-ready (double quotes inside
+the `'…'`); usage errors print plain `error:` even under `-v`; every command's
+`--help` has examples and exit codes; audit, adopt and apply share
 one fleet-read setup (`cmd/sshepherd/fleet.go`); a missing manifest points to
 `import --servers-only`. The E2E loop is adopt → apply → revoke
 --key → audit → rotate → audit, plus a headless `rotate`.

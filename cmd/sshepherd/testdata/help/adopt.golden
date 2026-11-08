@@ -6,8 +6,22 @@ with access to exactly the servers where they were found. The input
 file is never modified — review the output, then adopt it as your
 manifest. Any unreadable server aborts the run unless --partial is set.
 
+Exit codes:
+  0  manifest emitted
+  1  a server could not be fully read and --partial was not given; nothing
+     emitted
+  3  tool error: bad flags, unloadable manifest, failed preflight, an existing
+     --output without --force, interrupted
+
 Usage:
   sshepherd adopt [flags]
+
+Examples:
+  # Bootstrap: append every installed key to a servers-only manifest
+  sshepherd adopt --merge -o adopted.yaml
+
+  # Regenerate from scratch, even if some servers are down
+  sshepherd adopt --partial -o adopted.yaml
 
 Flags:
       --config string                   path to the manifest (default "sshepherd.yaml")
