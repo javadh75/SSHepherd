@@ -94,3 +94,10 @@ func ctxKind(ctx context.Context) fleet.ErrorKind {
 	}
 	return fleet.ErrorKindTimeout
 }
+
+// AuthExhausted reports whether err's chain carries the MaxAuthTries signal
+// from a server whose host key verified.
+func AuthExhausted(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.AuthExhausted
+}

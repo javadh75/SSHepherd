@@ -95,3 +95,10 @@ func HintOf(err error) string {
 	}
 	return ""
 }
+
+// HostKeyAlert reports whether kind is a host-key failure that may mean the
+// server is being impersonated: exit 2 for audit and for apply's post-write
+// login check, not a mere unreachable.
+func HostKeyAlert(kind ErrorKind) bool {
+	return kind == ErrorKindHostKeyChanged || kind == ErrorKindHostKeyRevoked
+}

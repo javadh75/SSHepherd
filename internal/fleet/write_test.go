@@ -78,3 +78,69 @@ func TestCksumMatchesPOSIXCksum(t *testing.T) {
 		}
 	}
 }
+
+type outcomeKind struct {
+	kind ErrorKind
+	msg  string
+}
+
+func (e outcomeKind) Error() string        { return e.msg }
+func (e outcomeKind) ErrorKind() ErrorKind { return e.kind }
+
+func TestUnprovenErrorMessages(t *testing.T) {
+	const dial = "dial tcp 10.0.0.1:22: i/o timeout"
+	for _, tt := range []struct {
+		name string
+		err  UnprovenError
+		want string
+	}{
+		{"network", UnprovenError{Attempts: 4, Last: outcomeKind{ErrorKindDial, dial}},
+			"written and verified, but the login check could not reach the server after 4 attempts (" + dial + ") — kept the new file; run sshepherd audit to confirm"},
+		{"one attempt", UnprovenError{Attempts: 1, Last: outcomeKind{ErrorKindDial, dial}},
+			"written and verified, but the login check could not reach the server after 1 attempt (" + dial + ") — kept the new file; run sshepherd audit to confirm"},
+		{"agent", UnprovenError{Attempts: 2, Last: outcomeKind{ErrorKindAgent, "none of the 1 surviving keys is offered (agent locked, or keys removed since the plan)"}},
+			"written and verified, but the login check could not offer the surviving keys you hold after 2 attempts (none of the 1 surviving keys is offered (agent locked, or keys removed since the plan)) — kept the new file; unlock the agent or re-add the key, then run sshepherd audit to confirm"},
+		{"host key", UnprovenError{Attempts: 1, HostKey: true, Last: outcomeKind{ErrorKindHostKeyChanged, "host key changed"}},
+			"written and verified, but the login check stopped at a host-key alarm (host key changed) — kept the new file; check known_hosts, then run sshepherd audit"},
+		{"budget", UnprovenError{Last: errors.New("session budget exhausted before the login check")},
+			"written and verified, but the session budget ran out before the login check could start — kept the new file; run sshepherd audit to confirm"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Errorf("got  %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+	e := &UnprovenError{Attempts: 1, Last: outcomeKind{ErrorKindHostKeyRevoked, "revoked"}}
+	if got := ErrorKindOf(e); got != ErrorKindHostKeyRevoked {
+		t.Errorf("ErrorKindOf = %q, want the last failure's kind through Unwrap", got)
+	}
+}
+
+func TestLockoutErrorMessages(t *testing.T) {
+	probe := errors.New("auth failed")
+	restored := "lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: auth failed)"
+	for _, tt := range []struct {
+		name string
+		err  LockoutError
+		want string
+	}{
+		{"restored", LockoutError{Path: "~/k", Probe: probe}, restored},
+		{"keys2 alone failed", LockoutError{Path: "~/k", Probe: probe, RestoreKeys2: errors.New("kept")},
+			restored + ", but restoring authorized_keys2 failed (kept)"},
+		{"restore failed", LockoutError{Path: "~/k", Probe: probe, Restore: errors.New("denied")},
+			"post-write login offering only the surviving keys you hold failed (auth failed) AND restoring the previous file failed (denied) — the previous version is at ~/k" + BackupSuffix + "; repair it over a session that is still open"},
+		{"reconnect refused", LockoutError{Path: "~/k", Probe: probe, Restore: ErrNoSession},
+			"connection dropped after the upload started and a fresh login offering the keys you hold was refused (auth failed) — the new file may lock you out; the previous version is at ~/k" + BackupSuffix},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Errorf("got  %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+	wrapped := &LockoutError{Probe: outcomeKind{ErrorKindAuth, "x"}, RestoreKeys2: errors.New("y")}
+	if got := ErrorKindOf(wrapped); got != ErrorKindAuth {
+		t.Errorf("ErrorKindOf = %q, want the probe's kind", got)
+	}
+}

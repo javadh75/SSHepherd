@@ -2,15 +2,14 @@
 // connection per server: a single guarded write script (symlink and
 // ownership refusals, per-target lock, compare-and-swap against the phase-1
 // snapshot, backups, length-checked atomic temp+rename), a read-back verify,
-// and a post-write login probe that restores the previous file when the
-// surviving keys cannot log in. Command builders are pure and share
+// and a post-write login check that restores the previous file when the
+// surviving keys are refused. Command builders are pure and share
 // sshconn.PathAssign's quoting discipline (the path enters each script
 // exactly once, fully quoted); only the network glue needs the integration
 // suite, and even the protocol sequencing is unit-tested through seams.
 package sshwrite
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -54,7 +53,7 @@ const (
 // Suffixes of the files the write protocol keeps next to the target.
 const (
 	tmpSuffix  = ".sshepherd.tmp"
-	bakSuffix  = ".sshepherd.bak"
+	bakSuffix  = fleet.BackupSuffix
 	origSuffix = ".sshepherd.orig"
 	lockSuffix = ".sshepherd.lock"
 	// casSuffix names the staging copy the compare-and-swap checks and
@@ -76,6 +75,9 @@ type Snapshot = fleet.Snapshot
 
 // Request is one server's write (fleet.WriteRequest).
 type Request = fleet.WriteRequest
+
+// LockoutError is the typed rollback outcome (fleet.LockoutError).
+type LockoutError = fleet.LockoutError
 
 // SnapshotOf builds the snapshot of phase-1 bytes read (or of an absent
 // file); see authkeys.ManagedSnapshot, the one definition of a managed file.
@@ -262,6 +264,15 @@ func restoreCmdFor(path string, wasAbsent bool, wrote Snapshot) string {
 		`; if [ -L "$p" ]; then exit 45; fi; ` + casCheck(wrote) + `; ` + undo
 }
 
+// lockedReadCmdFor re-reads path under the per-target lock, after a dropped
+// connection: the dropped script may still be running and holding it (47).
+// A missing directory reads as an absent file (44), since the lock could
+// not be taken there.
+func lockedReadCmdFor(path string) string {
+	read := strings.TrimPrefix(sshconn.AuthorizedKeysCmdFor(path), sshconn.PathAssign(path))
+	return sshconn.PathAssign(path) + `; set -f; if [ ! -d "$(dirname "$p")" ]; then exit 44; fi; ` + lockPrologue() + read
+}
+
 // disableKeys2Cmd moves ~/.ssh/authorized_keys2 aside and prints
 // "sshepherd-keys2 <basename>". A copy is never overwritten: the name is
 // fleet.Keys2DisabledSuffix when free, otherwise that plus a UTC timestamp,
@@ -333,24 +344,6 @@ func (e *ChangedError) Error() string {
 	return fmt.Sprintf("%s changed since the plan was read — refusing to overwrite unreviewed content; re-run apply", e.Path)
 }
 
-// LockoutError reports a write that verified but whose surviving held keys
-// (key files or agent) could not log in on a fresh connection; the
-// previous file was restored unless Restore says otherwise.
-type LockoutError struct {
-	Path    string
-	Probe   error // why the post-write login failed
-	Restore error // nil when the previous file was put back
-}
-
-func (e *LockoutError) Error() string {
-	if e.Restore == nil {
-		return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v)", e.Probe)
-	}
-	return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) AND restoring the previous file failed (%v) — the previous version is at %s%s; repair it over a session that is still open", e.Probe, e.Restore, e.Path, bakSuffix)
-}
-
-func (e *LockoutError) Unwrap() []error { return []error{e.Probe, e.Restore} }
-
 // FleetWriter applies rendered authorized_keys content to servers over SSH.
 // It is apply's Writer seam implementation.
 type FleetWriter struct {
@@ -363,6 +356,8 @@ type FleetWriter struct {
 	// Test seams; nil selects the real implementations.
 	connect func(ctx context.Context, srv config.Server, opts sshconn.ConnectOptions) (*sshconn.Conn, error)
 	exec    func(ctx context.Context, client *ssh.Client, cmd string, stdin io.Reader) (int, *sshconn.CappedBuffer, *sshconn.CappedBuffer, error)
+	now     func() time.Time
+	sleep   func(ctx context.Context, d time.Duration) error
 }
 
 // log returns the configured logger or a discard logger, so call sites never
@@ -375,12 +370,14 @@ func (w *FleetWriter) log() *slog.Logger {
 }
 
 // Apply makes srv's authorized_keys equal req.Content: the guarded write
-// script (content on stdin), a read-back verify (byte-compare — trusting
-// mv's exit status would leave silent-corruption blind spots for the cost
-// of one extra cat), then a login probe on a fresh connection offering only
-// req.Survivors that must run a probe command; if that login or command
-// fails the previous file is restored over the still-open connection
-// (*LockoutError).
+// script (content on stdin) or, for req.SkipWrite, a byte compare; a
+// read-back verify; then a login check on a fresh connection offering only
+// req.Survivors that must run a probe command. classifyProbe sorts a failed
+// check by the stage it reached: a REJECTED login restores the previous
+// file (*LockoutError, its Restore set when that failed too); one that
+// never got past authentication keeps the file (*fleet.UnprovenError). A
+// transport error during the write or verify opens one fresh connection and
+// re-reads under the lock.
 //
 // ctx bounds and may interrupt only the connect: canceled there, Apply
 // returns an error wrapping fleet.ErrWriteNotStarted and nothing changed.
@@ -393,81 +390,19 @@ func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request)
 	if len(req.Survivors) == 0 {
 		return fmt.Errorf("write on %s: no surviving key you hold to prove the post-write login with — refusing to write", srv.Name)
 	}
-	conn, err := w.connectForWrite(ctx, srv)
+	conn, deadline, err := w.connectForWrite(ctx, srv)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = conn.Close() }() // errcheck: close error is uninteresting after the verdict
-	execCtx := context.WithoutCancel(ctx)
-
+	sessCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancel()
 	path := srv.AuthorizedKeysFile
 	if path == "" {
 		path = sshconn.DefaultAuthorizedKeysPath
 	}
-	log := w.log()
-
-	// Stage 1: the guarded write, rendered bytes on stdin.
-	code, stdout, stderr, err := w.execFn()(execCtx, conn.Client, writeCmdFor(path, req.Expect, len(req.Content)), bytes.NewReader(req.Content))
-	if err != nil {
-		return sshconn.SanitizedError{Err: fmt.Errorf("write on %s: %w (the server installs only a complete upload)", srv.Name, err)}
-	}
-	if err := writeExitError(code, path, srv, stdout, stderr); err != nil {
-		return err
-	}
-	log.Debug("write ok", "server", srv.Name, "bytes", len(req.Content))
-
-	// Stage 2: verify — re-read through the existing read command and
-	// byte-compare against the render.
-	if err := w.verify(execCtx, conn, srv.Name, path, req.Content); err != nil {
-		return err
-	}
-	log.Debug("verify ok", "server", srv.Name)
-
-	// Stage 2b: disable a non-empty authorized_keys2 before the probe, so
-	// the probe proves the survivors log in without it. A failure here
-	// cannot lock anyone out (the file only ever adds keys), so the probe
-	// still runs and the failure is reported after it.
-	var (
-		keys2Name string
-		keys2Err  error
-	)
-	if req.DisableKeys2 {
-		keys2Name, keys2Err = w.disableKeys2(execCtx, conn, srv.Name)
-		if keys2Err == nil {
-			log.Debug("authorized_keys2 disabled", "server", srv.Name)
-		}
-	}
-
-	// Stage 3: prove the lockout guard's prediction — a fresh login offering
-	// only the surviving held keys (in req.Survivors order, which the caller
-	// sets to the production offer order), running probeCmd. Every write is probed,
-	// not only those that drop the session key: an options rewrite on the
-	// survivor (from= fails the handshake, command= the probe command), or
-	// sshd rejecting the survivor's algorithm, locks out just as surely, and
-	// the cost is one handshake and one command per written server.
-	if err := w.probeOrRestore(execCtx, conn, srv, path, req, keys2Name); err != nil {
-		return err
-	}
-	return keys2Err
-}
-
-// disableKeys2 runs disableKeys2Cmd over conn and returns the moved copy's
-// basename ("" when there was nothing to move).
-func (w *FleetWriter) disableKeys2(ctx context.Context, conn *sshconn.Conn, server string) (string, error) {
-	code, stdout, stderr, err := w.execFn()(ctx, conn.Client, disableKeys2Cmd(), nil)
-	switch {
-	case err != nil:
-		return "", sshconn.SanitizedError{Err: fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s failed: %w", server, err)}
-	case code == unsafePathExit:
-		return "", fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s was refused: its directory fails the ownership/mode walk", server)
-	case code != 0:
-		return "", fmt.Errorf("authorized_keys written and verified, but %w", stageFailure("disabling authorized_keys2", server, code, stderr))
-	}
-	name, ok := parseKeys2Name(stdout.String())
-	if !ok {
-		return "", fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s printed an unrecognized name", server)
-	}
-	return name, nil
+	s := &writeSession{w: w, ctx: sessCtx, deadline: deadline, srv: srv, path: path, req: req, conn: conn}
+	defer s.close()
+	return s.run()
 }
 
 // connectFn and execFn resolve the test seams to the real implementations.
@@ -485,21 +420,49 @@ func (w *FleetWriter) execFn() func(context.Context, *ssh.Client, string, io.Rea
 	return sshconn.Exec
 }
 
-// connectForWrite opens the write connection. Its deadline (installed as
-// the socket deadline) is the session budget, detached from ctx; ctx still
-// aborts the dial and handshake through the AfterFunc until the connect
-// returns. Canceled before or during the connect, it returns an error
-// wrapping fleet.ErrWriteNotStarted.
-func (w *FleetWriter) connectForWrite(ctx context.Context, srv config.Server) (*sshconn.Conn, error) {
+// clock and sleepFn resolve the time seams to the real implementations.
+func (w *FleetWriter) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
+}
+
+func (w *FleetWriter) sleepFn() func(context.Context, time.Duration) error {
+	if w.sleep != nil {
+		return w.sleep
+	}
+	return sleepCtx
+}
+
+// sleepCtx waits d or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait: %w", ctx.Err())
+	case <-t.C:
+		return nil
+	}
+}
+
+// connectForWrite opens the write connection and returns the budget
+// deadline it installed (also the socket deadline), detached from ctx; ctx
+// still aborts the dial and handshake through the AfterFunc until the
+// connect returns. Canceled before or during the connect, it returns an
+// error wrapping fleet.ErrWriteNotStarted.
+func (w *FleetWriter) connectForWrite(ctx context.Context, srv config.Server) (*sshconn.Conn, time.Time, error) {
 	notStarted := fmt.Errorf("%s: %w", srv.Name, fleet.ErrWriteNotStarted)
 	if ctx.Err() != nil {
-		return nil, notStarted
+		return nil, time.Time{}, notStarted
 	}
 	budget := w.SessionBudget
 	if budget <= 0 {
 		budget = defaultSessionBudget
 	}
-	connCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	deadline := w.clock().Add(budget)
+	connCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	stop := context.AfterFunc(ctx, cancel)
 	conn, err := w.connectFn()(connCtx, srv, sshconn.ConnectOptions{})
 	stop()
@@ -510,14 +473,14 @@ func (w *FleetWriter) connectForWrite(ctx context.Context, srv config.Server) (*
 	interrupted := errors.Is(ctx.Err(), context.Canceled)
 	switch {
 	case err != nil && interrupted:
-		return nil, notStarted
+		return nil, time.Time{}, notStarted
 	case err != nil:
-		return nil, sshconn.SanitizedError{Err: err}
+		return nil, time.Time{}, sshconn.SanitizedError{Err: err}
 	case interrupted:
 		_ = conn.Close()
-		return nil, notStarted
+		return nil, time.Time{}, notStarted
 	}
-	return conn, nil
+	return conn, deadline, nil
 }
 
 // writeExitError maps the write script's exit status to its typed outcome;
@@ -541,102 +504,19 @@ func writeExitError(code int, path string, srv config.Server, stdout, stderr *ss
 	}
 }
 
-// verify re-reads path over conn and byte-compares it with content.
-func (w *FleetWriter) verify(ctx context.Context, conn *sshconn.Conn, server, path string, content []byte) error {
-	code, stdout, stderr, err := w.execFn()(ctx, conn.Client, sshconn.AuthorizedKeysCmdFor(path), nil)
-	if err != nil {
-		return sshconn.SanitizedError{Err: fmt.Errorf("verify on %s: %w", server, err)}
-	}
-	res, err := sshconn.FinishRead(code, stdout, stderr, server, w.log())
-	if err != nil {
-		return sshconn.SanitizedError{Err: fmt.Errorf("verify on %s: %w", server, err)}
-	}
-	if res.FileAbsent {
-		return fmt.Errorf("verify on %s: file absent after write", server)
-	}
-	if !bytes.Equal(res.Content, content) {
-		return fmt.Errorf("verify on %s: file bytes differ from the rendered desired state", server)
-	}
-	return nil
-}
-
-// probeCmd is what the post-write login probe runs; a session whose key
-// line forces command= runs that instead and cannot print probeOutput.
-const (
-	probeCmd    = `echo sshepherd-probe-ok`
-	probeOutput = "sshepherd-probe-ok\n"
-)
-
-// probeOrRestore logs in afresh offering only req.Survivors and runs
-// probeCmd: a key that authenticates but whose line now forces a command
-// (command=, or an options rewrite that adds one) would leave sshepherd
-// unable to manage the server, so the probe requires the command to run
-// and print probeOutput, not just a handshake. If either fails it restores
-// the previous file over the still-open conn and returns a *LockoutError.
-func (w *FleetWriter) probeOrRestore(ctx context.Context, conn *sshconn.Conn, srv config.Server, path string, req Request, keys2Name string) error {
-	log := w.log()
-	perr := w.probe(ctx, srv, req.Survivors)
-	if perr == nil {
-		log.Debug("login probe ok", "server", srv.Name)
-		return nil
-	}
-	log.Warn(fmt.Sprintf("%s: post-write login probe failed; restoring the previous file", srv.Name))
-	lockout := &LockoutError{Path: path, Probe: sshconn.SanitizedError{Err: perr}}
-	code, _, stderr, err := w.execFn()(ctx, conn.Client, restoreCmdFor(path, req.Expect.Absent, SnapshotOf(false, req.Content)), nil)
-	switch {
-	case err != nil:
-		lockout.Restore = sshconn.SanitizedError{Err: err}
-	case code != 0:
-		lockout.Restore = restoreExitError(code, srv.Name, stderr)
-	}
-	if keys2Name != "" {
-		code, _, stderr, err := w.execFn()(ctx, conn.Client, restoreKeys2Cmd(keys2Name), nil)
-		var k2err error
-		switch {
-		case err != nil:
-			k2err = sshconn.SanitizedError{Err: fmt.Errorf("restore authorized_keys2 on %s: %w", srv.Name, err)}
-		case code == changedExit:
-			k2err = fmt.Errorf("restore authorized_keys2 on %s refused: it was recreated meanwhile (the disabled copy is at %s)", srv.Name, keys2Name)
-		case code != 0:
-			k2err = stageFailure("restore authorized_keys2", srv.Name, code, stderr)
-		}
-		lockout.Restore = errors.Join(lockout.Restore, k2err)
-	}
-	return lockout
-}
-
 // restoreExitError explains a nonzero restore exit. It deliberately returns
 // untyped errors: a LockoutError unwraps to its Restore error, and a typed
 // refusal there would make fleet.IsRefusal call a written file "nothing
-// changed".
+// changed". Exit 47 never arrives here: restoreFile retries a busy lock.
 func restoreExitError(code int, server string, stderr *sshconn.CappedBuffer) error {
 	switch code {
 	case symlinkExit:
 		return fmt.Errorf("restore on %s refused: the file or its backup is now a symlink", server)
 	case changedExit:
 		return fmt.Errorf("restore on %s refused: the file changed since this apply wrote it (a concurrent apply?) — left as is", server)
-	case lockedExit:
-		return fmt.Errorf("restore on %s refused: another apply holds the lock", server)
 	default:
 		return stageFailure("restore", server, code, stderr)
 	}
-}
-
-// probe logs in offering only survivors and runs probeCmd over that login.
-func (w *FleetWriter) probe(ctx context.Context, srv config.Server, survivors []string) error {
-	probe, err := w.connectFn()(ctx, srv, sshconn.ConnectOptions{Only: survivors})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = probe.Close() }() // errcheck: the verdict is already decided
-	code, stdout, _, err := w.execFn()(ctx, probe.Client, probeCmd, nil)
-	switch {
-	case err != nil:
-		return fmt.Errorf("probe command: %w", err)
-	case code != 0 || stdout.String() != probeOutput:
-		return fmt.Errorf("probe command did not run as sent (exit %d) — a forced command= on the surviving key?", code)
-	}
-	return nil
 }
 
 // stageFailure wraps a nonzero remote exit with its stderr, bounded by

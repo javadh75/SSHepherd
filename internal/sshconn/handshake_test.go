@@ -385,3 +385,19 @@ func TestExecMarksASessionThatNeverOpened(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthExhausted(t *testing.T) {
+	ctx := context.Background()
+	verified := dialFacts{user: "u", addr: "h:22", hk: &hostKeyState{verified: true}, rec: &sessionKey{}}
+	unverified := dialFacts{user: "u", addr: "h:22", hk: &hostKeyState{}, rec: &sessionKey{}}
+	err := verified.failure(ctx, errors.New(exhaustedText))
+	if !AuthExhausted(SanitizedError{Err: err}) {
+		t.Errorf("AuthExhausted(%v) = false through the sanitizing wrapper", err)
+	}
+	if got := fleet.ErrorKindOf(err); got != fleet.ErrorKindHandshake {
+		t.Errorf("kind = %q, want handshake (audit's error_kind must not change)", got)
+	}
+	if AuthExhausted(unverified.failure(ctx, errors.New(exhaustedText))) || AuthExhausted(errors.New("x")) || AuthExhausted(nil) {
+		t.Error("AuthExhausted is true without the flag")
+	}
+}

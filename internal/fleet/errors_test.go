@@ -85,3 +85,14 @@ func TestErrorKindWireValues(t *testing.T) {
 		}
 	}
 }
+
+func TestHostKeyAlert(t *testing.T) {
+	for kind, want := range map[ErrorKind]bool{
+		ErrorKindHostKeyChanged: true, ErrorKindHostKeyRevoked: true,
+		ErrorKindHostKeyUnknown: false, ErrorKindHostKeyTypeUnrecorded: false, ErrorKindHostKey: false, ErrorKindDial: false,
+	} {
+		if got := HostKeyAlert(kind); got != want {
+			t.Errorf("HostKeyAlert(%q) = %v, want %v", kind, got, want)
+		}
+	}
+}

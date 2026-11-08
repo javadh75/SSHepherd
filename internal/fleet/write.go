@@ -1,10 +1,17 @@
 package fleet
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Keys2DisabledSuffix is appended to ~/.ssh/authorized_keys2 when a write
 // disables it (WriteRequest.DisableKeys2).
 const Keys2DisabledSuffix = ".sshepherd.disabled"
+
+// BackupSuffix names the previous version the write protocol keeps next to
+// the target (replaced by every write that changes the file).
+const BackupSuffix = ".sshepherd.bak"
 
 // Snapshot is the phase-1 state a write is conditional on: the file was
 // absent, or it held Size bytes with POSIX cksum Cksum. The write script
@@ -44,6 +51,17 @@ type WriteRequest struct {
 	// Keys2DisabledSuffix) after the write verifies and before the login
 	// probe, so the probe proves the survivors log in without it.
 	DisableKeys2 bool
+	// SkipWrite: authorized_keys already holds Content (a plan that only
+	// disables authorized_keys2), so no lock, backup, upload or rename runs:
+	// the writer re-reads and compares the file (a mismatch is a refusal),
+	// disables authorized_keys2 and proves the login. A rejected login check
+	// restores only authorized_keys2.
+	SkipWrite bool
+	// HeadlessProof lists key-file fingerprints for one more login after a
+	// passing probe (D9b: warn-only; it never restores); empty skips it.
+	HeadlessProof []string
+	// OnWarning receives the sanitized cause when the headless proof fails.
+	OnWarning func(cause string)
 }
 
 // cksumTable is the CRC-32 table for POSIX cksum's polynomial 0x04C11DB7,
@@ -99,4 +117,72 @@ func Refused(err error) error { return &RefusalError{Err: err} }
 func IsRefusal(err error) bool {
 	var r *RefusalError
 	return errors.As(err, &r)
+}
+
+// ErrNoSession is LockoutError.Restore when no session could be opened to
+// restore over: the reconnect after a dropped write was refused.
+var ErrNoSession = errors.New("no session left to restore over")
+
+// LockoutError reports a write that verified but whose surviving held keys
+// (key files or agent) could not log in on a fresh connection, or whose
+// reconnect after a dropped connection was refused. Restore is nil when the
+// previous authorized_keys was put back; RestoreKeys2 is the separate
+// authorized_keys2 move-back, whose failure cannot lock anyone out (the
+// file only ever adds keys).
+type LockoutError struct {
+	Path         string
+	Probe        error // why the login failed
+	Restore      error // nil when the previous file was put back
+	RestoreKeys2 error // nil when authorized_keys2 went back, or was not moved
+}
+
+func (e *LockoutError) Error() string {
+	switch {
+	case errors.Is(e.Restore, ErrNoSession):
+		return fmt.Sprintf("connection dropped after the upload started and a fresh login offering the keys you hold was refused (%v) — the new file may lock you out; the previous version is at %s%s", e.Probe, e.Path, BackupSuffix)
+	case e.Restore != nil:
+		return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) AND restoring the previous file failed (%v) — the previous version is at %s%s; repair it over a session that is still open", e.Probe, errors.Join(e.Restore, e.RestoreKeys2), e.Path, BackupSuffix)
+	case e.RestoreKeys2 != nil:
+		return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v), but restoring authorized_keys2 failed (%v)", e.Probe, e.RestoreKeys2)
+	}
+	return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v)", e.Probe)
+}
+
+// Unwrap keeps the probe's kind first in the chain.
+func (e *LockoutError) Unwrap() []error { return []error{e.Probe, e.Restore, e.RestoreKeys2} }
+
+// UnprovenError reports a write that was written and verified but whose
+// post-write login never got past authentication (dial, kex, agent, host
+// key) after the retries. The
+// file is kept because restoring could reinstall a key the manifest
+// removed. Any failure after a successful login is a rejected probe, never
+// an UnprovenError.
+type UnprovenError struct {
+	Path     string
+	Attempts int
+	HostKey  bool  // stopped by a host-key alarm (no retry)
+	Last     error // sanitized; its kind is the last probe failure's
+}
+
+func (e *UnprovenError) Error() string {
+	const kept = " — kept the new file; "
+	switch {
+	case e.Attempts == 0:
+		return "written and verified, but the session budget ran out before the login check could start" + kept + "run sshepherd audit to confirm"
+	case e.HostKey:
+		return fmt.Sprintf("written and verified, but the login check stopped at a host-key alarm (%v)%scheck known_hosts, then run sshepherd audit", e.Last, kept)
+	case ErrorKindOf(e.Last) == ErrorKindAgent:
+		return fmt.Sprintf("written and verified, but the login check could not offer the surviving keys you hold after %s (%v)%sunlock the agent or re-add the key, then run sshepherd audit to confirm", attempts(e.Attempts), e.Last, kept)
+	}
+	return fmt.Sprintf("written and verified, but the login check could not reach the server after %s (%v)%srun sshepherd audit to confirm", attempts(e.Attempts), e.Last, kept)
+}
+
+// Unwrap exposes the last failure's kind and hint.
+func (e *UnprovenError) Unwrap() error { return e.Last }
+
+func attempts(n int) string {
+	if n == 1 {
+		return "1 attempt"
+	}
+	return fmt.Sprintf("%d attempts", n)
 }

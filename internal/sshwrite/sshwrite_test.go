@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -32,6 +33,7 @@ func TestScriptsAreSingleLineAndQuotePathOnce(t *testing.T) {
 		"write present":  writeCmdFor(hostile, SnapshotOf(false, []byte("x\n")), 10),
 		"restore":        restoreCmdFor(hostile, false, SnapshotOf(false, []byte("x\n"))),
 		"restore absent": restoreCmdFor(hostile, true, SnapshotOf(false, []byte("x\n"))),
+		"locked read":    lockedReadCmdFor(hostile),
 	} {
 		if strings.ContainsAny(script, "\n\r") {
 			t.Errorf("%s: script must be single-line (sshconn.Exec rejects newlines)", name)
@@ -1075,24 +1077,68 @@ func (s *scriptedExec) exec(_ context.Context, _ *ssh.Client, cmd string, stdin 
 	return r.code, out, errBuf, nil
 }
 
-// seamedConnect records every connect's options; probeErr fails the
-// post-write probe (the connect with Only set).
+// seamedConnect records every connect's options. onlyErrs scripts the
+// post-write logins (connects with Only set) in order, then probeErr
+// applies; fullErrs scripts the reconnects (full connects after the first).
 type seamedConnect struct {
 	opts     []sshconn.ConnectOptions
 	probeErr error
+	onlyErrs []error
+	fullErrs []error
+	onlyHook func(ctx context.Context) // runs on each Only connect
+
+	onlySeen, fullSeen int
 }
 
-func (c *seamedConnect) connect(_ context.Context, _ config.Server, opts sshconn.ConnectOptions) (*sshconn.Conn, error) {
+func (c *seamedConnect) connect(ctx context.Context, _ config.Server, opts sshconn.ConnectOptions) (*sshconn.Conn, error) {
 	c.opts = append(c.opts, opts)
-	if len(opts.Only) > 0 && c.probeErr != nil {
-		return nil, c.probeErr
+	var err error
+	if len(opts.Only) > 0 {
+		if c.onlyHook != nil {
+			c.onlyHook(ctx)
+		}
+		err = c.probeErr
+		if c.onlySeen < len(c.onlyErrs) {
+			err = c.onlyErrs[c.onlySeen]
+		}
+		c.onlySeen++
+	} else {
+		if c.fullSeen > 0 && c.fullSeen <= len(c.fullErrs) {
+			err = c.fullErrs[c.fullSeen-1]
+		}
+		c.fullSeen++
+	}
+	if err != nil {
+		return nil, err
 	}
 	return &sshconn.Conn{}, nil // Close is nil-safe by design
 }
 
-// seamedWriter builds a FleetWriter whose network is fully scripted.
+// fakeClock is the now/sleep seam: time passes only when a test says so.
+type fakeClock struct {
+	t     time.Time
+	slept []time.Duration
+}
+
+func newClock() *fakeClock { return &fakeClock{t: time.Now()} }
+
+func (c *fakeClock) now() time.Time { return c.t }
+
+func (c *fakeClock) sleep(_ context.Context, d time.Duration) error {
+	c.slept = append(c.slept, d)
+	c.t = c.t.Add(d)
+	return nil
+}
+
+// kinded is a transport error of the given kind.
+func kinded(kind fleet.ErrorKind, msg string) error {
+	return &sshconn.Error{Kind: kind, Err: errors.New(msg)}
+}
+
+// seamedWriter builds a FleetWriter whose network and clock are scripted.
 func seamedWriter(s *scriptedExec, c *seamedConnect) *FleetWriter {
-	return &FleetWriter{connect: c.connect, exec: s.exec}
+	clk := newClock()
+	return &FleetWriter{connect: c.connect, exec: s.exec, now: clk.now, sleep: clk.sleep}
 }
 
 func req(content string, survivors ...string) Request {
@@ -1206,8 +1252,6 @@ func TestApplyStageFailures(t *testing.T) {
 		wantCmds  int
 	}{
 		{"write nonzero", []execResp{{code: 1, stderr: "mv: read-only"}}, "write", 1},
-		{"write transport error", []execResp{{err: errors.New("EOF")}}, "installs only a complete upload", 1},
-		{"verify transport error", []execResp{{code: 0}, {err: errors.New("channel gone")}}, "verify", 2},
 		{"verify absent after write", []execResp{{code: 0}, {code: 44}}, "absent after write", 2},
 		{"verify bytes differ", []execResp{{code: 0}, {code: 0, stdout: "tampered\n"}}, "differ", 2},
 	}
@@ -1249,7 +1293,7 @@ func TestStageFailureBoundsStderr(t *testing.T) {
 }
 
 func TestApplyLoginProbeFailureRestores(t *testing.T) {
-	probeErr := errors.New("ssh: unable to authenticate")
+	probeErr := kinded(fleet.ErrorKindAuth, "ssh: unable to authenticate")
 	for _, tt := range []struct {
 		name     string
 		absent   bool
@@ -1260,12 +1304,12 @@ func TestApplyLoginProbeFailureRestores(t *testing.T) {
 	}{
 		{name: "forced command answers the probe", probe: &execResp{stdout: "forced\n"}, restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented"},
 		{name: "probe command fails", probe: &execResp{code: 1}, restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented"},
-		{name: "probe session refused", probe: &execResp{err: errors.New("session refused")}, restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented"},
+		{name: "probe session refused", probe: &execResp{err: fmt.Errorf("open session: %w", &ssh.OpenChannelError{})}, restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented"},
+		{name: "no exit status after login", probe: &execResp{err: &ssh.ExitMissingError{}}, restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented"},
 		{name: "restores the backup", restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented — restored previous file"},
 		{name: "first contact removes the file", absent: true, restore: execResp{code: 0}, restored: true, wantIn: "lockout prevented"},
 		{name: "restore failure is loud", restore: execResp{code: 1, stderr: "mv: denied"}, wantIn: "AND restoring the previous file failed"},
 		{name: "restore refused: file changed since written", restore: execResp{code: changedExit}, wantIn: "changed since this apply wrote it"},
-		{name: "restore refused: locked", restore: execResp{code: lockedExit}, wantIn: "another apply holds the lock"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			responses := []execResp{{code: 0}, {code: 0, stdout: "x\n"}}
@@ -1520,6 +1564,7 @@ func TestApplyHermeticRealConnection(t *testing.T) {
 func TestApplyHermeticProbeReadsWrittenFile(t *testing.T) {
 	op := sshtest.Key(1)
 	opLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshtest.Signer(t, op).PublicKey())))
+	otherLine := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshtest.Signer(t, sshtest.Key(2)).PublicKey())))
 	tests := []struct {
 		name, survivor string
 		lockout        bool
@@ -1529,6 +1574,7 @@ func TestApplyHermeticProbeReadsWrittenFile(t *testing.T) {
 		{"forced command= on the survivor fails the probe", `command="echo forced" ` + opLine, true, "", "forced command="},
 		{"from= the client cannot match fails the login", `from="10.255.255.1" ` + opLine, true, fleet.ErrorKindAuth, ""},
 		{"restrict alone passes the probe (negative control)", `restrict ` + opLine, false, "", ""},
+		{"the written file drops the survivor", otherLine, true, fleet.ErrorKindAuth, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1738,7 +1784,7 @@ func TestApplyDisablesKeys2BeforeTheProbe(t *testing.T) {
 	})
 	t.Run("probe failure restores both files", func(t *testing.T) {
 		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 0, stdout: moved}, {code: 0}, {code: 0}}}
-		err := seamedWriter(s, &seamedConnect{probeErr: errors.New("denied")}).Apply(context.Background(), config.Server{Name: "w"}, r)
+		err := seamedWriter(s, &seamedConnect{probeErr: kinded(fleet.ErrorKindAuth, "denied")}).Apply(context.Background(), config.Server{Name: "w"}, r)
 		var lo *LockoutError
 		if !errors.As(err, &lo) || lo.Restore != nil {
 			t.Fatalf("err = %v, want a restored *LockoutError", err)
@@ -1850,5 +1896,39 @@ func TestWriteCmdHasNoShellHeaderCompare(t *testing.T) {
 		if strings.Contains(rest, "head -n 1") || strings.Contains(rest, "Managed by") {
 			t.Errorf("write script still compares the header in the shell:\n%s", cmd)
 		}
+	}
+}
+
+// TestApplyExecsRunUnderTheBudget: the budget is a context deadline, not
+// just a socket deadline, so the probe, the restore and a reconnect can
+// derive theirs from it.
+func TestApplyExecsRunUnderTheBudget(t *testing.T) {
+	var remaining []time.Duration
+	s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}}}
+	w := &FleetWriter{SessionBudget: 90 * time.Second, connect: (&seamedConnect{}).connect,
+		exec: func(ctx context.Context, c *ssh.Client, cmd string, in io.Reader) (int, *sshconn.CappedBuffer, *sshconn.CappedBuffer, error) {
+			if dl, ok := ctx.Deadline(); ok {
+				remaining = append(remaining, time.Until(dl))
+			}
+			return s.exec(ctx, c, cmd, in)
+		}}
+	if err := w.Apply(context.Background(), config.Server{Name: "w"}, req("x\n")); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(remaining) != 3 || remaining[0] <= 0 || remaining[0] > 90*time.Second {
+		t.Errorf("exec deadlines = %v, want three bounded by the 90s budget", remaining)
+	}
+}
+
+// TestSleepCtx: every other test injects the sleep seam, so the real wait
+// is pinned here.
+func TestSleepCtx(t *testing.T) {
+	if err := sleepCtx(context.Background(), time.Millisecond); err != nil {
+		t.Errorf("timer expiry = %v, want nil", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sleepCtx(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Errorf("canceled = %v, want one wrapping context.Canceled", err)
 	}
 }

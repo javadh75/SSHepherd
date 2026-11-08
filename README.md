@@ -2179,8 +2179,7 @@ the write (`changed since the plan was read`) instead of vanishing — keeps tha
 copy as `.sshepherd.bak` (flushed too), and `mv`s the upload into place. Flushes are
 per file (`dd conv=fsync`, never a global `sync`); the directory entry is not
 flushed, so after a crash you see either the old or the new complete file. Readers
-never see a half-written file, and a dropped connection leaves the original
-untouched (`upload incomplete … original left untouched`).
+never see a half-written file. If the connection drops during the upload or the verify, SSHepherd opens one fresh connection, takes the file's lock and re-reads it. The render in place means the rename happened, so the run continues; the planned bytes mean `connection dropped before the rename; original untouched (re-checked under the lock)`; anything else, or a lock that never frees, is `connection dropped; the file is in an unknown state (previous version at <path>.sshepherd.bak) — run sshepherd audit`. If that fresh login is refused with an authentication error after the upload started, the server is reported `LOCKOUT — NOT RESTORED: connection dropped after the upload started and a fresh login offering the keys you hold was refused (…)` and the run exits `2`; the previous version is at `<path>.sshepherd.bak`.
 
 **Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced on
 every apply. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written
@@ -2204,12 +2203,7 @@ connection offering only the surviving keys you hold**, in exactly the order eve
 later connection offers them (see Connection posture), so the probe proves the key
 the next run logs in with; it no longer prefers `--identity` key files over agent
 keys. It runs a probe command over it, so a surviving key whose line forces a `command=` fails
-the probe just like a refused login. If the probe fails, the previous file (and a
-disabled `authorized_keys2`) is restored over the still-open session and the server
-is reported `FAILED: lockout prevented — restored previous file (…)`. The restore
-takes the lock again and refuses to replace a file that changed since this apply
-wrote it (a concurrent apply); if the restore fails or is refused, the message says
-so and names the `.bak` path.
+the probe just like a refused login. The check is sorted by how far it got. A login that never finished authentication proves nothing about the server: a dial or handshake failure is retried (up to 4 attempts, waits 0/2/5/10 s, all inside the 2-minute session budget), a locked or emptied agent once, and a host-key alarm not at all; then the new file is **kept** and the server reports `written and verified, but the login check could not reach the server after 4 attempts (…) — kept the new file; run sshepherd audit to confirm`, because undoing could reinstall a key the manifest removed. A login that was refused (every surviving key you hold offered and refused, or `MaxAuthTries`), or anything that goes wrong after it succeeded (a forced `command=`, a session that will not open, a probe command that hangs past 15 s), restores the previous file (and a disabled `authorized_keys2`) over the still-open session: `lockout prevented — restored previous file (…)`. The restore takes the lock again, waits out a busy lock (1, 3 and 6 s, naming the lock's owner and age if it never frees) and refuses to replace a file that changed since this apply wrote it (a concurrent apply); over a dropped connection it is retried once over a fresh login. If the restore fails or is refused, the message says so and names the `.bak` path.
 
 **Connection posture.** Key files and/or agent (see
 [Authentication](#authentication)), strict `known_hosts` with no TOFU, per-server and dial timeouts, and bounded fan-out (`--parallel`, default 32,
