@@ -82,15 +82,16 @@ FIXTURE_A='
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed; do
       mkuser "$u"
       mkdir -p "/home/$u/.ssh"
     done
     # cas/locked/verifyfail/drop/lockout: the agent key alone (write-path
     # refusal and failure cases); trima/trimb/overlap: the agent key alone
-    # (revoke --server and rotate --keep-old E2E); unparse: plus a line
-    # apply cannot parse.
-    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok; do
+    # (revoke --server and rotate --keep-old E2E); stala/stalb/handed: the
+    # agent key alone (revocation-memory E2E); unparse: plus a line apply
+    # cannot parse.
+    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed; do
       cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
     done
     { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
@@ -104,6 +105,10 @@ FIXTURE_A='
     cat /seed/key.pub /seed/stale.pub > /home/writer/.ssh/authorized_keys
     cat /seed/key.pub /seed/stale.pub > /home/e2e/.ssh/authorized_keys
     cat /seed/key.pub /seed/stale.pub > /home/fleet/.ssh/authorized_keys
+    # nra/nrb: the agent key + the stale key, found by the opening adopt of
+    # TestE2ERevokeNoResurrect (revocation-memory E2E).
+    cat /seed/key.pub /seed/stale.pub > /home/nra/.ssh/authorized_keys
+    cat /seed/key.pub /seed/stale.pub > /home/nrb/.ssh/authorized_keys
     # virgin: logs in via authorized_keys2; the default file stays absent
     # until apply creates it (first-contact case).
     cp /seed/key.pub /home/virgin/.ssh/authorized_keys2
@@ -111,7 +116,7 @@ FIXTURE_A='
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true

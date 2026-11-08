@@ -2,10 +2,11 @@
 
 - **Date:** 2026-11-08 (drafted 2026-11-07 in wave W0 of the review-remediation plan;
   revised 2026-11-08 with the owner's answers and the W0 verifier's PRD-2 fix)
-- **Status:** Approved (owner, 2026-11-08, via recorded answers) — ready for the W4
-  plan. Every Block 1 decision (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c,
-  D2a, D4a, D4c, D1d, D1e) is answered and recorded below as final. The W4 plan is
-  written after W3 (P14) lands, against the tree it leaves.
+- **Status:** Implemented (W4, commits eb8d9da schema, 2dbb35f header, 1c337cc apply,
+  0e2246a audit, 55791e5 writecmds, 7abd8fa sweep, and the e2e lane commit that records
+  this status). Approved by the owner on 2026-11-08 via recorded answers. Every Block 1
+  decision (D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c,
+  D2a, D4a, D4c, D1d, D1e) is answered and recorded below as final.
 - **Findings:** PRD-1 (HIGH), PRD-2 (MEDIUM), SEC-2 (LOW), SEC-3 (LOW) from the
   2026-11-07 whole-repo review.
 - **Plan:** package P04 of `docs/superpowers/plans/2026-11-07-review-remediation.md`

@@ -59,7 +59,7 @@ edit actually changes. Offboarding becomes one command.
 | 2 | Revoke forms | **User** (offboard: user + all their grants) and **key** (one key). | Per-server access trimming (deferred: splitting grants, wildcard→`except:`, emptied grants are invalid). |
 | 3 | Operators | **Refused by default** (exit 3 + hint); `--operator` acknowledges and performs the flag change in the same edit; loud `OPERATOR` lines; `--yes` alone never covers it. | Always refuse (forces a hand edit); treat like anyone (weakens the contract). |
 | 4 | Rotate shape | **One-step swap** in place; old key dead fleet-wide in that run. | Staged overlap / `--keep-old` (deferred). |
-| 5 | Apply scope | **Affected servers only** — servers whose rendered desired file changes; on those, the full render still converges other drift (shown in the plan). Unaffected servers are not contacted, and the output says so. | Whole fleet (emergency revocation stalls on unrelated refusals); strict (trivial drift blocks an emergency). |
+| 5 | Apply scope | **Affected servers only** — servers whose rendered desired file changes; on those, the full render still converges other drift (shown in the plan). Unaffected servers are not contacted, and the output says so. **Amended by [revocation memory](2026-11-08-revocation-memory-design.md) (W4):** the scope stays affected-only, header-only writes stay inside it, and the audit command or `--sweep` replaces the `scope:` hint. | Whole fleet (emergency revocation stalls on unrelated refusals); strict (trivial drift blocks an emergency). |
 | 6 | Save point | Manifest saved **once, after confirmation, before the first remote write**, under a local lock with a compare-and-swap. | Save after writes (a crash leaves servers revoked but the manifest granting — the next `apply` reinstalls the key); save-then-rollback (fragile rollback of the source of truth). |
 
 ## Command surface
@@ -284,7 +284,8 @@ before step 7.
    and push it: an apply from a copy without this edit re-grants the
    removed key`. The per-server guard re-check inside `Execute` stays
    authoritative. The save itself is not interruptible once the lock is
-   taken.
+   taken. **Amended by [revocation memory](2026-11-08-revocation-memory-design.md) (W4):** the save note names the serial, and
+   `revoke --key` of an unowned key records a tombstone (D1b).
 8. **Writes** exactly as apply. The summary then ends with:
    - if any affected server that a later `apply` could converge is not
      converged (failed, refused for a fixable reason, unreachable, or not

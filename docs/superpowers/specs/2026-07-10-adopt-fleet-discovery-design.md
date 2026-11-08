@@ -122,7 +122,8 @@ For each server's `Diff.Unauthorized` key:
      invent one).
    - **Access:** one entry, servers where found, sorted. Found on *every*
      server and fleet ≥ 2 → compacts to `servers: ["*"]` with import's
-     "includes servers added later" warning.
+     "includes servers added later" warning. **Amended by [revocation memory](2026-11-08-revocation-memory-design.md)
+     (W4):** no wildcard compaction, and revoked keys are skipped with a warning.
 
 Section ordering in the output: existing users, then new users in discovery
 order; existing servers verbatim; existing access entries, then extension

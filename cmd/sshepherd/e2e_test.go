@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -545,5 +546,150 @@ func writeSwappedKnownHosts(t *testing.T, kh, dst string, blobs map[string]map[s
 	}
 	if err := os.WriteFile(dst, []byte(b.String()), 0o600); err != nil {
 		t.Fatalf("write %s: %v", dst, err)
+	}
+}
+
+// replaceLast replaces the last occurrence of old in s (the adopted
+// manifest lists nr-a before nr-b, and both share the container's port).
+func replaceLast(t *testing.T, s, old, repl string) string {
+	t.Helper()
+	i := strings.LastIndex(s, old)
+	if i < 0 {
+		t.Fatalf("%q not found in:\n%s", old, s)
+	}
+	return s[:i] + repl + s[i+len(old):]
+}
+
+// TestE2ERevokeNoResurrect (PRD-1), the spec's flow: adopt → apply →
+// revoke the adopted user while nr-b is unreachable → adopt --merge finds
+// the key on nr-b and does not re-adopt it (the warning names it) → audit
+// pages (exit 2) until apply --server removes it → audit is clean.
+func TestE2ERevokeNoResurrect(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	stale := itPubLine(t, itKeys(t), "stale")
+	staleKey, err := authkeys.ParseLine(stale)
+	if err != nil || staleKey == nil {
+		t.Fatalf("stale key: %v", err)
+	}
+	dir := t.TempDir()
+	m0 := writeE2EManifest(t, dir, "nr0.yaml", `
+users:
+  - {name: op, operator: true, keys: ["`+pub+`"]}
+servers:
+  - {name: nr-a, host: `+host+`, port: `+port+`, user: nra}
+  - {name: nr-b, host: `+host+`, port: `+port+`, user: nrb}
+`)
+	code, out, stderr := runBin(t, bin, "adopt", "--config", m0, "--known-hosts", kh)
+	if code != 0 {
+		t.Fatalf("adopt exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	adopted := writeE2EManifest(t, dir, "nr.yaml", out)
+	cfg, err := config.Parse([]byte(out))
+	if err != nil {
+		t.Fatalf("adopted manifest does not load: %v\n%s", err, out)
+	}
+	owner, ok := cfg.OwnerOf(staleKey.Fingerprint)
+	if !ok {
+		t.Fatalf("adopt did not adopt the stale key:\n%s", out)
+	}
+	for _, a := range cfg.Access {
+		if a.User == owner.Name && strings.Join(a.Servers, ",") != "nr-a,nr-b" {
+			t.Errorf("%s granted %v, want [nr-a nr-b] by name (D5)", owner.Name, a.Servers)
+		}
+	}
+	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", adopted, "--known-hosts", kh); code != 0 {
+		t.Fatalf("apply exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	closed := strconv.Itoa(closedPort(t))
+	down := writeE2EManifest(t, dir, "nr-down.yaml", replaceLast(t, readFile(t, adopted), "port: "+port+"\n", "port: "+closed+"\n"))
+	code, out, stderr = runBin(t, bin, "revoke", owner.Name, "--yes", "--config", down, "--known-hosts", kh)
+	if code != 1 || !strings.Contains(out, "nr-a: applied · verified") {
+		t.Fatalf("revoke exit = %d, want 1 with nr-a applied and nr-b unreachable (stderr: %s)\n%s", code, stderr, out)
+	}
+	back := writeE2EManifest(t, dir, "nr-back.yaml", replaceLast(t, readFile(t, down), "port: "+closed+"\n", "port: "+port+"\n"))
+	code, out, stderr = runBin(t, bin, "adopt", "--merge", "--config", back, "--known-hosts", kh)
+	blob := strings.Fields(stale)[1]
+	if code != 0 || strings.Contains(out, blob) {
+		t.Fatalf("adopt --merge exit = %d; the revoked key must not come back (stderr: %s)\n%s", code, stderr, out)
+	}
+	if want := "key " + staleKey.Fingerprint + " on nr-b is REVOKED ("; !strings.Contains(stderr, want) || !strings.Contains(stderr, ", "+owner.Name+") — not adopted") {
+		t.Errorf("adopt stderr lacks the revoked-key warning naming the key:\n%s", stderr)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", back, "--known-hosts", kh); code != 2 || !strings.Contains(out, "installed but REVOKED") {
+		t.Fatalf("audit exit = %d, want 2 with the REVOKED row (stderr: %s)\n%s", code, stderr, out)
+	}
+	if code, out, stderr := runBin(t, bin, "apply", "--server", "nr-b", "--yes", "--config", back, "--known-hosts", kh); code != 0 {
+		t.Fatalf("apply --server nr-b exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", back, "--known-hosts", kh); code != 0 {
+		t.Fatalf("final audit exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+}
+
+// TestE2EStaleManifestRefused (PRD-2): a copy of the manifest taken before
+// a revoke cannot re-grant on ANY affected server — including stalb, where
+// alice's key was already missing and the revoke wrote only the header.
+func TestE2EStaleManifestRefused(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	stale := itPubLine(t, itKeys(t), "stale")
+	dir := t.TempDir()
+	srv := "servers:\n  - {name: stala, host: " + host + ", port: " + port + ", user: stala}\n" +
+		"  - {name: stalb, host: " + host + ", port: " + port + ", user: stalb}\n"
+	users := "users:\n  - {name: op, operator: true, keys: [\"" + pub + "\"]}\n  - {name: alice, keys: [\"" + stale + "\"]}\n"
+	pre := writeE2EManifest(t, dir, "pre.yaml", users+srv+"access:\n  - {user: alice, servers: [stala]}\n")
+	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", pre, "--known-hosts", kh); code != 0 {
+		t.Fatalf("seed apply exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	m := writeE2EManifest(t, dir, "m.yaml", users+srv+"access:\n  - {user: alice, servers: [stala, stalb]}\n")
+	old := writeE2EManifest(t, dir, "old.yaml", readFile(t, m))
+	code, out, stderr := runBin(t, bin, "revoke", "alice", "--yes", "--config", m, "--known-hosts", kh)
+	if code != 0 || !strings.Contains(out, "update header: no serial → 1 (keys unchanged)") || !strings.Contains(out, "stalb: applied · verified") {
+		t.Fatalf("revoke exit = %d, want 0 with stalb's header-only write (stderr: %s)\n%s", code, stderr, out)
+	}
+	before := map[string]string{"stala": e2eRemoteCat(t, host, port, kh, "stala"), "stalb": e2eRemoteCat(t, host, port, kh, "stalb")}
+	code, out, stderr = runBin(t, bin, "apply", "--yes", "--config", old, "--known-hosts", kh)
+	if code != 1 {
+		t.Fatalf("stale apply exit = %d, want 1 (stderr: %s)\n%s", code, stderr, out)
+	}
+	if n := strings.Count(out, "written by manifest serial 1, this manifest is 0"); n != 2 {
+		t.Errorf("serial refusals = %d, want 2 (every affected server):\n%s", n, out)
+	}
+	for user, b := range before {
+		if got := e2eRemoteCat(t, host, port, kh, user); got != b {
+			t.Errorf("%s changed under a stale apply:\n%s", user, got)
+		}
+	}
+}
+
+// TestE2EStaleManifestAfterHandEdit (D4b): removing alice by hand and
+// applying bumps serial: and writes it; the pre-edit copy is then refused.
+func TestE2EStaleManifestAfterHandEdit(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	stale := itPubLine(t, itKeys(t), "stale")
+	dir := t.TempDir()
+	srv := "servers:\n  - {name: handed, host: " + host + ", port: " + port + ", user: handed}\n"
+	op := "users:\n  - {name: op, operator: true, keys: [\"" + pub + "\"]}\n"
+	m := writeE2EManifest(t, dir, "m.yaml", op+"  - {name: alice, keys: [\""+stale+"\"]}\n"+srv+"access:\n  - {user: alice, servers: [handed]}\n")
+	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("seed apply exit = %d (stderr: %s)\n%s", code, stderr, out)
+	}
+	old := writeE2EManifest(t, dir, "old.yaml", readFile(t, m))
+	if err := os.WriteFile(m, []byte(op+srv), 0o600); err != nil { // the hand edit: alice gone
+		t.Fatal(err)
+	}
+	code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh)
+	if code != 0 || !strings.Contains(out, "manifest serial: 0 → 1 (saved; this apply removes keys)") {
+		t.Fatalf("hand-edit apply exit = %d, want 0 with the serial bump (stderr: %s)\n%s", code, stderr, out)
+	}
+	if !strings.HasPrefix(readFile(t, m), "serial: 1\n") {
+		t.Errorf("manifest not bumped:\n%s", readFile(t, m))
+	}
+	before := e2eRemoteCat(t, host, port, kh, "handed")
+	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", old, "--known-hosts", kh); code != 1 ||
+		!strings.Contains(out, "written by manifest serial 1, this manifest is 0") {
+		t.Fatalf("stale apply exit = %d, want 1 with the serial refusal (stderr: %s)\n%s", code, stderr, out)
+	}
+	if got := e2eRemoteCat(t, host, port, kh, "handed"); got != before {
+		t.Errorf("handed changed under a stale apply:\n%s", got)
 	}
 }

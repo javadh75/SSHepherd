@@ -186,7 +186,11 @@ test that fails before the fix and passes after.
   `known_hosts` is per host:port. B's entry recording A's keys exits 2 with
   `host_key_changed` for fleet-b alone, while fleet-a stays compliant. A cross swap must
   flag both, which catches a lookup that pools keys across ports. It also checks B's
-  `authorized_keys_file` override.
+  `authorized_keys_file` override. The revocation-memory tests are
+  `TestE2ERevokeNoResurrect` (adopt → apply → a revoke with one server unreachable →
+  `adopt --merge` skips the revoked key → audit exit 2 → `apply --server` → audit 0),
+  `TestE2EStaleManifestRefused` (an old copy refused on every affected server, including
+  a header-only one) and `TestE2EStaleManifestAfterHandEdit` (D4b).
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
   `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
@@ -499,25 +503,24 @@ remediation P02 lane B, SEC-6/OPS-1/OPS-2/OPS-3/OPS-4/OPS-6). Every release tag 
 point at a commit at or after the release-gating commit `ca50409` (the W0 repair; at
 `38c92c0` the publish digest pre-check fails every tag); older commits carry an ungated
 or never-publishing release.yml.
-Revocation memory (tombstones, manifest serial, opt-in post-revoke sweep, no adopt
-wildcard) is specced and approved (owner answers recorded 2026-11-08), in
-`docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation
-P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4, in progress: the `revoked:`/`serial:`
-schema with policy conflicts, adopt never writing `["*"]`, and adopt/`import --merge`
-skipping tombstoned keys and access have landed, and the managed header carries
-`(serial N)` via `authkeys.Header`/`ParseHeader` (`FuzzParseHeader`, 4-entry corpus), with
-`.orig` decided by `Snapshot.Managed` and sshread reading `authorized_keys2` content;
-apply plans by the serial table (`internal/apply/serial.go`: newer serial refused unless
-removal-only, equal-body newer converged with a note, forged headers rewritten,
-header-only writes on affected older-serial servers) and refuses servers a policy
-conflict names; audit adds REVOKED (critical), access-revoked (drift), serial-ahead
-(drift), forged-header and policy-conflict (critical) classes and additive JSON fields;
-revoke/rotate write tombstones through `manifest.AddTombstones`, bump the serial
-(`manifest.BumpSerial`) and take `--reason`, `revoke --key` of an unowned key records it
-(D1b), a repeated revoke exits 0 (D1c), saving commands refuse a manifest that would keep
-a policy conflict (exit 3), a revoke/rotate's affected servers get header-only writes,
-every key-removing run prints `check every server: sshepherd audit`, and a confirmed apply
-that removes keys bumps the serial (D4b, `apply.NeedsSerialBump`, `serial_bump` in JSON)).
+**Revocation memory (W4, P04-impl)** (specced in
+`docs/superpowers/specs/2026-11-08-revocation-memory-design.md`, planned in
+`docs/superpowers/plans/2026-11-08-revocation-memory.md`): the manifest gains `revoked:`
+(key and access tombstones; shape errors load-fail, an unknown server in an access entry
+is a D1e warning, policy conflicts — a revoked key still listed, a grant over an access
+tombstone — load and are reported: audit exit 2, apply refuses those servers, saving
+commands exit 3) and `serial:`; the managed header carries `(serial N)`
+(`authkeys.Header`/`ParseHeader`, `.orig` decided by `Snapshot.Managed`); apply plans by
+the §3 table (newer serial refused unless removal-only, which keeps S; equal-body newer
+converged with a note; forged > M+1000 rewritten; header-only writes on a revoke/rotate's
+affected servers — the PRD-2 fix); revoke/rotate write tombstones, bump the serial, take
+`--reason` and opt-in `--sweep` (exit 2 on a revoked key still installed), `revoke --key`
+of an unowned key records it (D1b), a repeated revoke exits 0 (D1c); a confirmed apply
+that removes keys bumps the serial (D4b); audit adds REVOKED (critical), access-revoked
+(drift), serial-ahead (drift), forged-header and policy-conflict (critical) classes and
+JSON fields; adopt never writes `["*"]` and, like `import --merge`, skips tombstoned keys
+and access. Exit 2 now also means revoke/rotate `--sweep` found a revoked key (one shared
+table, D28).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one

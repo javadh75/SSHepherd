@@ -55,7 +55,7 @@
 | W1 | P05, P06, P07 (fix); P08, P09 (spec) | 16 | 11 | 27 |
 | W2 | P11, P12, P13 (remaining six) | 19 | — | 19 |
 | W3 | P14 (fixed order) | 5 | — | 5 |
-| W4 | P04-impl (the 4 W0 spec findings are built here) | — | (4) | — |
+| W4 | P04-impl (the 4 W0 spec findings are built here) — **Done** 2026-11-08 | — | (4) | — |
 | after W4 | P10 spec (roadmap) | — | 8 | 8 |
 | W5+ | P08-impl, P09-impl, P10 slices (the 19 W1/P10 spec findings are built here) | — | (19) | — |
 | **All** | 14 packages | **55** | **23** | **78** |
@@ -405,6 +405,8 @@ Built from every wave's ownership table plus the P04-impl, P08-impl and P14 file
 | `cmd/sshepherd/revoke.go` | P06 (W1) → P12-B (W2) → P14 (W3) → P04-impl (W4) |
 | `cmd/sshepherd/apply.go`, `editrun.go` | P06 (W1) → P14 (W3) → P04-impl (W4) → P08-impl |
 | `cmd/sshepherd/e2e_test.go` | P13-D (W2 r2) → P04-impl (W4) |
+| `internal/apply/serial.go`, `serialbump.go`, `sweep.go` | P04-impl (W4) → P08-impl |
+| `cmd/sshepherd/sweep.go`, `conflicts.go` | P04-impl (W4) → P08-impl |
 | `cmd/sshepherd/identity_integration_test.go` | P13-0 (W0) |
 | `cmd/sshepherd/testdata/help/*.golden` | P01 (W0, creates) → P06 (W1) → P12-C (W2 r2, `adopt.golden`) |
 | `internal/adopt/adopt.go`, `adopt_test.go` | P05 (W1 r1) → P07-F1 (W1 r2) → P14 (W3, renames) → P04-impl (W4) |

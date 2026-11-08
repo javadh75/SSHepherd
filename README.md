@@ -66,6 +66,11 @@ rotate → audit**.
 `--identity` key files, or both — so they also run headless in CI, cron and containers (see
 [Authentication](#authentication)).
 
+Revocation memory: `revoked:` tombstones and a manifest `serial:`; revoke/rotate record
+and bump them, apply refuses a server written by a newer manifest unless the write only
+removes keys, audit pages on a revoked key still installed, adopt and `import --merge`
+never bring one back, `revoke --sweep` checks the rest of the fleet.
+
 ## Install
 
 **From source** (Go 1.27.3+):
@@ -412,6 +417,26 @@ Setting `comment:` on a user with multiple keys is legal — it deliberately
 normalizes every key to the same comment — but the manifest loader warns about it,
 so it stays a conscious choice. `audit --comments` reports comment drift on present
 keys; it is informational and never affects the exit code.
+
+### Serial
+
+`serial:` counts the manifest's revocations, so an older copy cannot undo them. It
+goes up by one on every `revoke` or `rotate` that saves, and on a confirmed `apply`
+that removes a key from a server whose header serial is not below the manifest's
+(see [`apply`](#sshepherd-apply)). You normally never edit it.
+
+Every managed file's header carries the value:
+`# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.`
+A server written by a newer manifest is refused unless the write only removes keys,
+and the only override is setting the serial by hand:
+
+```console
+s-refused (deploy@10.0.0.5:22)  REFUSED: written by manifest serial 8, this manifest is 7 — a newer manifest revoked or rotated keys here; pull the latest manifest, or if you are sure, set serial: 8 in your manifest (this is the only override)
+```
+
+The serial narrows the window for a stale copy and does not close it: only the
+servers a bumping run writes learn the new value, and a hand edit bumps it only
+through that `apply`. [Safety model](#safety-model) lists the limits.
 
 ### Revoked keys
 
@@ -1227,7 +1252,7 @@ sessions and exits `3` without rendering a report or writing a manifest (servers
 short are never passed off as unreachable).
 
 **Serial bump.** A confirmed apply that removes a key from a server whose header serial
-is not above the manifest's bumps `serial:` once, saving it under the manifest lock
+is not below the manifest's bumps `serial:` once, saving it under the manifest lock
 after the prompt and before the first write:
 
 ```console
@@ -2003,7 +2028,7 @@ Non-key lines — hand-written comments, blank lines — are **deleted** by the 
 the plan shows a `normalize` row with the exact count *before* anything is written.
 Output is deterministic, so a repeated `apply` is a byte-for-byte no-op.
 
-**Manifest serial.** Once the manifest has a `serial:`, the managed header carries it as `(serial N)`, and apply compares each server's header serial S with the manifest's M. A server written by a newer manifest (S > M) is refused unless the write only removes keys. With an equal body it is converged with a note (exit 0). A removal-only write proceeds and keeps S, so a server's serial never goes down. A header more than 1000 above M is treated as forged, as if it had no serial, and is rewritten. `revoke` and `rotate` write a header-only update on affected servers whose keys already match.
+**Manifest authority.** Once the manifest has a `serial:`, the managed header carries it as `(serial N)`, and apply compares each server's header serial S with the manifest's M. A server written by a newer manifest (S > M) is refused unless the write only removes keys. With an equal body it is converged with a note (exit 0). A removal-only write proceeds and keeps S, so a server's serial never goes down. A header more than 1000 above M is treated as forged, as if it had no serial, and is rewritten. `revoke` and `rotate` write a header-only update on affected servers whose keys already match. A confirmed `apply` that removes a key from a server whose header serial is not below M bumps `serial:` once and saves it before the first write.
 
 ```
 s-forged (deploy@10.0.0.1:22)
@@ -2031,6 +2056,26 @@ s-removal (deploy@10.0.0.6:22)
 ```
 
 **Policy conflicts.** A server a policy conflict names is refused with the conflict message (exit 1); the rest of the fleet is planned normally.
+
+**Known limitations of the serial.**
+
+- The header-only write happens only in the run that bumps. An affected server that run
+  does not write (`--no-apply`, unreachable, refused, or a run declined or interrupted)
+  and whose keys already match keeps its older header until its next real change, so a
+  copy older than the revoke can still re-grant there. Run `revoke` with its apply phase
+  rather than `--no-apply` followed by `apply`: a plain `apply` cannot tell those servers
+  from unaffected ones.
+- A hand edit does not bump the serial by itself. `apply` bumps it only when it writes a
+  removal on a server whose header serial is not below the manifest's, and only the
+  servers that run writes carry the new value, so a copy taken at the same serial can
+  still re-grant on the others.
+- Two branches that each bumped to the same serial cannot be told apart; git discipline
+  is the control for that case.
+- The `--sweep` read of `authorized_keys2` happens only on the default path.
+- Deleting a `revoked:` entry by hand is a deliberate un-revoke, audited only by git
+  history.
+- An access entry naming a removed server is ignored for it, with a warning; re-adding a
+  server under the same name re-applies the entry.
 
 **Two-phase, one confirmation.** SSHepherd reads the entire fleet and shows a single
 plan, you confirm once (interactive prompt on a TTY, or `--yes`), and only then does
@@ -2186,6 +2231,8 @@ $ make hooks        # install the lefthook pre-commit/pre-push hooks
 $ make tools        # install pinned dev tooling (exact versions, no @latest)
 ```
 
+`make integration` also runs the revocation-memory end-to-end tests: the E2E loop adds `TestE2ERevokeNoResurrect` (adopt → apply → a revoke with one server unreachable → `adopt --merge` skips the revoked key → audit exit 2 → `apply --server` → audit 0), `TestE2EStaleManifestRefused` (an old copy refused on every affected server, including a header-only one) and `TestE2EStaleManifestAfterHandEdit` (D4b).
+
 `make tidy` (part of the gate) uses `go mod tidy -diff`: it fails and prints the
 needed change when `go.mod`/`go.sum` are not tidy, and never rewrites them. Re-run
 `make tools` after upgrading Go — `make lint` refuses a `golangci-lint` built by a
@@ -2298,11 +2345,11 @@ checks (`goleak` in every package), and golden snapshots of rendered output.
 
 ```
 cmd/sshepherd/       CLI: root command, audit, import, adopt, apply, revoke, rotate, E2E tests
-internal/config/     manifest load + strict validation, access resolution
-internal/authkeys/   authorized_keys parser and renderer, option semantics, key offer order (OfferOrder/OfferRank)
+internal/config/     manifest load + strict validation, access resolution, revocation memory (revoked:, serial:, policy conflicts)
+internal/authkeys/   authorized_keys parser and renderer, managed header grammar (Header/ParseHeader, serial), option semantics, key offer order (OfferOrder/OfferRank)
 internal/audit/      fan-out, diffing, text/JSON reports, exit codes
 internal/adopt/      pure fleet-discovery plan
-internal/apply/      plan computation, self-lockout guard, phase-2 fan-out behind the Writer seam, plan/JSON reports — no transport imports
+internal/apply/      plan computation (serial rows, D4b bump, sweep report), self-lockout guard, phase-2 fan-out behind the Writer seam, plan/JSON reports — no transport imports
 internal/fleet/      shared leaf vocabulary: error kinds, read result, held keys, write request — stdlib only
 internal/workflow/   the write workflow for apply/revoke/rotate: plan → confirm → commit manifest → write, behind seams
 internal/sshconn/    shared connection glue (dial, credentials: key files + agent, host keys)
@@ -2312,7 +2359,7 @@ internal/sshread/    remote read protocol
 internal/sshwrite/   remote write protocol (guarded script, CAS, lock, verify, probe)
 internal/sshcfg/     OpenSSH client-config parser
 internal/identity/   IdentityFile → .pub resolution
-internal/manifest/   comment-preserving manifest edits (append, remove, replace, operator flag)
+internal/manifest/   comment-preserving manifest edits (append, remove, replace, operator flag, tombstones via AddTombstones, serial bump via BumpSerial)
 internal/reconcile/  pure import-merge reconciliation, same-target collapse
 internal/naming/     collision-free user-name allocator (import, merge, adopt)
 internal/clog/       leveled, colorized logging and output sanitization
@@ -2336,10 +2383,8 @@ specced in
 `revoke` and `rotate` in
 [`docs/superpowers/specs/2026-10-23-revoke-rotate-design.md`](docs/superpowers/specs/2026-10-23-revoke-rotate-design.md),
 and `revoke --server` / `rotate --keep-old` in
-[`docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`](docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md).
-Revocation memory (tombstones, a manifest serial, an opt-in post-revoke sweep, no
-adopt wildcard) is designed and approved, and being built (the `revoked:` and `serial:`
-manifest fields have landed):
+[`docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`](docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md);
+revocation memory (tombstones, the manifest serial, the post-revoke sweep) in
 [`docs/superpowers/specs/2026-11-08-revocation-memory-design.md`](docs/superpowers/specs/2026-11-08-revocation-memory-design.md).
 
 ## License
