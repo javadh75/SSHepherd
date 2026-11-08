@@ -98,10 +98,14 @@ lint-toolchain:
 LAYER_DOMAIN_BAN := SSHepherd/internal/(sshconn|sshread|sshwrite|keyfile)$$|golang.org/x/term$$|golang.org/x/crypto/ssh/(agent|knownhosts)$$|spf13/cobra$$
 LAYER_TRANSPORT_BAN := SSHepherd/internal/(audit|apply|adopt|workflow)$$
 
-## layering: fail when the import graph breaks the documented package layers
+## layering: fail when the import graph breaks the documented package layers,
+## or when go list cannot load a listed package (a rename or a broken import
+## must not silently drop a package from the check)
 layering:
-	@bad=$$($(GO) list -deps ./internal/apply ./internal/workflow ./internal/fleet | grep -E '$(LAYER_DOMAIN_BAN)'); \
-	bad2=$$($(GO) list -deps ./internal/sshconn ./internal/sshread ./internal/sshwrite | grep -E '$(LAYER_TRANSPORT_BAN)'); \
+	@domain=$$($(GO) list -deps ./internal/apply ./internal/workflow ./internal/fleet) || { echo "FAIL: layering: go list failed"; exit 1; }; \
+	transport=$$($(GO) list -deps ./internal/sshconn ./internal/sshread ./internal/sshwrite) || { echo "FAIL: layering: go list failed"; exit 1; }; \
+	bad=$$(printf '%s\n' "$$domain" | grep -E '$(LAYER_DOMAIN_BAN)'); \
+	bad2=$$(printf '%s\n' "$$transport" | grep -E '$(LAYER_TRANSPORT_BAN)'); \
 	if [ -n "$$bad$$bad2" ]; then printf '%s\n%s\n' "$$bad" "$$bad2"; echo "FAIL: layering"; exit 1; fi
 
 ## deadcode: whole-program reachability — fail on functions unreachable from main

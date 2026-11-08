@@ -1869,7 +1869,7 @@ checks (`goleak` in every package), and golden snapshots of rendered output.
 ```
 cmd/sshepherd/       CLI: root command, audit, import, adopt, apply, revoke, rotate, E2E tests
 internal/config/     manifest load + strict validation, access resolution
-internal/authkeys/   authorized_keys parser and renderer
+internal/authkeys/   authorized_keys parser and renderer, option semantics, key offer order (OfferOrder/OfferRank)
 internal/audit/      fan-out, diffing, text/JSON reports, exit codes
 internal/adopt/      pure fleet-discovery plan
 internal/apply/      plan computation, self-lockout guard, phase-2 fan-out behind the Writer seam, plan/JSON reports — no transport imports
