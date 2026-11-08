@@ -1,0 +1,2 @@
+manifest edit: remove key SHA256:x from bob — 1 server affected
+note: bob has no keys left — 'sshepherd revoke bob --config fleet.yaml' removes the user

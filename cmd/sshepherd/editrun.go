@@ -39,11 +39,12 @@ func (f *editFlags) register(cmd *cobra.Command) {
 var connectionFlags = []string{"identity", "identity-passphrase-file", "identity-passphrase", "known-hosts", "parallel"}
 
 // validate is step 1's flag half (exit 3 before the manifest is read):
-// --json needs --dry-run or --yes (--no-apply still confirms); --no-apply
+// --dry-run and --yes exclude each other, and --json needs one of them
+// (--no-apply still confirms); --no-apply
 // refuses the connection flags; otherwise --parallel and the identity flags
 // are checked exactly as apply checks them.
 func (f *editFlags) validate(cmd *cobra.Command) (identities, error) {
-	if err := f.run.checkJSON(); err != nil {
+	if err := f.run.checkModes(); err != nil {
 		return identities{}, err
 	}
 	if f.noApply {
@@ -63,7 +64,7 @@ func (f *editFlags) validate(cmd *cobra.Command) (identities, error) {
 func loadForEdit(log *slog.Logger, path string) (manifestTarget, *manifest.File, error) {
 	m, err := readManifest(path)
 	if err != nil {
-		return manifestTarget{}, nil, fmt.Errorf("load manifest: %w", err)
+		return manifestTarget{}, nil, manifestError("--config", path, err)
 	}
 	if m.Stream {
 		return manifestTarget{}, nil, fmt.Errorf("cannot edit %s: not a regular file — revoke and rotate save the manifest in place; pass the manifest file's path", path)
@@ -71,16 +72,13 @@ func loadForEdit(log *slog.Logger, path string) (manifestTarget, *manifest.File,
 	mf, err := manifest.Load(m.Loaded)
 	var ue *manifest.UnsupportedError
 	if errors.As(err, &ue) {
-		return manifestTarget{}, nil, fmt.Errorf("cannot edit %s: %s — edit the manifest by hand and run 'sshepherd apply'", path, ue.Reason)
+		apply := (&connFlags{cfgPath: path, knownHosts: defaultKnownHosts}).followUp().command("apply", nil)
+		return manifestTarget{}, nil, fmt.Errorf("cannot edit %s: %s — edit the manifest by hand and run '%s'", path, ue.Reason, apply)
 	}
 	if err != nil {
-		return manifestTarget{}, nil, fmt.Errorf("load manifest: %w", err)
+		return manifestTarget{}, nil, manifestError("--config", path, err)
 	}
-	cfg := mf.Config()
-	log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
-	for _, w := range cfg.Warnings {
-		log.Warn(w)
-	}
+	logManifest(log, mf.Config())
 	return m, mf, nil
 }
 
@@ -135,15 +133,14 @@ type overlapFinish struct {
 // (never under --json or --dry-run, whose callers return first): affected
 // is the affected-server count, noApply is --no-apply, and notConverged
 // counts a confirmed run's affected servers that do not hold the new key
-// yet. CMD quotes like applyHint; an operator's hint gets a second line.
-func overlapHint(o overlapFinish, cfgPath string, affected int, noApply bool, notConverged int) string {
-	cmd := "sshepherd revoke --key " + hintArg(o.oldFP)
-	if cfgPath != "sshepherd.yaml" {
-		cmd += " --config " + hintArg(cfgPath)
-	}
+// yet. CMD carries the run's flags (h) and quotes like applyHint; an
+// operator's hint gets a second line.
+func overlapHint(o overlapFinish, h followUp, affected int, noApply bool, notConverged int) string {
+	var opTail []string
 	if o.operator {
-		cmd += " --operator"
+		opTail = append(opTail, "--operator")
 	}
+	cmd := h.command("revoke", []string{"--key", hintArg(o.oldFP)}, opTail...)
 	var lead string
 	switch {
 	case affected == 0:
@@ -194,6 +191,10 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 	aff := apply.Affected(ep.former, ep.edited)
 	ep.summary.Affected = len(aff.Servers)
 	ep.summary.Emptied = emptiedServers(ep.former, aff.Emptied)
+	// Every hint repeats the run's own flags (a --no-apply run sets no
+	// connection flags, so its hints carry --config only).
+	h := f.run.followUp()
+	ep.summary.FollowUp = h.suffix()
 	ropts := apply.RenderOptions{Color: a.reportColor, Former: ep.former, FormerNote: ep.formerNote}
 	header := func(w io.Writer) { apply.RenderEditHeader(w, ep.summary, ropts) }
 	// doc renders the --json document; nil in text mode. Every exit-0/1
@@ -210,7 +211,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 		if doc == nil {
 			header(stdout)
 		}
-		return saveOnly(cmd, log, stdout, f, ep, aff.Servers, doc)
+		return saveOnly(cmd, log, stdout, f, ep, aff, doc, h)
 	}
 	// saved is set by beforeWrite after a successful save and read by
 	// finish, which runs after it: false under --dry-run and on the
@@ -251,7 +252,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 			return nil
 		},
 		finish: func(plans []apply.ServerPlan, stage applyStage) error {
-			return finishEdit(stdout, log, ep, aff, f.run.cfgPath, plans, stage, ropts, doc, saved)
+			return finishEdit(stdout, log, ep, aff, h, plans, stage, ropts, doc, saved)
 		},
 	})
 }
@@ -264,7 +265,7 @@ type editDoc func(plans []apply.ServerPlan, saved bool) error
 // saveOnly confirms and saves without contacting any server: zero
 // affected servers, or --no-apply. --dry-run stops before the prompt.
 // Under --json (doc non-nil) the document replaces every text line.
-func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ep editPlan, affected []string, doc editDoc) error {
+func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, doc editDoc, h followUp) error {
 	if f.run.dryRun {
 		log.Info("dry run — manifest not changed")
 		if doc != nil {
@@ -272,7 +273,7 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 		}
 		return nil
 	}
-	ok, err := confirmGate(cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(affected), f.noApply))
+	ok, err := confirmGate(cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(aff.Servers), f.noApply))
 	if err != nil {
 		return err
 	}
@@ -286,23 +287,30 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 	if doc != nil {
 		return doc(nil, true)
 	}
-	switch {
-	case f.noApply && len(affected) == 0:
-		fmt.Fprintln(stdout, "no servers contacted — no server's desired keys changed")
-	case f.noApply:
-		verb := "carry"
-		if len(affected) == 1 {
-			verb = "carries"
-		}
-		fmt.Fprintf(stdout, "no servers contacted — %s still %s the old keys; run '%s' to push\n",
-			apply.Plural(len(affected), "affected server", "affected servers"), verb, applyHint(f.run.cfgPath, affected))
-	case ep.removesKey:
-		printScope(stdout, 0, len(ep.edited.Servers))
-	}
+	noApplyNote(stdout, f, ep, aff, h)
 	if ep.overlap != nil {
-		fmt.Fprint(stdout, overlapHint(*ep.overlap, f.run.cfgPath, len(affected), f.noApply, 0))
+		fmt.Fprint(stdout, overlapHint(*ep.overlap, h, len(aff.Servers), f.noApply, 0))
 	}
 	return nil
+}
+
+// noApplyNote is saveOnly's text tail after the save: under --no-apply what
+// is left to push — only the servers apply would not refuse, as finishEdit
+// does, since an emptied server is never written — else the scope line of a
+// key removal that affected no server.
+func noApplyNote(stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, h followUp) {
+	pushable := slices.DeleteFunc(slices.Clone(aff.Servers), func(s string) bool { return slices.Contains(aff.Emptied, s) })
+	switch {
+	case f.noApply && len(aff.Servers) == 0:
+		fmt.Fprintln(stdout, "no servers contacted — no server's desired keys changed")
+	case f.noApply && len(pushable) == 0:
+		fmt.Fprintln(stdout, "no servers contacted — nothing to push: every affected server would be left with no granted keys (see the warnings above)")
+	case f.noApply:
+		fmt.Fprintf(stdout, "no servers contacted — %s still %s the old keys; run '%s' to push\n",
+			apply.Plural(len(pushable), "affected server", "affected servers"), pluralWord(len(pushable), "carries", "carry"), applyHint(h, pushable))
+	case ep.removesKey:
+		printScope(stdout, h, 0, len(ep.edited.Servers))
+	}
 }
 
 // saveEdit is step 7's save, then the reminder that the manifest is the
@@ -341,7 +349,7 @@ func finishDoc(doc editDoc, plans []apply.ServerPlan, stage applyStage, saved bo
 // and maps the exit code. stageWithheld (nothing can land, or no held key
 // survives) is exit 1 with nothing saved; in text mode the hook already
 // logged why and the plan is shown, so nothing more is printed.
-func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.AffectedSet, cfgPath string,
+func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.AffectedSet, h followUp,
 	plans []apply.ServerPlan, stage applyStage, ropts apply.RenderOptions, doc editDoc, saved bool,
 ) error {
 	if doc != nil {
@@ -365,13 +373,13 @@ func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.Affec
 		}
 		if len(pending) > 0 {
 			fmt.Fprintf(stdout, "manifest updated; %s not converged — finish with: %s\n",
-				apply.Plural(len(pending), "server", "servers"), applyHint(cfgPath, pending))
+				apply.Plural(len(pending), "server", "servers"), applyHint(h, pending))
 		}
 		if ep.removesKey {
-			printScope(stdout, len(plans), len(ep.edited.Servers))
+			printScope(stdout, h, len(plans), len(ep.edited.Servers))
 		}
 		if ep.overlap != nil {
-			fmt.Fprint(stdout, overlapHint(*ep.overlap, cfgPath, len(aff.Servers), false, len(pending)))
+			fmt.Fprint(stdout, overlapHint(*ep.overlap, h, len(aff.Servers), false, len(pending)))
 		}
 	}
 	if apply.ExitCode(plans) != 0 {
@@ -380,9 +388,12 @@ func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.Affec
 	return nil
 }
 
-func printScope(w io.Writer, contacted, fleet int) {
-	fmt.Fprintf(w, "scope: only servers whose grants changed were contacted (%d of %d); the removed key may still be installed elsewhere as drift — run 'sshepherd audit' to confirm, 'sshepherd apply' to sweep\n",
-		contacted, fleet)
+// printScope is the scope line after a key removal: only affected servers
+// were contacted, with the audit and apply commands (carrying the run's
+// flags) that confirm and sweep the rest of the fleet.
+func printScope(w io.Writer, h followUp, contacted, fleet int) {
+	fmt.Fprintf(w, "scope: only servers whose grants changed were contacted (%d of %d); the removed key may still be installed elsewhere as drift — run '%s' to confirm, '%s' to sweep\n",
+		contacted, fleet, h.command("audit", nil), h.command("apply", nil))
 }
 
 // shellSafe matches arguments that need no quoting in a hint.
@@ -395,17 +406,14 @@ func hintArg(s string) string {
 	return sshconn.ShQuote(s)
 }
 
-// applyHint is the apply command that finishes the job: --config when it
-// is not the default, one --server per server.
-func applyHint(cfgPath string, servers []string) string {
-	parts := []string{"sshepherd apply"}
-	if cfgPath != "sshepherd.yaml" {
-		parts = append(parts, "--config "+hintArg(cfgPath))
-	}
+// applyHint is the apply command that finishes the job: the run's flags
+// (h), one --server per server.
+func applyHint(h followUp, servers []string) string {
+	tail := make([]string, 0, len(servers))
 	for _, s := range servers {
-		parts = append(parts, "--server "+hintArg(s))
+		tail = append(tail, "--server "+hintArg(s))
 	}
-	return strings.Join(parts, " ")
+	return h.command("apply", nil, tail...)
 }
 
 // nothingCanLand: no affected server is change-planned or converged, and

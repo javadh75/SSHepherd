@@ -35,7 +35,15 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			"saved after confirmation and before the first write, so commit and push\n" +
 			"it afterwards. --dry-run changes nothing; --no-apply saves the edit\n" +
 			"without contacting any server. A server whose only grantee is revoked is\n" +
-			"never emptied: the key stays installed there (a warning says so).",
+			"never emptied: the key stays installed there (a warning says so).\n\n" + exitCodesWrite,
+		Example: "  # Offboard a user everywhere\n" +
+			"  sshepherd revoke alice\n\n" +
+			"  # Lost laptop: revoke one key, keep the user\n" +
+			"  sshepherd revoke --key ~/alice-laptop.pub\n\n" +
+			"  # Remove a user's access to one server only\n" +
+			"  sshepherd revoke alice --server db-1\n\n" +
+			"  # Record the edit now, push it later\n" +
+			"  sshepherd revoke alice --no-apply",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ids, err := f.validate(cmd)
@@ -51,13 +59,14 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 				return err
 			}
 			var ep editPlan
+			h := f.run.followUp()
 			switch {
 			case len(trim) > 0:
-				ep, err = planRevokeAccess(mf, users, trim)
+				ep, err = planRevokeAccess(mf, users, trim, h)
 			case len(users) > 0:
-				ep, err = planRevokeUsers(mf, users, f.operator)
+				ep, err = planRevokeUsers(mf, users, f.operator, h)
 			default:
-				ep, err = planRevokeKeys(mf, keyArgs, f.operator)
+				ep, err = planRevokeKeys(mf, keyArgs, f.operator, h)
 			}
 			if err != nil {
 				return err
@@ -129,8 +138,12 @@ func unique(in []string) []string {
 	return out
 }
 
-// planRevokeUsers resolves and applies 'revoke USER...'.
-func planRevokeUsers(mf *manifest.File, users []string, operator bool) (editPlan, error) {
+// planRevokeUsers resolves and applies 'revoke USER...'. A user not in the
+// manifest is refused (exit 3) with what a retried revoke needs: the save
+// may have landed while the push did not, so the hint shows what is left
+// to push (apply --dry-run: the user's former servers are no longer in the
+// manifest to name) and how to verify, both with the run's flags (h).
+func planRevokeUsers(mf *manifest.File, users []string, operator bool, h followUp) (editPlan, error) {
 	cfg := mf.Config()
 	var unknown []string
 	for _, name := range users {
@@ -139,7 +152,9 @@ func planRevokeUsers(mf *manifest.File, users []string, operator bool) (editPlan
 		}
 	}
 	if len(unknown) > 0 {
-		return editPlan{}, fmt.Errorf("unknown %s: %s", pluralWord(len(unknown), "user", "users"), strings.Join(unknown, ", "))
+		return editPlan{}, fmt.Errorf("unknown %s: %s — not in the manifest (already revoked?); see what is left to push with '%s', verify with '%s'",
+			pluralWord(len(unknown), "user", "users"), strings.Join(unknown, ", "),
+			h.command("apply", []string{"--dry-run"}), h.command("audit", nil))
 	}
 	ops, err := operatorGate(cfg, users, operator)
 	if err != nil {
@@ -164,8 +179,9 @@ func planRevokeUsers(mf *manifest.File, users []string, operator bool) (editPlan
 // planRevokeKeys resolves and applies 'revoke --key KEY...'. Keys are
 // unique across users (config rejects duplicates), so each owner is
 // unambiguous. An operator losing its last key loses the flag first
-// (operator: true with no keys fails validation).
-func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool) (editPlan, error) {
+// (operator: true with no keys fails validation). h carries the run's
+// flags into the not-in-the-manifest hint.
+func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, h followUp) (editPlan, error) {
 	cfg := mf.Config()
 	var missing []string
 	var owners []string
@@ -173,7 +189,8 @@ func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool) (editPlan, 
 	for _, k := range keys {
 		u, ok := cfg.OwnerOf(k.Fingerprint)
 		if !ok {
-			missing = append(missing, fmt.Sprintf("%s is not in the manifest; apply already removes keys the manifest does not grant — run 'sshepherd audit' to find where it is installed", keyName(k)))
+			missing = append(missing, fmt.Sprintf("%s is not in the manifest; apply already removes keys the manifest does not grant — run '%s' to find where it is installed",
+				keyName(k), h.command("audit", nil)))
 			continue
 		}
 		if !slices.Contains(owners, u.Name) {
@@ -221,9 +238,9 @@ func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool) (editPlan, 
 // There is no operator gate: an operator target is refused outright
 // (access to every server by definition). Every problem is listed in one
 // refusal before any edit (accessProblems).
-func planRevokeAccess(mf *manifest.File, users, servers []string) (editPlan, error) {
+func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp) (editPlan, error) {
 	cfg := mf.Config()
-	if problems := accessProblems(cfg, users, servers); len(problems) > 0 {
+	if problems := accessProblems(cfg, users, servers, h); len(problems) > 0 {
 		return editPlan{}, errors.New(strings.Join(problems, "; "))
 	}
 	ep := editPlan{
@@ -248,6 +265,13 @@ func planRevokeAccess(mf *manifest.File, users, servers []string) (editPlan, err
 	}
 	for i, e := range ep.summary.Edits {
 		ep.summary.Edits[i].NoGrantsLeft = !slices.ContainsFunc(ep.edited.Access, func(a config.Access) bool { return a.User == e.User })
+		// What is left, said in the header: a "web-1 first" trim must not
+		// read as an offboarding.
+		for _, srv := range ep.edited.Servers {
+			if ep.edited.Covers(e.User, srv.Name) {
+				ep.summary.Edits[i].KeepsServers++
+			}
+		}
 	}
 	return ep, nil
 }
@@ -256,8 +280,8 @@ func planRevokeAccess(mf *manifest.File, users, servers []string) (editPlan, err
 // in this order: unknown users (one entry, the existing wording), unknown
 // servers, operator targets, then every non-operator user × known server
 // pair the user has no access to (config.Covers: wildcards and except:
-// included).
-func accessProblems(cfg *config.Config, users, servers []string) []string {
+// included). h carries the run's flags into the operator hint.
+func accessProblems(cfg *config.Config, users, servers []string, h followUp) []string {
 	var problems, unknown, ops []string
 	for _, name := range users {
 		i := slices.IndexFunc(cfg.Users, func(u config.User) bool { return u.Name == name })
@@ -280,7 +304,8 @@ func accessProblems(cfg *config.Config, users, servers []string) []string {
 		}
 	}
 	for _, name := range ops {
-		problems = append(problems, fmt.Sprintf("%s is an operator (access to every server by definition); remove the user with 'sshepherd revoke %s --operator', or clear operator: true by hand", name, name))
+		problems = append(problems, fmt.Sprintf("%s is an operator (access to every server by definition); remove the user with '%s', or clear operator: true by hand",
+			name, h.command("revoke", []string{hintArg(name)}, "--operator")))
 	}
 	for _, name := range users {
 		if slices.Contains(unknown, name) || slices.Contains(ops, name) {

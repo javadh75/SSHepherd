@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -156,6 +157,20 @@ func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return code
 }
 
+// exitCodesAudit and exitCodesWrite end the --help description of audit and
+// of apply/revoke/rotate; README's Exit codes section carries both verbatim.
+const exitCodesAudit = `Exit codes:
+  0  compliant
+  1  drift or unreachable servers (compliance not proven)
+  2  critical: a missing operator key, or a changed or @revoked host key
+  3  tool error: bad flags, unloadable manifest, failed preflight, interrupted`
+
+const exitCodesWrite = `Exit codes:
+  0  converged: nothing left to do
+  1  pending changes, unreachable or refused servers, or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+     before anything was saved or written`
+
 // exitCodeFor maps Execute's error to the monitoring-style process exit code
 // (see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md).
 // Sentinel-mapped outcomes have already rendered their report; only the
@@ -185,7 +200,18 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true, // run() prints errors with consistent formatting
+		// Args: any, so cobra's legacyArgs never builds its multi-line
+		// "Did you mean this?" error; RunE words an unknown command on one line.
+		Args: cobra.ArbitraryArgs,
+		// cobra's own default, which it applies only inside its finder;
+		// SuggestionsFor reads the field as is.
+		SuggestionsMinimumDistance: 2,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			// Checked before a.logger is built, so the error prints through
+			// the plain fallback handler (no timestamp, even with -v).
+			if verbose && quiet {
+				return errors.New("-v/--verbose and -q/--quiet cannot be combined; pick one")
+			}
 			mode, err := clog.ParseColorMode(colorFlag)
 			if err != nil {
 				return fmt.Errorf("--color: %w", err)
@@ -205,8 +231,14 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 			a.reportColor = clog.Enabled(stdout, mode)
 			return nil
 		},
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errors.New("no command given (try --help)")
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return errors.New("no command given (try --help)")
+			}
+			if s := cmd.SuggestionsFor(args[0]); len(s) > 0 {
+				return fmt.Errorf("unknown command %q (did you mean %s?); see 'sshepherd --help'", args[0], strings.Join(s, ", "))
+			}
+			return fmt.Errorf("unknown command %q; see 'sshepherd --help'", args[0])
 		},
 	}
 	root.SetOut(stdout)
@@ -217,7 +249,6 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	pf.BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 	pf.BoolVarP(&quiet, "quiet", "q", false, "log errors only")
 	pf.StringVar(&colorFlag, "color", "auto", "colorize output: auto, always, or never")
-	root.MarkFlagsMutuallyExclusive("verbose", "quiet")
 	root.AddCommand(newAuditCmd(a, stdout))
 	root.AddCommand(newImportCmd(a, stdout))
 	root.AddCommand(newAdoptCmd(a, stdout))

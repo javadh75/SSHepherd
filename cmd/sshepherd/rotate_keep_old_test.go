@@ -51,7 +51,7 @@ func TestRotateKeepOldLifecycle(t *testing.T) {
 		"--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
 	}
-	finish := "sshepherd revoke --key " + fpOf(t, 1) + " --config " + cfg
+	finish := "sshepherd revoke --key " + fpOf(t, 1) + " --config " + cfg + " --known-hosts " + kh
 	for _, want := range []string{
 		"manifest edit: rotate alice key " + fpOf(t, 1) + " → " + fpOf(t, 5) + " (keeps the old key) — 2 servers affected\n",
 		"manifest " + cfg + " updated — commit and push it: an apply from a copy without this edit removes the new key — clients that already switched would be locked out\n",
@@ -160,8 +160,8 @@ func TestRotateKeepOldHintRows(t *testing.T) {
 			t.Fatalf("exit = %d, want 1\n%s\n%s", code, out.String(), errBuf.String())
 		}
 		inOrderCmd(t, out.String(),
-			"manifest updated; 1 server not converged — finish with: sshepherd apply --config "+cfg+" --server web-2\n",
-			"overlap incomplete — 1 server does not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key "+fpOf(t, 1)+" --config "+cfg+"\n")
+			"manifest updated; 1 server not converged — finish with: sshepherd apply --config "+cfg+" --known-hosts "+kh+" --server web-2\n",
+			"overlap incomplete — 1 server does not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key "+fpOf(t, 1)+" --config "+cfg+" --known-hosts "+kh+"\n")
 	})
 	t.Run("operator", func(t *testing.T) {
 		cfg := writeConfig(t, "users:\n  - {name: ops, operator: true, keys: ["+qk(t, 1)+"]}\nservers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n")

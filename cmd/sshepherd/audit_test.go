@@ -32,6 +32,48 @@ func TestAuditMissingConfig(t *testing.T) {
 	}
 }
 
+// TestManifestErrors: a missing default manifest names the bootstrap, a
+// missing --config path says to check it, and no error stutters.
+func TestManifestErrors(t *testing.T) {
+	t.Run("missing default", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"audit"}, &out, &errBuf); code != 3 {
+			t.Fatalf("exit = %d, want 3", code)
+		}
+		want := "error: no manifest at sshepherd.yaml — create one with 'sshepherd import --servers-only -o sshepherd.yaml', or pass --config PATH\n"
+		if errBuf.String() != want {
+			t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+		}
+	})
+	t.Run("missing --config", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		run([]string{"apply", "--config", "no-such.yaml"}, &out, &errBuf)
+		want := "error: no manifest at no-such.yaml — check --config, or create one with 'sshepherd import --servers-only -o no-such.yaml'\n"
+		if errBuf.String() != want {
+			t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+		}
+	})
+	t.Run("no stutter", func(t *testing.T) {
+		for _, body := range []string{"users: [\n", "users:\n  - {name: a, keys: []}\n  - {name: a, keys: []}\n"} {
+			path := writeConfig(t, body)
+			for _, sub := range []string{"audit", "adopt", "apply", "revoke"} {
+				var out, errBuf bytes.Buffer
+				args := []string{sub, "--config", path}
+				if sub == "revoke" {
+					args = append(args, "a")
+				}
+				run(args, &out, &errBuf)
+				s := errBuf.String()
+				worded := strings.Contains(s, "parse manifest:") || strings.Contains(s, "invalid manifest "+path+":")
+				if strings.Contains(s, "load manifest:") || !worded {
+					t.Errorf("%s: stderr = %q", sub, s)
+				}
+			}
+		}
+	})
+}
+
 func TestAuditInvalidConfig(t *testing.T) {
 	path := writeConfig(t, "users: [\n")
 	var out, errBuf bytes.Buffer

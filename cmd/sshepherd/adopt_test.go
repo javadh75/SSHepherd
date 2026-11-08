@@ -21,8 +21,38 @@ import (
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/manifest"
+	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// TestQuickStartBootstrap is README's Quick start step 1, end to end:
+// import --servers-only writes a servers-only manifest from the ssh
+// config, adopt --merge adds every installed key to that same file, and
+// the audit of the result is clean.
+func TestQuickStartBootstrap(t *testing.T) {
+	hermeticHome(t)
+	srv, hostKey, _ := hermeticFleet(t, shortHome(t))
+	kh := sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+	sshCfg := writeSSHConfig(t, "Host web-1\n  HostName 127.0.0.1\n  Port "+strconv.Itoa(srv.Port)+"\n  User deploy\n")
+	m := filepath.Join(t.TempDir(), "sshepherd.yaml")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", sshCfg, "--servers-only", "-o", m}, &out, &errBuf); code != 0 {
+		t.Fatalf("import exit = %d\n%s", code, errBuf.String())
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"adopt", "--merge", "--config", m, "-o", m, "--force", "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("adopt --merge exit = %d\n%s", code, errBuf.String())
+	}
+	if cfg := readCfg(t, m); len(cfg.Users) != 1 || len(cfg.Servers) != 1 || len(cfg.Access) != 1 {
+		t.Errorf("bootstrapped manifest = %+v, want one adopted user granted web-1", cfg)
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"audit", "--config", m, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("audit exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+}
 
 // fakeReader returns canned authorized_keys content per server name.
 type fakeReader struct {
@@ -409,7 +439,7 @@ func TestReportPlanPositiveOutcome(t *testing.T) {
 	log := slog.New(clog.NewHandler(&buf, clog.Options{Level: slog.LevelInfo}))
 	reportPlan(log, adopt.Plan{NewUsers: []adopt.NewUser{{Name: "u1"}}}, nil)
 	got := buf.String()
-	if !strings.Contains(got, "adopting 1 new users, 0 access extensions") {
+	if !strings.Contains(got, "adopting 1 new user, 0 access extensions") {
 		t.Errorf("log = %q, want the adopting summary", got)
 	}
 	if strings.Contains(got, "nothing to adopt") {
@@ -530,6 +560,9 @@ func TestAdoptUnreachableStrictGateAndPartial(t *testing.T) {
 	}
 	if !strings.Contains(errBuf.String(), "--partial") || !strings.Contains(errBuf.String(), "web-1") {
 		t.Errorf("stderr = %q, want the per-server error and a --partial hint", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "1 server could not be fully read — nothing written") {
+		t.Errorf("stderr = %q, want the pluralized strict-gate count", errBuf.String())
 	}
 
 	// -q suppresses the phase narration but the per-issue ERRORs and the

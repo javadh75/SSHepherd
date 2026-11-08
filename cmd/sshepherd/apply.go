@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -18,7 +17,6 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
-	"github.com/javadh75/SSHepherd/internal/sshread"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
 )
 
@@ -47,29 +45,34 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			"previous file is restored. --yes skips only the confirmation: an\n" +
 			"encrypted --identity key may still prompt for its passphrase.\n" +
 			"Ctrl-C stops new writes; started ones finish. --dry-run previews the\n" +
-			"plan and never writes.",
+			"plan and never writes.\n\n" + exitCodesWrite,
+		Example: "  # Preview, then write after one confirmation\n" +
+			"  sshepherd apply --dry-run\n" +
+			"  sshepherd apply\n\n" +
+			"  # Canary: one server first, then the rest\n" +
+			"  sshepherd apply --server web-1\n" +
+			"  sshepherd apply\n\n" +
+			"  # CI with a deploy key instead of ssh-agent\n" +
+			"  sshepherd apply --yes --identity ~/.ssh/ci --identity-passphrase-file /run/secrets/ci.pass",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ids, err := validateFlags(rf.parallel, &rf.idf)
 			if err != nil {
 				return err
 			}
-			if err := rf.checkJSON(); err != nil {
+			if err := rf.checkModes(); err != nil {
 				return err
 			}
 			log := a.logger
 			m, err := readManifest(rf.cfgPath)
 			if err != nil {
-				return fmt.Errorf("load manifest: %w", err)
+				return manifestError("--config", rf.cfgPath, err)
 			}
 			cfg, err := config.Parse(m.Loaded)
 			if err != nil {
-				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
+				return manifestError("--config", rf.cfgPath, err)
 			}
-			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
-			for _, w := range cfg.Warnings {
-				log.Warn(w)
-			}
+			logManifest(log, cfg)
 			targets, err := selectServers(cfg, serverSel)
 			if err != nil {
 				return err
@@ -91,7 +94,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				// before the key that matters is tried.
 				preferKeys: func(s config.Server) []string { return audit.GrantedFingerprints(cfg, s.Name) },
 				prompt: func(_ []apply.ServerPlan, toWrite int) (string, error) {
-					return fmt.Sprintf("apply %d of %d servers?", toWrite, len(targets)), nil
+					return fmt.Sprintf("apply %d of %s?", toWrite, apply.Plural(len(targets), "server", "servers")), nil
 				},
 				// A concurrent revoke may have replaced the manifest while
 				// this run planned against the old one: writing that plan
@@ -183,11 +186,11 @@ func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids id
 	if run.header != nil && !rf.json {
 		run.header(stdout)
 	}
-	pre, err := applyPreflight(ctx, log, rf.knownHosts, ids)
+	pre, err := applyPreflight(ctx, log, &rf.connFlags, ids)
 	if err != nil {
 		return err
 	}
-	plans, err := planFleet(ctx, log, pre, run, rf.parallel)
+	plans, err := planFleet(ctx, pre, run)
 	if err != nil {
 		return err
 	}
@@ -216,8 +219,8 @@ func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids id
 		}
 		return run.finish(plans, stageConfirmed)
 	}
-	log.Info(fmt.Sprintf("applying %d servers (parallelism %d)…", toWrite, rf.parallel))
-	if err := writePhase(ctx, log, pre, run.preferKeys, plans, rf.parallel, run.beforeWrite); err != nil {
+	log.Info(fmt.Sprintf("applying %s (parallelism %d)…", apply.Plural(toWrite, "server", "servers"), rf.parallel))
+	if err := writePhase(ctx, pre, run.preferKeys, plans, run.beforeWrite); err != nil {
 		return run.withheld(plans, err)
 	}
 	return run.finish(plans, stageConfirmed)
@@ -225,26 +228,10 @@ func runApply(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids id
 
 // planFleet is phase 1: audit's pipeline over run.servers, then the plan
 // from run.cfg.
-func planFleet(ctx context.Context, log *slog.Logger, pre preflight, run applyRun, parallel int) ([]apply.ServerPlan, error) {
-	reader := &sshread.Client{
-		KnownHostsPath: pre.khPath,
-		KnownHosts:     pre.kh,
-		Creds:          pre.creds,
-		DialTimeout:    dialTimeout,
-		PreferKeys:     run.preferKeys,
-		Log:            log,
-	}
-	log.Info(fmt.Sprintf("planning %d servers (parallelism %d)…", len(run.servers), parallel))
-	start := time.Now()
-	results := audit.Run(ctx, run.cfg, reader, audit.Options{
-		Parallel:         parallel,
-		PerServerTimeout: perServerTimeout,
-		Servers:          run.servers,
-		Logger:           log,
-	})
-	logFleetReadDone(log, run.cfg, results, start)
-	if err := interrupted(ctx); err != nil {
-		return nil, err // nothing written: phase 2 never started
+func planFleet(ctx context.Context, pre preflight, run applyRun) ([]apply.ServerPlan, error) {
+	results, err := pre.Read(ctx, "planning", run.cfg, run.servers, run.preferKeys)
+	if err != nil {
+		return nil, err // interrupted; nothing written: phase 2 never started
 	}
 	plans, err := apply.Build(run.cfg, results, pre.held)
 	if err != nil {
@@ -262,10 +249,11 @@ func planFleet(ctx context.Context, log *slog.Logger, pre preflight, run applyRu
 // it empty, which fails every write through the guard rather than
 // guessing. beforeWrite (the manifest re-check or save) runs after the
 // re-list and before any worker starts; its error writes nothing.
-func writePhase(ctx context.Context, log *slog.Logger, pre preflight, preferKeys func(config.Server) []string,
-	plans []apply.ServerPlan, parallel int,
+func writePhase(ctx context.Context, pre preflight, preferKeys func(config.Server) []string,
+	plans []apply.ServerPlan,
 	beforeWrite func(context.Context, []apply.ServerPlan, []sshconn.HeldKey) error,
 ) error {
+	log := pre.log
 	fresh, err := pre.creds.Held(ctx)
 	if err != nil {
 		log.Error(fmt.Sprintf("%s: %v — no server will be written", relistPrefix(pre.creds), err))
@@ -276,61 +264,41 @@ func writePhase(ctx context.Context, log *slog.Logger, pre preflight, preferKeys
 			return err
 		}
 	}
-	writer := &sshwrite.FleetWriter{
-		Dialer: &sshconn.Dialer{
-			KnownHostsPath: pre.khPath,
-			KnownHosts:     pre.kh,
-			Creds:          pre.creds,
-			DialTimeout:    dialTimeout,
-			PreferKeys:     preferKeys,
-			Log:            log,
-		},
-		Log: log,
-	}
+	writer := &sshwrite.FleetWriter{Dialer: pre.dialer(preferKeys), Log: log}
 	apply.Execute(ctx, plans, writer, apply.ExecOptions{
-		Parallel:         parallel,
+		Parallel:         pre.parallel,
 		PerServerTimeout: perServerTimeout,
 		Held:             fresh,
 		Logger:           log,
 	})
 	if n := apply.Interrupted(plans); n > 0 {
-		log.Error(fmt.Sprintf("interrupted: %d servers not started (nothing written there); started writes finished", n))
+		log.Error("interrupted: " + apply.Plural(n, "server", "servers") + " not started (nothing written there); started writes finished")
 	}
 	return nil
 }
 
-// preflight is what apply's pre-dial checks hand to both phases.
+// preflight is what apply's pre-dial checks hand to both phases: the
+// run's fleet session (known_hosts parsed once and the one credential
+// source, shared by the reader, the writer and the probe) and the held keys.
 type preflight struct {
-	khPath string
-	kh     *sshconn.KnownHosts  // parsed once, shared by the reader and the writer
-	creds  *sshconn.Credentials // the run's one credential source: reader, writer, probe
-	held   []sshconn.HeldKey    // the plan-time guard's ground truth
+	*fleetSession
+	held []sshconn.HeldKey // the plan-time guard's ground truth
 }
 
 // applyPreflight runs apply's pre-dial checks in the order of operations:
-// known_hosts (parsed exactly once per run; both phases share the
-// snapshot), then the key files (may prompt), then the credentials check —
-// apply needs plain held keys — and the held-key capture that is the
+// openFleet (known_hosts, the key files, the credentials check — apply
+// needs plain held keys), then the held-key capture that is the
 // self-lockout guard's ground truth.
-func applyPreflight(ctx context.Context, log *slog.Logger, knownHosts string, ids identities) (preflight, error) {
-	var pre preflight
-	var err error
-	if pre.khPath, err = expandHome(knownHosts); err != nil {
-		return pre, err
+func applyPreflight(ctx context.Context, log *slog.Logger, f *connFlags, ids identities) (preflight, error) {
+	s, err := openFleet(ctx, log, f, ids, true)
+	if err != nil {
+		return preflight{}, err
 	}
-	if pre.kh, err = sshread.LoadKnownHosts(pre.khPath); err != nil {
-		return pre, fmt.Errorf("known_hosts preflight: %w", err)
+	held, err := s.creds.Held(ctx)
+	if err != nil {
+		return preflight{}, fmt.Errorf("agent preflight: %w", err)
 	}
-	if pre.creds, err = ids.credentials(ctx, log); err != nil {
-		return pre, err
-	}
-	if err := checkCredentials(ctx, pre.creds, true); err != nil {
-		return pre, err
-	}
-	if pre.held, err = pre.creds.Held(ctx); err != nil {
-		return pre, fmt.Errorf("agent preflight: %w", err)
-	}
-	return pre, nil
+	return preflight{fleetSession: s, held: held}, nil
 }
 
 // relistPrefix words a failed post-confirmation re-list: the

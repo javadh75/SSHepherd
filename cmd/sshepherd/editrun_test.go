@@ -14,16 +14,18 @@ import (
 
 func TestApplyHint(t *testing.T) {
 	for _, tt := range []struct {
-		cfg     string
+		cfg, kh string
 		servers []string
 		want    string
 	}{
-		{"sshepherd.yaml", []string{"web-1"}, "sshepherd apply --server web-1"},
-		{"/etc/fleet.yaml", []string{"web-1", "db-1"}, "sshepherd apply --config /etc/fleet.yaml --server web-1 --server db-1"},
-		{"my fleet.yaml", []string{"web-1"}, "sshepherd apply --config 'my fleet.yaml' --server web-1"},
+		{"sshepherd.yaml", defaultKnownHosts, []string{"web-1"}, "sshepherd apply --server web-1"},
+		{"/etc/fleet.yaml", defaultKnownHosts, []string{"web-1", "db-1"}, "sshepherd apply --config /etc/fleet.yaml --server web-1 --server db-1"},
+		{"my fleet.yaml", defaultKnownHosts, []string{"web-1"}, "sshepherd apply --config 'my fleet.yaml' --server web-1"},
+		{"/etc/fleet.yaml", "/kh", []string{"web-1", "db-1"}, "sshepherd apply --config /etc/fleet.yaml --known-hosts /kh --server web-1 --server db-1"},
 	} {
-		if got := applyHint(tt.cfg, tt.servers); got != tt.want {
-			t.Errorf("applyHint(%q, %v) = %q, want %q", tt.cfg, tt.servers, got, tt.want)
+		cf := connFlags{cfgPath: tt.cfg, knownHosts: tt.kh}
+		if got := applyHint(cf.followUp(), tt.servers); got != tt.want {
+			t.Errorf("applyHint(%q, %q, %v) = %q, want %q", tt.cfg, tt.kh, tt.servers, got, tt.want)
 		}
 	}
 }
@@ -104,25 +106,28 @@ func TestOverlapHint(t *testing.T) {
 	for _, tt := range []struct {
 		name                   string
 		o                      overlapFinish
-		cfg                    string
+		cfg, kh                string
 		affected, notConverged int
 		noApply                bool
 		want                   string
 	}{
-		{"started", bob, "sshepherd.yaml", 3, 0, false,
+		{"started", bob, "sshepherd.yaml", defaultKnownHosts, 3, 0, false,
 			"overlap started — every affected server accepts both keys; once every client uses the new key, finish with: sshepherd revoke --key SHA256:old+/=\n"},
-		{"incomplete, one", bob, "sshepherd.yaml", 3, 1, false,
+		{"incomplete, one", bob, "sshepherd.yaml", defaultKnownHosts, 3, 1, false,
 			"overlap incomplete — 1 server does not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key SHA256:old+/=\n"},
-		{"incomplete, many", bob, "/etc/fleet.yaml", 3, 2, false,
+		{"incomplete, many", bob, "/etc/fleet.yaml", defaultKnownHosts, 3, 2, false,
 			"overlap incomplete — 2 servers do not have the new key yet; push it first (see the apply hint above), then finish with: sshepherd revoke --key SHA256:old+/= --config /etc/fleet.yaml\n"},
-		{"not pushed", bob, "my fleet.yaml", 3, 0, true,
+		{"not pushed", bob, "my fleet.yaml", defaultKnownHosts, 3, 0, true,
 			"overlap recorded, not pushed — run the apply hint above, then, once every client uses the new key, finish with: sshepherd revoke --key SHA256:old+/= --config 'my fleet.yaml'\n"},
-		{"no grants", bob, "sshepherd.yaml", 0, 0, true,
+		{"no grants", bob, "sshepherd.yaml", defaultKnownHosts, 0, 0, true,
 			"new key recorded — bob has no grants yet, so no server was contacted; finish the overlap with: sshepherd revoke --key SHA256:old+/=\n"},
-		{"operator", ops, "sshepherd.yaml", 2, 0, false,
+		{"operator", ops, "sshepherd.yaml", defaultKnownHosts, 2, 0, false,
 			"overlap started — every affected server accepts both keys; once every client uses the new key, finish with: sshepherd revoke --key SHA256:old --operator\n" + opLine},
+		{"operator, run flags", ops, "/etc/fleet.yaml", "/kh", 2, 0, false,
+			"overlap started — every affected server accepts both keys; once every client uses the new key, finish with: sshepherd revoke --key SHA256:old --config /etc/fleet.yaml --known-hosts /kh --operator\n" + opLine},
 	} {
-		if got := overlapHint(tt.o, tt.cfg, tt.affected, tt.noApply, tt.notConverged); got != tt.want {
+		h := (&connFlags{cfgPath: tt.cfg, knownHosts: tt.kh}).followUp()
+		if got := overlapHint(tt.o, h, tt.affected, tt.noApply, tt.notConverged); got != tt.want {
 			t.Errorf("%s:\n got %q\nwant %q", tt.name, got, tt.want)
 		}
 	}

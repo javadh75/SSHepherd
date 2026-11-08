@@ -324,7 +324,7 @@ access:
 	if code != 0 {
 		t.Fatalf("revoke --server exit = %d (stderr: %s)\n%s", code, stderr, out)
 	}
-	for _, want := range []string{"manifest edit: remove tmp's access to trim-a (1 access entry changed) — 1 server affected", "trim-a: applied · verified"} {
+	for _, want := range []string{"manifest edit: remove tmp's access to trim-a (1 access entry changed); tmp keeps access to 1 other server — 1 server affected", "trim-a: applied · verified"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("revoke output lacks %q:\n%s", want, out)
 		}

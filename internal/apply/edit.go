@@ -49,6 +49,9 @@ type Edit struct {
 	// NoGrantsLeft (EditRemoveAccess) reports that the user has no access:
 	// entry left after the whole edit.
 	NoGrantsLeft bool
+	// KeepsServers (EditRemoveAccess) counts the servers the user still
+	// covers after the edit.
+	KeepsServers int
 }
 
 // EmptiedServer is an affected server left with no granted keys: the
@@ -65,6 +68,10 @@ type EditSummary struct {
 	Affected  int      // servers whose rendered desired file changes
 	Operators []string // operator targets, acknowledged with --operator
 	Emptied   []EmptiedServer
+	// FollowUp is the run's non-default flags appended to the header's
+	// 'sshepherd revoke USER' hints (" --config fleet.yaml"); "" for none.
+	// Not part of the JSON.
+	FollowUp string
 }
 
 // RenderEditHeader writes the manifest-edit header printed above the
@@ -96,11 +103,11 @@ func RenderEditHeader(w io.Writer, s EditSummary, opts RenderOptions) {
 		}
 		switch {
 		case e.NoGrantsLeft:
-			fmt.Fprintf(w, "note: %s has no access left — 'sshepherd revoke %s' removes the user\n", e.User, e.User)
+			fmt.Fprintf(w, "note: %s has no access left — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, s.FollowUp)
 		case e.ClearsOperator:
-			fmt.Fprintf(w, "note: %s has no keys left, so its operator flag is cleared — 'sshepherd revoke %s' removes the user\n", e.User, e.User)
+			fmt.Fprintf(w, "note: %s has no keys left, so its operator flag is cleared — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, s.FollowUp)
 		case e.NoKeysLeft:
-			fmt.Fprintf(w, "note: %s has no keys left — 'sshepherd revoke %s' removes the user\n", e.User, e.User)
+			fmt.Fprintf(w, "note: %s has no keys left — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, s.FollowUp)
 		}
 	}
 	for _, op := range s.Operators {
@@ -124,6 +131,9 @@ func editText(e Edit) string {
 		t := fmt.Sprintf("remove %s's access to %s", e.User, strings.Join(e.AccessServers, ", "))
 		if c := accessCounts(e); c != "" {
 			t += " (" + c + ")"
+		}
+		if e.KeepsServers > 0 {
+			t += "; " + e.User + " keeps access to " + Plural(e.KeepsServers, "other server", "other servers")
 		}
 		return t
 	default:
@@ -179,11 +189,16 @@ func stayText(e EmptiedServer) string {
 
 // EditPrompt is revoke/rotate's confirmation question (confirm appends
 // " [y/N] "): the save is always asked for, with the write count when
-// servers will be written, prefixed "OPERATOR NAME: " per operator target.
+// servers will be written, prefixed "OPERATOR NAME: " for one operator
+// target, or "OPERATORS A, B: " for several.
 func EditPrompt(operators []string, toWrite, affected int, noApply bool) string {
 	var b strings.Builder
-	for _, op := range operators {
-		fmt.Fprintf(&b, "OPERATOR %s: ", op)
+	switch len(operators) {
+	case 0:
+	case 1:
+		fmt.Fprintf(&b, "OPERATOR %s: ", operators[0])
+	default:
+		fmt.Fprintf(&b, "OPERATORS %s: ", strings.Join(operators, ", "))
 	}
 	switch {
 	case noApply:
@@ -191,7 +206,7 @@ func EditPrompt(operators []string, toWrite, affected int, noApply bool) string 
 	case toWrite == 0:
 		b.WriteString("save manifest edit (no servers need a write)?")
 	default:
-		fmt.Fprintf(&b, "save manifest edit and write %d of %d affected servers?", toWrite, affected)
+		fmt.Fprintf(&b, "save manifest edit and write %d of %s?", toWrite, Plural(affected, "affected server", "affected servers"))
 	}
 	return b.String()
 }

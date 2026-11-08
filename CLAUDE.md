@@ -353,7 +353,10 @@ with a compare-and-swap and an atomic rename keeping mode and owner; `--dry-run`
 saves nothing, `--no-apply` saves without connecting. Apply's run body is now
 `runApply(applyRun)`, and plain `apply` re-checks the manifest before writing
 (skipped for a piped `--config`, which edits refuse).
-Report count strings are pluralized. The E2E loop is adopt → apply → revoke
+Count strings in logs, reports and prompts are pluralized; follow-up hints carry the
+run's own flags; `--help` has examples and exit codes; audit, adopt and apply share
+one fleet-read setup (`cmd/sshepherd/fleet.go`); a missing manifest points to
+`import --servers-only`. The E2E loop is adopt → apply → revoke
 --key → audit → rotate → audit, plus a headless `rotate`.
 Review remediation W1: authorized_keys option meaning lives in one table
 (`internal/authkeys/options.go`) used by manifest validation (a malformed

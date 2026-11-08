@@ -394,11 +394,104 @@ func TestRevokePartialFailure(t *testing.T) {
 	if code := run([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
 		t.Fatalf("exit = %d, want 1\n%s\n%s", code, out.String(), errBuf.String())
 	}
-	if want := "manifest updated; 1 server not converged — finish with: sshepherd apply --config " + cfg + " --server web-2\n"; !strings.Contains(out.String(), want) {
+	if want := "manifest updated; 1 server not converged — finish with: sshepherd apply --config " + cfg + " --known-hosts " + kh + " --server web-2\n"; !strings.Contains(out.String(), want) {
 		t.Errorf("stdout lacks %q:\n%s", want, out.String())
 	}
 	if len(readCfg(t, cfg).Users) != 1 {
 		t.Error("manifest not saved")
+	}
+}
+
+// TestRevokeHintsCarryRunFlags: a run with a key file, a passphrase file
+// and its own known_hosts prints hints that repeat all of them (paths
+// only), so the finish and the scope commands can be pasted as is.
+func TestRevokeHintsCarryRunFlags(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1")
+	hosts["web-1"].install(t, []byte{1, 2})
+	id := encryptedKey(t, 1)
+	pp := filepath.Join(t.TempDir(), "pp")
+	if err := os.WriteFile(pp, []byte("pw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\nservers:\n"+hosts["web-1"].line("web-1")+
+		fmt.Sprintf("  - {name: web-2, host: 127.0.0.1, port: %d, user: deploy}\n", closedPort(t))+
+		"access:\n  - {user: alice, servers: [web-1, web-2]}\n  - {user: bob, servers: [web-1, web-2]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh, "--identity", id, "--identity-passphrase-file", pp}, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	flags := " --config " + cfg + " --known-hosts " + kh + " --identity " + id + " --identity-passphrase-file " + pp
+	for _, want := range []string{
+		"finish with: sshepherd apply" + flags + " --server web-2\n",
+		"run 'sshepherd audit" + flags + "' to confirm, 'sshepherd apply" + flags + "' to sweep\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// TestRevokeNoApplyExcludesEmptied: the --no-apply push hint names only
+// the servers apply would write — an emptied server (bob was its sole
+// grantee) is refused by apply, so it is left out; when every affected
+// server is emptied there is nothing to push.
+func TestRevokeNoApplyExcludesEmptied(t *testing.T) {
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\n"+
+		"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.2, user: deploy}\n"+
+		"access:\n  - {user: alice, servers: [web-1]}\n  - {user: bob, servers: [web-1, db-1]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, errBuf.String())
+	}
+	if want := "run 'sshepherd apply --config " + cfg + " --server web-1' to push\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("stdout lacks %q:\n%s", want, out.String())
+	}
+	if strings.Contains(out.String(), "--server db-1") {
+		t.Errorf("the push hint names the emptied db-1:\n%s", out.String())
+	}
+
+	t.Run("all emptied", func(t *testing.T) {
+		cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\n"+
+			"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.2, user: deploy}\n"+
+			"access:\n  - {user: alice, servers: [web-1]}\n  - {user: bob, servers: [db-1]}\n")
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"revoke", "bob", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
+			t.Fatalf("exit = %d\n%s", code, errBuf.String())
+		}
+		want := "no servers contacted — nothing to push: every affected server would be left with no granted keys (see the warnings above)\n"
+		if !strings.Contains(out.String(), want) || strings.Contains(out.String(), "to push\n") {
+			t.Errorf("stdout = %s\nwant %q and no push hint", out.String(), want)
+		}
+	})
+}
+
+// TestRevokeRetryAfterSave: a revoke whose save landed but whose push did
+// not is retried as is; the retry exits 3, changes nothing, contacts no
+// server, and points at the apply that finishes the job.
+func TestRevokeRetryAfterSave(t *testing.T) {
+	hosts, kh, cfg := twoUserFleet(t)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
+		t.Fatalf("first run exit = %d\n%s", code, errBuf.String())
+	}
+	before := fileBytes(t, cfg)
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 3 {
+		t.Fatalf("retry exit = %d, want 3", code)
+	}
+	want := "unknown user: bob — not in the manifest (already revoked?); see what is left to push with 'sshepherd apply --dry-run --config " +
+		cfg + " --known-hosts " + kh + "', verify with 'sshepherd audit --config " + cfg + " --known-hosts " + kh + "'"
+	if !strings.Contains(errBuf.String(), want) {
+		t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+	}
+	if !bytes.Equal(fileBytes(t, cfg), before) {
+		t.Error("the retry changed the manifest")
+	}
+	for name, h := range hosts {
+		if len(h.srv.Attempts()) != 0 {
+			t.Errorf("the retry connected to %s", name)
+		}
 	}
 }
 
@@ -486,7 +579,7 @@ func TestRevokeInterruptedAfterSave(t *testing.T) {
 	}
 	for _, want := range []string{
 		"manifest " + cfg + " updated — commit and push it",
-		"manifest updated; 2 servers not converged — finish with: sshepherd apply --config " + cfg + " --server web-1 --server web-2\n",
+		"manifest updated; 2 servers not converged — finish with: sshepherd apply --config " + cfg + " --known-hosts " + kh + " --server web-1 --server web-2\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out.String())
@@ -581,7 +674,7 @@ func TestRevokeOperator(t *testing.T) {
 		if !strings.Contains(out.String(), "OPERATOR: ops-bot is an operator (fleet-wide, protected); --operator given") {
 			t.Errorf("stdout = %s", out.String())
 		}
-		if !strings.Contains(prompt.String(), "OPERATOR ops-bot: save manifest edit and write 1 of 1 affected servers? [y/N]") {
+		if !strings.Contains(prompt.String(), "OPERATOR ops-bot: save manifest edit and write 1 of 1 affected server? [y/N]") {
 			t.Errorf("prompt = %q", prompt.String())
 		}
 		if strings.Contains(h.keys(t), testkeys.Line(t, 2)) {
@@ -624,8 +717,9 @@ func TestRevokeKeyLeavesUngrantedDrift(t *testing.T) {
 	}
 	for _, want := range []string{
 		"manifest edit: remove key " + fpOf(t, 2) + " from bob — 1 server affected\n",
-		"note: bob has no keys left — 'sshepherd revoke bob' removes the user\n",
-		"scope: only servers whose grants changed were contacted (1 of 2); the removed key may still be installed elsewhere as drift — run 'sshepherd audit' to confirm, 'sshepherd apply' to sweep\n",
+		"note: bob has no keys left — 'sshepherd revoke bob --config " + cfg + " --known-hosts " + kh + "' removes the user\n",
+		"scope: only servers whose grants changed were contacted (1 of 2); the removed key may still be installed elsewhere as drift — run 'sshepherd audit --config " +
+			cfg + " --known-hosts " + kh + "' to confirm, 'sshepherd apply --config " + cfg + " --known-hosts " + kh + "' to sweep\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out.String())
@@ -655,12 +749,13 @@ func TestRevokeUsage(t *testing.T) {
 		{"--no-apply with --identity", []string{"revoke", "bob", "--no-apply", "--identity", "/k/id"}, cfgBody, "--no-apply contacts no server, so --identity would be unused"},
 		{"--no-apply with --known-hosts", []string{"revoke", "bob", "--no-apply", "--known-hosts", "/x"}, cfgBody, "--known-hosts would be unused"},
 		{"--no-apply with --parallel", []string{"revoke", "bob", "--no-apply", "--parallel", "2"}, cfgBody, "--parallel would be unused"},
-		{"unknown users listed", []string{"revoke", "carol", "bob", "dave"}, cfgBody, "unknown users: carol, dave"},
+		{"unknown users listed", []string{"revoke", "carol", "bob", "dave"}, cfgBody,
+			"unknown users: carol, dave — not in the manifest (already revoked?); see what is left to push with 'sshepherd apply --dry-run --config CFG', verify with 'sshepherd audit --config CFG'"},
 		{"key not in the manifest", []string{"revoke", "--key", fpOf(t, 9)}, cfgBody,
-			fpOf(t, 9) + " is not in the manifest; apply already removes keys the manifest does not grant — run 'sshepherd audit' to find where it is installed"},
+			fpOf(t, 9) + " is not in the manifest; apply already removes keys the manifest does not grant — run 'sshepherd audit --config CFG' to find where it is installed"},
 		{"malformed --key", []string{"revoke", "--key", "SHA256:nope"}, cfgBody, "malformed fingerprint"},
 		{"anchors cannot be edited", []string{"revoke", "bob"}, "users: &u []\nservers: []\naccess: []\n",
-			"cannot edit CFG: manifest contains a YAML anchor or alias (line 1); comment-preserving edits do not support them — edit the manifest by hand and run 'sshepherd apply'"},
+			"cannot edit CFG: manifest contains a YAML anchor or alias (line 1); comment-preserving edits do not support them — edit the manifest by hand and run 'sshepherd apply --config CFG'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

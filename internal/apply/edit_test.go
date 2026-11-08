@@ -46,6 +46,11 @@ func TestRenderEditHeaderGoldens(t *testing.T) {
 			Edits:    []Edit{{Kind: EditRemoveUser, User: "dave", Keys: 1, Grants: 0}},
 			Affected: 0,
 		}, false},
+		{"edit_header_followup.golden", EditSummary{
+			FollowUp: " --config fleet.yaml",
+			Edits:    []Edit{{Kind: EditRemoveKey, User: "bob", Fingerprint: "SHA256:x", NoKeysLeft: true}},
+			Affected: 1,
+		}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.golden, func(t *testing.T) {
@@ -53,6 +58,30 @@ func TestRenderEditHeaderGoldens(t *testing.T) {
 			RenderEditHeader(&buf, tt.s, RenderOptions{Color: tt.color})
 			checkGolden(t, tt.golden, buf.Bytes())
 		})
+	}
+}
+
+// TestRenderEditHeaderFollowUp: the header's revoke hint carries the run's
+// flags (FollowUp) on every note form.
+func TestRenderEditHeaderFollowUp(t *testing.T) {
+	var buf bytes.Buffer
+	RenderEditHeader(&buf, EditSummary{
+		FollowUp: " --config fleet.yaml",
+		Edits: []Edit{
+			{Kind: EditRemoveKey, User: "bob", Fingerprint: "SHA256:x", NoKeysLeft: true},
+			{Kind: EditRemoveKey, User: "ops", Fingerprint: "SHA256:y", NoKeysLeft: true, ClearsOperator: true},
+			{Kind: EditRemoveAccess, User: "carol", AccessServers: []string{"web-1"}, NoGrantsLeft: true},
+		},
+		Affected: 1,
+	}, RenderOptions{})
+	for _, want := range []string{
+		"note: bob has no keys left — 'sshepherd revoke bob --config fleet.yaml' removes the user\n",
+		"note: ops has no keys left, so its operator flag is cleared — 'sshepherd revoke ops --config fleet.yaml' removes the user\n",
+		"note: carol has no access left — 'sshepherd revoke carol --config fleet.yaml' removes the user\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("header lacks %q:\n%s", want, buf.String())
+		}
 	}
 }
 
@@ -104,12 +133,21 @@ func TestEditPromptGolden(t *testing.T) {
 		EditPrompt(nil, 0, 3, true),
 		EditPrompt([]string{"ops-bot"}, 1, 4, false),
 		EditPrompt([]string{"ops-bot", "ci"}, 0, 2, true),
+		EditPrompt(nil, 1, 1, false),
 	} {
 		fmt.Fprintln(&buf, q+" [y/N]")
 	}
 	want := "save manifest edit and write 2 of 3 affected servers? [y/N]\n"
 	if !strings.HasPrefix(buf.String(), want) {
 		t.Errorf("first prompt = %q, want %q", strings.SplitAfter(buf.String(), "\n")[0], want)
+	}
+	for _, want := range []string{
+		"save manifest edit and write 1 of 1 affected server? [y/N]\n",
+		"OPERATORS ops-bot, ci: save manifest edit? [y/N]\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("prompts lack %q:\n%s", want, buf.String())
+		}
 	}
 	checkGolden(t, "edit_prompt.golden", buf.Bytes())
 }
@@ -141,6 +179,10 @@ func TestRenderEditHeaderRemoveAccess(t *testing.T) {
 			Edits:    []Edit{{Kind: EditRemoveAccess, User: "carol", AccessServers: []string{"db-1"}, EntriesRemoved: 1, WildcardsRemoved: 1, NoGrantsLeft: true}},
 			Affected: 1,
 		}, true},
+		{"edit_header_access_keeps.golden", EditSummary{
+			Edits:    []Edit{{Kind: EditRemoveAccess, User: "alice", AccessServers: []string{"web-1"}, EntriesChanged: 1, KeepsServers: 3}},
+			Affected: 1,
+		}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.golden, func(t *testing.T) {
@@ -169,6 +211,28 @@ func TestEditTextRemoveAccessCounts(t *testing.T) {
 	} {
 		if got := editText(tt.e); got != tt.want {
 			t.Errorf("editText(%+v) = %q, want %q", tt.e, got, tt.want)
+		}
+	}
+}
+
+// TestEditTextKeepsServers: a remove-access edit says how many other
+// servers the user still reaches, so 'revoke alice --server web-1' meant
+// as "web-1 first" cannot read as an offboarding; none left says nothing
+// (the no-access-left note covers it).
+func TestEditTextKeepsServers(t *testing.T) {
+	e := func(keeps int) Edit {
+		return Edit{Kind: EditRemoveAccess, User: "alice", AccessServers: []string{"web-1"}, EntriesChanged: 1, KeepsServers: keeps}
+	}
+	for _, tt := range []struct {
+		keeps int
+		want  string
+	}{
+		{3, "remove alice's access to web-1 (1 access entry changed); alice keeps access to 3 other servers"},
+		{1, "remove alice's access to web-1 (1 access entry changed); alice keeps access to 1 other server"},
+		{0, "remove alice's access to web-1 (1 access entry changed)"},
+	} {
+		if got := editText(e(tt.keeps)); got != tt.want {
+			t.Errorf("editText(keeps %d) = %q, want %q", tt.keeps, got, tt.want)
 		}
 	}
 }

@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// defaultConfigPath is the manifest every command reads without --config.
+const defaultConfigPath = "sshepherd.yaml"
+
 // expandHome resolves "~" or a leading "~/" against the current user's home.
 func expandHome(path string) (string, error) {
 	if path != "~" && !strings.HasPrefix(path, "~/") {

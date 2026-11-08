@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"time"
 
@@ -9,7 +8,6 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
-	"github.com/javadh75/SSHepherd/internal/sshread"
 )
 
 const (
@@ -28,31 +26,31 @@ const (
 
 func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
-		cfgPath    string
-		knownHosts string
-		parallel   int
-		jsonOut    bool
-		comments   bool
-		idf        identityFlags
+		cf       connFlags
+		jsonOut  bool
+		comments bool
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Report drift between the manifest and each server's authorized_keys (read-only)",
-		Args:  cobra.NoArgs,
+		Long: "Reports drift between the manifest and each server's authorized_keys.\n" +
+			"Read-only: nothing is written to any server.\n\n" + exitCodesAudit,
+		Example: "  # Check the whole fleet\n" +
+			"  sshepherd audit --config fleet.yaml\n\n" +
+			"  # Monitoring: JSON report on stdout, alert on the exit code\n" +
+			"  sshepherd audit --json --config fleet.yaml",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ids, err := validateFlags(parallel, &idf)
+			ids, err := cf.validate()
 			if err != nil {
 				return err
 			}
 			log := a.logger
-			cfg, err := config.Load(cfgPath)
+			cfg, err := config.Load(cf.cfgPath)
 			if err != nil {
-				return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
+				return manifestError("--config", cf.cfgPath, err)
 			}
-			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
-			for _, w := range cfg.Warnings {
-				log.Warn(w)
-			}
+			logManifest(log, cfg)
 			// One render path for the empty-fleet early return and the main
 			// flow, so the two cannot drift apart.
 			render := func(results []audit.ServerResult) error {
@@ -65,43 +63,8 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 			if len(cfg.Servers) == 0 {
 				return render(nil)
 			}
-			khPath, err := expandHome(knownHosts)
+			results, err := readFleet(cmd.Context(), log, cfg, &cf, ids, "auditing")
 			if err != nil {
-				return err
-			}
-			// Preflight known_hosts once: a bad path fails with a single
-			// clear error instead of N identical per-server errors, and the
-			// parsed snapshot is the one every server is verified against.
-			kh, err := sshread.LoadKnownHosts(khPath)
-			if err != nil {
-				return fmt.Errorf("known_hosts preflight: %w", err)
-			}
-			creds, err := ids.credentials(cmd.Context(), log)
-			if err != nil {
-				return err
-			}
-			if err := checkCredentials(cmd.Context(), creds, false); err != nil {
-				return err
-			}
-			reader := &sshread.Client{
-				KnownHostsPath: khPath,
-				KnownHosts:     kh,
-				Creds:          creds,
-				DialTimeout:    dialTimeout,
-				// Offer the keys granted on each server first, so many held
-				// keys cannot exhaust sshd's MaxAuthTries.
-				PreferKeys: func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) },
-				Log:        log,
-			}
-			log.Info(fmt.Sprintf("auditing %d servers (parallelism %d)…", len(cfg.Servers), parallel))
-			start := time.Now()
-			results := audit.Run(cmd.Context(), cfg, reader, audit.Options{
-				Parallel:         parallel,
-				PerServerTimeout: perServerTimeout,
-				Logger:           log,
-			})
-			logFleetReadDone(log, cfg, results, start)
-			if err := interrupted(cmd.Context()); err != nil {
 				return err
 			}
 			if err := render(results); err != nil {
@@ -110,13 +73,10 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 			return auditVerdict(cfg, results)
 		},
 	}
-	cmd.Flags().StringVar(&cfgPath, "config", "sshepherd.yaml", "path to the manifest")
-	cmd.Flags().StringVar(&knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
-	cmd.Flags().IntVar(&parallel, "parallel", defaultParallel, "max concurrent server audits")
+	cf.register(cmd, "max concurrent server audits")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the report as machine-readable JSON on stdout")
 	cmd.Flags().BoolVar(&comments, "comments", false,
 		"also report comment drift on present keys (informational; never affects the exit code)")
-	idf.register(cmd)
 	return cmd
 }
 

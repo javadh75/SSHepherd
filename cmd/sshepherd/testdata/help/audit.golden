@@ -1,7 +1,21 @@
-Report drift between the manifest and each server's authorized_keys (read-only)
+Reports drift between the manifest and each server's authorized_keys.
+Read-only: nothing is written to any server.
+
+Exit codes:
+  0  compliant
+  1  drift or unreachable servers (compliance not proven)
+  2  critical: a missing operator key, or a changed or @revoked host key
+  3  tool error: bad flags, unloadable manifest, failed preflight, interrupted
 
 Usage:
   sshepherd audit [flags]
+
+Examples:
+  # Check the whole fleet
+  sshepherd audit --config fleet.yaml
+
+  # Monitoring: JSON report on stdout, alert on the exit code
+  sshepherd audit --json --config fleet.yaml
 
 Flags:
       --comments                        also report comment drift on present keys (informational; never affects the exit code)

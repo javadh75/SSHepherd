@@ -1,21 +1,18 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/adopt"
-	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/manifest"
-	"github.com/javadh75/SSHepherd/internal/sshread"
 )
 
 // generateAdoptManifest renders the input manifest plus the adoption plan:
@@ -113,65 +110,6 @@ func renderMergedManifest(mf *manifest.File, raw []byte, plan adopt.Plan, unread
 	return out, nil
 }
 
-// readFleet runs the known_hosts and credentials preflights and reads every
-// server's authorized_keys via the same SSH path as audit. An empty fleet
-// needs no credentials (never reads a key, never prompts) and returns nil
-// results.
-func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, knownHosts string, parallel int, ids identities) ([]audit.ServerResult, error) {
-	if len(cfg.Servers) == 0 {
-		return nil, nil
-	}
-	khPath, err := expandHome(knownHosts)
-	if err != nil {
-		return nil, err
-	}
-	// Load known_hosts once: a bad path fails with a single clear error
-	// instead of N identical per-server errors, and the parsed snapshot is
-	// shared across the fan-out.
-	kh, err := sshread.LoadKnownHosts(khPath)
-	if err != nil {
-		return nil, fmt.Errorf("known_hosts preflight: %w", err)
-	}
-	creds, err := ids.credentials(ctx, log)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkCredentials(ctx, creds, false); err != nil {
-		return nil, err
-	}
-	reader := &sshread.Client{
-		KnownHostsPath: khPath,
-		KnownHosts:     kh,
-		Creds:          creds,
-		DialTimeout:    dialTimeout,
-		Log:            log,
-		// Offer granted keys (operators first) before the rest, so many
-		// held keys do not trip sshd's MaxAuthTries.
-		PreferKeys: func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) },
-	}
-	results := audit.Run(ctx, cfg, reader, audit.Options{
-		Parallel:         parallel,
-		PerServerTimeout: perServerTimeout,
-		Logger:           log,
-	})
-	if err := interrupted(ctx); err != nil {
-		return nil, err
-	}
-	return results, nil
-}
-
-// interrupted reports a canceled run (Ctrl-C/SIGTERM) as a tool error.
-// Read-only commands check it after their fan-out: servers the interrupt
-// cut short come back as read errors, and treating them as unreachable
-// would render a report (or, under adopt --partial, write a manifest)
-// that misdescribes the fleet.
-func interrupted(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("interrupted: %w — no report or manifest produced", err)
-	}
-	return nil
-}
-
 // reportUnreadable logs each unreadable-server issue (warn under --partial,
 // error otherwise) and, absent --partial, escalates to the strict abort: a
 // draft generated from a partial read under-represents reality, so a later
@@ -193,9 +131,8 @@ func reportUnreadable(log *slog.Logger, plan adopt.Plan, unreadable []string, pa
 		}
 	}
 	if !partial {
-		log.Error(fmt.Sprintf(
-			"%d server(s) could not be fully read — nothing written; fix the errors above or re-run with --partial",
-			len(unreadable)))
+		log.Error(apply.Plural(len(unreadable), "server", "servers") +
+			" could not be fully read — nothing written; fix the errors above or re-run with --partial")
 		return errFleetUnreadable
 	}
 	return nil
@@ -218,20 +155,17 @@ func reportPlan(log *slog.Logger, plan adopt.Plan, unreadable []string) {
 		log.Info(note)
 		return
 	}
-	log.Info(fmt.Sprintf("adopting %d new users, %d access extensions",
-		len(plan.NewUsers), len(plan.Extensions)))
+	log.Info("adopting " + apply.Plural(len(plan.NewUsers), "new user", "new users") + ", " +
+		apply.Plural(len(plan.Extensions), "access extension", "access extensions"))
 }
 
 func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
-		cfgPath    string
-		knownHosts string
-		outPath    string
-		parallel   int
-		force      bool
-		partial    bool
-		merge      bool
-		idf        identityFlags
+		cf      connFlags
+		outPath string
+		force   bool
+		partial bool
+		merge   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt",
@@ -245,7 +179,7 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			"manifest. Any unreadable server aborts the run unless --partial is set.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ids, err := validateFlags(parallel, &idf)
+			ids, err := cf.validate()
 			if err != nil {
 				return err
 			}
@@ -258,34 +192,27 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			if merge {
 				// --merge needs the original bytes: they are the output when
 				// there is nothing to adopt, and the append base otherwise.
-				raw, err = os.ReadFile(cfgPath) // #nosec G304 -- path is the user's own --config flag
+				m, err := readManifest(cf.cfgPath)
 				if err != nil {
-					return fmt.Errorf("load manifest: %w", err)
+					return manifestError("--config", cf.cfgPath, err)
 				}
+				raw = m.Loaded
 				mf, err = manifest.Load(raw)
 				if err != nil {
-					return fmt.Errorf("load manifest: %w", err)
+					return manifestError("--config", cf.cfgPath, err)
 				}
 				cfg = mf.Config()
 			} else {
-				cfg, err = config.Load(cfgPath)
+				cfg, err = config.Load(cf.cfgPath)
 				if err != nil {
-					return fmt.Errorf("load manifest: %w", err) // wrapcheck: wrap at package boundary
+					return manifestError("--config", cf.cfgPath, err)
 				}
 			}
-			log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
-			for _, w := range cfg.Warnings {
-				log.Warn(w)
-			}
-			if len(cfg.Servers) > 0 {
-				log.Info(fmt.Sprintf("reading %d servers (parallelism %d)…", len(cfg.Servers), parallel))
-			}
-			start := time.Now()
-			results, err := readFleet(cmd.Context(), log, cfg, knownHosts, parallel, ids)
+			logManifest(log, cfg)
+			results, err := readFleet(cmd.Context(), log, cfg, &cf, ids, "reading")
 			if err != nil {
 				return err
 			}
-			logFleetReadDone(log, cfg, results, start)
 			plan := adopt.Build(cfg, results)
 			unreadable := plan.UnreadableServers()
 			if err := reportUnreadable(log, plan, unreadable, partial); err != nil {
@@ -295,7 +222,7 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			if merge {
 				rendered, err = renderMergedManifest(mf, raw, plan, unreadable, time.Now().Format("2006-01-02"))
 			} else {
-				rendered, err = generateAdoptManifest(cfg, plan, cfgPath, unreadable)
+				rendered, err = generateAdoptManifest(cfg, plan, cf.cfgPath, unreadable)
 			}
 			if err != nil {
 				return err
@@ -314,13 +241,10 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 			return writeFileNoClobber(outPath, rendered, force)
 		},
 	}
-	cmd.Flags().StringVar(&cfgPath, "config", "sshepherd.yaml", "path to the manifest")
-	cmd.Flags().StringVar(&knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
-	cmd.Flags().IntVar(&parallel, "parallel", defaultParallel, "max concurrent server reads")
+	cf.register(cmd, "max concurrent server reads")
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
 	cmd.Flags().BoolVar(&partial, "partial", false, "proceed even if some servers cannot be read (their access will be missing from the output)")
 	cmd.Flags().BoolVar(&merge, "merge", false, "preserve the manifest text (comments intact) and append the additions instead of regenerating")
-	idf.register(cmd)
 	return cmd
 }

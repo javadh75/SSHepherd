@@ -12,8 +12,27 @@ it afterwards. --dry-run changes nothing; --no-apply saves the edit
 without contacting any server. A server whose only grantee is revoked is
 never emptied: the key stays installed there (a warning says so).
 
+Exit codes:
+  0  converged: nothing left to do
+  1  pending changes, unreachable or refused servers, or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+     before anything was saved or written
+
 Usage:
   sshepherd revoke {USER... [--server NAME...] | --key KEY...} [flags]
+
+Examples:
+  # Offboard a user everywhere
+  sshepherd revoke alice
+
+  # Lost laptop: revoke one key, keep the user
+  sshepherd revoke --key ~/alice-laptop.pub
+
+  # Remove a user's access to one server only
+  sshepherd revoke alice --server db-1
+
+  # Record the edit now, push it later
+  sshepherd revoke alice --no-apply
 
 Flags:
       --config string                   path to the manifest (default "sshepherd.yaml")

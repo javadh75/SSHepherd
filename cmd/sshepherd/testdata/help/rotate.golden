@@ -9,8 +9,24 @@ private key with --identity, so the lockout guard and the post-write
 login probe can use it. Operators need --operator (the flag is kept).
 Saves and confirms like revoke.
 
+Exit codes:
+  0  converged: nothing left to do
+  1  pending changes, unreachable or refused servers, or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+     before anything was saved or written
+
 Usage:
   sshepherd rotate USER --old KEY --new KEY [flags]
+
+Examples:
+  # Replace a key in place
+  sshepherd rotate alice --old ~/.ssh/alice_old.pub --new ~/.ssh/alice_new.pub
+
+  # Overlap old and new while clients switch, finish later with revoke --key
+  sshepherd rotate deploy --old ~/.ssh/deploy_old.pub --new ~/.ssh/deploy_2027.pub --keep-old
+
+  # Headless rotation of the key this machine logs in with
+  sshepherd rotate ci --operator --old ~/.ssh/ci_old.pub --new ~/.ssh/ci_new.pub --yes --identity ~/.ssh/ci_old --identity ~/.ssh/ci_new
 
 Flags:
       --config string                   path to the manifest (default "sshepherd.yaml")

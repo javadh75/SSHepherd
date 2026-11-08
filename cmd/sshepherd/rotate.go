@@ -36,7 +36,13 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 			"line or a .pub path. Rotating the key you log in with? Pass the new\n" +
 			"private key with --identity, so the lockout guard and the post-write\n" +
 			"login probe can use it. Operators need --operator (the flag is kept).\n" +
-			"Saves and confirms like revoke.",
+			"Saves and confirms like revoke.\n\n" + exitCodesWrite,
+		Example: "  # Replace a key in place\n" +
+			"  sshepherd rotate alice --old ~/.ssh/alice_old.pub --new ~/.ssh/alice_new.pub\n\n" +
+			"  # Overlap old and new while clients switch, finish later with revoke --key\n" +
+			"  sshepherd rotate deploy --old ~/.ssh/deploy_old.pub --new ~/.ssh/deploy_2027.pub --keep-old\n\n" +
+			"  # Headless rotation of the key this machine logs in with\n" +
+			"  sshepherd rotate ci --operator --old ~/.ssh/ci_old.pub --new ~/.ssh/ci_new.pub --yes --identity ~/.ssh/ci_old --identity ~/.ssh/ci_new",
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) != 1 {
 				return fmt.Errorf("rotate takes exactly one USER (got %d)", len(args))

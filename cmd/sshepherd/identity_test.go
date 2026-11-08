@@ -197,7 +197,7 @@ users:
 			neverPrompt(t)
 			var out, errBuf bytes.Buffer
 			code := run([]string{cmd, "--config", bad, "--known-hosts", emptyKnownHosts(t), "--identity", key}, &out, &errBuf)
-			if code != 3 || !strings.Contains(errBuf.String(), "load manifest") {
+			if code != 3 || !strings.Contains(errBuf.String(), "parse manifest") {
 				t.Fatalf("%s exit = %d, stderr = %q; want the manifest error before any prompt", cmd, code, errBuf.String())
 			}
 		}

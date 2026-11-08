@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/identity"
 	"github.com/javadh75/SSHepherd/internal/manifest"
@@ -159,7 +160,7 @@ func deriveUsers(log *slog.Logger, serversOnly bool, hosts []sshcfg.Host, operat
 	for _, w := range warnings {
 		log.Warn(w)
 	}
-	log.Info(fmt.Sprintf("derived %d users from identity files", len(users)))
+	log.Info("derived " + apply.Plural(len(users), "user", "users") + " from identity files")
 	return users, nil
 }
 
@@ -213,17 +214,13 @@ func renderImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcf
 func loadMergeTarget(log *slog.Logger, path string) ([]byte, *manifest.File, error) {
 	raw, err := os.ReadFile(path) // #nosec G304 -- path is the user's own --merge flag
 	if err != nil {
-		return nil, nil, fmt.Errorf("load manifest: %w", err)
+		return nil, nil, manifestError("--merge", path, fmt.Errorf("read manifest: %w", err))
 	}
 	mf, err := manifest.Load(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load manifest: %w", err)
+		return nil, nil, manifestError("--merge", path, err)
 	}
-	cfg := mf.Config()
-	log.Info(fmt.Sprintf("loaded manifest: %d users, %d servers", len(cfg.Users), len(cfg.Servers)))
-	for _, w := range cfg.Warnings {
-		log.Warn(w)
-	}
+	logManifest(log, mf.Config())
 	return raw, mf, nil
 }
 
@@ -313,20 +310,13 @@ func renderMergedImport(mf *manifest.File, raw []byte, plan reconcile.Plan, src,
 // mergeSummary renders the info-level outcome line, e.g.
 // "merged: +1 server, +2 users, +1 extension, +2 access entries, 1 conflict skipped".
 func mergeSummary(plan reconcile.Plan) string {
-	return fmt.Sprintf("merged: +%d %s, +%d %s, +%d %s, +%d access %s, %d %s skipped",
-		len(plan.NewServers), nWord(len(plan.NewServers), "server", "servers"),
-		len(plan.NewUsers), nWord(len(plan.NewUsers), "user", "users"),
-		len(plan.Extensions), nWord(len(plan.Extensions), "extension", "extensions"),
-		len(plan.NewGrants), nWord(len(plan.NewGrants), "entry", "entries"),
-		plan.ConflictsSkipped(), nWord(plan.ConflictsSkipped(), "conflict", "conflicts"))
-}
-
-// nWord picks the grammatical number for a count.
-func nWord(n int, singular, plural string) string {
-	if n == 1 {
-		return singular
-	}
-	return plural
+	return "merged: " + strings.Join([]string{
+		"+" + apply.Plural(len(plan.NewServers), "server", "servers"),
+		"+" + apply.Plural(len(plan.NewUsers), "user", "users"),
+		"+" + apply.Plural(len(plan.Extensions), "extension", "extensions"),
+		"+" + apply.Plural(len(plan.NewGrants), "access entry", "access entries"),
+		apply.Plural(plan.ConflictsSkipped(), "conflict", "conflicts") + " skipped",
+	}, ", ")
 }
 
 const defaultSSHConfig = "~/.ssh/config"

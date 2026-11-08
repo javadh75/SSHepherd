@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -76,6 +77,70 @@ func TestRunVerboseQuietConflict(t *testing.T) {
 	got := errBuf.String()
 	if !strings.Contains(got, "verbose") || !strings.Contains(got, "quiet") {
 		t.Errorf("stderr = %q, want the mutual-exclusion message naming both flags", got)
+	}
+}
+
+// TestUsageErrorsArePlain: our own wording, the plain "error:" format (no
+// timestamp, even with -v), one line.
+func TestUsageErrorsArePlain(t *testing.T) {
+	path := writeConfig(t, "")
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"audit", "-v", "-q", "--config", path}, "error: -v/--verbose and -q/--quiet cannot be combined; pick one\n"},
+		{[]string{"apply", "--dry-run", "--yes", "--config", path}, "error: --dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking\n"},
+		{[]string{"revoke", "bob", "--dry-run", "--yes", "--config", path}, "error: --dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking\n"},
+		{[]string{"audti"}, "error: unknown command \"audti\" (did you mean audit?); see 'sshepherd --help'\n"},
+		{[]string{"zzz"}, "error: unknown command \"zzz\"; see 'sshepherd --help'\n"},
+	} {
+		var out, errBuf bytes.Buffer
+		if code := run(tt.args, &out, &errBuf); code != 3 {
+			t.Errorf("%v: exit = %d, want 3", tt.args, code)
+		}
+		if errBuf.String() != tt.want {
+			t.Errorf("%v: stderr = %q, want %q", tt.args, errBuf.String(), tt.want)
+		}
+	}
+}
+
+// TestHelpExamplesAndExitCodes: every write/monitoring command shows
+// examples and its exit-code footer, every example line parses against the
+// real flag set, and README's Exit codes section carries both footers verbatim.
+func TestHelpExamplesAndExitCodes(t *testing.T) {
+	raw, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{exitCodesAudit, exitCodesWrite} {
+		if !strings.Contains(string(raw), f) {
+			t.Errorf("README lacks the --help footer:\n%s", f)
+		}
+	}
+	for name, footer := range map[string]string{"audit": exitCodesAudit, "apply": exitCodesWrite, "revoke": exitCodesWrite, "rotate": exitCodesWrite} {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{name, "--help"}, &out, &errBuf); code != 0 {
+			t.Fatalf("%s --help exit = %d", name, code)
+		}
+		help := out.String()
+		if !strings.Contains(help, "Examples:\n") || !strings.Contains(help, footer) {
+			t.Errorf("%s --help lacks examples or footer:\n%s", name, help)
+		}
+		_, ex, _ := strings.Cut(help, "Examples:\n")
+		for _, line := range strings.Split(ex, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "sshepherd ") {
+				continue
+			}
+			root := newRootCmd(&app{}, io.Discard, io.Discard)
+			cmd, rest, err := root.Find(strings.Fields(line)[1:])
+			if err == nil {
+				err = cmd.ParseFlags(rest)
+			}
+			if err != nil {
+				t.Errorf("%s example %q does not parse: %v", name, line, err)
+			}
+		}
 	}
 }
 

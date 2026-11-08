@@ -348,6 +348,22 @@ func TestImportMergeInvalidManifest(t *testing.T) {
 	}
 }
 
+// TestImportMergeMissingManifest: a missing --merge file names the flag to
+// check and the bootstrap command, with no "load manifest:" stutter.
+func TestImportMergeMissingManifest(t *testing.T) {
+	hermeticHome(t)
+	t.Chdir(t.TempDir())
+	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--merge", "missing.yaml", "--servers-only"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+	}
+	want := "error: no manifest at missing.yaml — check --merge, or create one with 'sshepherd import --servers-only -o missing.yaml'\n"
+	if errBuf.String() != want {
+		t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+	}
+}
+
 // TestImportMergeSameTargetAsManifestServer: an ssh alias whose name is new
 // but whose target is an existing manifest server's would be a duplicate
 // target the loader rejects — it is skipped with a warning naming both, and

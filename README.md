@@ -125,24 +125,31 @@ SSHepherd deliberately has a narrow, strict connection posture:
 
 ### 1. Get a manifest
 
-Bootstrap from the fleet you already run — `adopt` connects to every server, reads
-the real `authorized_keys`, and writes a manifest in which every installed key is
-accounted for:
+Bootstrap from the fleet you already run, into one manifest. `adopt` reads the
+servers from a manifest, so list them first — `import --servers-only` takes them from
+your SSH client config — then let `adopt --merge` add every key actually installed on
+them to that same file:
 
 ```console
-$ sshepherd adopt --config sshepherd.yaml -o adopted.yaml
+$ sshepherd import --servers-only -o sshepherd.yaml         # servers from ~/.ssh/config
+$ sshepherd adopt --merge -o sshepherd.yaml --force         # adds every installed key to sshepherd.yaml
+$ git diff sshepherd.yaml                                   # review what adopt added
 ```
 
-Or bootstrap from your local SSH client config — `import` resolves each concrete
-`Host` to the host/port/user `ssh` would use and derives users from the `.pub` files
-next to each `IdentityFile`:
+`adopt --merge` keeps the manifest's text (comments intact) and appends the
+discovered users and grants under a dated marker. Without a manifest, every command
+says so and points here:
+`no manifest at sshepherd.yaml — create one with 'sshepherd import --servers-only -o sshepherd.yaml', or pass --config PATH`.
+
+Or bootstrap users too from your local SSH client config — `import` resolves each
+concrete `Host` to the host/port/user `ssh` would use and derives users from the
+`.pub` files next to each `IdentityFile`:
 
 ```console
 $ sshepherd import ~/.ssh/config -o sshepherd.yaml
 ```
 
-Both commands only ever *emit* a manifest — review it before you trust it. Neither
-modifies the input file.
+Both commands only ever *emit* a manifest — review it before you trust it.
 
 ### 2. See the drift
 
@@ -184,11 +191,14 @@ so a CI job that forgot `--yes` fails instead of writing unattended.
 ### 4. Offboard someone
 
 ```console
-$ sshepherd revoke alice --dry-run   # preview: the edit header and the plan
-$ sshepherd revoke alice             # confirm once: save the manifest, then write
-$ git commit -am "offboard alice" && git push
+$ sshepherd revoke alice --no-apply                   # edit and save the manifest only
+$ git commit -am "offboard alice" && git push         # publish the edit first
+$ sshepherd apply                                     # then converge the fleet
 $ sshepherd audit
 ```
+
+Publishing the edit before any server changes means no stale copy of the manifest
+can re-grant alice later.
 
 `revoke` removes the user and every `access:` entry naming them, keeps the
 manifest's comments, and writes only the servers whose rendered `authorized_keys`
@@ -590,7 +600,7 @@ with exit 1, and `--partial` skips the line and keeps the server's other keys:
 
 ```console
 error: server web-1: key SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE: sshd ignores this line: option "no-ptty" is not a recognized authorized_keys option
-error: 1 server(s) could not be fully read — nothing written; fix the errors above or re-run with --partial
+error: 1 server could not be fully read — nothing written; fix the errors above or re-run with --partial
 ```
 
 ### `sshepherd apply`
@@ -862,6 +872,9 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 
 **Users or keys, not both.** `revoke USER...` deletes each user and every `access:`
 entry whose `user:` is that user (unknown users are listed and nothing happens).
+Re-running a revoke whose save landed but whose push did not finish exits `3` with
+`not in the manifest (already revoked?)` and the `apply --dry-run`/`audit` commands to
+finish and verify.
 `revoke --key KEY...` removes each key line from its owner; a user left with no keys
 stays with `keys: []`. A `KEY` is a `SHA256:` fingerprint (pasted `ssh-keygen -lf`
 output works), a public-key line (quote it), or a path to a `.pub` file holding
@@ -884,7 +897,13 @@ with `--key` (access is per user), with `--operator`, or on an operator user
 (operators have every server by definition), `--server '*'` (use `revoke USER`), an
 unknown server, and any user × server pair the user has no access to — every problem
 is listed in one message. Only the trimmed servers are contacted, there is no
-`scope:` line, and the save reminder ends `re-grants the removed access`.
+`scope:` line, and the save reminder ends `re-grants the removed access`. The edit
+header says how many other servers each user keeps; `revoke USER` without `--server`
+removes every grant.
+
+```console
+manifest edit: remove alice's access to web-1 (1 access entry changed); alice keeps access to 3 other servers — 1 server affected
+```
 
 ```console
 manifest edit: remove bob's access to web-1, db-1 (2 access entries changed, 1 removed, 1 server excepted) — 2 servers affected
@@ -926,7 +945,8 @@ save manifest edit (no servers need a write)? [y/N]
 save manifest edit (no servers need a write)? [y/N]
 save manifest edit? [y/N]
 OPERATOR ops-bot: save manifest edit and write 1 of 4 affected servers? [y/N]
-OPERATOR ops-bot: OPERATOR ci: save manifest edit? [y/N]
+OPERATORS ops-bot, ci: save manifest edit? [y/N]
+save manifest edit and write 1 of 1 affected server? [y/N]
 ```
 
 Declining exits `1` with `aborted; manifest not changed, nothing written`. When no
@@ -935,7 +955,9 @@ exits `1` without a prompt. `--dry-run` saves nothing and exits exactly as
 `apply --dry-run` would. After the save the run prints
 `manifest PATH updated — commit and push it: …`; servers left unconverged (failed,
 refused for a fixable reason, unreachable, interrupted) are named in a ready-made
-`sshepherd apply --server …` command.
+`sshepherd apply --server …` command. Follow-up hints repeat the run's own
+`--config`, `--known-hosts` and `--identity*` flags (paths only), so they can be
+pasted as is; `--no-apply` hints leave out servers that would be emptied.
 
 **`--no-apply`** shows the header, asks, saves, and contacts nothing; it refuses
 `--identity*`, `--known-hosts` and `--parallel` (they would be silently unused).
@@ -1052,7 +1074,8 @@ with no granted keys):
 **Operators.** A target that is, or belongs to, an `operator: true` user refuses the
 whole command until you pass `--operator` (and `--operator` with no operator target
 is refused too); `--yes` never substitutes for it. With it, the header carries an
-`OPERATOR:` line, the prompt is prefixed `OPERATOR NAME: `, and revoking an
+`OPERATOR:` line, the prompt is prefixed `OPERATOR NAME: ` (`OPERATORS A, B: ` for
+several), and revoking an
 operator's last key also clears its `operator:` flag. The lockout guard still
 applies on top.
 
@@ -1161,8 +1184,9 @@ included (a passed one is refused, as for a plain rotation), and the header says
 an apply from a copy without the edit removes the new key. The run ends (text mode
 only; never under `--json` or `--dry-run`, nor when nothing was saved) with the exact
 command that finishes the overlap once every client uses the new key —
-`sshepherd revoke --key OLD`, plus `--config` when not the default and `--operator`
-for an operator, whose hint gets a second line about `--identity`. It reads
+`sshepherd revoke --key OLD`, plus the run's own `--config`, `--known-hosts` and
+`--identity*` flags when not the defaults (paths only, so it can be pasted as is) and
+`--operator` for an operator, whose hint gets a second line about `--identity`. It reads
 `overlap started — …` when every affected server holds both keys,
 `overlap incomplete — N servers do not have the new key yet …` after a partial run,
 `overlap recorded, not pushed — …` under `--no-apply`, and
@@ -1428,6 +1452,26 @@ Monitoring-style, shared by `audit`, `apply`, `revoke` and `rotate` (code `2` is
 | `1` | Drift, unreachable servers, or pending changes — compliance not proven |
 | `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply`, `revoke` and `rotate` never return `2` |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a concurrent save) |
+
+`--help` shows this summary. `audit --help`:
+
+```console
+Exit codes:
+  0  compliant
+  1  drift or unreachable servers (compliance not proven)
+  2  critical: a missing operator key, or a changed or @revoked host key
+  3  tool error: bad flags, unloadable manifest, failed preflight, interrupted
+```
+
+`apply`, `revoke` and `rotate --help`:
+
+```console
+Exit codes:
+  0  converged: nothing left to do
+  1  pending changes, unreachable or refused servers, or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+     before anything was saved or written
+```
 
 ## Safety model
 

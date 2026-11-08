@@ -57,6 +57,10 @@ func TestApplyDryRunYesConflict(t *testing.T) {
 	if code := run([]string{"apply", "--config", path, "--dry-run", "--yes"}, &out, &errBuf); code != 3 {
 		t.Fatalf("exit = %d, want 3 (mutually exclusive flags)", code)
 	}
+	want := "error: --dry-run and --yes cannot be combined: --dry-run previews without writing, --yes writes without asking\n"
+	if errBuf.String() != want {
+		t.Errorf("stderr = %q, want %q (plain wording, not cobra's flag-group jargon)", errBuf.String(), want)
+	}
 }
 
 func TestApplyUnknownServer(t *testing.T) {
@@ -419,7 +423,7 @@ func TestApplyRefusesChangedManifest(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "manifest "+cfg+" changed since it was read; re-run") {
 		t.Errorf("stderr = %q, want the changed-manifest refusal", errBuf.String())
 	}
-	if !strings.Contains(prompt.String(), "apply 1 of 1 servers? [y/N]") {
+	if !strings.Contains(prompt.String(), "apply 1 of 1 server? [y/N]") {
 		t.Errorf("prompt = %q", prompt.String())
 	}
 	if after, _ := os.ReadFile(target); !bytes.Equal(after, before) {
