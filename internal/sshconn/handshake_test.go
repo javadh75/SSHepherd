@@ -157,6 +157,27 @@ func TestDialFactsFailure(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a dial the context ended is not the MaxAuthTries signal", func(t *testing.T) {
+		check := func(ended context.Context, kind fleet.ErrorKind) {
+			t.Helper()
+			for _, missing := range []int{0, 1} {
+				f := dialFacts{user: "u", addr: "h:22", hk: verified(), rec: &sessionKey{}, asked: 2, missing: missing}
+				var e *Error
+				if err := f.failure(ended, errors.New(exhaustedText)); !errors.As(err, &e) {
+					t.Fatalf("%s: err = %v, want *Error", kind, err)
+				}
+				if e.Kind != kind || e.AuthExhausted {
+					t.Errorf("%d not offered: kind = %q, exhausted = %v; want %q, false", missing, e.Kind, e.AuthExhausted, kind)
+				}
+			}
+		}
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		check(canceled, fleet.ErrorKindCanceled)
+		expired, cancelExpired := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+		defer cancelExpired()
+		check(expired, fleet.ErrorKindTimeout)
+	})
 	t.Run("a host-key verdict wins", func(t *testing.T) {
 		verdict := &Error{Kind: fleet.ErrorKindHostKeyChanged, Err: errors.New("mismatch")}
 		f := dialFacts{user: "u", addr: "h:22", hk: &hostKeyState{verdict: verdict}, rec: &sessionKey{}}

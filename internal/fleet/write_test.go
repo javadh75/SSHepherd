@@ -134,6 +134,8 @@ func TestLockoutErrorMessages(t *testing.T) {
 			"post-write login offering only the surviving keys you hold failed (auth failed) and moving authorized_keys2 back failed (kept); authorized_keys was not changed"},
 		{"restore failed", LockoutError{Path: "~/k", Probe: probe, Restore: errors.New("denied")},
 			"post-write login offering only the surviving keys you hold failed (auth failed) AND restoring the previous file failed (denied) — the previous version is at ~/k" + BackupSuffix + "; repair it over a session that is still open"},
+		{"restore and keys2 both failed", LockoutError{Path: "~/k", Probe: probe, Restore: errors.New("denied"), RestoreKeys2: errors.New("kept")},
+			"post-write login offering only the surviving keys you hold failed (auth failed) AND restoring the previous file failed (denied\nkept) — the previous version is at ~/k" + BackupSuffix + "; repair it over a session that is still open"},
 		{"reconnect refused", LockoutError{Path: "~/k", Probe: probe, Restore: ErrNoSession},
 			"connection dropped after the upload started and a fresh login offering the keys you hold was refused (auth failed) — the new file may lock you out; the previous version is at ~/k" + BackupSuffix},
 	} {
@@ -146,5 +148,9 @@ func TestLockoutErrorMessages(t *testing.T) {
 	wrapped := &LockoutError{Probe: outcomeKind{ErrorKindAuth, "x"}, RestoreKeys2: errors.New("y")}
 	if got := ErrorKindOf(wrapped); got != ErrorKindAuth {
 		t.Errorf("ErrorKindOf = %q, want the probe's kind", got)
+	}
+	bothKinded := &LockoutError{Probe: outcomeKind{ErrorKindAuth, "x"}, Restore: outcomeKind{ErrorKindTimeout, "y"}, RestoreKeys2: outcomeKind{ErrorKindDial, "z"}}
+	if got := ErrorKindOf(bothKinded); got != ErrorKindAuth {
+		t.Errorf("ErrorKindOf with kinded restore errors = %q, want the probe's kind", got)
 	}
 }

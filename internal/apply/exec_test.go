@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -329,6 +330,22 @@ func (w blockingWriter) Apply(context.Context, config.Server, fleet.WriteRequest
 	return nil
 }
 
+// secondBlocksWriter returns from its first write at once and holds its
+// second open until release closes.
+type secondBlocksWriter struct {
+	calls            atomic.Int32
+	started, release chan struct{}
+}
+
+func (w *secondBlocksWriter) Apply(context.Context, config.Server, fleet.WriteRequest) error {
+	if w.calls.Add(1) == 1 {
+		return nil
+	}
+	close(w.started)
+	<-w.release
+	return nil
+}
+
 func TestExecuteInterruptNotice(t *testing.T) {
 	held := testKey(t, 1)
 	t.Run("a started write gets the notice", func(t *testing.T) {
@@ -348,6 +365,30 @@ func TestExecuteInterruptNotice(t *testing.T) {
 		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(buf.String(), want); time.Sleep(5 * time.Millisecond) {
 			if time.Now().After(deadline) {
 				t.Fatalf("no notice; log:\n%s", buf.String())
+			}
+		}
+		close(w.release)
+		<-done
+	})
+	t.Run("a finished write is not counted", func(t *testing.T) {
+		var buf syncBuffer
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		w := &secondBlocksWriter{started: make(chan struct{}), release: make(chan struct{})}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			Execute(ctx, []ServerPlan{changePlan("web-1", held), changePlan("web-2", held)}, w, ExecOptions{Parallel: 1, Held: agentHeld(held.Fingerprint),
+				Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+		}()
+		<-w.started // Parallel 1: the first write has returned and been counted out
+		cancel()
+		const want = "finishing 1 in-flight write (write, verify, login check"
+		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(buf.String(), want); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				close(w.release)
+				<-done
+				t.Fatalf("no one-write notice; log:\n%s", buf.String())
 			}
 		}
 		close(w.release)
@@ -466,6 +507,28 @@ func TestApplyOneHeadlessWarning(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "web-1: "+want) {
 		t.Errorf("log = %s", buf.String())
+	}
+}
+
+// causeWriter reports cause through the write's headless-proof warning.
+type causeWriter struct{ cause string }
+
+func (w causeWriter) Apply(_ context.Context, _ config.Server, req fleet.WriteRequest) error {
+	req.OnWarning(w.cause)
+	return nil
+}
+
+// TestApplyOneHeadlessWarningIsOneLine: a remote cause can span lines; the
+// warning, on stderr and in JSON alike, stays on one.
+func TestApplyOneHeadlessWarningIsOneLine(t *testing.T) {
+	agent, plain := testKey(t, 1), testKey(t, 2)
+	plans := []ServerPlan{changePlan("web-1", agent, plain)}
+	var buf syncBuffer
+	Execute(context.Background(), plans, causeWriter{cause: "ssh: handshake failed:\n  refused\tby host\n"}, ExecOptions{Parallel: 1, Logger: slog.New(slog.NewTextHandler(&buf, nil)),
+		Held: []fleet.HeldKey{{Fingerprint: agent.Fingerprint, Source: fleet.SourceAgent}, fileHeld(plain.Fingerprint, "/k/ci")}})
+	want := "your --identity key /k/ci could not log in on its own (ssh: handshake failed: refused by host); a headless run with only that key would fail"
+	if got := planFor(t, plans, "web-1").Warnings; !slices.Equal(got, []string{want}) {
+		t.Errorf("Warnings = %q", got)
 	}
 }
 

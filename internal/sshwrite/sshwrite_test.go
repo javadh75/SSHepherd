@@ -1659,6 +1659,67 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 				t.Errorf("timestamped copy = %q", got)
 			}
 		})
+		t.Run("a dangling symlink at the disabled name is taken and never overwritten", func(t *testing.T) {
+			home, k2 := setup(t)
+			writeFile(t, k2, "second\n")
+			disabled, dest := k2+fleet.Keys2DisabledSuffix, filepath.Join(home, "nowhere")
+			if err := os.Symlink(dest, disabled); err != nil {
+				t.Fatal(err)
+			}
+			code, out := runShOut(t, sh, disableKeys2Cmd(), home, nil)
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0", code)
+			}
+			if got, err := os.Readlink(disabled); err != nil || got != dest {
+				t.Errorf("disabled name = %q, %v; want the symlink kept", got, err)
+			}
+			name, ok := parseKeys2Name(out)
+			if !ok || name == "authorized_keys2"+fleet.Keys2DisabledSuffix {
+				t.Fatalf("stdout %q parsed to %q, %v; want the timestamped name", out, name, ok)
+			}
+			if got := readFile(t, filepath.Join(filepath.Dir(k2), name)); got != "second\n" {
+				t.Errorf("timestamped copy = %q", got)
+			}
+		})
+		t.Run("every fallback name taken refuses and moves nothing", func(t *testing.T) {
+			home, k2 := setup(t)
+			stub, mark := t.TempDir(), filepath.Join(t.TempDir(), "date.called")
+			stamped := k2 + fleet.Keys2DisabledSuffix + ".20261108T010203Z"
+			// The stub claims the script's own $$ name: the script is the
+			// stub's parent, or its grandparent if the shell forks twice.
+			writeFile(t, filepath.Join(stub, "date"), "#!/bin/sh\n: > '"+mark+"'\n"+
+				"for pid in $PPID $(ps -o ppid= -p $PPID); do echo taken > '"+stamped+".'\"$pid\"; done\n"+
+				"echo 20261108T010203Z\n")
+			if err := os.Chmod(filepath.Join(stub, "date"), 0o700); err != nil { // #nosec G302 -- test stub
+				t.Fatal(err)
+			}
+			writeFile(t, k2, "third\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "first\n")
+			writeFile(t, stamped, "second\n")
+			argv := append(append([]string{}, sh[1:]...), "-c", disableKeys2Cmd())
+			c := exec.CommandContext(t.Context(), sh[0], argv...) // #nosec G204 -- test runs the package's own script
+			c.Env = append(os.Environ(), "HOME="+home, "PATH="+stub+":"+os.Getenv("PATH"))
+			err := c.Run()
+			if _, statErr := os.Stat(mark); os.IsNotExist(statErr) {
+				t.Skipf("%v runs date as a built-in applet; a PATH stub cannot observe it", sh)
+			}
+			var ee *exec.ExitError
+			if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+				t.Fatalf("disable: %v, want exit 1", err)
+			}
+			if readFile(t, k2) != "third\n" || readFile(t, stamped) != "second\n" {
+				t.Error("a refused disable moved or overwrote a file")
+			}
+			taken, err := filepath.Glob(stamped + ".*")
+			if err != nil || len(taken) == 0 {
+				t.Fatalf("Glob = %v, %v", taken, err)
+			}
+			for _, f := range taken {
+				if got := readFile(t, f); got != "taken\n" {
+					t.Errorf("%s = %q, want it untouched", f, got)
+				}
+			}
+		})
 		t.Run("a second copy in the same second gets the pid", func(t *testing.T) {
 			home, k2 := setup(t)
 			stub, mark := t.TempDir(), filepath.Join(t.TempDir(), "date.called")
@@ -1761,6 +1822,8 @@ func TestParseKeys2Name(t *testing.T) {
 		{"sshepherd-keys2 " + base + ".20261108T010203Z\n", base + ".20261108T010203Z", true},
 		{"sshepherd-keys2 " + base + ".20261108T010203Z.4121\n", base + ".20261108T010203Z.4121", true},
 		{"sshepherd-keys2 ../../etc/passwd\n", "", false},
+		{"sshepherd-keys2 " + base + "; rm -rf ~\n", "", false},
+		{"sshepherd-keys2 " + base + ".20261108T010203Z.4121/../x\n", "", false},
 		{"garbage\n", "", false},
 	} {
 		if got, ok := parseKeys2Name(tt.out); got != tt.want || ok != tt.ok {

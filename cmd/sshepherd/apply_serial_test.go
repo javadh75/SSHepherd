@@ -135,6 +135,45 @@ func bumpOverLimit(t *testing.T) (cfg, kh, target string) {
 	return c, kh, target
 }
 
+// TestOversizedBumpOnlyForABumpThatHappens (spec §7): a render the bumped
+// header would overflow withholds the run only when the run would bump and
+// can save it. Without a bump the header does not grow.
+func TestOversizedBumpOnlyForABumpThatHappens(t *testing.T) {
+	head := authkeys.Header(0)
+	rendered := []byte(head + "\n" + strings.Repeat("k", fleet.MaxRemoteOutput-5-len(head)-1))
+	srv := config.Server{Name: "web-1"}
+	removal := apply.ServerPlan{Server: srv, Class: apply.ClassChange, Remove: []authkeys.Key{{Fingerprint: "SHA256:x"}}, Rendered: rendered}
+	addOnly := apply.ServerPlan{Server: srv, Class: apply.ClassChange, Rendered: rendered}
+	target := func(t *testing.T, text string) manifestTarget {
+		t.Helper()
+		m, err := readManifest(writeConfig(t, text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	const editable = "users: []\nservers: []\naccess: []\n"
+	const anchored = "users: &u []\nservers: []\naccess: []\n"
+	for _, tt := range []struct {
+		name     string
+		m        manifestTarget
+		plan     apply.ServerPlan
+		withheld bool
+	}{
+		{"a removal on an editable manifest", target(t, editable), removal, true},
+		{"no removal means no bump", target(t, editable), addOnly, false},
+		{"an anchored manifest gets no bump", target(t, anchored), removal, false},
+		{"a piped manifest gets no bump", manifestTarget{manifest.Store{Stream: true}}, removal, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pa := &plainApply{m: tt.m, cfg: &config.Config{}}
+			if got := pa.oversizedBump([]apply.ServerPlan{tt.plan}); (len(got) > 0) != tt.withheld {
+				t.Errorf("oversizedBump = %q, want withheld %v", got, tt.withheld)
+			}
+		})
+	}
+}
+
 // TestReserialOversizeWithholdsBeforeSave (spec §7): nothing saved or
 // written, exit 1, the message on stderr and in serial_bump.warning; a dry
 // run reports the same warning.

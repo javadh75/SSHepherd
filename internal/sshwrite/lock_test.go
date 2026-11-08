@@ -153,6 +153,7 @@ func TestParseLockOwner(t *testing.T) {
 		{"valid", "sshepherd-lock 1010\nv1 ci-runner-3 4121 99 1000\n", true, "ci-runner-3 pid 4121", ten},
 		{"no record", "sshepherd-lock 1010\n", false, ownerUnknown, ageUnknown},
 		{"no marker at all", "", false, ownerUnknown, ageUnknown},
+		{"a record without the marker is ignored", "garbage\nv1 h 1 2 1000\n", false, ownerUnknown, ageUnknown},
 		{"hostile bytes", "sshepherd-lock 1010\nv1 \x1b]0;pwned\a 1 2 3\n", false, ownerUnrecognized, ageUnknown},
 		{"host too long", "sshepherd-lock 1010\nv1 " + strings.Repeat("h", 65) + " 1 2 3\n", false, ownerUnrecognized, ageUnknown},
 		{"future epoch is an unknown age", "sshepherd-lock 10\nv1 h 1 2 1000\n", true, "h pid 1", ageUnknown},

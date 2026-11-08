@@ -792,6 +792,27 @@ revoked:
 	}
 }
 
+// TestRestoredRevokedKeysOnlyAfterARollback (D10a): a write that removed a
+// revoked key and kept the new file restored nothing.
+func TestRestoredRevokedKeysOnlyAfterARollback(t *testing.T) {
+	alice := testKey(t, 2)
+	srv := config.Server{Name: "kept", Host: "10.0.0.1", Port: 22, User: "deploy"}
+	plans := []ServerPlan{{Server: srv, Class: ClassChange, Outcome: OutcomeApplied,
+		Remove: []authkeys.Key{alice}, RevokedRemovals: []string{alice.Fingerprint}}}
+	out := renderJSONCfg(t, &config.Config{}, plans, JSONOptions{Command: "revoke", Former: planCfg(t)})
+	var doc struct {
+		Servers []struct {
+			RestoredRevokedKeys []string `json:"restored_revoked_keys"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Servers) != 1 || len(doc.Servers[0].RestoredRevokedKeys) != 0 {
+		t.Errorf("servers = %+v, want no restored keys without a rollback", doc.Servers)
+	}
+}
+
 func TestRenderJSONFailuresGolden(t *testing.T) {
 	alice, bob := testKey(t, 2), testKey(t, 3)
 	server := func(n string) config.Server {

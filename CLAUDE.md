@@ -440,6 +440,10 @@ reserved for `pending` servers), apply
 JSON's rewrites gain `widens`, and Ctrl-C stops audit's fan-out without dialing
 queued servers.
 Write-failure semantics (P08, specced in `docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`): the post-write login check is sorted by the stage it reached (`classifyProbe`); a login that never got past authentication is retried and then reported UNPROVEN with the file kept, a refused login or anything after a successful one restores it. Exit 2 now also covers an unrestored lockout, a rollback that puts back a key on the `revoked:` list and a post-write changed or `@revoked` host key. Locks record owner and age and print their removal command (never removed automatically); a dropped connection reconnects once and re-checks under the lock; moved-aside `authorized_keys2` copies are never overwritten and a keys2-only write leaves `authorized_keys` and `.bak` alone; a mixed-source run proves an unrestricted `--identity` key on its own, warn-only; a serial bump that would overflow the read limit withholds the run.
+W5 follow-up: all 178 write-failure mutants were run (177 killed, one equivalent), and new tests pin
+the dangling-symlink keys2 name, the keys2 fallback refusal, anchored keys2 and lock parsing, the
+MaxAuthTries signal on a canceled dial, the lockout messages and the serial-bump oversize check's
+scope.
 The audit trust posture spec (P09: posture probe, operator cannot-log-in critical
 tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`,
 built-in weak/expired key rules via D29; specced in
