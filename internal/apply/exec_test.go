@@ -12,6 +12,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -238,7 +239,7 @@ access:
 		t.Fatal(err)
 	}
 	held := agentHeld(fp(t, 1), fp(t, 2))
-	plans := buildPlansHeld(t, cfg, &fakeReader{byName: map[string]audit.ReadResult{"s": {FileAbsent: true}}}, held)
+	plans := buildPlansHeld(t, cfg, &fakeReader{byName: map[string]fleet.ReadResult{"s": {FileAbsent: true}}}, held)
 	w := &fakeWriter{}
 	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: held})
 	isHeld := map[string]bool{}

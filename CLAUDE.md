@@ -532,3 +532,7 @@ committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change 
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on
 alpine, debian and rocky (a CI and release matrix).
+Layering refactor W3 (P14 S2, ARC-3): the error kinds (`ErrorKind` + constants,
+`KindedError`, `ErrorKindOf`, `Hinted`/`HintOf`) and `ReadResult` live in the new
+stdlib-only leaf `internal/fleet`; `sshconn` and `sshread` no longer import `audit`, and
+cmd checks the seam implementations (`audit.KeyReader`, `apply.Writer`) at compile time.

@@ -15,6 +15,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -24,13 +25,13 @@ var discardLogger = slog.New(slog.DiscardHandler)
 
 // fakeReader returns canned results per server name.
 type fakeReader struct {
-	byName map[string]ReadResult
+	byName map[string]fleet.ReadResult
 	errs   map[string]error
 }
 
-func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (ReadResult, error) {
+func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (fleet.ReadResult, error) {
 	if err, ok := f.errs[srv.Name]; ok {
-		return ReadResult{}, err
+		return fleet.ReadResult{}, err
 	}
 	return f.byName[srv.Name], nil
 }
@@ -56,7 +57,7 @@ access:
 
 func TestAuditOneCompliant(t *testing.T) {
 	cfg := testConfig(t)
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 	}}
 	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
@@ -71,7 +72,7 @@ func TestAuditOneCompliant(t *testing.T) {
 func TestAuditOneDrift(t *testing.T) {
 	cfg := testConfig(t)
 	// web-1 has an unauthorized key installed and alice's key missing.
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 9) + "\n")},
 	}}
 	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
@@ -99,7 +100,7 @@ func TestAuditOneConnectionError(t *testing.T) {
 
 func TestAuditOneFileAbsent(t *testing.T) {
 	cfg := testConfig(t)
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {FileAbsent: true},
 	}}
 	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
@@ -113,7 +114,7 @@ func TestAuditOneFileAbsent(t *testing.T) {
 
 func TestAuditOneParseErrors(t *testing.T) {
 	cfg := testConfig(t)
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\ngarbage\n")},
 	}}
 	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
@@ -127,7 +128,7 @@ func TestAuditOneParseErrors(t *testing.T) {
 
 func TestAuditOneNoUsersGranted(t *testing.T) {
 	cfg := testConfig(t)
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"orphan": {Content: []byte(testkeys.Line(t, 9) + "\n")},
 	}}
 	res := auditOne(context.Background(), cfg, r, cfg.Servers[1], 0, discardLogger)
@@ -146,7 +147,7 @@ type gateReader struct {
 	delay             time.Duration
 }
 
-func (g *gateReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (ReadResult, error) {
+func (g *gateReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
 	cur := g.inflight.Add(1)
 	defer g.inflight.Add(-1)
 	for {
@@ -157,12 +158,12 @@ func (g *gateReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) 
 	}
 	if g.block[srv.Name] {
 		<-ctx.Done()
-		return ReadResult{}, fmt.Errorf("read %s: %w", srv.Name, ctx.Err())
+		return fleet.ReadResult{}, fmt.Errorf("read %s: %w", srv.Name, ctx.Err())
 	}
 	if g.delay > 0 {
 		time.Sleep(g.delay)
 	}
-	return ReadResult{}, nil
+	return fleet.ReadResult{}, nil
 }
 
 // fleetConfig builds a config with n servers named srv-00 .. srv-N, no users.
@@ -261,9 +262,9 @@ func TestRunLogsPerServer(t *testing.T) {
 // countingReader counts reads; any read after cancellation is a wasted dial.
 type countingReader struct{ calls atomic.Int32 }
 
-func (c *countingReader) ReadAuthorizedKeys(ctx context.Context, _ config.Server) (ReadResult, error) {
+func (c *countingReader) ReadAuthorizedKeys(ctx context.Context, _ config.Server) (fleet.ReadResult, error) {
 	c.calls.Add(1)
-	return ReadResult{}, fmt.Errorf("read: %w", ctx.Err())
+	return fleet.ReadResult{}, fmt.Errorf("read: %w", ctx.Err())
 }
 
 // TestRunPreCanceledReadsNothing: a run whose ctx is already canceled takes
@@ -280,8 +281,8 @@ func TestRunPreCanceledReadsNothing(t *testing.T) {
 		t.Errorf("reader called %d times on a canceled run, want 0", n)
 	}
 	for _, res := range results {
-		if ErrorKindOf(res.Err) != ErrorKindCanceled {
-			t.Fatalf("%s: err %v (kind %q), want canceled", res.Server.Name, res.Err, ErrorKindOf(res.Err))
+		if fleet.ErrorKindOf(res.Err) != fleet.ErrorKindCanceled {
+			t.Fatalf("%s: err %v (kind %q), want canceled", res.Server.Name, res.Err, fleet.ErrorKindOf(res.Err))
 		}
 	}
 	if strings.Contains(logBuf.String(), "warn:") {
@@ -296,7 +297,7 @@ type cancelingReader struct {
 	cancel context.CancelFunc
 }
 
-func (c *cancelingReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (ReadResult, error) {
+func (c *cancelingReader) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
 	c.cancel()
 	return c.countingReader.ReadAuthorizedKeys(ctx, srv)
 }
@@ -327,7 +328,7 @@ func TestRunNilLoggerSafe(t *testing.T) {
 func TestAuditOneRetainsContentAndSessionKey(t *testing.T) {
 	cfg := testConfig(t)
 	content := testkeys.Line(t, 1) + "\n"
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(content), SessionKeyFP: "SHA256:sessionkey"},
 	}}
 	res := auditOne(context.Background(), cfg, r, cfg.Servers[0], 0, discardLogger)
@@ -341,7 +342,7 @@ func TestAuditOneRetainsContentAndSessionKey(t *testing.T) {
 
 func TestRunServerSubset(t *testing.T) {
 	cfg := testConfig(t)
-	r := &fakeReader{byName: map[string]ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1":  {Content: []byte(testkeys.Line(t, 1) + "\n")},
 		"orphan": {Content: []byte("")},
 	}}

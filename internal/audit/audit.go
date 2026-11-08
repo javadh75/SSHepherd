@@ -15,31 +15,13 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 )
-
-// ReadResult is the outcome of reading a server's authorized_keys.
-// FileAbsent means login succeeded but the audited file does not exist —
-// a strong signal sshd consults a different key source on that host.
-type ReadResult struct {
-	Content    []byte
-	FileAbsent bool
-	// SessionKeyFP is the SHA256 fingerprint of the key (--identity file or
-	// agent) that completed
-	// this read's SSH handshake — apply's guard note ("removes the key this
-	// session logged in with") consumes it. Empty for readers that do not
-	// authenticate (fakes).
-	SessionKeyFP string
-	// AuthorizedKeys2 reports that ~/.ssh/authorized_keys2 exists and is
-	// non-empty. OpenSSH's compiled-in AuthorizedKeysFile consults it after
-	// authorized_keys, so keys in it log in although SSHepherd neither reads
-	// nor manages them. Probed only when the audited path is the default.
-	AuthorizedKeys2 bool
-}
 
 // KeyReader fetches a server's current authorized_keys. Implementations must
 // honor ctx cancellation/deadlines.
 type KeyReader interface {
-	ReadAuthorizedKeys(ctx context.Context, srv config.Server) (ReadResult, error)
+	ReadAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error)
 }
 
 // ServerResult is the audit outcome for one server.
@@ -57,7 +39,7 @@ type ServerResult struct {
 	// keeps scanning after a line whose options refuse a login, so an
 	// unrestricted second copy defeats a restricted first one.
 	Duplicates      []Duplicate
-	AuthorizedKeys2 bool // unmanaged non-empty ~/.ssh/authorized_keys2 (see ReadResult)
+	AuthorizedKeys2 bool // unmanaged non-empty ~/.ssh/authorized_keys2 (see fleet.ReadResult)
 }
 
 // Duplicate is one fingerprint installed on Count (>= 2) lines; Key is its
@@ -184,7 +166,7 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 		// canceled read is the operator's own Ctrl-C: the command exits 3
 		// with one "interrupted" line, so a warning per queued server would
 		// only bury it.
-		if ErrorKindOf(err) != ErrorKindCanceled {
+		if fleet.ErrorKindOf(err) != fleet.ErrorKindCanceled {
 			log.Warn(fmt.Sprintf("%s: %v", srv.Name, err))
 		}
 		res.Err = err
@@ -265,7 +247,7 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 }
 
 // canceledResult is a server the run never read because ctx ended first.
-// ErrorKindOf classifies the wrapped context error (canceled or timeout),
+// fleet.ErrorKindOf classifies the wrapped context error (canceled or timeout),
 // so callers (cmd's interrupted(), apply's plan) see the same kind a read
 // cut short would have produced.
 func canceledResult(ctx context.Context, cfg *config.Config, srv config.Server) ServerResult {

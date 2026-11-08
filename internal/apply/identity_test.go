@@ -9,6 +9,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -29,7 +30,7 @@ access:
 	if err != nil {
 		t.Fatalf("rotationCfg: %v", err)
 	}
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 4) + " ci_old\n"), SessionKeyFP: fp(t, 4)},
 	}}
 	return cfg, r
@@ -76,7 +77,7 @@ func TestHeadlessRotationPlan(t *testing.T) {
 
 func TestRefusalListsSources(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	held := []sshconn.HeldKey{fileHeld(fp(t, 9), "/k/x"), fileHeld(fp(t, 9), "/k/x-again"), agentHeld(fp(t, 8))[0], agentHeld(fp(t, 9))[0]}
 	p := planFor(t, buildPlansHeld(t, cfg, r, held), "web-1")
 	want := "none of the 2 keys you hold (identity files + agent) would remain in web-1's authorized_keys — applying would lock this session out (held: " +
@@ -88,7 +89,7 @@ func TestRefusalListsSources(t *testing.T) {
 
 func TestAgentOnlySurvivorWarning(t *testing.T) {
 	cfg := planCfg(t) // op (seed 1) is an operator: desired everywhere
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	tests := []struct {
 		name string
 		held []sshconn.HeldKey
@@ -118,7 +119,7 @@ func TestCertOnlyOperatorRefused(t *testing.T) {
 	// A certificate-only agent lists no plain keys (sshconn excludes
 	// certificates from Held), so even an additive write is refused.
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	p := planFor(t, buildPlansHeld(t, cfg, r, nil), "web-1")
 	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "you hold no plain keys (identity files + agent; certificates do not count)") {
 		t.Fatalf("plan = %s/%q, want the no-plain-keys refusal", p.Class, p.Refusal)

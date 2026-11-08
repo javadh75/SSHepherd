@@ -18,9 +18,9 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -194,14 +194,14 @@ func TestDefaultCmdBehavesLikeOldConst(t *testing.T) {
 }
 
 // splitHint asserts the hint stayed out of err's message (one line, no
-// "hint:") and returns the message and the hint audit.HintOf sees.
+// "hint:") and returns the message and the hint fleet.HintOf sees.
 func splitHint(t *testing.T, err error) (msg, hint string) {
 	t.Helper()
 	msg = err.Error()
 	if strings.Contains(msg, "hint:") || strings.ContainsAny(msg, "\n") {
 		t.Errorf("message %q must not embed the hint", msg)
 	}
-	return msg, audit.HintOf(err)
+	return msg, fleet.HintOf(err)
 }
 
 func TestHostKeyHint(t *testing.T) {
@@ -277,15 +277,15 @@ func TestHostKeyHint(t *testing.T) {
 			name      string
 			err       error
 			presented ssh.PublicKey
-			want      audit.ErrorKind
+			want      fleet.ErrorKind
 		}{
-			{"unknown", &knownhosts.KeyError{}, ed25519Key(t, 1), audit.ErrorKindHostKeyUnknown},
-			{"changed", recorded, ed25519Key(t, 1), audit.ErrorKindHostKeyChanged},
-			{"unrecorded type", recorded, ecdsaKey(t), audit.ErrorKindHostKeyTypeUnrecorded},
-			{"revoked", &knownhosts.RevokedError{}, ed25519Key(t, 1), audit.ErrorKindHostKeyRevoked},
-			{"other", errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), audit.ErrorKindHostKey},
+			{"unknown", &knownhosts.KeyError{}, ed25519Key(t, 1), fleet.ErrorKindHostKeyUnknown},
+			{"changed", recorded, ed25519Key(t, 1), fleet.ErrorKindHostKeyChanged},
+			{"unrecorded type", recorded, ecdsaKey(t), fleet.ErrorKindHostKeyTypeUnrecorded},
+			{"revoked", &knownhosts.RevokedError{}, ed25519Key(t, 1), fleet.ErrorKindHostKeyRevoked},
+			{"other", errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), fleet.ErrorKindHostKey},
 		} {
-			if got := audit.ErrorKindOf(hostKeyHint(tt.err, tt.presented, srv, "/kh")); got != tt.want {
+			if got := fleet.ErrorKindOf(hostKeyHint(tt.err, tt.presented, srv, "/kh")); got != tt.want {
 				t.Errorf("%s: kind = %q, want %q", tt.name, got, tt.want)
 			}
 		}
@@ -460,7 +460,7 @@ func TestSecondaryKeysCmd(t *testing.T) {
 		stderr := NewCappedBuffer(100)
 		_, _ = stderr.Write([]byte("sh: boom\x1b[31m"))
 		_, err := FinishSecondaryProbe(2, stderr)
-		if audit.ErrorKindOf(err) != audit.ErrorKindRemote || strings.Contains(err.Error(), "\x1b") {
+		if fleet.ErrorKindOf(err) != fleet.ErrorKindRemote || strings.Contains(err.Error(), "\x1b") {
 			t.Errorf("err = %q, want a sanitized remote error", err)
 		}
 	})
@@ -468,7 +468,7 @@ func TestSecondaryKeysCmd(t *testing.T) {
 
 func TestFinishReadErrorsAreRemoteKind(t *testing.T) {
 	_, err := FinishRead(1, NewCappedBuffer(10), NewCappedBuffer(10), "h:22", slog.New(slog.DiscardHandler))
-	if got := audit.ErrorKindOf(err); got != audit.ErrorKindRemote {
+	if got := fleet.ErrorKindOf(err); got != fleet.ErrorKindRemote {
 		t.Errorf("kind = %q, want remote", got)
 	}
 }

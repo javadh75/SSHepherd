@@ -9,6 +9,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -16,13 +17,13 @@ import (
 
 // fakeReader returns canned phase-1 results per server name.
 type fakeReader struct {
-	byName map[string]audit.ReadResult
+	byName map[string]fleet.ReadResult
 	errs   map[string]error
 }
 
-func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (audit.ReadResult, error) {
+func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (fleet.ReadResult, error) {
 	if err, ok := f.errs[srv.Name]; ok {
-		return audit.ReadResult{}, err
+		return fleet.ReadResult{}, err
 	}
 	return f.byName[srv.Name], nil
 }
@@ -116,7 +117,7 @@ func renderedFor(t *testing.T, cfg *config.Config, name string) []byte {
 
 func TestPlanConvergedIsByteExact(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: renderedFor(t, cfg, "web-1")},
 	}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
@@ -130,7 +131,7 @@ func TestPlanAuditCleanIsNotApplyConverged(t *testing.T) {
 	// header and audit-style comments — the first apply normalizes it.
 	cfg := planCfg(t)
 	content := testkeys.Line(t, 1) + " op@sshepherd\n" + testkeys.Line(t, 2) + " alice@work\n" + testkeys.Line(t, 3) + " bob\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Class != ClassChange {
 		t.Fatalf("Class = %s, want change (byte drift: missing header)", p.Class)
@@ -155,7 +156,7 @@ func TestPlanAddRemoveRewriteNormalize(t *testing.T) {
 		testkeys.Line(t, 1) + " op@sshepherd\n" +
 		"\n" +
 		testkeys.Line(t, 9) + " stray@laptop\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 
 	if p.Class != ClassChange {
@@ -190,7 +191,7 @@ func TestPlanRewriteOptions(t *testing.T) {
 	content := string(renderedFor(t, cfg, "web-1"))
 	// Same file, but bob's line grew a no-pty option on the server.
 	content = strings.Replace(content, testkeys.Line(t, 3), "no-pty "+testkeys.Line(t, 3), 1)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if len(p.Rewrites) != 1 || !p.Rewrites[0].OptionsDiffer || p.Rewrites[0].CommentDiffers {
 		t.Fatalf("Rewrites = %+v, want exactly one options-only rewrite", p.Rewrites)
@@ -202,7 +203,7 @@ func TestPlanRewriteOptions(t *testing.T) {
 
 func TestPlanFileAbsentIsAdditiveChange(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Class != ClassChange || !p.FileAbsent {
 		t.Fatalf("plan = %+v, want an additive change carrying the file-absent diagnostic", p)
@@ -215,7 +216,7 @@ func TestPlanFileAbsentIsAdditiveChange(t *testing.T) {
 func TestPlanParseErrorRefused(t *testing.T) {
 	cfg := planCfg(t)
 	content := testkeys.Line(t, 1) + " op@sshepherd\nthis is not a key\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "unparseable") {
 		t.Fatalf("plan = %+v, want refusal over the unparseable line", p)
@@ -255,23 +256,23 @@ func TestPlanEmptyDesiredSplit(t *testing.T) {
 	web1 := renderedFor(t, cfg, "web-1")
 	tests := []struct {
 		name        string
-		read        audit.ReadResult
+		read        fleet.ReadResult
 		wantClass   Class
 		wantRefusal string
 	}{
-		{"file absent is converged", audit.ReadResult{FileAbsent: true}, ClassConverged, ""},
-		{"empty file is converged", audit.ReadResult{Content: []byte("")}, ClassConverged, ""},
-		{"comments-only file is converged", audit.ReadResult{Content: []byte("# just notes\n")}, ClassConverged, ""},
-		{"installed keys refuse the wipe", audit.ReadResult{Content: []byte(testkeys.Line(t, 9) + "\n" + testkeys.Line(t, 8) + "\n" + testkeys.Line(t, 7) + "\n")},
+		{"file absent is converged", fleet.ReadResult{FileAbsent: true}, ClassConverged, ""},
+		{"empty file is converged", fleet.ReadResult{Content: []byte("")}, ClassConverged, ""},
+		{"comments-only file is converged", fleet.ReadResult{Content: []byte("# just notes\n")}, ClassConverged, ""},
+		{"installed keys refuse the wipe", fleet.ReadResult{Content: []byte(testkeys.Line(t, 9) + "\n" + testkeys.Line(t, 8) + "\n" + testkeys.Line(t, 7) + "\n")},
 			ClassRefused, "3 keys installed but manifest grants none — refusing to wipe"},
-		{"unparseable content refuses too", audit.ReadResult{Content: []byte("garbage\n")},
+		{"unparseable content refuses too", fleet.ReadResult{Content: []byte("garbage\n")},
 			ClassRefused, "unparseable"},
-		{"no keys but authorized_keys2 refuses (audit calls it drift)", audit.ReadResult{FileAbsent: true, AuthorizedKeys2: true},
+		{"no keys but authorized_keys2 refuses (audit calls it drift)", fleet.ReadResult{FileAbsent: true, AuthorizedKeys2: true},
 			ClassRefused, "authorized_keys2 holds keys but the manifest grants none — refusing to wipe; remove it by hand"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: web1}, "bare": tt.read}}
+			r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: web1}, "bare": tt.read}}
 			p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 2)}), "bare")
 			if p.Class != tt.wantClass {
 				t.Fatalf("Class = %s, want %s", p.Class, tt.wantClass)
@@ -288,7 +289,7 @@ func TestPlanEmptyDesiredSplit(t *testing.T) {
 // keys — both non-zero, and apply writes nothing (no wipe mode exists).
 func TestApplyAuditAgreeOnKeys2WithoutGrants(t *testing.T) {
 	cfg := emptyDesiredCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: renderedFor(t, cfg, "web-1")}, "bare": {FileAbsent: true, AuthorizedKeys2: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: renderedFor(t, cfg, "web-1")}, "bare": {FileAbsent: true, AuthorizedKeys2: true}}}
 	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 1})
 	plans, err := Build(cfg, results, agentHeld(fp(t, 2)))
 	if err != nil {
@@ -305,7 +306,7 @@ func TestApplyAuditAgreeOnKeys2WithoutGrants(t *testing.T) {
 
 func TestGuardRefusesLockout(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	// The agent holds only keys the manifest never grants to web-1. One
 	// fingerprint is listed twice: the refusal must count distinct keys,
 	// not raw listing entries.
@@ -324,7 +325,7 @@ func TestGuardOperatorAlwaysPasses(t *testing.T) {
 	// An operator key is in every desired set, so holding it passes the
 	// guard on every server — the structural operator contract.
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Class != ClassChange {
 		t.Fatalf("Class = %s, want change (operator key held)", p.Class)
@@ -337,7 +338,7 @@ func TestGuardRotateNoteSessionKeyRemoved(t *testing.T) {
 	// the agent also holds op's key, which survives — rotate is allowed,
 	// loudly.
 	content := testkeys.Line(t, 9) + " old@key\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(content), SessionKeyFP: fp(t, 9)},
 	}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 9), fp(t, 1)}), "web-1")
@@ -352,7 +353,7 @@ func TestGuardRotateNoteSessionKeyRemoved(t *testing.T) {
 
 func TestGuardNoNoteWhenSessionKeySurvives(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {FileAbsent: true, SessionKeyFP: fp(t, 1)},
 	}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
@@ -366,12 +367,12 @@ func TestGuardEmptyAgentRefuses(t *testing.T) {
 	// probe would have nothing to offer), so even an additive write is
 	// refused — the old "additive writes may proceed" fallback is gone.
 	cfg := planCfg(t)
-	for name, read := range map[string]audit.ReadResult{
+	for name, read := range map[string]fleet.ReadResult{
 		"additive-only": {FileAbsent: true},
 		"removes a key": {Content: []byte(testkeys.Line(t, 9) + "\n")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": read}}
+			r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": read}}
 			p := planFor(t, buildPlans(t, cfg, r, nil), "web-1")
 			if p.Class != ClassRefused || !strings.Contains(p.Refusal, "you hold no plain keys") {
 				t.Fatalf("plan = %s/%q, want the empty-agent refusal", p.Class, p.Refusal)
@@ -397,7 +398,7 @@ access:
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "cert-authority") {
 		t.Fatalf("plan = %s/%q, want a lockout refusal naming the cert-authority line", p.Class, p.Refusal)
@@ -412,7 +413,7 @@ func TestPlanRefusesUnverifiableRenderSize(t *testing.T) {
 	saved := maxRender
 	maxRender = 100 // the real cap is sshconn.MaxRemoteOutput (1 MiB)
 	t.Cleanup(func() { maxRender = saved })
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Class != ClassRefused || !strings.Contains(p.Refusal, "could never be verified") {
 		t.Fatalf("plan = %s/%q, want the size refusal", p.Class, p.Refusal)
@@ -422,7 +423,7 @@ func TestPlanRefusesUnverifiableRenderSize(t *testing.T) {
 func TestPlanCarriesSnapshotAndKeys2(t *testing.T) {
 	cfg := planCfg(t)
 	content := []byte(testkeys.Line(t, 1) + "\n")
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: content, AuthorizedKeys2: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: content, AuthorizedKeys2: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 	if p.Expect != sshwrite.SnapshotOf(false, content) {
 		t.Errorf("Expect = %+v, want the snapshot of the phase-1 bytes", p.Expect)
@@ -430,7 +431,7 @@ func TestPlanCarriesSnapshotAndKeys2(t *testing.T) {
 	if !p.AuthorizedKeys2 {
 		t.Error("AuthorizedKeys2 must carry the phase-1 finding into the plan")
 	}
-	r = &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r = &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	if p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1"); !p.Expect.Absent {
 		t.Errorf("Expect = %+v, want absent for a file-absent server", p.Expect)
 	}
@@ -449,7 +450,7 @@ func TestPlanDuplicatesAreNamed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(base + tt.extra)}}}
+			r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(base + tt.extra)}}}
 			p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 			if p.Class != ClassChange {
 				t.Fatalf("Class = %s, want change", p.Class)
@@ -498,7 +499,7 @@ access:
 			}
 			// Comments match the render, so bob's options are the only drift.
 			content := testkeys.Line(t, 1) + " op\n" + tt.serverOpts + testkeys.Line(t, 3) + " bob\n"
-			r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+			r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 			p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 			if len(p.Rewrites) != 1 {
 				t.Fatalf("Rewrites = %+v, want bob's options rewrite", p.Rewrites)
@@ -526,7 +527,7 @@ access:
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {FileAbsent: true}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	t.Run("all surviving keys restricted warns", func(t *testing.T) {
 		p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
 		if p.Class != ClassChange {

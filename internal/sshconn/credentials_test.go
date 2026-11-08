@@ -12,7 +12,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 )
@@ -145,7 +145,7 @@ func TestNoKeysAtAllIsAnAgentError(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			creds := &Credentials{AgentSock: sock}
 			_, _, err := creds.Signers(context.Background())
-			if err == nil || kindOf(t, err) != audit.ErrorKindAgent {
+			if err == nil || kindOf(t, err) != fleet.ErrorKindAgent {
 				t.Fatalf("Signers err = %v, want ErrorKindAgent", err)
 			}
 			if _, err := creds.Held(context.Background()); err == nil {

@@ -12,7 +12,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 )
 
@@ -128,7 +128,7 @@ func (c *Credentials) Signers(ctx context.Context) ([]ssh.Signer, func(), error)
 		}
 	}
 	if len(out) == 0 {
-		return nil, noop, classify(audit.ErrorKindAgent, err)
+		return nil, noop, classify(fleet.ErrorKindAgent, err)
 	}
 	c.warnAgent(err)
 	return out, noop, nil

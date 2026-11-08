@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -29,7 +29,7 @@ access:
 	}
 	content := testkeys.Line(t, 1) + " op@sshepherd\n" + testkeys.Line(t, 2) + " alice@work\n" +
 		testkeys.Line(t, 3) + " bob\n" + testkeys.Line(t, 9) + " stray\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 	plans := buildPlans(t, edited, r, []string{fp(t, 1)})
 
 	for _, tt := range []struct {

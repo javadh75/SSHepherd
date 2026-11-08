@@ -17,7 +17,14 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/sshread"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
+)
+
+// The transport implementations of the domain seams, checked at compile time.
+var (
+	_ audit.KeyReader = (*sshread.Client)(nil)
+	_ apply.Writer    = (*sshwrite.FleetWriter)(nil)
 )
 
 func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {

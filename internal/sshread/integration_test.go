@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
@@ -88,11 +88,11 @@ func TestIntegrationUnknownHostKey(t *testing.T) {
 	_, err := c.ReadAuthorizedKeys(ctx, config.Server{
 		Name: "it", Host: host, Port: port, User: "present",
 	})
-	if err == nil || !strings.Contains(audit.HintOf(err), "| ssh-keygen -lf -") {
+	if err == nil || !strings.Contains(fleet.HintOf(err), "| ssh-keygen -lf -") {
 		t.Errorf("err = %v, want strict-host-key failure with a compare-first keyscan hint", err)
 	}
-	if audit.ErrorKindOf(err) != audit.ErrorKindHostKeyUnknown {
-		t.Errorf("kind = %q, want host_key_unknown", audit.ErrorKindOf(err))
+	if fleet.ErrorKindOf(err) != fleet.ErrorKindHostKeyUnknown {
+		t.Errorf("kind = %q, want host_key_unknown", fleet.ErrorKindOf(err))
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -45,11 +46,11 @@ type benchReader struct {
 	latency time.Duration
 }
 
-func (r *benchReader) ReadAuthorizedKeys(_ context.Context, _ config.Server) (ReadResult, error) {
+func (r *benchReader) ReadAuthorizedKeys(_ context.Context, _ config.Server) (fleet.ReadResult, error) {
 	if r.latency > 0 {
 		time.Sleep(r.latency)
 	}
-	return ReadResult{Content: r.content}, nil
+	return fleet.ReadResult{Content: r.content}, nil
 }
 
 // benchFleetConfig builds an n-server config for benchmarks. Separate from

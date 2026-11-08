@@ -23,13 +23,13 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 )
 
 // kindOf extracts the *Error kind, failing when err carries none.
-func kindOf(t *testing.T, err error) audit.ErrorKind {
+func kindOf(t *testing.T, err error) fleet.ErrorKind {
 	t.Helper()
 	var e *Error
 	if !errors.As(err, &e) {
@@ -112,7 +112,7 @@ func TestConnectHostKeyFailures(t *testing.T) {
 		name     string
 		hostKeys []ssh.Signer
 		khLines  func(f fixture) []string
-		kind     audit.ErrorKind
+		kind     fleet.ErrorKind
 		want     []string
 		notWant  []string
 	}{
@@ -122,14 +122,14 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			khLines: func(f fixture) []string {
 				return []string{f.srv.KnownHostsLine(sshtest.Signer(t, sshtest.Key(41)).PublicKey())}
 			},
-			kind: audit.ErrorKindHostKeyChanged,
+			kind: fleet.ErrorKindHostKeyChanged,
 			want: []string{"HOST KEY CHANGED", "presented ssh-ed25519 key " + ssh.FingerprintSHA256(host.PublicKey())},
 		},
 		{
 			name:     "unknown host gets an out-of-band hint, never a blind append",
 			hostKeys: []ssh.Signer{host},
 			khLines:  func(fixture) []string { return nil },
-			kind:     audit.ErrorKindHostKeyUnknown,
+			kind:     fleet.ErrorKindHostKeyUnknown,
 			want:     []string{"out of band", "| ssh-keygen -lf -", "'127.0.0.1'"},
 			notWant:  []string{">>"},
 		},
@@ -139,7 +139,7 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			khLines: func(f fixture) []string {
 				return []string{f.srv.KnownHostsLine(host.PublicKey())}
 			},
-			kind:    audit.ErrorKindHostKeyTypeUnrecorded,
+			kind:    fleet.ErrorKindHostKeyTypeUnrecorded,
 			want:    []string{"not recorded", "recorded: ssh-ed25519"},
 			notWant: []string{"HOST KEY CHANGED", ">>"},
 		},
@@ -152,7 +152,7 @@ func TestConnectHostKeyFailures(t *testing.T) {
 					"@revoked * " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(host.PublicKey()))),
 				}
 			},
-			kind: audit.ErrorKindHostKeyRevoked,
+			kind: fleet.ErrorKindHostKeyRevoked,
 			want: []string{"@revoked"},
 		},
 	}
@@ -174,7 +174,7 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			if strings.Contains(err.Error(), "hint:") || strings.ContainsAny(err.Error(), "\n") {
 				t.Errorf("message %q must not embed the hint", err)
 			}
-			full := err.Error() + "\n" + audit.HintOf(err)
+			full := err.Error() + "\n" + fleet.HintOf(err)
 			for _, w := range tt.want {
 				if !strings.Contains(full, w) {
 					t.Errorf("error + hint lacks %q:\n%s", w, full)
@@ -258,7 +258,7 @@ func TestConnectDeadlineAndCancel(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > time.Second {
 			t.Errorf("returned after %v, want ~200ms", elapsed)
 		}
-		if got := kindOf(t, err); got != audit.ErrorKindTimeout {
+		if got := kindOf(t, err); got != fleet.ErrorKindTimeout {
 			t.Errorf("kind = %q, want timeout (err: %v)", got, err)
 		}
 	})
@@ -273,7 +273,7 @@ func TestConnectDeadlineAndCancel(t *testing.T) {
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
 			t.Errorf("returned after %v, want ~100ms", elapsed)
 		}
-		if got := kindOf(t, err); got != audit.ErrorKindCanceled {
+		if got := kindOf(t, err); got != fleet.ErrorKindCanceled {
 			t.Errorf("kind = %q, want canceled (err: %v)", got, err)
 		}
 	})
@@ -281,7 +281,7 @@ func TestConnectDeadlineAndCancel(t *testing.T) {
 
 // TestConnectDialRefusedHintIsSeparate: a refused dial names the address
 // once, says "dial" once, carries no hint text in its message, and exposes
-// the bastion hint through audit.HintOf.
+// the bastion hint through fleet.HintOf.
 func TestConnectDialRefusedHintIsSeparate(t *testing.T) {
 	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -294,7 +294,7 @@ func TestConnectDialRefusedHintIsSeparate(t *testing.T) {
 	if err == nil {
 		t.Fatal("dial to a closed port succeeded")
 	}
-	if got := kindOf(t, err); got != audit.ErrorKindDial {
+	if got := kindOf(t, err); got != fleet.ErrorKindDial {
 		t.Errorf("kind = %q, want dial", got)
 	}
 	msg := err.Error()
@@ -305,7 +305,7 @@ func TestConnectDialRefusedHintIsSeparate(t *testing.T) {
 	if strings.Contains(msg, "hint") || strings.ContainsAny(msg, "\n") {
 		t.Errorf("message %q must not embed the hint", msg)
 	}
-	if h := audit.HintOf(err); h != DialHint {
+	if h := fleet.HintOf(err); h != DialHint {
 		t.Errorf("HintOf = %q, want DialHint", h)
 	}
 }
@@ -391,7 +391,7 @@ func TestConnectKeyOffering(t *testing.T) {
 		if err == nil {
 			t.Fatal("login with a refused-only key set succeeded")
 		}
-		if k := kindOf(t, err); k != audit.ErrorKindAuth {
+		if k := kindOf(t, err); k != fleet.ErrorKindAuth {
 			t.Errorf("kind = %q, want auth (err: %v)", k, err)
 		}
 		if !slices.Equal(got, []string{fpB}) {
@@ -499,7 +499,7 @@ func TestExecCancellationClosesSession(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("Exec returned after %v, want ~100ms", elapsed)
 	}
-	if got := kindOf(t, err); got != audit.ErrorKindCanceled {
+	if got := kindOf(t, err); got != fleet.ErrorKindCanceled {
 		t.Errorf("kind = %q, want canceled", got)
 	}
 
@@ -606,7 +606,7 @@ func TestHandshakeDisconnectTextIsBounded(t *testing.T) {
 	if !strings.Contains(msg, "ssh u@127.0.0.1:"+strconv.Itoa(port)) || !strings.Contains(msg, "disconnect") {
 		t.Errorf("message %q lost its prefix or the disconnect reason", msg)
 	}
-	if got := kindOf(t, err); got != audit.ErrorKindHandshake {
+	if got := kindOf(t, err); got != fleet.ErrorKindHandshake {
 		t.Errorf("kind = %q, want handshake", got)
 	}
 }
@@ -678,7 +678,7 @@ func TestExecOpenSessionRejectTextIsBounded(t *testing.T) {
 	if !errors.As(err, &oce) || oce.Reason != ssh.Prohibited {
 		t.Errorf("err = %v, want the *ssh.OpenChannelError kept for errors.As", err)
 	}
-	if got := kindOf(t, err); got != audit.ErrorKindRemote {
+	if got := kindOf(t, err); got != fleet.ErrorKindRemote {
 		t.Errorf("kind = %q, want remote", got)
 	}
 }

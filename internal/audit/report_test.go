@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -62,7 +63,7 @@ access:
 func driftResults(t *testing.T, cfg *config.Config) []ServerResult {
 	t.Helper()
 	reader := &fakeReader{
-		byName: map[string]ReadResult{
+		byName: map[string]fleet.ReadResult{
 			"web-1": {Content: []byte(
 				testkeys.Line(t, 1) + " alice@laptop\n" +
 					testkeys.Line(t, 9) + " who@is-this\n" +
@@ -81,7 +82,7 @@ const testDialHint = "check the host, port, and firewall; hosts reachable only t
 
 // dialRefused is the error sshconn returns for a refused TCP connect.
 func dialRefused(ip string) error {
-	return hintedErr{kindedErr{ErrorKindDial, (&net.OpError{Op: "dial", Net: "tcp",
+	return hintedErr{kindedErr{fleet.ErrorKindDial, (&net.OpError{Op: "dial", Net: "tcp",
 		Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 22},
 		Err:  os.NewSyscallError("connect", syscall.ECONNREFUSED)}).Error()}, testDialHint}
 }
@@ -93,7 +94,7 @@ func TestRenderHintOncePerDistinctHint(t *testing.T) {
 	reader := &fakeReader{errs: map[string]error{
 		"srv-00": dialRefused("10.0.0.1"),
 		"srv-01": dialRefused("10.0.0.2"),
-		"srv-02": hintedErr{kindedErr{ErrorKindHostKeyChanged, "ssh deploy@10.0.0.3:22: knownhosts: key mismatch"}, "HOST KEY CHANGED for 10.0.0.3:22"},
+		"srv-02": hintedErr{kindedErr{fleet.ErrorKindHostKeyChanged, "ssh deploy@10.0.0.3:22: knownhosts: key mismatch"}, "HOST KEY CHANGED for 10.0.0.3:22"},
 	}}
 	var buf bytes.Buffer
 	Render(&buf, cfg, Run(context.Background(), cfg, reader, Options{Parallel: 1}), RenderOptions{})
@@ -191,7 +192,7 @@ func TestRenderDriftColorGolden(t *testing.T) {
 
 func TestRenderCompliant(t *testing.T) {
 	cfg := reportConfig(t)
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")},
 		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 	}}
@@ -245,7 +246,7 @@ func TestExitCodeSeverity(t *testing.T) {
 
 func TestRenderFileAbsentDiagnostic(t *testing.T) {
 	cfg := reportConfig(t)
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {FileAbsent: true},
 		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 	}}
@@ -283,7 +284,7 @@ access:
 // declared a path, so "sshd has a custom AuthorizedKeysFile" is moot).
 func TestRenderFileAbsentOverrideGolden(t *testing.T) {
 	cfg := overrideConfig(t, "/etc/ssh/keys/deploy")
-	reader := &fakeReader{byName: map[string]ReadResult{"web-1": {FileAbsent: true}}}
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
 	var buf bytes.Buffer
 	Render(&buf, cfg, results, RenderOptions{})
@@ -301,7 +302,7 @@ func TestRenderFileAbsentOverrideGolden(t *testing.T) {
 // names the overridden path when one is set.
 func TestRenderEmptyFileOverrideNamesPath(t *testing.T) {
 	cfg := overrideConfig(t, "/etc/ssh/keys/deploy")
-	reader := &fakeReader{byName: map[string]ReadResult{"web-1": {Content: []byte{}}}}
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte{}}}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
 	var buf bytes.Buffer
 	Render(&buf, cfg, results, RenderOptions{})
@@ -319,7 +320,7 @@ func TestRenderEmptyFileOverrideNamesPath(t *testing.T) {
 // an override — the operator declared a path, so the note is path-aware.
 func TestRenderExplicitDefaultIsOverride(t *testing.T) {
 	cfg := overrideConfig(t, "~/.ssh/authorized_keys")
-	reader := &fakeReader{byName: map[string]ReadResult{"web-1": {FileAbsent: true}}}
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
 	var buf bytes.Buffer
 	Render(&buf, cfg, results, RenderOptions{})
@@ -336,7 +337,7 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 	cfg := reportConfig(t)
 	// web-2: alice ok; bob's key is installed although bob is NOT granted
 	// web-2 — the unauthorized row must name bob, not "(unknown)".
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")},
 		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")},
 	}}
@@ -371,7 +372,7 @@ func TestRenderUnauthorizedKnownOwnerIsNamed(t *testing.T) {
 // name-fallback comment — and web-2's copy of alice's key already matches.
 func commentDriftResults(t *testing.T, cfg *config.Config) []ServerResult {
 	t.Helper()
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(
 			testkeys.Line(t, 1) + " alice@laptop\n" +
 				testkeys.Line(t, 2) + " bob\n")},
@@ -453,7 +454,7 @@ access:
 // absent — the operator key is desired and missing there too.
 func criticalResults(t *testing.T, cfg *config.Config) []ServerResult {
 	t.Helper()
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 		"web-2": {FileAbsent: true},
 	}}
@@ -492,7 +493,7 @@ func TestRenderUnreachableServerNotCritical(t *testing.T) {
 	// web-1 fully compliant; web-2 unreachable — nothing knowable about its
 	// keys, so it must stay a plain ERROR, not a critical finding.
 	reader := &fakeReader{
-		byName: map[string]ReadResult{
+		byName: map[string]fleet.ReadResult{
 			"web-1": {Content: []byte(testkeys.Line(t, 3) + "\n" + testkeys.Line(t, 1) + "\n")},
 		},
 		errs: map[string]error{"web-2": errors.New("dial tcp 10.0.0.2:22: connection refused")},
@@ -522,7 +523,7 @@ servers:
 	if err != nil {
 		t.Fatalf("config: %v", err)
 	}
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 	}}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
@@ -543,7 +544,7 @@ servers:
 func TestRenderUnknownKeyShowsComment(t *testing.T) {
 	cfg := reportConfig(t)
 	long := strings.Repeat("x", 60)
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n" +
 			`from="10.0.0.0/8",no-pty ` + testkeys.Line(t, 9) + " alice@laptop\n" +
 			testkeys.Line(t, 8) + "\n" +

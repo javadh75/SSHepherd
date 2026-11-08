@@ -10,6 +10,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
@@ -334,7 +335,7 @@ func jsonErrorFor(p ServerPlan) (msg *string, kind, hint string) {
 	case ClassUnreachable:
 		if p.Err != nil {
 			m := cleanLine(p.Err.Error())
-			return &m, string(audit.ErrorKindOf(p.Err)), audit.CleanHint(p.Err)
+			return &m, string(fleet.ErrorKindOf(p.Err)), audit.CleanHint(p.Err)
 		}
 	case ClassRefused:
 		m := cleanLine(p.Refusal)
@@ -343,22 +344,22 @@ func jsonErrorFor(p ServerPlan) (msg *string, kind, hint string) {
 		if p.OutcomeErr != nil {
 			m := cleanLine(p.OutcomeErr.Error())
 			if p.Outcome == OutcomePending && errors.Is(p.OutcomeErr, errInterrupted) {
-				return &m, string(audit.ErrorKindCanceled), ""
+				return &m, string(fleet.ErrorKindCanceled), ""
 			}
 			// A transport-classified failure (host key changed at the
 			// write connect, auth, timeout…) keeps its kind; refusals and
 			// unclassified write/verify errors carry none, as before.
 			hint := audit.CleanHint(p.OutcomeErr)
-			switch k := audit.ErrorKindOf(p.OutcomeErr); k {
-			case audit.ErrorKindUnknown:
+			switch k := fleet.ErrorKindOf(p.OutcomeErr); k {
+			case fleet.ErrorKindUnknown:
 				return &m, "", hint
-			case audit.ErrorKindCanceled:
+			case fleet.ErrorKindCanceled:
 				// "canceled" marks a pending server that never started. A
 				// started server's write connect is canceled only by the
 				// per-server deadline (Ctrl-C there leaves it pending, and
 				// nothing after the connect is cancelable), which the
 				// transport sees as a plain cancellation.
-				return &m, string(audit.ErrorKindTimeout), hint
+				return &m, string(fleet.ErrorKindTimeout), hint
 			default:
 				return &m, string(k), hint
 			}

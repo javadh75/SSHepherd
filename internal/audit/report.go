@@ -8,6 +8,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
@@ -26,7 +27,7 @@ func ExitCode(cfg *config.Config, results []ServerResult) int {
 		case statusCritical:
 			return 2
 		case statusUnreachable:
-			if hostKeyAlert(ErrorKindOf(r.Err)) {
+			if hostKeyAlert(fleet.ErrorKindOf(r.Err)) {
 				return 2
 			}
 			code = 1
@@ -99,8 +100,8 @@ func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts Render
 // alert (changed or @revoked), painted bold red by both reports. The kind
 // leads so a changed host key is told apart from a timeout at a glance.
 func ErrorTag(err error) (tag string, alert bool) {
-	kind := ErrorKindOf(err)
-	if kind == "" || kind == ErrorKindUnknown {
+	kind := fleet.ErrorKindOf(err)
+	if kind == "" || kind == fleet.ErrorKindUnknown {
 		return "ERROR:", false
 	}
 	return "ERROR [" + string(kind) + "]:", hostKeyAlert(kind)
@@ -110,7 +111,7 @@ func ErrorTag(err error) (tag string, alert bool) {
 // and JSON carries. Hints are built locally, but they quote the configured
 // host and the known_hosts path, so they get the same boundary as error text.
 func CleanHint(err error) string {
-	return sanitize.Remote(strings.Join(strings.Fields(HintOf(err)), " "))
+	return sanitize.Remote(strings.Join(strings.Fields(fleet.HintOf(err)), " "))
 }
 
 // Hints prints each distinct remediation hint once per report, on its own
@@ -378,7 +379,7 @@ func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 		switch statusOf(cfg, r) {
 		case statusUnreachable:
 			c.unreachable++
-			if hostKeyAlert(ErrorKindOf(r.Err)) {
+			if hostKeyAlert(fleet.ErrorKindOf(r.Err)) {
 				c.hostKeyAlerts++
 			}
 		case statusCompliant:

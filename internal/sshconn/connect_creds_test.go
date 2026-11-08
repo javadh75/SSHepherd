@@ -12,8 +12,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 )
@@ -100,7 +100,7 @@ func TestConnectWithoutKeysFailsBeforeDialing(t *testing.T) {
 	t.Cleanup(func() { _ = l.Close(); <-done })
 	srv := config.Server{Name: "web-1", Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port, User: "deploy"}
 	d := &Dialer{KnownHostsPath: sshtest.KnownHostsFile(t), Creds: &Credentials{AgentSock: deadSock(t)}, DialTimeout: time.Second}
-	if _, err := d.Connect(ctxTimeout(t, 5*time.Second), srv); err == nil || kindOf(t, err) != audit.ErrorKindAgent {
+	if _, err := d.Connect(ctxTimeout(t, 5*time.Second), srv); err == nil || kindOf(t, err) != fleet.ErrorKindAgent {
 		t.Fatalf("Connect err = %v, want ErrorKindAgent", err)
 	}
 	if n := accepted.Load(); n != 0 {

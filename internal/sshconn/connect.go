@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
@@ -134,7 +134,7 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 // aborts the handshake. Callers without a ctx deadline get a hard floor:
 // 3×DialTimeout (30s when DialTimeout is zero). The agent connection lives
 // only until ConnectWith returns — signing happens during auth, never
-// after. Every error is an *Error carrying its audit.ErrorKind.
+// after. Every error is an *Error carrying its fleet.ErrorKind.
 func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts ConnectOptions) (*Conn, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		fallback := 3 * d.DialTimeout
@@ -156,7 +156,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 
 	kh, err := d.knownHosts()
 	if err != nil {
-		return nil, classify(audit.ErrorKindHostKey, err)
+		return nil, classify(fleet.ErrorKindHostKey, err)
 	}
 	addr := net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port))
 
@@ -193,10 +193,10 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	dialStart := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		kind, hint := audit.ErrorKindDial, DialHint
+		kind, hint := fleet.ErrorKindDial, DialHint
 		if ctx.Err() != nil {
 			kind = ctxKind(ctx)
-			if kind == audit.ErrorKindCanceled {
+			if kind == fleet.ErrorKindCanceled {
 				hint = "" // the operator interrupted; there is nothing to fix
 			}
 		}
@@ -328,7 +328,7 @@ func remoteCommand(script string) string {
 // that must let a started command finish passes context.WithoutCancel.
 func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reader) (code int, stdout, stderr *CappedBuffer, err error) {
 	if strings.ContainsAny(script, "\n\r") {
-		return 0, nil, nil, classify(audit.ErrorKindRemote, errors.New("remote script must be a single line"))
+		return 0, nil, nil, classify(fleet.ErrorKindRemote, errors.New("remote script must be a single line"))
 	}
 	if ctx.Err() != nil {
 		return 0, nil, nil, classify(ctxKind(ctx), fmt.Errorf("run remote command: %w", ctx.Err()))
@@ -337,7 +337,7 @@ func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reade
 	if err != nil {
 		// A rejected channel (*ssh.OpenChannelError) carries the server's
 		// free-text message: bounded like stderr (SEC-8).
-		return 0, nil, nil, classify(audit.ErrorKindRemote, fmt.Errorf("open session: %w", remoteText{err}))
+		return 0, nil, nil, classify(fleet.ErrorKindRemote, fmt.Errorf("open session: %w", remoteText{err}))
 	}
 	defer func() { _ = sess.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = sess.Close() })
@@ -355,7 +355,7 @@ func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reade
 		}
 		var exitErr *ssh.ExitError
 		if !errors.As(runErr, &exitErr) {
-			return 0, nil, nil, classify(audit.ErrorKindRemote, fmt.Errorf("run remote command: %w", runErr))
+			return 0, nil, nil, classify(fleet.ErrorKindRemote, fmt.Errorf("run remote command: %w", runErr))
 		}
 		code = exitErr.ExitStatus()
 	}

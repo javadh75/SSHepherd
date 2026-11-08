@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -38,8 +38,8 @@ func TestPluralizedCountStrings(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			read := map[string]audit.ReadResult{"web-1": {Content: web1}, "bare": {}}
-			read[tt.server] = audit.ReadResult{Content: []byte(tt.content)}
+			read := map[string]fleet.ReadResult{"web-1": {Content: web1}, "bare": {}}
+			read[tt.server] = fleet.ReadResult{Content: []byte(tt.content)}
 			p := planFor(t, buildPlans(t, cfg, &fakeReader{byName: read}, []string{fp(t, 2)}), tt.server)
 			if !strings.Contains(p.Refusal, tt.want) {
 				t.Errorf("Refusal = %q, want it to contain %q", p.Refusal, tt.want)
@@ -49,7 +49,7 @@ func TestPluralizedCountStrings(t *testing.T) {
 
 	t.Run("one key desired, plural non-key and duplicate lines", func(t *testing.T) {
 		content := "# a\n\n" + testkeys.Line(t, 2) + " x\n" + testkeys.Line(t, 2) + " y\n" + testkeys.Line(t, 2) + " z\n"
-		read := map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}
+		read := map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}
 		plans := buildPlans(t, cfg, &fakeReader{byName: read}, []string{fp(t, 2)})
 		var buf bytes.Buffer
 		Render(&buf, cfg, plans, RenderOptions{})

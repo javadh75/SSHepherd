@@ -21,6 +21,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/clog"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/manifest"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
@@ -58,13 +59,13 @@ func TestQuickStartBootstrap(t *testing.T) {
 
 // fakeReader returns canned authorized_keys content per server name.
 type fakeReader struct {
-	byName map[string]audit.ReadResult
+	byName map[string]fleet.ReadResult
 	errs   map[string]error
 }
 
-func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (audit.ReadResult, error) {
+func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (fleet.ReadResult, error) {
 	if err, ok := f.errs[srv.Name]; ok {
-		return audit.ReadResult{}, err
+		return fleet.ReadResult{}, err
 	}
 	return f.byName[srv.Name], nil
 }
@@ -112,7 +113,7 @@ func mixedReader(t *testing.T) *fakeReader {
 	bo := testkeys.Line(t, 4)
 	carol := testkeys.Line(t, 7) + " carol@laptop"
 	anon := testkeys.Line(t, 8)
-	return &fakeReader{byName: map[string]audit.ReadResult{
+	return &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + bo + "\n" + carol + "\n" + anon + "\n")},
 		"web-1": {Content: []byte(op + "\n" + al + "\n" + carol + "\n")},
 		"web-2": {Content: []byte(op + "\n" + al + "\n" + carol + "\n")},
@@ -150,7 +151,7 @@ func TestGenerateAdoptManifestNoopGolden(t *testing.T) {
 	cfg := mixedCfg(t)
 	op, al := testkeys.Line(t, 1), testkeys.Line(t, 2)
 	al2, bo := testkeys.Line(t, 3), testkeys.Line(t, 4)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n")},
 		"web-1": {Content: []byte(op + "\n" + al + "\n" + al2 + "\n" + bo + "\n")},
 		"web-2": {Content: []byte(op + "\n" + bo + "\n")},
@@ -195,7 +196,7 @@ access:
 		t.Fatalf("test config: %v", err)
 	}
 	al := testkeys.Line(t, 2)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(al + "\n")},
 		"web-2": {Content: []byte(al + "\n")},
 	}}
@@ -223,7 +224,7 @@ func TestGenerateAdoptManifestPartialGolden(t *testing.T) {
 	op := testkeys.Line(t, 1)
 	stranger := testkeys.Line(t, 7) + " carol@laptop"
 	r := &fakeReader{
-		byName: map[string]audit.ReadResult{
+		byName: map[string]fleet.ReadResult{
 			"web-1": {Content: []byte(op + "\n" + stranger + "\n")},
 			"web-2": {Content: []byte(op + "\n")},
 		},

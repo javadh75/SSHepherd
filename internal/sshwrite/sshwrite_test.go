@@ -15,9 +15,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
@@ -1481,7 +1481,7 @@ func TestApplyHermeticRealConnection(t *testing.T) {
 		if !errors.As(err, &lo) || lo.Restore != nil {
 			t.Fatalf("err = %v, want a restored *LockoutError", err)
 		}
-		if got := audit.ErrorKindOf(lo.Probe); got != audit.ErrorKindAuth {
+		if got := fleet.ErrorKindOf(lo.Probe); got != fleet.ErrorKindAuth {
 			t.Errorf("probe error kind = %q, want auth", got)
 		}
 		if got := readFile(t, target); got != "previous\n" {
@@ -1533,11 +1533,11 @@ func TestApplyHermeticProbeReadsWrittenFile(t *testing.T) {
 	tests := []struct {
 		name, survivor string
 		lockout        bool
-		kind           audit.ErrorKind // "" = not asserted
+		kind           fleet.ErrorKind // "" = not asserted
 		probeIn        string
 	}{
 		{"forced command= on the survivor fails the probe", `command="echo forced" ` + opLine, true, "", "forced command="},
-		{"from= the client cannot match fails the login", `from="10.255.255.1" ` + opLine, true, audit.ErrorKindAuth, ""},
+		{"from= the client cannot match fails the login", `from="10.255.255.1" ` + opLine, true, fleet.ErrorKindAuth, ""},
 		{"restrict alone passes the probe (negative control)", `restrict ` + opLine, false, "", ""},
 	}
 	for _, tt := range tests {
@@ -1566,8 +1566,8 @@ func TestApplyHermeticProbeReadsWrittenFile(t *testing.T) {
 			if !errors.As(err, &lo) || lo.Restore != nil {
 				t.Fatalf("err = %v, want a restored *LockoutError", err)
 			}
-			if tt.kind != "" && audit.ErrorKindOf(lo.Probe) != tt.kind {
-				t.Errorf("probe error kind = %q, want %q", audit.ErrorKindOf(lo.Probe), tt.kind)
+			if tt.kind != "" && fleet.ErrorKindOf(lo.Probe) != tt.kind {
+				t.Errorf("probe error kind = %q, want %q", fleet.ErrorKindOf(lo.Probe), tt.kind)
 			}
 			if tt.probeIn != "" && !strings.Contains(lo.Probe.Error(), tt.probeIn) {
 				t.Errorf("probe error = %q, want it to mention %q", lo.Probe, tt.probeIn)
@@ -1691,11 +1691,11 @@ func TestApplyDisablesKeys2BeforeTheProbe(t *testing.T) {
 // wrapping, so apply's JSON can report it as error_kind.
 func TestApplyConnectErrorKeepsKind(t *testing.T) {
 	w := &FleetWriter{connect: func(context.Context, config.Server, sshconn.ConnectOptions) (*sshconn.Conn, error) {
-		return nil, &sshconn.Error{Kind: audit.ErrorKindHostKeyChanged, Err: errors.New("knownhosts: key mismatch")}
+		return nil, &sshconn.Error{Kind: fleet.ErrorKindHostKeyChanged, Err: errors.New("knownhosts: key mismatch")}
 	}}
 	err := w.Apply(context.Background(), config.Server{Name: "a", Host: "10.0.0.1", Port: 22, User: "deploy"},
 		Request{Content: []byte("x\n"), Survivors: []string{"SHA256:x"}})
-	if got := audit.ErrorKindOf(err); got != audit.ErrorKindHostKeyChanged {
+	if got := fleet.ErrorKindOf(err); got != fleet.ErrorKindHostKeyChanged {
 		t.Fatalf("ErrorKindOf(%v) = %q, want host_key_changed", err, got)
 	}
 }

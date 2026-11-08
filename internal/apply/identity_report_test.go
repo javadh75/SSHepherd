@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -32,7 +32,7 @@ access:
 	if err != nil {
 		t.Fatalf("identityPlans: %v", err)
 	}
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 4) + " ci_old\n")},
 		"web-2": {FileAbsent: true},
 	}}

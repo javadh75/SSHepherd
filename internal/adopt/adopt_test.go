@@ -9,6 +9,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -48,13 +49,13 @@ func TestSanitizeNameCapsLength(t *testing.T) {
 
 // fakeReader returns canned authorized_keys content per server name.
 type fakeReader struct {
-	byName map[string]audit.ReadResult
+	byName map[string]fleet.ReadResult
 	errs   map[string]error
 }
 
-func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (audit.ReadResult, error) {
+func (f *fakeReader) ReadAuthorizedKeys(_ context.Context, srv config.Server) (fleet.ReadResult, error) {
 	if err, ok := f.errs[srv.Name]; ok {
-		return audit.ReadResult{}, err
+		return fleet.ReadResult{}, err
 	}
 	return f.byName[srv.Name], nil
 }
@@ -93,7 +94,7 @@ func TestBuildUnknownKeyBecomesOneUser(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	stranger := testkeys.Line(t, 7) + " alice@laptop.local"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n")},
 		"web-1": {Content: []byte(op + "\n" + stranger + "\n")},
 		"web-2": {Content: []byte(op + "\n" + stranger + "\n")},
@@ -123,8 +124,8 @@ func TestBuildUnknownKeyBecomesOneUser(t *testing.T) {
 func TestBuildCompliantFleetEmptyPlan(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
-	content := audit.ReadResult{Content: []byte(op + "\n")}
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	content := fleet.ReadResult{Content: []byte(op + "\n")}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1": content, "web-1": content, "web-2": content,
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
@@ -137,7 +138,7 @@ func TestBuildCompliantFleetEmptyPlan(t *testing.T) {
 func TestBuildFileAbsentServer(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {FileAbsent: true},
 		"web-1": {Content: []byte(op + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -152,7 +153,7 @@ func TestBuildAnonymousKeysNumberedInDiscoveryOrder(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	anonA, anonB := testkeys.Line(t, 8), testkeys.Line(t, 9)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + anonA + "\n")},
 		"web-1": {Content: []byte(op + "\n" + anonB + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -185,7 +186,7 @@ access:
 	op, carol := testkeys.Line(t, 1), testkeys.Line(t, 2)
 	k1 := testkeys.Line(t, 7) + " carol@a"
 	k2 := testkeys.Line(t, 8) + " Carol"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(op + "\n" + carol + "\n" + k1 + "\n" + k2 + "\n")},
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
@@ -204,8 +205,8 @@ func TestBuildWildcardCompaction(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	everywhere := testkeys.Line(t, 7) + " carol@laptop"
-	content := audit.ReadResult{Content: []byte(op + "\n" + everywhere + "\n")}
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	content := fleet.ReadResult{Content: []byte(op + "\n" + everywhere + "\n")}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1": content, "web-1": content, "web-2": content,
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
@@ -228,7 +229,7 @@ users:
 servers:
   - {name: web-1, host: 10.0.0.1, user: deploy}
 `)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 7) + "\n")},
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
@@ -244,7 +245,7 @@ func TestBuildDivergentCopiesFirstWins(t *testing.T) {
 	op := testkeys.Line(t, 1)
 	first := testkeys.Line(t, 7) + " carol@a"
 	second := testkeys.Line(t, 7) + " carol@b"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + first + "\n")},
 		"web-1": {Content: []byte(op + "\n" + second + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -282,7 +283,7 @@ access:
 func TestBuildExtendsKnownUser(t *testing.T) {
 	cfg := extCfg(t)
 	op, al := testkeys.Line(t, 1), testkeys.Line(t, 2)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + al + "\n")},
 		"web-1": {Content: []byte(op + "\n" + al + "\n")}, // granted: not an extension
 		"web-2": {Content: []byte(op + "\n" + al + "\n")},
@@ -301,7 +302,7 @@ func TestBuildExtendsKnownUser(t *testing.T) {
 func TestBuildExtensionDedupesServers(t *testing.T) {
 	cfg := extCfg(t)
 	op, al1, al2 := testkeys.Line(t, 1), testkeys.Line(t, 2), testkeys.Line(t, 3)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n")},
 		"web-1": {Content: []byte(op + "\n")},
 		"web-2": {Content: []byte(op + "\n" + al1 + "\n" + al2 + "\n")},
@@ -318,7 +319,7 @@ func TestBuildExtensionDedupesServers(t *testing.T) {
 func TestBuildRespectsExceptCarveOut(t *testing.T) {
 	cfg := extCfg(t)
 	op, bo := testkeys.Line(t, 1), testkeys.Line(t, 4)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + bo + "\n")}, // bob is excepted from db-1
 		"web-1": {Content: []byte(op + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -351,7 +352,7 @@ access:
   - {user: alice, servers: [web-1]}
   - {user: bob, servers: [web-2]}
 `)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(op + "\n" + al + "\n" + bo + "\n")},
 		"web-2": {Content: []byte(op + "\n" + al + "\n" + bo + "\n")},
 	}}
@@ -370,7 +371,7 @@ func TestBuildUnreachableServerIsAnIssue(t *testing.T) {
 	op := testkeys.Line(t, 1)
 	stranger := testkeys.Line(t, 7) + " carol@x"
 	r := &fakeReader{
-		byName: map[string]audit.ReadResult{
+		byName: map[string]fleet.ReadResult{
 			"web-1": {Content: []byte(op + "\n" + stranger + "\n")},
 			"web-2": {Content: []byte(op + "\n")},
 		},
@@ -396,7 +397,7 @@ func TestBuildUnreachableServerIsAnIssue(t *testing.T) {
 func TestBuildKeepsHint(t *testing.T) {
 	cfg := testCfg(t)
 	err := &sshconn.Error{
-		Kind: audit.ErrorKindDial,
+		Kind: fleet.ErrorKindDial,
 		Err:  errors.New("dial tcp 127.0.0.1:1: connect: connection refused"),
 		Hint: sshconn.DialHint,
 	}
@@ -418,7 +419,7 @@ func TestBuildParseErrorsAreIssues(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	stranger := testkeys.Line(t, 7) + " carol@x"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\ngarbage-line\nmore garbage\n" + stranger + "\n")},
 		"web-1": {Content: []byte(op + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -455,8 +456,8 @@ access:
   - {user: bob, servers: [db-1]}
 `)
 	op, bo := testkeys.Line(t, 1), testkeys.Line(t, 4)
-	content := audit.ReadResult{Content: []byte(op + "\n" + bo + "\n")}
-	r := &fakeReader{byName: map[string]audit.ReadResult{"db-1": content, "web-1": content}}
+	content := fleet.ReadResult{Content: []byte(op + "\n" + bo + "\n")}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"db-1": content, "web-1": content}}
 	p := Build(cfg, runAudit(t, cfg, r))
 	if len(p.Extensions) != 0 || len(p.Warnings) != 0 || len(p.NewUsers) != 0 {
 		t.Errorf("plan = %+v, want empty (explicit grant overrides except)", p)
@@ -470,7 +471,7 @@ func TestBuildDivergenceAndCompactionCompose(t *testing.T) {
 	op := testkeys.Line(t, 1)
 	first := testkeys.Line(t, 7) + " carol@a"
 	variant := testkeys.Line(t, 7) + " carol@b"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + first + "\n")},
 		"web-1": {Content: []byte(op + "\n" + variant + "\n")},
 		"web-2": {Content: []byte(op + "\n" + first + "\n")},
@@ -499,7 +500,7 @@ func TestUnreadableServersOrderAndDedup(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	r := &fakeReader{
-		byName: map[string]audit.ReadResult{
+		byName: map[string]fleet.ReadResult{
 			"web-1": {Content: []byte(op + "\ngarbage-one\ngarbage-two\n")},
 			"web-2": {Content: []byte(op + "\n")},
 		},
@@ -520,9 +521,9 @@ func TestBuildUnreadableServerSuppressesCompaction(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	stranger := testkeys.Line(t, 7) + " carol@x"
-	content := audit.ReadResult{Content: []byte(op + "\n" + stranger + "\n")}
+	content := fleet.ReadResult{Content: []byte(op + "\n" + stranger + "\n")}
 	r := &fakeReader{
-		byName: map[string]audit.ReadResult{"web-1": content, "web-2": content},
+		byName: map[string]fleet.ReadResult{"web-1": content, "web-2": content},
 		errs:   map[string]error{"db-1": errors.New("connection refused")},
 	}
 	p := Build(cfg, runAudit(t, cfg, r))
@@ -549,7 +550,7 @@ func TestBuildUnsafeCommentAdoptedWithoutComment(t *testing.T) {
 			op := testkeys.Line(t, 1)
 			bare := `no-pty,command="/bin/true" ` + testkeys.Line(t, 7)
 			line := bare + " " + comment
-			r := &fakeReader{byName: map[string]audit.ReadResult{
+			r := &fakeReader{byName: map[string]fleet.ReadResult{
 				"db-1":  {Content: []byte(op + "\n" + line + "\n")},
 				"web-1": {Content: []byte(op + "\n" + line + "\n")},
 				"web-2": {Content: []byte(op + "\n")},
@@ -591,7 +592,7 @@ access:
 `)
 	op := testkeys.Line(t, 1)
 	anonA, anonB := testkeys.Line(t, 8), testkeys.Line(t, 9)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(op + "\n" + prev + "\n" + anonA + "\n" + anonB + "\n")},
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
@@ -613,7 +614,7 @@ func TestBuildBadOptionLineIsAnIssue(t *testing.T) {
 			op := testkeys.Line(t, 1)
 			bad := prefix + testkeys.Line(t, 7) + " carol@laptop"
 			good := testkeys.Line(t, 8) + " dave@x"
-			r := &fakeReader{byName: map[string]audit.ReadResult{
+			r := &fakeReader{byName: map[string]fleet.ReadResult{
 				"db-1":  {Content: []byte(op + "\n" + bad + "\n" + good + "\n")},
 				"web-1": {Content: []byte(op + "\n")},
 				"web-2": {Content: []byte(op + "\n")},
@@ -634,7 +635,7 @@ func TestBuildBadOptionLineIsAnIssue(t *testing.T) {
 func TestBuildBadOptionKnownKeyNotExtended(t *testing.T) {
 	cfg := extCfg(t) // existing helper (adopt_test.go:264): alice granted web-1 only
 	op, al := testkeys.Line(t, 1), testkeys.Line(t, 2)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + "zzz " + al + "\n")}, // outside alice's grants, line sshd ignores
 		"web-1": {Content: []byte(op + "\n" + al + "\n")},          // granted: not an extension
 		"web-2": {Content: []byte(op + "\n")},
@@ -665,7 +666,7 @@ func TestBuildBadThenGoodLineIsAccess(t *testing.T) {
 			`command="a",command="b" ` + testkeys.Line(t, 7) + " carol@laptop\n" + testkeys.Line(t, 7) + " carol@laptop\n",
 		} {
 			cfg := testCfg(t)
-			r := &fakeReader{byName: map[string]audit.ReadResult{
+			r := &fakeReader{byName: map[string]fleet.ReadResult{
 				"db-1":  {Content: []byte(op + "\n" + content)},
 				"web-1": {Content: []byte(op + "\n")},
 				"web-2": {Content: []byte(op + "\n")},
@@ -683,7 +684,7 @@ func TestBuildBadThenGoodLineIsAccess(t *testing.T) {
 	t.Run("known key", func(t *testing.T) {
 		cfg := extCfg(t)
 		al := testkeys.Line(t, 2)
-		r := &fakeReader{byName: map[string]audit.ReadResult{
+		r := &fakeReader{byName: map[string]fleet.ReadResult{
 			"db-1":  {Content: []byte(op + "\n" + "zzz " + al + "\n" + al + "\n")},
 			"web-1": {Content: []byte(op + "\n" + al + "\n")},
 			"web-2": {Content: []byte(op + "\n")},
@@ -703,7 +704,7 @@ func TestBuildEveryLineIgnoredIsAnIssue(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	k := testkeys.Line(t, 7) + " carol@laptop"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + "zzz " + k + "\n" + "no-ptty " + k + "\n")},
 		"web-1": {Content: []byte(op + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -721,7 +722,7 @@ func TestBuildEveryLineIgnoredIsAnIssue(t *testing.T) {
 func TestBuildRepeatedClauseLineIsAnIssue(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"db-1":  {Content: []byte(op + "\n" + `command="echo A",command="echo B" ` + testkeys.Line(t, 7) + " carol@laptop\n")},
 		"web-1": {Content: []byte(op + "\n")},
 		"web-2": {Content: []byte(op + "\n")},
@@ -746,7 +747,7 @@ func TestBuildControlRuneOptionLine(t *testing.T) {
 	t.Run("known key extends", func(t *testing.T) {
 		cfg := extCfg(t)
 		al := testkeys.Line(t, 2)
-		r := &fakeReader{byName: map[string]audit.ReadResult{
+		r := &fakeReader{byName: map[string]fleet.ReadResult{
 			"db-1":  {Content: []byte(op + "\n" + "command=\"echo\ta\" " + al + "\n")},
 			"web-1": {Content: []byte(op + "\n" + al + "\n")},
 			"web-2": {Content: []byte(op + "\n")},
@@ -761,7 +762,7 @@ func TestBuildControlRuneOptionLine(t *testing.T) {
 	})
 	t.Run("unknown key is an issue", func(t *testing.T) {
 		cfg := testCfg(t)
-		r := &fakeReader{byName: map[string]audit.ReadResult{
+		r := &fakeReader{byName: map[string]fleet.ReadResult{
 			"db-1":  {Content: []byte(op + "\n" + "command=\"echo\ta\" " + testkeys.Line(t, 7) + " carol@laptop\n")},
 			"web-1": {Content: []byte(op + "\n")},
 			"web-2": {Content: []byte(op + "\n")},

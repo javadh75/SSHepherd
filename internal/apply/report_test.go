@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -71,7 +71,7 @@ func mixedPlans(t *testing.T) (*config.Config, []ServerPlan) {
 		testkeys.Line(t, 2) + " alice@old\n" +
 		testkeys.Line(t, 9) + " stray@laptop\n"
 	r := &fakeReader{
-		byName: map[string]audit.ReadResult{
+		byName: map[string]fleet.ReadResult{
 			"web-1": {Content: []byte(web1), SessionKeyFP: fp(t, 2)},
 			"web-2": {Content: renderedFor(t, cfg, "web-2")},
 			"db-1":  {Content: []byte(testkeys.Line(t, 8) + "\n")},
@@ -83,7 +83,7 @@ func mixedPlans(t *testing.T) (*config.Config, []ServerPlan) {
 
 // dialRefused is exactly what sshconn returns for a refused TCP connect.
 func dialRefused(ip string) error {
-	return &sshconn.Error{Kind: audit.ErrorKindDial, Hint: sshconn.DialHint, Err: &net.OpError{Op: "dial", Net: "tcp",
+	return &sshconn.Error{Kind: fleet.ErrorKindDial, Hint: sshconn.DialHint, Err: &net.OpError{Op: "dial", Net: "tcp",
 		Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 22}, Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
 }
 
@@ -91,7 +91,7 @@ func dialRefused(ip string) error {
 // in the remove row's detail cell.
 func TestRenderRemoveRowShowsOptions(t *testing.T) {
 	cfg := mixedCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 2) + " alice@work\n" + testkeys.Line(t, 3) + " bob\n" +
 			`command="/bin/backup" ` + testkeys.Line(t, 9) + " backup@nas\n"), SessionKeyFP: fp(t, 2)},
 	}}
@@ -289,7 +289,7 @@ func securityPlans(t *testing.T) (*config.Config, []ServerPlan) {
 		`from="10.0.0.5",command="/usr/bin/pg_dump-wrapper" ` + testkeys.Line(t, 2) + " alice@work\n" +
 		testkeys.Line(t, 3) + " bob\n" +
 		"no-pty " + testkeys.Line(t, 3) + " bob\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(content), AuthorizedKeys2: true},
 	}}
 	return cfg, buildPlans(t, cfg, r, []string{fp(t, 1)})
@@ -326,7 +326,7 @@ func TestRenderPlanSecurityGolden(t *testing.T) {
 // plan is a change whose only row disables the file.
 func TestPlanKeys2ForcesDisable(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: renderedFor(t, cfg, "web-1"), AuthorizedKeys2: true},
 	}}
 	plans := buildPlans(t, cfg, r, []string{fp(t, 1)})
@@ -348,7 +348,7 @@ func TestPlanKeys2ForcesDisable(t *testing.T) {
 // hand-removal warning — nothing disables the file there.
 func TestRenderKeys2WarningOnRefused(t *testing.T) {
 	cfg := planCfg(t)
-	r := &fakeReader{byName: map[string]audit.ReadResult{
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\ngarbage line\n"), AuthorizedKeys2: true},
 	}}
 	plans := buildPlans(t, cfg, r, []string{fp(t, 1)})

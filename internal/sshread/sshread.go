@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
 
@@ -113,8 +113,6 @@ type Client struct {
 	dialer *sshconn.Dialer
 }
 
-var _ audit.KeyReader = (*Client)(nil)
-
 // log returns the configured logger or a discard logger, so call sites never
 // nil-check.
 func (c *Client) log() *slog.Logger {
@@ -128,7 +126,7 @@ func (c *Client) log() *slog.Logger {
 // readAuthorizedKeys, wrapping any error so its message is control-stripped:
 // handshake errors can embed server-supplied text (disconnect messages,
 // algorithm names), which must never reach an operator's terminal raw.
-func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
+func (c *Client) ReadAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
 	res, err := c.readAuthorizedKeys(ctx, srv)
 	if err != nil {
 		return res, sshconn.SanitizedError{Err: err}
@@ -163,8 +161,8 @@ func (c *Client) getDialer() *sshconn.Dialer {
 // that the path is not equivalent. Deadline semantics live
 // in Connect: the ctx deadline (or the derived 3×DialTimeout floor) bounds
 // the whole exchange, not just the dial; ctx cancellation ends it at once.
-func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (audit.ReadResult, error) {
-	var zero audit.ReadResult
+func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
+	var zero fleet.ReadResult
 	conn, err := c.getDialer().Connect(ctx, srv)
 	if err != nil {
 		return zero, err

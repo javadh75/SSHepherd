@@ -7,6 +7,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
@@ -48,7 +49,7 @@ type jsonServer struct {
 	Status             string  `json:"status"`
 	Error              *string `json:"error"`
 	// ErrorKind is additive-optional (schema stays 1): present exactly when
-	// error is non-null; one of the audit.ErrorKind values.
+	// error is non-null; one of the fleet.ErrorKind values.
 	ErrorKind string `json:"error_kind,omitempty"`
 	// Hint is additive-optional (schema stays 1): operator remediation for
 	// error, sanitized; never part of error.
@@ -170,7 +171,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		// (C1, Cf) or merely escapes (C0) for the consumer to decode.
 		msg := sanitize.Remote(oneLine(r.Err))
 		s.Error = &msg
-		s.ErrorKind = string(ErrorKindOf(r.Err))
+		s.ErrorKind = string(fleet.ErrorKindOf(r.Err))
 		// Not deduplicated: each server object stays self-contained.
 		s.Hint = CleanHint(r.Err)
 		return s

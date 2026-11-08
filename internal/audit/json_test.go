@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -169,7 +170,7 @@ func TestRenderJSONOperatorMarker(t *testing.T) {
 func TestRenderJSONAuthorizedKeysFile(t *testing.T) {
 	t.Run("set: field emitted", func(t *testing.T) {
 		cfg := overrideConfig(t, "/etc/ssh/keys/deploy")
-		reader := &fakeReader{byName: map[string]ReadResult{"web-1": {FileAbsent: true}}}
+		reader := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 		results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
 		var rep struct {
 			Servers []map[string]json.RawMessage `json:"servers"`
@@ -294,7 +295,7 @@ func TestRenderJSONSanitizesHostileText(t *testing.T) {
 		testkeys.Line(t, 2) + "\n" +
 		testkeys.Line(t, 9) + " " + hostile + "\n"
 	reader := &fakeReader{
-		byName: map[string]ReadResult{"web-1": {Content: []byte(content)}},
+		byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}},
 		errs:   map[string]error{"web-2": errors.New("banner " + hostile)},
 	}
 	results := Run(context.Background(), cfg, reader, Options{Parallel: 1})
@@ -323,7 +324,7 @@ func TestRenderJSONSanitizesHostileText(t *testing.T) {
 // the error, hint the sanitized remediation, absent when there is none.
 func TestRenderJSONHintField(t *testing.T) {
 	cfg := reportConfig(t)
-	hostile := hintedErr{kindedErr{ErrorKindDial, "dial tcp 10.0.0.2:22: connect: connection refused"}, "fix\nit \x1b[31mnow\u202e"}
+	hostile := hintedErr{kindedErr{fleet.ErrorKindDial, "dial tcp 10.0.0.2:22: connect: connection refused"}, "fix\nit \x1b[31mnow\u202e"}
 	var rep jsonReport
 	raw := renderJSON(t, cfg, []ServerResult{{Server: cfg.Servers[0], Err: hostile}, {Server: cfg.Servers[1], Err: errors.New("boom")}})
 	if err := json.Unmarshal(raw, &rep); err != nil {
@@ -344,7 +345,7 @@ func TestRenderJSONHintField(t *testing.T) {
 // when it carries options: `options` is only for a key nobody owns.
 func TestRenderJSONUnauthorizedOptions(t *testing.T) {
 	cfg := reportConfig(t)
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(`no-pty,command="x` + "\u202e" + `" ` + testkeys.Line(t, 9) + " a@b\n" + testkeys.Line(t, 8) + "\n")},
 		"web-2": {Content: []byte("no-pty " + testkeys.Line(t, 2) + " bob@laptop\n")},
 	}}

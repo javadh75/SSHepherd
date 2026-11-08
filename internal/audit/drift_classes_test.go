@@ -5,55 +5,31 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 // kindedErr is a reader error that carries its own classification, the
 // way sshconn.Error does.
 type kindedErr struct {
-	kind ErrorKind
+	kind fleet.ErrorKind
 	msg  string
 }
 
-func (e kindedErr) Error() string        { return e.msg }
-func (e kindedErr) ErrorKind() ErrorKind { return e.kind }
-
-func TestErrorKindOf(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want ErrorKind
-	}{
-		{"nil", nil, ""},
-		{"plain", errors.New("boom"), ErrorKindUnknown},
-		{"kinded", kindedErr{ErrorKindAuth, "denied"}, ErrorKindAuth},
-		{"kinded behind wrappers", fmt.Errorf("read: %w", kindedErr{ErrorKindHostKeyChanged, "x"}), ErrorKindHostKeyChanged},
-		{"deadline", fmt.Errorf("x: %w", context.DeadlineExceeded), ErrorKindTimeout},
-		{"canceled", fmt.Errorf("x: %w", context.Canceled), ErrorKindCanceled},
-		{"net dial", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, ErrorKindDial},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := ErrorKindOf(tt.err); got != tt.want {
-				t.Errorf("ErrorKindOf(%v) = %q, want %q", tt.err, got, tt.want)
-			}
-		})
-	}
-}
+func (e kindedErr) Error() string              { return e.msg }
+func (e kindedErr) ErrorKind() fleet.ErrorKind { return e.kind }
 
 // errorKindResults: web-1 presents a changed host key, web-2 refuses auth.
 func errorKindResults(t *testing.T, cfg *config.Config) []ServerResult {
 	t.Helper()
 	reader := &fakeReader{errs: map[string]error{
-		"web-1": hintedErr{kindedErr{ErrorKindHostKeyChanged, "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch"},
+		"web-1": hintedErr{kindedErr{fleet.ErrorKindHostKeyChanged, "ssh deploy@10.0.0.1:22: presented ssh-ed25519 key SHA256:abc: knownhosts: key mismatch"},
 			"HOST KEY CHANGED for 10.0.0.1:22 — possible impersonation; investigate and verify the new fingerprint out of band before touching ~/.ssh/known_hosts"},
-		"web-2": kindedErr{ErrorKindAuth, "ssh deploy@10.0.0.2:22: ssh: unable to authenticate"},
+		"web-2": kindedErr{fleet.ErrorKindAuth, "ssh deploy@10.0.0.2:22: ssh: unable to authenticate"},
 	}}
 	return Run(context.Background(), cfg, reader, Options{Parallel: 2})
 }
@@ -111,26 +87,6 @@ type hintedErr struct {
 
 func (e hintedErr) ErrorHint() string { return e.hint }
 
-func TestHintOf(t *testing.T) {
-	h := hintedErr{kindedErr{ErrorKindDial, "dial tcp x: refused"}, "check the firewall"}
-	for _, tt := range []struct {
-		name string
-		err  error
-		want string
-	}{
-		{"nil", nil, ""},
-		{"plain", errors.New("boom"), ""},
-		{"hinted", h, "check the firewall"},
-		{"hinted behind wrappers", fmt.Errorf("read: %w", h), "check the firewall"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := HintOf(tt.err); got != tt.want {
-				t.Errorf("HintOf = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestUnknownErrorKindStaysPlain(t *testing.T) {
 	cfg := reportConfig(t)
 	var buf bytes.Buffer
@@ -172,7 +128,7 @@ access:
 func securityDriftResults(t *testing.T, cfg *config.Config) []ServerResult {
 	t.Helper()
 	restricted := `restrict,command="/usr/local/bin/backup",from="10.0.0.5" ` + testkeys.Line(t, 1)
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
 		"web-2": {
 			Content: []byte(restricted + "\n" +
@@ -226,7 +182,7 @@ func TestSecurityDriftClasses(t *testing.T) {
 func TestOptionsMatchIsCompliant(t *testing.T) {
 	cfg := optionsConfig(t)
 	restricted := `restrict,command="/usr/local/bin/backup",from="10.0.0.5" ` + testkeys.Line(t, 1)
-	reader := &fakeReader{byName: map[string]ReadResult{
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
 		"web-1": {Content: []byte(restricted + " any-comment\n")},
 	}}
 	res := auditOne(context.Background(), cfg, reader, cfg.Servers[0], 0, discardLogger)

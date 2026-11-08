@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
@@ -294,7 +294,7 @@ access:
 	}
 	content := testkeys.Line(t, 1) + " op@sshepherd\n" + testkeys.Line(t, 2) + " alice@work\n" +
 		testkeys.Line(t, 3) + " bob\n" + testkeys.Line(t, 9) + " stray\n"
-	r := &fakeReader{byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}}}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}}}
 	plans := buildPlans(t, edited, r, []string{fp(t, 1)})
 	sum := EditSummary{
 		Edits:    []Edit{{Kind: EditRemoveUser, User: "alice", Keys: 1, Grants: 1}},
@@ -406,7 +406,7 @@ func TestRenderJSONSanitizes(t *testing.T) {
 		testkeys.Line(t, 9) + " " + hostile + "\n" +
 		`command="/bin/` + hostile + `" ` + testkeys.Line(t, 8) + " backup@nas\n"
 	r := &fakeReader{
-		byName: map[string]audit.ReadResult{"web-1": {Content: []byte(content)}},
+		byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(content)}},
 	}
 	plans := buildPlans(t, cfg, r, []string{fp(t, 1)})
 	plans = append(plans, ServerPlan{
@@ -635,10 +635,10 @@ func srv(name string) config.Server { return config.Server{Name: name} }
 
 // writeKindErr stands in for a classified transport error (sshconn.Error)
 // that reaches a plan's OutcomeErr through sshwrite's wrappers.
-type writeKindErr struct{ kind audit.ErrorKind }
+type writeKindErr struct{ kind fleet.ErrorKind }
 
 func (e writeKindErr) Error() string              { return "ssh deploy@10.0.0.1:22: knownhosts: key mismatch" }
-func (e writeKindErr) ErrorKind() audit.ErrorKind { return e.kind }
+func (e writeKindErr) ErrorKind() fleet.ErrorKind { return e.kind }
 
 // TestJSONErrorKindWritePhase: a write-phase failure keeps the kind the
 // transport attached (ARC-3), so a host key that changed between plan and
@@ -651,9 +651,9 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 		want string
 	}{
 		{"host key changed at write connect", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
-			OutcomeErr: fmt.Errorf("write on a: %w", writeKindErr{audit.ErrorKindHostKeyChanged})}, "host_key_changed"},
+			OutcomeErr: fmt.Errorf("write on a: %w", writeKindErr{fleet.ErrorKindHostKeyChanged})}, "host_key_changed"},
 		{"dial at write connect", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
-			OutcomeErr: writeKindErr{audit.ErrorKindDial}}, "dial"},
+			OutcomeErr: writeKindErr{fleet.ErrorKindDial}}, "dial"},
 		{"unclassified verify failure", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
 			OutcomeErr: errors.New("verify failed")}, ""},
 		{"refusal", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeRefused,
@@ -661,7 +661,7 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 		{"interrupted pending", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomePending,
 			OutcomeErr: errInterrupted}, "canceled"},
 		{"per-server deadline at write connect", ServerPlan{Server: srv("a"), Class: ClassChange, Outcome: OutcomeFailed,
-			OutcomeErr: writeKindErr{audit.ErrorKindCanceled}}, "timeout"},
+			OutcomeErr: writeKindErr{fleet.ErrorKindCanceled}}, "timeout"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -696,7 +696,7 @@ func TestJSONWriteConnectTimeoutIsTimeout(t *testing.T) {
 	if plans[0].Outcome != OutcomeFailed {
 		t.Fatalf("Outcome = %s (err %v), want failed", plans[0].Outcome, plans[0].OutcomeErr)
 	}
-	if msg, kind, _ := jsonErrorFor(plans[0]); msg == nil || kind != string(audit.ErrorKindTimeout) {
+	if msg, kind, _ := jsonErrorFor(plans[0]); msg == nil || kind != string(fleet.ErrorKindTimeout) {
 		t.Errorf("jsonErrorFor = (%v, %q), want kind timeout", msg, kind)
 	}
 }

@@ -9,8 +9,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 )
 
 // hostKeyHint classifies a known_hosts verification failure and attaches
@@ -29,31 +29,31 @@ func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, knownHos
 	}
 	var revoked *knownhosts.RevokedError
 	if errors.As(err, &revoked) {
-		return classifyHint(audit.ErrorKindHostKeyRevoked, fmt.Sprintf(
+		return classifyHint(fleet.ErrorKindHostKeyRevoked, fmt.Sprintf(
 			"this key is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
 			knownHostsPath), err)
 	}
 	var ke *knownhosts.KeyError
 	if !errors.As(err, &ke) {
 		if strings.Contains(err.Error(), noAuthorityPrefix) {
-			return classifyHint(audit.ErrorKindHostKey, fmt.Sprintf(
+			return classifyHint(fleet.ErrorKindHostKey, fmt.Sprintf(
 				"the host presented a certificate but no @cert-authority line in %s vouches for it here; record the host's plain key or its CA (verified out of band)",
 				knownHostsPath), err)
 		}
-		return classify(audit.ErrorKindHostKey, err)
+		return classify(fleet.ErrorKindHostKey, err)
 	}
 	if len(ke.Want) == 0 {
-		return classifyHint(audit.ErrorKindHostKeyUnknown, fmt.Sprintf(
+		return classifyHint(fleet.ErrorKindHostKeyUnknown, fmt.Sprintf(
 			"host is not in %s; verify the presented fingerprint out of band (on the server console: %s, or the cloud provider's console output), then compare before recording: %s — append only a line whose fingerprint matches",
 			knownHostsPath, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
 	}
 	if presented != nil && !typeRecorded(ke, presented.Type()) {
-		return classifyHint(audit.ErrorKindHostKeyTypeUnrecorded, fmt.Sprintf(
+		return classifyHint(fleet.ErrorKindHostKeyTypeUnrecorded, fmt.Sprintf(
 			"host key type %s is not recorded in known_hosts for this host (recorded: %s) — unverified, not proof of a change; verify the presented fingerprint out of band (%s on the console), compare with: %s — and append only a matching line",
 			presented.Type(), strings.Join(recordedTypes(ke), ", "),
 			consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
 	}
-	return classifyHint(audit.ErrorKindHostKeyChanged, fmt.Sprintf(
+	return classifyHint(fleet.ErrorKindHostKeyChanged, fmt.Sprintf(
 		"HOST KEY CHANGED for %s:%d — possible impersonation; investigate and verify the new fingerprint out of band before touching %s",
 		srv.Host, srv.Port, knownHostsPath), err)
 }

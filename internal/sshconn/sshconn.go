@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
@@ -116,7 +116,7 @@ func FinishSecondaryProbe(code int, stderr *CappedBuffer) (present bool, err err
 	case secondaryPresentExit:
 		return true, nil
 	default:
-		return false, classify(audit.ErrorKindRemote, fmt.Errorf("authorized_keys2 probe failed (exit %d): %s",
+		return false, classify(fleet.ErrorKindRemote, fmt.Errorf("authorized_keys2 probe failed (exit %d): %s",
 			code, sanitize.RemoteSnippet(stderr.String())))
 	}
 }
@@ -198,21 +198,21 @@ func (b *CappedBuffer) Len() int { return b.buf.Len() }
 // stdout is an error (a partial authorized_keys must never be diffed as
 // truth: missing tail keys would be misreported as drift); truncated stderr
 // is diagnostics only and is worth a WARN, not a failure.
-func FinishRead(code int, stdout, stderr *CappedBuffer, addr string, log *slog.Logger) (audit.ReadResult, error) {
-	var zero audit.ReadResult
+func FinishRead(code int, stdout, stderr *CappedBuffer, addr string, log *slog.Logger) (fleet.ReadResult, error) {
+	var zero fleet.ReadResult
 	if stderr.truncated {
 		log.Warn(fmt.Sprintf("%s: remote stderr exceeded %d bytes; diagnostics truncated", addr, MaxRemoteOutput))
 	}
 	absent, err := interpretExit(code, stderr.String())
 	if err != nil {
-		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: %w", addr, err))
+		return zero, classify(fleet.ErrorKindRemote, fmt.Errorf("remote read on %s: %w", addr, err))
 	}
 	if stdout.truncated {
-		return zero, classify(audit.ErrorKindRemote, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to trust a truncated authorized_keys", addr))
+		return zero, classify(fleet.ErrorKindRemote, fmt.Errorf("remote read on %s: remote output exceeded 1MiB — refusing to trust a truncated authorized_keys", addr))
 	}
 	if absent {
-		return audit.ReadResult{FileAbsent: true}, nil
+		return fleet.ReadResult{FileAbsent: true}, nil
 	}
 	log.Debug("read authorized_keys", "addr", addr, "bytes", stdout.Len())
-	return audit.ReadResult{Content: stdout.Bytes()}, nil
+	return fleet.ReadResult{Content: stdout.Bytes()}, nil
 }
