@@ -2,7 +2,8 @@ BINARY       := sshepherd
 IMAGE        := sshepherd:dev
 VERSION      ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COVERPROFILE := coverage.out
-COVERAGE_MIN := 80
+# Ratchet: floor(measured production total) − 1, measured 2026-11-08 at 2010589 (94.8%); raise it, never lower it.
+COVERAGE_MIN := 93
 PKG          := ./...
 GO           := go
 
@@ -167,8 +168,13 @@ IT_DISTRO ?= alpine
 integration:
 	./scripts/integration.sh "$(IT_DISTRO)"
 
-## coverage: report coverage and fail below COVERAGE_MIN%
+## coverage: report coverage and fail below COVERAGE_MIN% (production packages only)
+# Test-support packages: linked only into tests, so their own-package 0%
+# would dilute the production figure. Excluded from the gated profile.
+COVER_EXCLUDE := /internal/sshconn/sshtest/|/internal/testkeys/
+
 coverage: test
+	@{ head -n1 $(COVERPROFILE); tail -n +2 $(COVERPROFILE) | grep -Ev '$(COVER_EXCLUDE)'; } > $(COVERPROFILE).tmp && mv $(COVERPROFILE).tmp $(COVERPROFILE)
 	$(GO) tool cover -func=$(COVERPROFILE)
 	$(GO) tool cover -html=$(COVERPROFILE) -o coverage.html
 	@total=$$($(GO) tool cover -func=$(COVERPROFILE) | awk '/^total:/ {print $$3}' | tr -d '%'); \

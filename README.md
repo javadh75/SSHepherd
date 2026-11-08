@@ -1739,9 +1739,9 @@ characters (`…(truncated)`).
 Everything below runs the same commands CI runs.
 
 ```console
-$ make check        # the full gate: tidy, fmt, vet, lint, layering, deadcode, security, licenses, coverage (≥80%)
+$ make check        # the full gate: tidy, fmt, vet, lint, layering, deadcode, security, licenses, coverage (≥93%, production packages; test helpers excluded)
 $ make test         # go test -race with an atomic coverage profile
-$ make coverage     # coverage report; fails below 80% line coverage
+$ make coverage     # coverage report; fails below 93% line coverage (production packages; test helpers excluded)
 $ make integration  # two dockerized alpine sshd containers + build-tagged integration/E2E tests
 $ make integration IT_DISTRO=debian  # or alpine | rocky
 $ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each); fails if a package's tests do not build

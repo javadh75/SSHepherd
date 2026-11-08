@@ -216,9 +216,10 @@ test that fails before the fix and passes after.
   `go test -race -covermode=atomic -coverprofile=coverage.out ./...`.
 - Human-readable views: `go tool cover -func=coverage.out` (per-func summary) and
   `go tool cover -html=coverage.out -o coverage.html` (annotated source).
-- CI **uploads `coverage.out` / `coverage.html` as an artifact** and **fails below the 80%
-  line-coverage minimum** (best-practice gate, enforced by `make coverage` via `COVERAGE_MIN`;
-  ratchet upward over time). Never let coverage silently drop.
+- CI **uploads `coverage.out` / `coverage.html` as an artifact** and **fails below the `COVERAGE_MIN`
+  line-coverage minimum** (currently 93%, production packages only — `internal/sshconn/sshtest` and
+  `internal/testkeys` are excluded; `make coverage` filters them out of `coverage.out` in place) (best-practice
+  gate, enforced by `make coverage`; ratchet: floor(measured) − 1, raise it, never lower it). Never let coverage silently drop.
 
 ## Container image
 
@@ -576,3 +577,8 @@ REFUSED-row hint, audit's queued-server release on Ctrl-C (COR-7), and explicit 
 rows. The `ssh -G` differential compares alias sets both ways (deliberate skips are recorded
 in `skippedOnPurpose`) and ProxyJump/ProxyCommand. `TestRootVersionUsesResolved` fails if
 `--version` bypasses `resolveVersion`.
+P14 S6 (TST-7): the layering pass also gates coverage on production packages (`COVERAGE_MIN` 93):
+`make coverage` drops the test-support packages `internal/sshconn/sshtest` and `internal/testkeys`
+from `coverage.out` in place (keeping the `mode:` header, so CI's artifact names are unchanged);
+the measured production total was 94.8% at `2010589` (93.3% with the helpers), and the minimum
+ratchets as floor(measured) − 1, raised and never lowered.
