@@ -125,3 +125,26 @@ func TestRenderEmpty(t *testing.T) {
 		t.Fatalf("Render(nil) = (%q, %v), want header only", got, err)
 	}
 }
+
+// TestRenderSerialZeroIsLegacyBytes: serial 0 renders today's file byte for
+// byte, so fleets that never revoke see no churn on upgrade.
+func TestRenderSerialZeroIsLegacyBytes(t *testing.T) {
+	e := []RenderEntry{{Key: mustKey(t, testkeys.Line(t, 1)), Comment: "a"}}
+	old, err := Render(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero, err := RenderSerial(e, 0)
+	if err != nil || !bytes.Equal(old, zero) || !bytes.HasPrefix(zero, []byte(ManagedHeader+"\n")) {
+		t.Fatalf("RenderSerial(…, 0) = %q, %v; want Render's bytes %q", zero, err, old)
+	}
+}
+
+func TestRenderSerialHeader(t *testing.T) {
+	e := []RenderEntry{{Key: mustKey(t, testkeys.Line(t, 1)), Comment: "a"}}
+	out, err := RenderSerial(e, 7)
+	want := "# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.\n" + testkeys.Line(t, 1) + " a\n"
+	if err != nil || string(out) != want {
+		t.Fatalf("RenderSerial = %q, %v\nwant %q", out, err, want)
+	}
+}

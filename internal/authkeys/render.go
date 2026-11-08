@@ -8,10 +8,11 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// ManagedHeader is the fixed first line of every rendered file. Deliberately
-// undated: output stays byte-stable and golden-testable, so a repeated apply
-// is a byte-for-byte no-op (2026-07-19 apply spec, owner-approved).
-const ManagedHeader = "# Managed by SSHepherd. Manual edits will be overwritten by 'sshepherd apply'."
+// ManagedHeader is the legacy first line of every rendered file — the
+// header at serial 0 (see Header). Deliberately undated: output stays
+// byte-stable and golden-testable, so a repeated apply is a byte-for-byte
+// no-op (2026-07-19 apply spec, owner-approved; amended 2026-11-08).
+const ManagedHeader = "# Managed by SSHepherd" + headerTail
 
 // RenderEntry pairs a parsed key with the comment the write policy decided
 // on (config.DesiredComment — resolved by the caller; authkeys cannot
@@ -47,13 +48,17 @@ func RenderLine(e RenderEntry) (string, error) {
 	return b.String(), nil
 }
 
-// Render renders the complete managed authorized_keys file: the managed
-// header, one line per entry in order, trailing newline. Deterministic —
-// equal input yields byte-identical output; apply's byte-exact convergence
-// test and its idempotency both hang on this.
-func Render(entries []RenderEntry) ([]byte, error) {
+// Render renders the managed file at serial 0 (the legacy header); see
+// RenderSerial.
+func Render(entries []RenderEntry) ([]byte, error) { return RenderSerial(entries, 0) }
+
+// RenderSerial renders the complete managed authorized_keys file: the
+// managed header for serial (Header), one line per entry in order, trailing
+// newline. Deterministic — equal input yields byte-identical output; apply's
+// convergence test and its idempotency both hang on this.
+func RenderSerial(entries []RenderEntry, serial uint64) ([]byte, error) {
 	var b bytes.Buffer
-	b.WriteString(ManagedHeader)
+	b.WriteString(Header(serial))
 	b.WriteByte('\n')
 	for _, e := range entries {
 		line, err := RenderLine(e)

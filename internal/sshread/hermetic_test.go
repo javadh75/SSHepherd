@@ -141,3 +141,27 @@ func TestReadWithKeyFileNoAgent(t *testing.T) {
 		t.Errorf("SessionKeyFP = %q, want the key file's fingerprint", res.SessionKeyFP)
 	}
 }
+
+// TestReadKeys2Content: with ReadKeys2 the reader returns a non-empty
+// authorized_keys2's bytes (the post-revoke sweep reads it); without it, or
+// when the file is empty or absent, Keys2 stays nil.
+func TestReadKeys2Content(t *testing.T) {
+	home := t.TempDir()
+	writeHomeFile(t, home, ".ssh/authorized_keys", "ssh-ed25519 AAAA main\n")
+	writeHomeFile(t, home, ".ssh/authorized_keys2", "ssh-ed25519 AAAA planted\n")
+	c, _, srv := hermeticClient(t, home)
+	res, err := c.ReadAuthorizedKeys(t.Context(), srv)
+	if err != nil || res.Keys2 != nil {
+		t.Fatalf("without ReadKeys2: Keys2 = %q, err %v; want nil", res.Keys2, err)
+	}
+	c.ReadKeys2 = true
+	res, err = c.ReadAuthorizedKeys(t.Context(), srv)
+	if err != nil || string(res.Keys2) != "ssh-ed25519 AAAA planted\n" || res.Keys2Err != nil || !res.AuthorizedKeys2 {
+		t.Fatalf("ReadKeys2: %+v, err %v", res, err)
+	}
+	writeHomeFile(t, home, ".ssh/authorized_keys2", "")
+	res, err = c.ReadAuthorizedKeys(t.Context(), srv)
+	if err != nil || res.Keys2 != nil || res.AuthorizedKeys2 {
+		t.Fatalf("empty keys2: %+v, err %v", res, err)
+	}
+}

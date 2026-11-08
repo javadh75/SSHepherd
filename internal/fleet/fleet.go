@@ -17,6 +17,12 @@ type ReadResult struct {
 	// authorized_keys, so keys in it log in although SSHepherd neither reads
 	// nor manages them. Probed only when the audited path is the default.
 	AuthorizedKeys2 bool
+	// Keys2 holds ~/.ssh/authorized_keys2's bytes when the reader was asked
+	// for them (sshread.Client.ReadKeys2) and AuthorizedKeys2 is true;
+	// Keys2Err is why they could not be read (the main read still stands).
+	// Only the post-revoke sweep asks.
+	Keys2    []byte
+	Keys2Err error
 }
 
 // SourceAgent is HeldKey.Source for a key the ssh-agent holds.

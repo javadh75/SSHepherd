@@ -247,6 +247,34 @@ func TestIntegrationApplyWriteBackupVerify(t *testing.T) {
 	}
 }
 
+// TestIntegrationOrigFollowsHeaderSerial: on real sshd and every distro's
+// shell, a "(serial 9)" file takes no .orig, while a "(serial 07)" lookalike
+// — not a managed header by ParseHeader's anchored definition — does.
+func TestIntegrationOrigFollowsHeaderSerial(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "writer", Host: host, Port: port, User: "writer"}
+	for _, tc := range []struct {
+		first string
+		orig  bool
+	}{
+		{authkeys.Header(9), false},
+		{"# Managed by SSHepherd (serial 07). Manual edits will be overwritten by 'sshepherd apply'.", true},
+	} {
+		seed := tc.first + "\n" + itPub(t) + "\n"
+		reseed(t, w.Dialer, srv, fixture{keys: strp(seed)})
+		if err := w.Apply(itCtx(t), srv, itRequest(t, w.Dialer, srv, itRendered(t))); err != nil {
+			t.Fatalf("Apply over %q: %v", tc.first, err)
+		}
+		got := remoteOut(t, w.Dialer, srv, `if [ -e "$HOME/.ssh/authorized_keys.sshepherd.orig" ]; then cat "$HOME/.ssh/authorized_keys.sshepherd.orig"; else echo absent; fi`)
+		switch {
+		case tc.orig && got != seed:
+			t.Errorf("first line %q: .orig = %q, want the seeded bytes", tc.first, got)
+		case !tc.orig && got != "absent\n":
+			t.Errorf("first line %q: .orig = %q, want none", tc.first, got)
+		}
+	}
+}
+
 // TestIntegrationOrphanedTempReclaimed: a temp file orphaned by a dropped
 // connection (planted directly here) is reclaimed by the next apply's rm -f.
 // The temp name is deliberately fixed — no $$ suffix — exactly so this

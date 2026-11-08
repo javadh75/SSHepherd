@@ -1674,7 +1674,8 @@ Exit codes:
 `apply` writes to production machines, so it is built to fail closed.
 
 **Full-file rewrite.** Each managed file is rendered from scratch: a managed header
-(`# Managed by SSHepherd. Manual edits will be overwritten by 'sshepherd apply'.`),
+(`# Managed by SSHepherd. Manual edits will be overwritten by 'sshepherd apply'.`, or
+`# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.` once the manifest has a `serial:`),
 operator keys first, then the granted keys, with the decided comment policy applied.
 Non-key lines — hand-written comments, blank lines — are **deleted** by the rewrite;
 the plan shows a `normalize` row with the exact count *before* anything is written.
@@ -1765,8 +1766,9 @@ untouched (`upload incomplete … original left untouched`).
 **Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced on
 every apply. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written
 once, the first time an unmanaged file is replaced (flushed to disk before the rename,
-like `.bak`), and never overwritten — use it to
-undo the first apply. A symlink planted at either name is never written through.
+like `.bak`), and never overwritten. The one-time `.sshepherd.orig` is taken only when the
+file's first line is not a managed header — the exact `ParseHeader` grammar, decided on the
+bytes the compare-and-swap just proved — use it to undo the first apply. A symlink planted at either name is never written through.
 
 **`authorized_keys2`.** When phase 1 found a non-empty `~/.ssh/authorized_keys2`
 (default path or an equivalent spelling), the plan shows

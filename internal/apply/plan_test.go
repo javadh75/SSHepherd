@@ -590,3 +590,32 @@ func TestExitCode(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanSnapshotCarriesManaged(t *testing.T) {
+	cfg := planCfg(t)
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {Content: []byte(authkeys.Header(3) + "\n" + testkeys.Line(t, 9) + "\n")},
+	}}
+	content := []byte(authkeys.Header(3) + "\n" + testkeys.Line(t, 9) + "\n")
+	if p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1"); !p.Expect.Managed || p.Expect != authkeys.ManagedSnapshot(false, content) {
+		t.Errorf("Expect = %+v, want authkeys.ManagedSnapshot's (Managed for a (serial 3) file)", p.Expect)
+	}
+	r.byName["web-1"] = fleet.ReadResult{Content: []byte(testkeys.Line(t, 9) + "\n")}
+	if p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1"); p.Expect.Managed {
+		t.Error("Expect.Managed = true for a hand-written file")
+	}
+}
+
+// A serial header is a managed header: never counted as a removed
+// hand-written comment line.
+func TestNormalizeSkipsSerialHeader(t *testing.T) {
+	cfg := planCfg(t)
+	body := strings.TrimPrefix(string(renderedFor(t, cfg, "web-1")), authkeys.ManagedHeader+"\n")
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {Content: []byte(authkeys.Header(5) + "\n" + testkeys.Line(t, 9) + "\n" + body)},
+	}}
+	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
+	if p.Normalize.NonKeyLines != 0 {
+		t.Errorf("NonKeyLines = %d, want 0 (the serial header is not a hand comment)", p.Normalize.NonKeyLines)
+	}
+}

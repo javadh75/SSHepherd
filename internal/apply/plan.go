@@ -193,7 +193,7 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey) (Se
 	p := ServerPlan{
 		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
 		AuthorizedKeys2: r.AuthorizedKeys2,
-		Expect:          fleet.SnapshotOf(r.FileAbsent, r.Content),
+		Expect:          authkeys.ManagedSnapshot(r.FileAbsent, r.Content),
 	}
 	if r.Err != nil {
 		p.Class = ClassUnreachable
@@ -317,7 +317,7 @@ func normalize(r audit.ServerResult, entries []authkeys.RenderEntry, explained b
 	}
 	for _, line := range lines {
 		t := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if t == authkeys.ManagedHeader {
+		if _, managed := authkeys.ParseHeader(t); managed {
 			continue // re-emitted by the render, not removed
 		}
 		if t == "" || strings.HasPrefix(t, "#") {

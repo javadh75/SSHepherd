@@ -116,3 +116,31 @@ func FuzzRenderRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseHeader: ParseHeader never panics; the only lines it accepts are
+// exactly Header(n) (so the .orig decision and the serial rows can never
+// disagree with what Render writes); and any in-range serial rendered by
+// RenderSerial parses back.
+func FuzzParseHeader(f *testing.F) {
+	f.Add(ManagedHeader, uint64(0))
+	f.Add(Header(7), uint64(7))
+	f.Add("# Managed by SSHepherd (serial 07). Manual edits will be overwritten by 'sshepherd apply'.", uint64(1<<63))
+	f.Add(ManagedHeader+"\r", uint64(MaxHeaderSerial))
+	f.Fuzz(func(t *testing.T, line string, n uint64) {
+		s, managed := ParseHeader(line)
+		if !managed && s != 0 {
+			t.Fatalf("ParseHeader(%q) = (%d, false): an unmanaged line has no serial", line, s)
+		}
+		if managed && Header(s) != line {
+			t.Fatalf("ParseHeader(%q) accepted a line Header(%d) = %q does not write", line, s, Header(s))
+		}
+		m := n % (MaxHeaderSerial + 1)
+		out, err := RenderSerial(nil, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := ParseHeaderOf(out); got != m || !ok {
+			t.Fatalf("ParseHeaderOf(RenderSerial(nil, %d)) = (%d, %v)", m, got, ok)
+		}
+	})
+}

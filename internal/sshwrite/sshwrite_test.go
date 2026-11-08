@@ -1666,3 +1666,68 @@ func TestApplyConnectErrorKeepsKind(t *testing.T) {
 		t.Fatalf("ErrorKindOf(%v) = %q, want host_key_changed", err, got)
 	}
 }
+
+// headerCases are the first lines the .orig decision must classify exactly
+// as authkeys.ParseHeader does (orig: the write keeps a one-time .orig).
+var headerCases = []struct {
+	name, first string
+	orig        bool
+}{
+	{"legacy header", authkeys.ManagedHeader, false},
+	{"serial header", authkeys.Header(9), false},
+	{"serial 07", "# Managed by SSHepherd (serial 07). Manual edits will be overwritten by 'sshepherd apply'.", true},
+	{"serial 0", "# Managed by SSHepherd (serial 0). Manual edits will be overwritten by 'sshepherd apply'.", true},
+	{"legacy plus a trailing space", authkeys.ManagedHeader + " ", true},
+	{"prefix lookalike", "# Managed by SSHepherd-ish. Manual edits will be overwritten by 'sshepherd apply'.", true},
+	{"hand-written file", "ssh-ed25519 AAAA hand", true},
+}
+
+// TestSnapshotOfDelegatesToManagedSnapshot: the write path's snapshot is
+// authkeys.ManagedSnapshot's, byte for byte (one implementation), and each
+// header case's .orig expectation agrees with it.
+func TestSnapshotOfDelegatesToManagedSnapshot(t *testing.T) {
+	for _, tc := range headerCases {
+		content := []byte(tc.first + "\nkey-line\n")
+		got, want := SnapshotOf(false, content), authkeys.ManagedSnapshot(false, content)
+		if got != want || got.Managed == tc.orig {
+			t.Errorf("%s: SnapshotOf = %+v, ManagedSnapshot = %+v, orig %v", tc.name, got, want, tc.orig)
+		}
+	}
+	if SnapshotOf(true, nil) != authkeys.ManagedSnapshot(true, nil) {
+		t.Error("absent: SnapshotOf differs from ManagedSnapshot")
+	}
+}
+
+// TestOrigDecisionFollowsParseHeader: a legacy or (serial N) file takes no
+// .orig; every other first line does — the anchored definition, never a
+// shell prefix pattern.
+func TestOrigDecisionFollowsParseHeader(t *testing.T) {
+	forEachShell(t, func(t *testing.T, sh []string) {
+		for _, tc := range headerCases {
+			t.Run(tc.name, func(t *testing.T) {
+				home := t.TempDir()
+				target := filepath.Join(home, "auth")
+				old := tc.first + "\nkey-line\n"
+				writeFile(t, target, old)
+				if code := runSh(t, sh, writeCmdFor(target, SnapshotOf(false, []byte(old)), len(managed)), home, []byte(managed)); code != 0 {
+					t.Fatalf("exit = %d, want 0", code)
+				}
+				if tc.orig {
+					if got := readFile(t, target+origSuffix); got != old {
+						t.Errorf(".orig = %q, want the pre-SSHepherd bytes", got)
+					}
+				} else {
+					assertAbsent(t, target+origSuffix, "a managed file is not an original")
+				}
+			})
+		}
+	})
+}
+
+func TestWriteCmdHasNoShellHeaderCompare(t *testing.T) {
+	for _, s := range []Snapshot{SnapshotOf(false, []byte("x\n")), SnapshotOf(false, []byte(managed))} {
+		if cmd := writeCmdFor("~/.ssh/authorized_keys", s, 10); strings.Contains(cmd, "head -n 1") || strings.Contains(cmd, "Managed by") {
+			t.Errorf("write script still compares the header in the shell:\n%s", cmd)
+		}
+	}
+}

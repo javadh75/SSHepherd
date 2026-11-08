@@ -504,7 +504,9 @@ wildcard) is specced and approved (owner answers recorded 2026-11-08), in
 `docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation
 P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4, in progress: the `revoked:`/`serial:`
 schema with policy conflicts, adopt never writing `["*"]`, and adopt/`import --merge`
-skipping tombstoned keys and access have landed).
+skipping tombstoned keys and access have landed, and the managed header carries
+`(serial N)` via `authkeys.Header`/`ParseHeader` (`FuzzParseHeader`, 4-entry corpus), with
+`.orig` decided by `Snapshot.Managed` and sshread reading `authorized_keys2` content).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one
@@ -535,7 +537,7 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
-Fuzz oracles and corpus (P13, round 2): every one of the 19 `Fuzz*` targets has a
+Fuzz oracles and corpus (P13, round 2): every one of the 20 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on

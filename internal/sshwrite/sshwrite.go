@@ -76,8 +76,10 @@ type Snapshot = fleet.Snapshot
 type Request = fleet.WriteRequest
 
 // SnapshotOf builds the snapshot of phase-1 bytes read (or of an absent
-// file); see fleet.SnapshotOf.
-func SnapshotOf(absent bool, content []byte) Snapshot { return fleet.SnapshotOf(absent, content) }
+// file); see authkeys.ManagedSnapshot, the one definition of a managed file.
+func SnapshotOf(absent bool, content []byte) Snapshot {
+	return authkeys.ManagedSnapshot(absent, content)
+}
 
 // lockPrologue takes the per-target lock (mkdir is atomic on every POSIX
 // filesystem) and arranges its removal on every exit path, together with
@@ -169,7 +171,8 @@ const ancestorCheck = `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
 //     absent, or still be exactly the phase-1 bytes (length + POSIX cksum)
 //     — so a key another tool added during the upload refuses the write
 //     instead of vanishing. .sshepherd.orig is derived from the copy once,
-//     only while the file is not yet SSHepherd-managed, so a retry after a
+//     only while the snapshot is not SSHepherd-managed (Snapshot.Managed,
+//     authkeys.ParseHeader's anchored verdict), so a retry after a
 //     failed apply never loses the hand-maintained original, and flushed at
 //     once (it is never rewritten, so a crash must not leave it empty —
 //     WP-4); the copy then
@@ -226,22 +229,25 @@ func cksumPresent(expect Snapshot) string {
 
 // casBackupBlock is the tight step between the completed upload and the mv
 // (WP-3): copy the live file to a fresh staging name, compare-and-swap the
-// COPY (46 on mismatch), derive .orig from it, and rename it to .bak — so
-// .bak holds exactly the bytes the CAS validated, and a lock-less editor
-// that changed the file during the upload refuses the write instead of
-// losing its edit. rm -f + set -C keep the staging name from following a
-// planted symlink; rm -f "$b" fails (exit 1) on a directory planted at .bak.
+// COPY (46 on mismatch), derive .orig from it — only when the snapshot is
+// not managed (expect.Managed, decided in Go by authkeys.ParseHeader on the
+// very bytes the CAS just proved) — and rename it to .bak, so .bak holds
+// exactly the bytes the CAS validated, and a lock-less editor that changed
+// the file during the upload refuses the write instead of losing its edit.
+// rm -f + set -C keep the staging name from following a planted symlink;
+// rm -f "$b" fails (exit 1) on a directory planted at .bak.
 func casBackupBlock(expect Snapshot) string {
 	if expect.Absent {
 		return `if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi`
 	}
-	return `if [ -L "$p" ]; then exit 45; fi; if [ ! -f "$p" ]; then exit 46; fi` +
+	b := `if [ -L "$p" ]; then exit 45; fi; if [ ! -f "$p" ]; then exit 46; fi` +
 		`; rm -f "$c" || exit 1; (set -C; cat "$p" > "$c") || exit 1` +
 		`; set -- $(cksum < "$c"); if [ "$1" != ` + strconv.FormatUint(uint64(expect.Cksum), 10) +
-		` ] || [ "$2" != ` + strconv.Itoa(expect.Size) + ` ]; then rm -f "$c"; exit 46; fi` +
-		`; if [ ! -e "$o" ] && [ ! -L "$o" ] && [ "$(head -n 1 "$c")" != ` + sshconn.ShQuote(authkeys.ManagedHeader) +
-		` ]; then (set -C; cat "$c" > "$o") || exit 1; dd if=/dev/null of="$o" conv=notrunc,fsync 2>/dev/null || :; fi` +
-		`; rm -f "$b" || exit 1; mv -f "$c" "$b" || exit 1`
+		` ] || [ "$2" != ` + strconv.Itoa(expect.Size) + ` ]; then rm -f "$c"; exit 46; fi`
+	if !expect.Managed {
+		b += `; if [ ! -e "$o" ] && [ ! -L "$o" ]; then (set -C; cat "$c" > "$o") || exit 1; dd if=/dev/null of="$o" conv=notrunc,fsync 2>/dev/null || :; fi`
+	}
+	return b + `; rm -f "$b" || exit 1; mv -f "$c" "$b" || exit 1`
 }
 
 // casCheck is the compare-and-swap test (exit 46): the file must be absent

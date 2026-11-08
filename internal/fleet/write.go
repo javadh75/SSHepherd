@@ -15,6 +15,12 @@ type Snapshot struct {
 	Absent bool
 	Size   int
 	Cksum  uint32
+	// Managed reports that the snapshot's first line is a managed header
+	// (authkeys.ParseHeader's verdict, set by the caller — this package is
+	// stdlib-only). The write script takes the one-time .orig backup only
+	// when it is false, after the compare-and-swap proved the file is still
+	// these bytes.
+	Managed bool
 }
 
 // SnapshotOf builds the snapshot of phase-1 bytes read (or of an absent

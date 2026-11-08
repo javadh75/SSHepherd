@@ -3,6 +3,7 @@
 package sshread
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -111,5 +112,27 @@ func TestIntegrationKeys2OnAbsoluteDefaultPath(t *testing.T) {
 	}
 	if !res.FileAbsent || !res.AuthorizedKeys2 {
 		t.Errorf("FileAbsent=%v AuthorizedKeys2=%v, want both true (the absolute spelling of the default file)", res.FileAbsent, res.AuthorizedKeys2)
+	}
+}
+
+// TestIntegrationReadKeys2Content: on a real sshd and every distro's shell,
+// ReadKeys2 returns authorized_keys2's bytes. Container A's user "absent"
+// has no default file and the seed key (SSHEPHERD_IT_PUB) in
+// authorized_keys2 (scripts/integration.sh).
+func TestIntegrationReadKeys2Content(t *testing.T) {
+	c, host, port := itClient(t)
+	want, err := os.ReadFile(os.Getenv("SSHEPHERD_IT_PUB")) // #nosec G703 -- harness key path (SSHEPHERD_IT_PUB)
+	if err != nil {
+		t.Fatalf("SSHEPHERD_IT_PUB: %v", err)
+	}
+	c.ReadKeys2 = true
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := c.ReadAuthorizedKeys(ctx, config.Server{Name: "it", Host: host, Port: port, User: "absent"})
+	if err != nil {
+		t.Fatalf("ReadAuthorizedKeys: %v", err)
+	}
+	if !res.AuthorizedKeys2 || res.Keys2Err != nil || !bytes.Equal(bytes.TrimSpace(res.Keys2), bytes.TrimSpace(want)) {
+		t.Errorf("Keys2 = %q (err %v, present %v), want the seed key %q", res.Keys2, res.Keys2Err, res.AuthorizedKeys2, want)
 	}
 }

@@ -107,7 +107,11 @@ type Client struct {
 	// PreferKeys optionally names the keys to offer first per server (see
 	// sshconn.Dialer.PreferKeys) — typically audit.GrantedFingerprints.
 	PreferKeys func(srv config.Server) []string
-	Log        *slog.Logger // optional stage-level telemetry; nil discards
+	// ReadKeys2 also reads a non-empty ~/.ssh/authorized_keys2 (with the
+	// managed read's size cap) into ReadResult.Keys2 — the post-revoke
+	// sweep's proof that a revoked key is gone from it too.
+	ReadKeys2 bool
+	Log       *slog.Logger // optional stage-level telemetry; nil discards
 
 	once   sync.Once
 	dialer *sshconn.Dialer
@@ -194,5 +198,26 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (fle
 		return zero, fmt.Errorf("on %s: %w", addr, err)
 	}
 	res.AuthorizedKeys2 = present
+	if present && c.ReadKeys2 {
+		res.Keys2, res.Keys2Err = c.readKeys2(ctx, conn, addr)
+	}
 	return res, nil
+}
+
+// readKeys2 cats ~/.ssh/authorized_keys2 on the open connection, with the
+// managed read's size cap and error mapping. Errors are control-stripped
+// (they can embed remote text) and never fail the main read.
+func (c *Client) readKeys2(ctx context.Context, conn *sshconn.Conn, addr string) ([]byte, error) {
+	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, sshconn.AuthorizedKeysCmdFor(sshconn.SecondaryAuthorizedKeysPath), nil)
+	if err != nil {
+		return nil, sshconn.SanitizedError{Err: fmt.Errorf("authorized_keys2 read on %s: %w", addr, err)}
+	}
+	res, err := sshconn.FinishRead(code, stdout, stderr, addr, c.log())
+	if err != nil {
+		return nil, sshconn.SanitizedError{Err: err}
+	}
+	if res.FileAbsent {
+		return nil, nil
+	}
+	return res.Content, nil
 }
