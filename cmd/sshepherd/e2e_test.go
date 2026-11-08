@@ -399,8 +399,12 @@ access:
 
 // TestE2EFleetFanOut drives two sshd containers: fleet-a (default path) and
 // fleet-b (sshd reads ~/.ssh/fleet_keys; the manifest says so). One apply
-// converges both in parallel; audit closes the loop; a known_hosts entry with
-// B's keys swapped for A's must raise a host-key alarm (exit 2) for B alone.
+// converges both in parallel; audit closes the loop. known_hosts is checked
+// per host:port in two steps: B's entry recording A's keys must raise a
+// host-key alarm (exit 2) for B alone, with A still compliant; and a cross
+// swap (each entry recording the other's keys, so both real keys are still
+// in the file under 127.0.0.1) must alarm on both, which a lookup that pools
+// keys across ports would miss.
 func TestE2EFleetFanOut(t *testing.T) {
 	bin, host, portA, kh, pub := itE2E(t)
 	portB := os.Getenv("SSHEPHERD_IT_PORT_B")
@@ -439,11 +443,45 @@ servers:
 	if code, _, _ := runBin(t, bin, "audit", "--config", wrong, "--known-hosts", kh); code == 0 {
 		t.Errorf("audit of B's default path exit 0: apply must not have written ~/.ssh/authorized_keys on fleet-b")
 	}
-	swapped := filepath.Join(dir, "known_hosts.swapped")
-	writeSwappedKnownHosts(t, kh, swapped, portA, portB)
-	code, out, stderr = runBin(t, bin, "audit", "--json", "--config", m, "--known-hosts", swapped)
-	if code != 2 || !strings.Contains(out, `"host_key_changed"`) {
-		t.Fatalf("swapped known_hosts: exit = %d, want 2 with host_key_changed (stderr: %s)\n%s", code, stderr, out)
+	blobsA, blobsB := knownHostsBlobs(t, kh, portA), knownHostsBlobs(t, kh, portB)
+	for _, tc := range []struct {
+		name  string
+		blobs map[string]map[string]string // port -> key type -> recorded blob
+		want  map[string]string            // server -> error_kind ("" = verified and compliant)
+	}{
+		{"b-impersonated", map[string]map[string]string{portB: blobsA},
+			map[string]string{"fleet-a": "", "fleet-b": "host_key_changed"}},
+		{"cross-swap", map[string]map[string]string{portA: blobsB, portB: blobsA},
+			map[string]string{"fleet-a": "host_key_changed", "fleet-b": "host_key_changed"}},
+	} {
+		swapped := filepath.Join(dir, "known_hosts."+tc.name)
+		writeSwappedKnownHosts(t, kh, swapped, tc.blobs)
+		code, out, stderr := runBin(t, bin, "audit", "--json", "--config", m, "--known-hosts", swapped)
+		var rep struct {
+			Servers []struct {
+				Name      string `json:"name"`
+				Status    string `json:"status"`
+				ErrorKind string `json:"error_kind"`
+			} `json:"servers"`
+		}
+		if err := json.Unmarshal([]byte(out), &rep); err != nil || code != 2 {
+			t.Fatalf("%s known_hosts: exit = %d (want 2), json err = %v (stderr: %s)\n%s", tc.name, code, err, stderr, out)
+		}
+		got := map[string]string{}
+		for _, s := range rep.Servers {
+			got[s.Name] = s.ErrorKind
+			if s.ErrorKind == "" && s.Status != "compliant" {
+				t.Errorf("%s known_hosts: %s status = %q, want compliant", tc.name, s.Name, s.Status)
+			}
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("%s known_hosts: servers = %v, want %v", tc.name, got, tc.want)
+		}
+		for name, kind := range tc.want {
+			if g, ok := got[name]; !ok || g != kind {
+				t.Errorf("%s known_hosts: %s error_kind = %q, want %q\n%s", tc.name, name, g, kind, out)
+			}
+		}
 	}
 }
 
@@ -480,15 +518,23 @@ func hostKeyBlob(t *testing.T, kh, port string) string {
 	return blob
 }
 
-// writeSwappedKnownHosts copies kh to dst, recording A's host key blob of
-// the same type on every one of B's lines (B now looks impersonated).
-func writeSwappedKnownHosts(t *testing.T, kh, dst, portA, portB string) {
+// writeSwappedKnownHosts copies kh to dst, recording on every
+// [127.0.0.1]:port line of a port in blobs the blob blobs[port] holds for
+// that line's key type (that host now looks impersonated). A line whose type
+// has no replacement fails the test: left genuine, it would still verify.
+func writeSwappedKnownHosts(t *testing.T, kh, dst string, blobs map[string]map[string]string) {
 	t.Helper()
-	blobsA := knownHostsBlobs(t, kh, portA)
 	var b strings.Builder
 	for line := range strings.Lines(readFile(t, kh)) {
-		if f := strings.Fields(line); len(f) >= 3 && f[0] == "[127.0.0.1]:"+portB && blobsA[f[1]] != "" {
-			line = f[0] + " " + f[1] + " " + blobsA[f[1]] + "\n"
+		f := strings.Fields(line)
+		for port, repl := range blobs {
+			if len(f) < 3 || f[0] != "[127.0.0.1]:"+port {
+				continue
+			}
+			if repl[f[1]] == "" {
+				t.Fatalf("%s: no %s key to record on the [127.0.0.1]:%s line", kh, f[1], port)
+			}
+			line = f[0] + " " + f[1] + " " + repl[f[1]] + "\n"
 		}
 		b.WriteString(line)
 	}

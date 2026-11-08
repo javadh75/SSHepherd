@@ -9425,15 +9425,29 @@ gosec:
 ```make
 FUZZTIME ?= 15s
 
-## fuzz-list: every Fuzz* target as "importpath Target" (discovered, never hand-listed)
+## fuzz-list: every Fuzz* target as "importpath Target" (discovered, never hand-listed).
+## Fails, rather than dropping a package, when `go list` or a package's
+## `go test -list` fails (tests that do not build), or when the targets listed
+## differ in number from the `func Fuzz…` declarations in its test files.
 fuzz-list:
-	@for pkg in $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(PKG)); do \
-	  $(GO) test -list '^Fuzz' $$pkg | sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg \1|p"; \
+	@pkgs=$$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(PKG)) || \
+	  { echo "FAIL: go list $(PKG)" >&2; exit 1; }; \
+	for pkg in $$pkgs; do \
+	  out=$$($(GO) test -list '^Fuzz' $$pkg) || \
+	    { echo "FAIL: go test -list $$pkg (its tests must build for its Fuzz* targets to run)" >&2; exit 1; }; \
+	  got=$$(printf '%s\n' "$$out" | sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg \1|p"); \
+	  info=$$($(GO) list -f '{{.Dir}}{{range .TestGoFiles}} {{.}}{{end}}{{range .XTestGoFiles}} {{.}}{{end}}' $$pkg) || exit 1; \
+	  set -- $$info; dir=$$1; shift; \
+	  want=$$(cd "$$dir" && cat "$$@" | grep -c '^func Fuzz[^a-z]'); \
+	  n=$$(printf '%s' "$$got" | grep -c .); \
+	  [ "$$n" = "$$want" ] || \
+	    { echo "FAIL: $$pkg: go test -list found $$n Fuzz* targets, its test files declare $$want" >&2; exit 1; }; \
+	  [ -z "$$got" ] || printf '%s\n' "$$got"; \
 	done
 
 ## fuzz: fuzz every target for FUZZTIME each (default 15s); runs all, fails if any failed
 fuzz:
-	@fail=0; $(MAKE) -s fuzz-list > .fuzz-targets || exit 1; \
+	@fail=0; $(MAKE) -s fuzz-list > .fuzz-targets || { rm -f .fuzz-targets; exit 1; }; \
 	while read -r pkg t; do \
 	  echo "== $$t ($$pkg)"; \
 	  $(GO) test -run='^$$' -fuzz="^$$t\$$" -fuzztime=$(FUZZTIME) $$pkg || fail=1; \
@@ -9755,12 +9769,15 @@ Add `dist` to `.PHONY` and `clean`.
             "./dist/sshepherd_${VERSION}_linux_amd64" --version | grep -F "$VERSION"
           fi
       # Same reachability scan the image gets, on the shipped linux binaries.
+      # The target arch is ARCH, used only in the path: GOOS/GOARCH in this
+      # step's env would make `go run` build govulncheck for the target and
+      # exec it, which fails on the amd64 runner for arm64 (no QEMU).
       - name: govulncheck the binary
         if: matrix.goos == 'linux'
         env:
           VERSION: ${{ github.ref_name }}
-          GOARCH: ${{ matrix.goarch }}
-        run: go run golang.org/x/vuln/cmd/govulncheck@$(make -s print-GOVULN_VERSION) -mode=binary "./dist/sshepherd_${VERSION}_linux_${GOARCH}"
+          ARCH: ${{ matrix.goarch }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@$(make -s print-GOVULN_VERSION) -mode=binary "./dist/sshepherd_${VERSION}_linux_${ARCH}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-${{ matrix.goos }}-${{ matrix.goarch }}

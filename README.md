@@ -1742,7 +1742,7 @@ $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 80% line coverage
 $ make integration  # two dockerized alpine sshd containers + build-tagged integration/E2E tests
 $ make integration IT_DISTRO=debian  # or alpine | rocky
-$ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each)
+$ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each); fails if a package's tests do not build
 $ make fuzz-list    # every Fuzz* target as 'importpath Target'
 $ make licenses     # dependency licenses of the shipped binary stay Apache-2.0-compatible (part of make check)
 $ make actionlint   # lint .github/workflows (shellcheck disabled; not part of make check)
@@ -1798,7 +1798,10 @@ HIGH/CRITICAL), dockle and `scripts/docker-gates.sh`. Only
 when every job passes does it tag the digest with semver tags (`latest` last, and only
 for the newest release), sign it keyless with cosign, attach signed build provenance,
 and verify that signature with the command below. A manual `workflow_dispatch` run is
-a dry run: every job except the publishing one, even one dispatched on a tag. Verify an image before you run it
+a dry run: every job except the two publishing ones (`publish` and `release-binaries`),
+even one dispatched on a tag. On a tag push, after the image is published,
+`release-binaries` attaches the signed `linux`/`darwin` `amd64`/`arm64` binaries,
+`SHA256SUMS` and `SHA256SUMS.sigstore.json` to a GitHub release (see Install). Verify an image before you run it
 (requires cosign v3.1.4 or newer, the `COSIGN_VERSION` in release.yml; older cosign v2
 may report "no signatures found"):
 
@@ -1830,6 +1833,10 @@ Release recovery:
    the `release` concurrency group, so a third tag pushed while one release runs and
    another waits cancels the waiting one. Nothing was tagged or signed. Re-run it once
    the queue drains: `gh run rerun <run-id>`.
+5. **The image published but the GitHub release has no binaries:** `release-binaries`
+   runs only after `publish` and every `binaries` leg. Fix the failing leg, then
+   `gh run rerun <run-id> --failed`. If the fix needs a release.yml change, cut
+   `vX.Y.Z+1` (step 2).
 
 Every release tag must point at a commit at or after `ca50409`, the commit that fixed
 the gated release workflow; older commits run an ungated release workflow or one whose

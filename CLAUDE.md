@@ -180,13 +180,17 @@ test that fails before the fix and passes after.
   `integration` jobs are an alpine/debian/rocky matrix.
 - **End-to-end (E2E)** — drive the actual CLI binary through full flows
   (distribute → audit → revoke → rotate) against a small fleet of test containers.
-  `TestE2EFleetFanOut` drives apply and audit across both containers. It checks the per-host
-  `known_hosts` (a swapped host key exits 2 with `host_key_changed`) and B's
+  `TestE2EFleetFanOut` drives apply and audit across both containers. It checks that
+  `known_hosts` is per host:port. B's entry recording A's keys exits 2 with
+  `host_key_changed` for fleet-b alone, while fleet-a stays compliant. A cross swap must
+  flag both, which catches a lookup that pools keys across ports. It also checks B's
   `authorized_keys_file` override.
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
   `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
-  anchors each `-fuzz=^Target$`, runs all of them even after a failure, and fails if any
+  anchors each `-fuzz=^Target$`, fails (instead of skipping a package) when `go list` or a
+  package's `go test -list` fails or the listed count differs from its `func Fuzz…`
+  declarations, runs all of them even after a failure, and fails if any
   failed; `FUZZTIME` defaults to 15s. The scheduled CI job runs `make fuzz FUZZTIME=2m`
   (90-minute timeout) and restores/saves `$(go env GOCACHE)/fuzz` through actions/cache
   restore/save, keyed per run, so the corpus survives even a crash.
