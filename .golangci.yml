@@ -75,6 +75,61 @@ linters:
               desc: native golang.org/x/crypto/ssh only — never shell out to a host ssh binary
             - pkg: math/rand
               desc: not cryptographically secure; use crypto/rand
+        # Layering (ARC-8). Domain packages never reach the transport, the
+        # terminal or the CLI; they talk to it through seams (audit.KeyReader,
+        # apply.Writer, workflow interfaces) and the internal/fleet vocabulary.
+        domain:
+          list-mode: lax
+          files:
+            - "**/internal/config/*.go"
+            - "**/internal/authkeys/*.go"
+            - "**/internal/manifest/*.go"
+            - "**/internal/reconcile/*.go"
+            - "**/internal/adopt/*.go"
+            - "**/internal/apply/*.go"
+            - "**/internal/audit/*.go"
+            - "**/internal/workflow/*.go"
+          deny:
+            - pkg: github.com/javadh75/SSHepherd/internal/sshconn
+              desc: domain code must not import the SSH transport; use internal/fleet types and the seams
+            - pkg: github.com/javadh75/SSHepherd/internal/sshread
+              desc: domain code must not import the read transport; depend on audit.KeyReader
+            - pkg: github.com/javadh75/SSHepherd/internal/sshwrite
+              desc: domain code must not import the write transport; depend on apply.Writer
+            - pkg: github.com/javadh75/SSHepherd/internal/keyfile
+              desc: key-file loading is transport/CLI wiring
+            - pkg: golang.org/x/term
+              desc: terminal handling belongs in cmd
+            - pkg: golang.org/x/crypto/ssh/agent
+              desc: agent access belongs in sshconn
+            - pkg: github.com/spf13/cobra
+              desc: the CLI framework belongs in cmd/sshepherd
+        # Transport never depends on the domain (the ARC-3 inversion).
+        transport:
+          list-mode: lax
+          files:
+            - "**/internal/sshconn/*.go"
+            - "**/internal/sshread/*.go"
+            - "**/internal/sshwrite/*.go"
+          deny:
+            - pkg: github.com/javadh75/SSHepherd/internal/audit
+              desc: transport must not import audit; shared types live in internal/fleet
+            - pkg: github.com/javadh75/SSHepherd/internal/apply
+              desc: transport must not import apply; shared types live in internal/fleet
+            - pkg: github.com/javadh75/SSHepherd/internal/adopt
+              desc: transport must not import the domain
+            - pkg: github.com/javadh75/SSHepherd/internal/workflow
+              desc: transport must not import the workflow
+            - pkg: github.com/spf13/cobra
+              desc: the CLI framework belongs in cmd/sshepherd
+        # internal/fleet is the leaf: standard library only (tests may use goleak).
+        fleet-leaf:
+          list-mode: strict
+          files:
+            - "**/internal/fleet/*.go"
+            - "!$test"
+          allow:
+            - $gostd
   exclusions:
     generated: lax
     rules:
@@ -85,6 +140,25 @@ linters:
           - errcheck
           - gocyclo
           - wrapcheck
+      # Layering (ARC-8) exceptions in tests that predate the rules, pinned
+      # to the file and the exact import so any other cross-layer import
+      # still fails: apply's and adopt's contract tests drive the real
+      # transport (sshconn.Error, DialHint, FleetWriter against sshtest) to
+      # prove the classified-error vocabulary end to end, and the write
+      # integration test probes in audit.OfferOrder. Drop an entry once its
+      # test moves out of the layer.
+      - path: '(^|/)internal/apply/json_test\.go$'
+        linters:
+          - depguard
+        text: '^import ''github\.com/javadh75/SSHepherd/internal/(sshconn|sshconn/sshtest|sshwrite)'' is not allowed from list ''domain'''
+      - path: '(^|/)internal/(apply/report|adopt/adopt)_test\.go$'
+        linters:
+          - depguard
+        text: '^import ''github\.com/javadh75/SSHepherd/internal/sshconn'' is not allowed from list ''domain'''
+      - path: '(^|/)internal/sshwrite/integration_test\.go$'
+        linters:
+          - depguard
+        text: '^import ''github\.com/javadh75/SSHepherd/internal/audit'' is not allowed from list ''transport'''
       # gosec is not in `enable` above: `make gosec` runs it here with
       # `--enable-only=gosec`, for the //go:build integration test files
       # only (standalone gosec skips every _test.go file; it covers the

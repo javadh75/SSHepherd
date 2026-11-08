@@ -44,7 +44,7 @@ ifeq ($(origin GOTOOLCHAIN),undefined)
 endif
 TOOLS_ENV   := GOTOOLCHAIN=$(or $(GOTOOLCHAIN),local)
 
-.PHONY: all check build dist fmt vet lint lint-toolchain deadcode security gosec vuln secrets \
+.PHONY: all check build dist fmt vet lint lint-toolchain layering deadcode security gosec vuln secrets \
         secrets-history licenses actionlint test coverage integration fuzz fuzz-list bench tidy \
         docker docker-lint docker-scan smoke tools hooks clean
 
@@ -52,7 +52,7 @@ TOOLS_ENV   := GOTOOLCHAIN=$(or $(GOTOOLCHAIN),local)
 all: check
 
 ## check: full quality gate (the same command CI runs) — includes the coverage minimum
-check: tidy fmt vet lint deadcode security licenses coverage
+check: tidy fmt vet lint layering deadcode security licenses coverage
 
 # LDFLAGS stamps VERSION into main.version, so --version reports it; a plain
 # `go install …@vX.Y.Z` falls back to the module version instead.
@@ -90,6 +90,18 @@ lint-toolchain:
 	  echo "golangci-lint was built with $${have:-an unknown Go} but the active toolchain is $$want;"; \
 	  echo "rebuild it with: make tools"; exit 1; \
 	fi
+
+# Transitive import assertions depguard cannot express (it checks direct
+# imports only): apply/workflow/fleet never pull in the transport, the
+# terminal or the CLI, and the transport never pulls in the domain.
+LAYER_DOMAIN_BAN := SSHepherd/internal/(sshconn|sshread|sshwrite|keyfile)$$|golang.org/x/term$$|golang.org/x/crypto/ssh/(agent|knownhosts)$$|spf13/cobra$$
+LAYER_TRANSPORT_BAN := SSHepherd/internal/(audit|apply|adopt|workflow)$$
+
+## layering: fail when the import graph breaks the documented package layers
+layering:
+	@bad=$$($(GO) list -deps ./internal/apply ./internal/workflow ./internal/fleet | grep -E '$(LAYER_DOMAIN_BAN)'); \
+	bad2=$$($(GO) list -deps ./internal/sshconn ./internal/sshread ./internal/sshwrite | grep -E '$(LAYER_TRANSPORT_BAN)'); \
+	if [ -n "$$bad$$bad2" ]; then printf '%s\n%s\n' "$$bad" "$$bad2"; echo "FAIL: layering"; exit 1; fi
 
 ## deadcode: whole-program reachability — fail on functions unreachable from main
 deadcode:

@@ -105,6 +105,8 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
   at package boundaries), `contextcheck` + `noctx` (don't drop `context.Context`).
 - Complexity & imports: `gocyclo`/`cyclop` (cap function complexity), `dupl` (copy-paste),
   `depguard` — pin crypto/SSH deps (e.g. force `golang.org/x/crypto/ssh`, ban risky packages).
+- Layering: `make layering` (in `make check`) checks transitive imports with `go list -deps`;
+  depguard's path-scoped rules (`domain`, `transport`, `fleet-leaf`) check direct ones.
 - Dead code: `deadcode ./cmd/sshepherd` (`golang.org/x/tools/cmd/deadcode`) — whole-program
   reachability from `main`; fails `make check` on unreachable functions. Complements the
   per-package `unused` linter, which can't see cross-package dead exported identifiers.
@@ -554,3 +556,11 @@ the confirm gate and `fleetSession`, builds the transport seams in `runWorkflow(
 and prints the edit header before the preflight, as before. The plan predicates
 (`CountChanges`, `NothingCanLand`, `AnySurvivor`, `AnyConverged`) are exported from
 `internal/apply`. `go list -deps ./internal/workflow` names no transport, cobra or x/term.
+Layering is machine-enforced (P14 S5, ARC-8): `.golangci.yml` depguard rules `domain`
+(config/authkeys/manifest/reconcile/adopt/apply/audit/workflow never import
+sshconn/sshread/sshwrite/keyfile, x/term, ssh/agent or cobra), `transport`
+(sshconn/sshread/sshwrite never import audit/apply/adopt/workflow or cobra) and
+`fleet-leaf` (internal/fleet non-test code is stdlib only), plus the transitive
+`make layering` check (in `make check`). Four pre-existing test files are pinned by file
+and import in `exclusions.rules`: apply/json_test.go, apply/report_test.go,
+adopt/adopt_test.go and sshwrite/integration_test.go.

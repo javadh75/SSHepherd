@@ -1739,13 +1739,14 @@ characters (`…(truncated)`).
 Everything below runs the same commands CI runs.
 
 ```console
-$ make check        # the full gate: tidy, fmt, vet, lint, deadcode, security, licenses, coverage (≥80%)
+$ make check        # the full gate: tidy, fmt, vet, lint, layering, deadcode, security, licenses, coverage (≥80%)
 $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 80% line coverage
 $ make integration  # two dockerized alpine sshd containers + build-tagged integration/E2E tests
 $ make integration IT_DISTRO=debian  # or alpine | rocky
 $ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each); fails if a package's tests do not build
 $ make fuzz-list    # every Fuzz* target as 'importpath Target'
+$ make layering     # fail when the import graph breaks the package layers (transitive go list -deps check; depguard covers direct imports)
 $ make licenses     # dependency licenses of the shipped binary stay Apache-2.0-compatible (part of make check)
 $ make actionlint   # lint .github/workflows (shellcheck disabled; not part of make check)
 $ make secrets-history BASE=<sha>  # gitleaks over BASE..HEAD (whole history when BASE is empty, all-zero or unknown)
