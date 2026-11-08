@@ -2,7 +2,8 @@ version: 2
 
 # Keep every pin fresh: Go modules, the SHA-pinned GitHub Actions (Dependabot
 # updates the SHA and its version comment together), and the digest-pinned
-# Dockerfile base images. Grouped so each ecosystem is one weekly PR.
+# Dockerfiles (the release image, plus the CI scanner and sshd test images in
+# ci/images/). Grouped so each ecosystem is one weekly PR.
 # Cooldown: a new upstream release is proposed only after it has been public 7 days (time for a compromised release to be caught). Dependabot security updates ignore the cooldown and still open at once.
 updates:
   - package-ecosystem: gomod
@@ -26,7 +27,7 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: docker
-    directory: /
+    directories: ["/", "/ci/images"]
     schedule:
       interval: weekly
     cooldown:

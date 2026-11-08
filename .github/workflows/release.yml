@@ -10,8 +10,13 @@ name: Release image
 #                against that exact digest
 #   publish      tags the gated digest, signs it keyless with cosign, and runs
 #                the README's `cosign verify` against it
-# workflow_dispatch is a dry run: everything except publish. It leaves one
-# untagged, unsigned digest in GHCR.
+#   binaries     static linux/darwin amd64/arm64 binaries (`make dist`), with a
+#                --version check and a govulncheck binary scan on linux;
+#                binaries-arm64-run executes the arm64 one on a native runner
+#   release-binaries  after publish: SHA256SUMS, `cosign sign-blob` keyless,
+#                the README's `cosign verify-blob`, then the GitHub release
+# workflow_dispatch is a dry run: everything except publish and
+# release-binaries. It leaves one untagged, unsigned digest in GHCR.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -35,11 +40,13 @@ env:
   # The `cosign-release` default in cosign-installer v4.1.3's action.yml (the
   # SHA pinned below); bump the two together.
   COSIGN_VERSION: v3.1.4
-  TRIVY_IMAGE: aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
-  DOCKLE_IMAGE: goodwithtech/dockle:v0.4.15@sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9
 
 # Every third-party action is pinned to a full commit SHA (version in the
-# trailing comment); every container image by digest. Dependabot bumps both.
+# trailing comment). Every container image is pinned by digest in a
+# Dockerfile: the release image in `Dockerfile`, and the scanners and sshd
+# test images in `ci/images/` (read by each job's "Read scanner pins" step).
+# Dependabot bumps actions and those Dockerfiles. The Go dev tools are pinned
+# in the Makefile and bumped by hand (see the Makefile header).
 
 jobs:
   verify-ref:
@@ -83,6 +90,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the secret scan reads the whole history
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -104,6 +113,14 @@ jobs:
         run: |
           make tools
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The tree scan (make check) cannot see a key committed and deleted
+      # within one push, or one committed with --no-verify, from the web UI or
+      # by a bot. A release scans the whole history (empty BASE).
+      - name: Secret scan of the whole history (gitleaks history)
+        env:
+          BASE: ""
+        run: make secrets-history BASE="$BASE"
 
       # Same gate as CI: tidy, fmt, vet, lint, deadcode, gosec, govulncheck
       # (against the exact Go the image ships), gitleaks, race + coverage.
@@ -127,7 +144,8 @@ jobs:
         run: make integration
 
   # Least privilege: `image` can push but holds no OIDC token, `gate` is
-  # read-only, and only `publish`, after every gate, can sign.
+  # read-only, and only `publish` (the image) and `release-binaries` (the
+  # binaries), after every gate, can sign.
   image:
     name: Build once, push by digest
     needs: verify-ref
@@ -141,15 +159,26 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Scanner pins live in ci/images/*.Dockerfile so Dependabot can bump them.
+      - name: Read scanner pins
+        run: |
+          for t in trivy dockle; do
+            ref=$(sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "ci/images/$t.Dockerfile" | head -n1)
+            case "$ref" in *@sha256:*) ;; *) echo "::error::ci/images/$t.Dockerfile has no digest-pinned FROM"; exit 1;; esac
+            printf '%s_IMAGE=%s\n' "$(printf %s "$t" | tr '[:lower:]' '[:upper:]')" "$ref" >> "$GITHUB_ENV"
+          done
+
       - name: Lint Dockerfile (hadolint)
         uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
         with:
           dockerfile: Dockerfile
 
+      # ci/images holds pin files and sshd test images: they run as root by
+      # design and are never shipped, so only the release Dockerfile is linted.
       - name: Lint Dockerfile config (Trivy)
         run: |
           docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY_IMAGE" \
-            config --exit-code 1 .
+            config --exit-code 1 --skip-dirs ci/images .
 
       # No QEMU: the build stage cross-compiles and the runtime stage has no RUN.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -205,6 +234,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Scanner pins live in ci/images/*.Dockerfile so Dependabot can bump them.
+      - name: Read scanner pins
+        run: |
+          for t in trivy dockle; do
+            ref=$(sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "ci/images/$t.Dockerfile" | head -n1)
+            case "$ref" in *@sha256:*) ;; *) echo "::error::ci/images/$t.Dockerfile has no digest-pinned FROM"; exit 1;; esac
+            printf '%s_IMAGE=%s\n' "$(printf %s "$t" | tr '[:lower:]' '[:upper:]')" "$ref" >> "$GITHUB_ENV"
+          done
+
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
@@ -237,7 +275,7 @@ jobs:
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
             "$DOCKLE_IMAGE" --exit-code 1 -i CIS-DI-0006 sshepherd:gate
 
-  # The only job that can sign, and it never runs on a dispatch (dry run),
+  # The only job that can sign the image, and it never runs on a dispatch (dry run),
   # not even one dispatched on a tag ref: only a tag push publishes.
   publish:
     name: Tag, sign and verify
@@ -353,3 +391,107 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-github-workflow-trigger push \
             --certificate-github-workflow-repository javadh75/SSHepherd >/dev/null
+
+  # Release binaries: built with no special permissions and with setup-go's
+  # cache off, so no cache entry written elsewhere can poison a release build.
+  # VERSION is verify-ref's output (the tag, or dryrun-<sha> on a dispatch).
+  binaries:
+    name: Binary (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: verify-ref
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.verify-ref.outputs.version }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          make dist VERSION="$VERSION" GOOS="$GOOS" GOARCH="$GOARCH"
+          if [ "$GOOS/$GOARCH" = linux/amd64 ]; then
+            "./dist/sshepherd_${VERSION}_linux_amd64" --version | grep -F "$VERSION"
+          fi
+
+      # Same reachability scan the image gets, on the shipped linux binaries.
+      - name: govulncheck the binary
+        if: matrix.goos == 'linux'
+        env:
+          VERSION: ${{ needs.verify-ref.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@$(make -s print-GOVULN_VERSION) -mode=binary "./dist/sshepherd_${VERSION}_linux_${GOARCH}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
+
+  # The arm64 binary is cross-compiled above; execute it natively once.
+  binaries-arm64-run:
+    name: Binary runs (linux/arm64)
+    needs: [verify-ref, binaries]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bin-linux-arm64
+          path: dist
+
+      - name: --version reports the release version
+        env:
+          VERSION: ${{ needs.verify-ref.outputs.version }}
+        run: chmod +x "dist/sshepherd_${VERSION}_linux_arm64" && "dist/sshepherd_${VERSION}_linux_arm64" --version | grep -F "$VERSION"
+
+  # Its own job, so publish keeps image-only rights and the two can be re-run
+  # alone; a failing `gh release create` never strands a signed image without
+  # its release. Like publish, it never runs on a dispatch (dry run).
+  release-binaries:
+    name: Sign and attach binaries
+    needs: [verify-ref, check, integration, binaries, binaries-arm64-run, publish]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write   # gh release create
+      id-token: write   # cosign sign-blob (keyless)
+    steps:
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bin-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums, sign, verify, attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.verify-ref.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum sshepherd_* > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          # The same command the README gives users.
+          cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$VERSION" --generate-notes sshepherd_* SHA256SUMS SHA256SUMS.sigstore.json

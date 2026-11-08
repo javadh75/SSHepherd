@@ -120,7 +120,8 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
 - `govulncheck ./...` — official Go vulnerability scanner. Reachability-aware: only reports
   CVEs in deps/std-lib that your code actually calls, so few false positives. Run in CI.
 - `gitleaks dir --redact .` (working tree, `make secrets`, in `make check`) + `gitleaks git`
-  over the pushed range (`make secrets-history BASE=<sha>`, CI) + `--staged` pre-commit — this
+  over the pushed range (`make secrets-history BASE=<sha>`: CI's `go` job scans the pushed
+  commits, release.yml's `check` job the full history) + `--staged` pre-commit — this
   repo handles SSH keys; block private keys, tokens, or secrets from ever being committed.
 
 ### Dependency & supply chain
@@ -179,9 +180,12 @@ test that fails before the fix and passes after.
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
   `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
   anchors each `-fuzz=^Target$`, runs all of them even after a failure, and fails if any
-  failed; `FUZZTIME` defaults to 15s.
+  failed; `FUZZTIME` defaults to 15s. The scheduled CI job runs `make fuzz FUZZTIME=2m`
+  (90-minute timeout) and restores/saves `$(go env GOCACHE)/fuzz` through actions/cache
+  restore/save, keyed per run, so the corpus survives even a crash.
 - **Benchmarks** — `go test -bench=. -benchmem` for hot paths (fan-out to many servers); watch
-  for regressions.
+  for regressions. An informational `bench` job on push/PR posts benchstat base->head to the
+  job summary; it fails only if the head benchmarks fail, and it is not in `ci-ok`.
 - **Race** — run the suite with `-race`.
 - **Goroutine leaks** — `go.uber.org/goleak` via a `TestMain` in every test package;
   a package's tests fail if any goroutine outlives the run.
@@ -216,6 +220,12 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   signal actions for PID 1. `scripts/docker-gates.sh` proves it against the built image.
 - **Hardening**: run as a **non-root** user (e.g. UID 65532), compatible with a read-only
   rootfs, no secrets baked into layers, `ENTRYPOINT` = the binary. Pin every base image by digest.
+  The smoke enforces it: `--version`/`--help`/PID-1 runs use `--read-only --cap-drop ALL
+  --security-opt no-new-privileges`.
+- **Pins**: every container image is pinned by digest in a Dockerfile (the release image in
+  `Dockerfile`, the scanners and sshd test images in `ci/images/`); Dependabot's docker
+  ecosystem covers `directories: ["/", "/ci/images"]`. Go tools are pinned in the Makefile and
+  bumped by hand.
 - **Multi-arch**: build `linux/amd64` + `linux/arm64` once with `docker buildx`; gate each variant
   with `scripts/docker-gates.sh --platform OS/ARCH`.
 
@@ -225,7 +235,8 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   HIGH/CRITICAL); `trivy config` lints the `Dockerfile` for misconfiguration.
 - **dockle** — image linter / CIS checks (non-root, no setuid surprises, no leaked secrets).
 - **Architecture gate** — the binary's ELF machine must match the image platform (`docker-gates.sh`).
-- **Smoke test** — `docker run --rm <image> --version` (and `--help`) must succeed.
+- **Smoke test** — `docker run --rm <image> --version` (and `--help`) must succeed, hardened
+  (read-only rootfs, no capabilities, no-new-privileges).
 - **Size & user gates** — assert the final image stays under a budget (e.g. < 30 MB) and does
   not run as root.
 - **PID-1 signal gate** — two SIGTERMs to a blocked container must stop it with exit 143.
@@ -233,6 +244,12 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   provenance/attestations, and sign the image with `cosign`; the verify identity is pinned to
   `release.yml@refs/tags/vX.Y.Z` with trigger `push`. Keep base images fresh via
   Dependabot/Renovate.
+- **Release binaries** — the `binaries` matrix (linux/darwin x amd64/arm64, `make dist`,
+  `--version` check, `govulncheck -mode=binary` on linux) and `binaries-arm64-run` (native arm64
+  execution) feed `release-binaries` (after publish, tag push only; the only job with
+  `contents: write`), which writes `SHA256SUMS`, runs cosign `sign-blob` keyless and
+  `verify-blob`, then `gh release create`. Exactly two jobs hold `id-token: write`: `publish`
+  and `release-binaries`.
 
 ## License
 
@@ -479,3 +496,11 @@ owner-checked; mode, owner and group kept) and one encoder from the config types
 (`Append` takes `config.User/Server/Access`; `Generate`); cmd/sshepherd is rewired
 onto it in W2 round 2 (P12-C), until then deadcode lists the unwired store
 functions. `revoke NAME` resolves manifest users first.
+CI and gate hygiene (P13, round 1): `make fuzz` discovers every `Fuzz*` target and the
+daily CI fuzz keeps its corpus; `make check` adds `go-licenses`, and CI scans each push's
+commits with `gitleaks git` (`make secrets-history`); `make build`/`dist` and
+`go install …@vX` report a real version; FuzzRemote checks the safety property;
+scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the smoke
+runs hardened; an informational `bench` job reports benchstat deltas; and tagged
+releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
+(D7 = 1).

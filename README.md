@@ -80,6 +80,21 @@ $ go install github.com/javadh75/SSHepherd/cmd/sshepherd@latest
 the Go VCS pseudo-version, for example
 `sshepherd v0.0.0-20261108032608-56713ff9ffb0+dirty`.
 
+**Release binaries** — each release attaches static binaries named
+`sshepherd_vX.Y.Z_{linux,darwin}_{amd64,arm64}`, plus `SHA256SUMS` and its keyless
+signature bundle `SHA256SUMS.sigstore.json`. Verify the checksums file, then the binary
+(requires cosign v3.1.4 or newer, the `COSIGN_VERSION` in release.yml):
+
+```console
+$ cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+    --certificate-identity "https://github.com/javadh75/SSHepherd/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+$ sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The darwin binaries are not notarized; after verifying the checksum and signature, run
+`xattr -d com.apple.quarantine ./sshepherd_*_darwin_*`.
+
 **Build locally** — produces a reproducible static binary at `bin/sshepherd`:
 
 ```console
@@ -1712,12 +1727,19 @@ standalone gosec skips test files; name them `*integration_test.go` or
 overridable with `VERSION=`), `docker-lint` (hadolint + dockle), `docker-scan`
 (Trivy), and `smoke` — `scripts/docker-gates.sh`: `--version` and `--help`, the
 binary's ELF architecture matches the image platform, an image size budget under
-30 MB (`SIZE_BUDGET_MB`), a non-root user check, and the PID-1 SIGTERM gate.
+30 MB (`SIZE_BUDGET_MB`), a non-root user check, and the PID-1 SIGTERM gate. The
+`--version`, `--help` and PID-1 runs happen on a read-only rootfs with all
+capabilities dropped (`--read-only --cap-drop ALL --security-opt no-new-privileges`;
+gate line `ok: runs on a read-only rootfs with no capabilities and no-new-privileges`).
+The Trivy and dockle scanner images are pinned by digest in `ci/images/trivy.Dockerfile`
+and `ci/images/dockle.Dockerfile`, which Dependabot bumps; the workflows read the first
+`FROM` line of each, and `trivy config` skips `ci/images`.
 `scripts/docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]` checks one variant of
 any local or registry image. The Dockerfile cross-compiles on the build host's
 platform, so a multi-arch `docker buildx` build never runs the compiler under QEMU. CI builds
-and gates the image natively on amd64 and arm64. CI also runs `govulncheck` and every fuzz
-target daily, and Trivy-scans the published `latest` image for both architectures (job
+and gates the image natively on amd64 and arm64. CI runs `govulncheck` and fuzzes every
+target for 2 minutes daily, keeping the generated corpus between runs. Every push also
+scans its new commits for secrets and reports benchmark deltas. CI also Trivy-scans the published `latest` image for both architectures (job
 `published-image-scan`, "Published image CVEs"). Before the first `vX.Y.Z` tag there is
 nothing to scan and the job passes. After that, a registry error fails it.
 

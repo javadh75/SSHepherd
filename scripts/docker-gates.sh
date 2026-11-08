@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runtime gates for a built image, shared by `make smoke`, CI and the release
 # workflow so they can never disagree: the binary is built for the image's
-# platform, runs (--version, --help), the image stays under the size budget,
-# does not run as root, and stops on a second SIGTERM as PID 1.
+# platform, runs hardened (--version, --help), the image stays under the size
+# budget, is non-root, and a hardened PID 1 stops on a second SIGTERM.
 #
 # Usage: docker-gates.sh [--platform OS/ARCH] [--pull] [IMAGE]
 #   IMAGE defaults to $IMAGE. --platform picks one variant of a multi-arch
@@ -24,6 +24,10 @@ done
 IMAGE="${IMAGE:?pass an image ref or set IMAGE}"
 SIZE_BUDGET_MB="${SIZE_BUDGET_MB:-30}"
 BIN=/usr/local/bin/sshepherd
+# Every run is hardened, so the image's read-only-rootfs claim is exercised:
+# a read-only root filesystem, no capabilities, no privilege gain. A binary
+# that writes outside a mounted volume fails here, not on a user's box.
+HARDEN=(--read-only --cap-drop ALL --security-opt no-new-privileges)
 
 native="linux/$(docker version -f '{{.Server.Arch}}')"
 platform="${platform:-$native}"
@@ -60,9 +64,10 @@ if [ "$got" != "$want" ]; then
 fi
 echo "ok: $BIN is built for $platform"
 
-docker run --rm "${plat[@]}" "$IMAGE" --version
-docker run --rm "${plat[@]}" "$IMAGE" --help >/dev/null
+docker run --rm "${HARDEN[@]}" "${plat[@]}" "$IMAGE" --version
+docker run --rm "${HARDEN[@]}" "${plat[@]}" "$IMAGE" --help >/dev/null
 echo "ok: --version and --help run"
+echo "ok: runs on a read-only rootfs with no capabilities and no-new-privileges"
 
 # Measure the unpacked root filesystem (export of a never-started container):
 # `docker image inspect .Size` means different things under the classic and
@@ -90,7 +95,7 @@ echo "ok: image runs as non-root user '$user'"
 # (reading the manifest), then send two SIGTERMs: the first only cancels, the
 # second must exit explicitly with 128+15, within a few seconds and not after
 # a SIGKILL timeout.
-sig=$(docker run -d -i "${plat[@]}" "$IMAGE" apply --dry-run --config /dev/stdin)
+sig=$(docker run -d -i "${HARDEN[@]}" "${plat[@]}" "$IMAGE" apply --dry-run --config /dev/stdin)
 sleep "$settle"
 docker kill -s TERM "$sig" >/dev/null
 sleep 1

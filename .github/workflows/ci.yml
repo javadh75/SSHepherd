@@ -15,7 +15,11 @@ permissions:
   contents: read
 
 # Every third-party action is pinned to a full commit SHA (version in the
-# trailing comment); every container image by digest. Dependabot bumps both.
+# trailing comment). Every container image is pinned by digest in a
+# Dockerfile: the release image in `Dockerfile`, and the scanners and sshd
+# test images in `ci/images/`. Dependabot bumps actions and those Dockerfiles.
+# The Go dev tools are pinned in the Makefile and bumped by hand (see the
+# Makefile header).
 
 jobs:
   go:
@@ -24,6 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the history secret scan reads the pushed commits
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -47,6 +53,13 @@ jobs:
         run: |
           make tools
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The tree scan (make check) cannot see a key committed and deleted
+      # within one push, or one committed with --no-verify, from the web UI or by a bot.
+      - name: Secret scan of the pushed commits (gitleaks history)
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: make secrets-history BASE="$BASE"
 
       # The single gate local and CI share: tidy (fails on a go.mod/go.sum
       # diff), fmt, vet, lint, deadcode, security, and the race suite with the
@@ -78,10 +91,17 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       IMAGE: sshepherd:ci
-      TRIVY_IMAGE: aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
-      DOCKLE_IMAGE: goodwithtech/dockle:v0.4.15@sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Scanner pins live in ci/images/*.Dockerfile so Dependabot can bump them.
+      - name: Read scanner pins
+        run: |
+          for t in trivy dockle; do
+            ref=$(sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "ci/images/$t.Dockerfile" | head -n1)
+            case "$ref" in *@sha256:*) ;; *) echo "::error::ci/images/$t.Dockerfile has no digest-pinned FROM"; exit 1;; esac
+            printf '%s_IMAGE=%s\n' "$(printf %s "$t" | tr '[:lower:]' '[:upper:]')" "$ref" >> "$GITHUB_ENV"
+          done
 
       # The Dockerfile lints are arch-independent: run them once.
       - name: Lint Dockerfile (hadolint)
@@ -90,11 +110,13 @@ jobs:
         with:
           dockerfile: Dockerfile
 
+      # ci/images holds pin files and sshd test images: they run as root by
+      # design and are never shipped, so only the release Dockerfile is linted.
       - name: Lint Dockerfile config (Trivy)
         if: matrix.arch == 'amd64'
         run: |
           docker run --rm -v "$PWD:/src:ro" -w /src "$TRIVY_IMAGE" \
-            config --exit-code 1 .
+            config --exit-code 1 --skip-dirs ci/images .
 
       - name: Build image
         run: docker build --build-arg "VERSION=${GITHUB_SHA::12}" -t "$IMAGE" .
@@ -133,6 +155,43 @@ jobs:
       - name: Run integration tests
         run: make integration
 
+  # Informational: benchstat of base vs head in the job summary. It fails only
+  # if the head benchmarks themselves fail (panic or build error), never on a
+  # delta, and ci-ok does not wait for it. Trunk-based pushes compare against
+  # the previous master commit.
+  bench:
+    name: Benchmarks (benchstat vs base, informational)
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Bench head and base, report the delta
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          go test -run '^$' -bench . -benchmem -count 6 ./... > head.txt
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            git worktree add -q ../base "$BASE"
+            (cd ../base && go test -run '^$' -bench . -benchmem -count 6 ./... > "$GITHUB_WORKSPACE/base.txt") || : > base.txt
+          else
+            : > base.txt
+          fi
+          {
+            echo '### Benchmarks (benchstat, base → head; shared runners are noisy, read trends not single runs)'
+            echo '```'
+            go run golang.org/x/perf/cmd/benchstat@v0.0.0-20261009192801-be2c69fb417e base.txt head.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # Required checks name only this job, so renaming or splitting a job above
   # never strands a branch/tag rule on a check that no longer exists.
   ci-ok:
@@ -153,6 +212,7 @@ jobs:
     name: Scheduled (govulncheck + fuzz)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -169,10 +229,29 @@ jobs:
       - name: Vulnerability scan (govulncheck)
         run: make vuln
 
-      # -k: run every fuzz target even after one fails, so a single run
-      # surfaces all crashers.
-      - name: Fuzz all parsers
-        run: make -k fuzz
+      - name: Locate the fuzz cache
+        id: fuzzcache
+        run: echo "dir=$(go env GOCACHE)/fuzz" >> "$GITHUB_OUTPUT"
+
+      # Restore the newest previous corpus, and save a new entry every run
+      # even when a target crashes, so each day builds on the last.
+      # (actions/cache saves only on success; setup-go's cache is keyed on
+      # go.sum and saved only on a miss, so neither can do this.)
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.fuzzcache.outputs.dir }}
+          key: fuzz-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ runner.os }}-
+
+      # Every discovered target x 2 min; the Makefile runs all of them even after a failure.
+      - name: Fuzz every target
+        run: make fuzz FUZZTIME=2m
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: ${{ !cancelled() }}
+        with:
+          path: ${{ steps.fuzzcache.outputs.dir }}
+          key: fuzz-${{ runner.os }}-${{ github.run_id }}
 
       # A failing fuzz target writes its minimized input to the package's
       # testdata/fuzz/<Target>/ — collect only the new (untracked) ones.
@@ -203,10 +282,17 @@ jobs:
     permissions:
       contents: read
       packages: read
-    env:
-      TRIVY_IMAGE: aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Scanner pins live in ci/images/*.Dockerfile so Dependabot can bump them.
+      - name: Read scanner pins
+        run: |
+          for t in trivy dockle; do
+            ref=$(sed -n 's/^FROM[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*/\1/p' "ci/images/$t.Dockerfile" | head -n1)
+            case "$ref" in *@sha256:*) ;; *) echo "::error::ci/images/$t.Dockerfile has no digest-pinned FROM"; exit 1;; esac
+            printf '%s_IMAGE=%s\n' "$(printf %s "$t" | tr '[:lower:]' '[:upper:]')" "$ref" >> "$GITHUB_ENV"
+          done
 
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
