@@ -494,7 +494,7 @@ point at a commit at or after the release-gating commit `ca50409` (the W0 repair
 `38c92c0` the publish digest pre-check fails every tag); older commits carry an ungated
 or never-publishing release.yml.
 Revocation memory (tombstones, manifest serial, opt-in post-revoke sweep, no adopt
-wildcard) is specced, awaiting owner decisions, in
+wildcard) is specced and approved (owner answers recorded 2026-11-08), not yet built, in
 `docs/superpowers/specs/2026-11-08-revocation-memory-design.md` (review remediation
 P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
