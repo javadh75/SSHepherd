@@ -93,16 +93,20 @@ lint-toolchain:
 	fi
 
 # Transitive import assertions depguard cannot express (it checks direct
-# imports only): apply/workflow/fleet never pull in the transport, the
-# terminal or the CLI, and the transport never pulls in the domain.
-LAYER_DOMAIN_BAN := SSHepherd/internal/(sshconn|sshread|sshwrite|keyfile)$$|golang.org/x/term$$|golang.org/x/crypto/ssh/(agent|knownhosts)$$|spf13/cobra$$
+# imports only): no domain package (nor the fleet leaf) pulls in the
+# transport, the terminal, x/sys/unix or the CLI, and the transport never
+# pulls in the domain. internal/manifest's store lock uses the standard
+# library's syscall, not x/sys/unix, so that ban holds for it too.
+LAYER_DOMAIN_PKGS := ./internal/config ./internal/authkeys ./internal/manifest ./internal/reconcile \
+	./internal/adopt ./internal/apply ./internal/audit ./internal/workflow ./internal/fleet
+LAYER_DOMAIN_BAN := SSHepherd/internal/(sshconn|sshread|sshwrite|keyfile)$$|golang.org/x/term$$|golang.org/x/sys/unix$$|golang.org/x/crypto/ssh/(agent|knownhosts)$$|spf13/cobra$$
 LAYER_TRANSPORT_BAN := SSHepherd/internal/(audit|apply|adopt|workflow)$$
 
 ## layering: fail when the import graph breaks the documented package layers,
 ## or when go list cannot load a listed package (a rename or a broken import
 ## must not silently drop a package from the check)
 layering:
-	@domain=$$($(GO) list -deps ./internal/apply ./internal/workflow ./internal/fleet) || { echo "FAIL: layering: go list failed"; exit 1; }; \
+	@domain=$$($(GO) list -deps $(LAYER_DOMAIN_PKGS)) || { echo "FAIL: layering: go list failed"; exit 1; }; \
 	transport=$$($(GO) list -deps ./internal/sshconn ./internal/sshread ./internal/sshwrite) || { echo "FAIL: layering: go list failed"; exit 1; }; \
 	bad=$$(printf '%s\n' "$$domain" | grep -E '$(LAYER_DOMAIN_BAN)'); \
 	bad2=$$(printf '%s\n' "$$transport" | grep -E '$(LAYER_TRANSPORT_BAN)'); \
@@ -179,6 +183,11 @@ COVER_EXCLUDE := /internal/sshconn/sshtest/|/internal/testkeys/
 
 coverage: test
 	@{ head -n1 $(COVERPROFILE); tail -n +2 $(COVERPROFILE) | grep -Ev '$(COVER_EXCLUDE)'; } > $(COVERPROFILE).tmp && mv $(COVERPROFILE).tmp $(COVERPROFILE)
+	@# The filter must have run: the test-only helpers are named literally (not
+	@# through COVER_EXCLUDE), so a broken pattern or a dropped step fails here.
+	@if grep -Fq -e /internal/sshconn/sshtest/ -e /internal/testkeys/ $(COVERPROFILE); then \
+	  echo "FAIL: coverage: $(COVERPROFILE) still holds test-helper packages (sshconn/sshtest, testkeys) after the filter"; exit 1; \
+	fi
 	$(GO) tool cover -func=$(COVERPROFILE)
 	$(GO) tool cover -html=$(COVERPROFILE) -o coverage.html
 	@total=$$($(GO) tool cover -func=$(COVERPROFILE) | awk '/^total:/ {print $$3}' | tr -d '%'); \

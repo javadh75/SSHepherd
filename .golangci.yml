@@ -102,6 +102,13 @@ linters:
               desc: terminal handling belongs in cmd
             - pkg: golang.org/x/crypto/ssh/agent
               desc: agent access belongs in sshconn
+            - pkg: golang.org/x/crypto/ssh/knownhosts
+              desc: host-key verification belongs in sshconn
+            # internal/manifest's store lock and owner checks use the standard
+            # library's syscall, not x/sys/unix, so this ban holds for every
+            # domain package.
+            - pkg: golang.org/x/sys/unix
+              desc: OS-level calls (terminal, descriptors) belong in the transport or cmd
             - pkg: github.com/spf13/cobra
               desc: the CLI framework belongs in cmd/sshepherd
         # Transport never depends on the domain (the ARC-3 inversion).

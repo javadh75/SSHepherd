@@ -404,9 +404,10 @@ servers are warned, never emptied). KEY is a SHA256 fingerprint, a key line or a
 contents). Operator targets need `--operator`. The edit is always confirmed and
 saved once — after the prompt, before the first write — under a flock sidecar
 with a compare-and-swap and an atomic rename keeping mode and owner; `--dry-run`
-saves nothing, `--no-apply` saves without connecting. Apply's run body is now
-`runApply(applyRun)`, and plain `apply` re-checks the manifest before writing
-(skipped for a piped `--config`, which edits refuse).
+saves nothing, `--no-apply` saves without connecting. apply, revoke and rotate
+share one run body (then `runApply(applyRun)`; since P14 S4 `runWorkflow(applySpec)`
+over `internal/workflow.Apply`), and plain `apply` re-checks the manifest before
+writing (skipped for a piped `--config`, which edits refuse).
 Count strings in CLI messages are pluralized (three report strings still are not:
 audit's `HOST KEY ALERT`, apply's `option(s)` and the guard's `none of the %d keys`);
 follow-up hints carry the run's own flags and are paste-ready (double quotes inside
@@ -559,10 +560,12 @@ and prints the edit header before the preflight, as before. The plan predicates
 `internal/apply`. `go list -deps ./internal/workflow` names no transport, cobra or x/term.
 Layering is machine-enforced (P14 S5, ARC-8): `.golangci.yml` depguard rules `domain`
 (config/authkeys/manifest/reconcile/adopt/apply/audit/workflow never import
-sshconn/sshread/sshwrite/keyfile, x/term, ssh/agent or cobra), `transport`
+sshconn/sshread/sshwrite/keyfile, x/term, ssh/agent, ssh/knownhosts, x/sys/unix or
+cobra; manifest's store lock uses the stdlib `syscall`), `transport`
 (sshconn/sshread/sshwrite never import audit/apply/adopt/workflow or cobra) and
 `fleet-leaf` (internal/fleet non-test code is stdlib only), plus the transitive
-`make layering` check (in `make check`). The rules cover test files too, with no
+`make layering` check (in `make check`) over every domain package and the fleet leaf
+(`LAYER_DOMAIN_PKGS`). The rules cover test files too, with no
 exclusions: apply's and adopt's tests build classified, hinted errors from the fleet
 vocabulary (apply's `testDialHint` mirror is pinned to `sshconn.DialHint` by sshconn's
 `TestAuditGoldenCarriesDialHint`), the write-connect timeout contract test
@@ -579,6 +582,12 @@ in `skippedOnPurpose`) and ProxyJump/ProxyCommand. `TestRootVersionUsesResolved`
 `--version` bypasses `resolveVersion`.
 P14 S6 (TST-7): the layering pass also gates coverage on production packages (`COVERAGE_MIN` 93):
 `make coverage` drops the test-support packages `internal/sshconn/sshtest` and `internal/testkeys`
-from `coverage.out` in place (keeping the `mode:` header, so CI's artifact names are unchanged);
+from `coverage.out` in place (keeping the `mode:` header, so CI's artifact names are unchanged)
+and fails if either path is still in the profile after the filter;
 the measured production total was 94.8% at `2010589` (93.3% with the helpers), and the minimum
 ratchets as floor(measured) − 1, raised and never lowered.
+W3 follow-up: mutation-killing tests pin the workflow's verbatim Confirmer/Committer
+errors and its "applying N servers" log before the held-key re-list (logs and seam calls
+recorded in one sequence), the edit header printing before a failing preflight, and the
+edit commit guard's converged escape (a vanished agent still saves when an affected
+server already holds the edited render).
