@@ -3,6 +3,7 @@ package apply
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -51,11 +52,13 @@ func (p palette) paint(code, s string) string {
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-// oneLine collapses newlines so hostile error text cannot forge report rows
-// or a Summary line (terminal escapes are already stripped upstream).
-func oneLine(err error) string {
-	return strings.Join(strings.Fields(err.Error()), " ")
-}
+// collapse folds whitespace runs to single spaces so hostile error text
+// cannot forge report rows or a Summary line (terminal escapes are already
+// stripped upstream).
+func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// oneLine is collapse for an error's text.
+func oneLine(err error) string { return collapse(err.Error()) }
 
 // label mirrors audit's row label: the owning user (with their comment:
 // when set); for a key only opts.Former owns, its former owner and the
@@ -318,7 +321,7 @@ func normalizeDetail(n Normalize) string {
 // converged includes servers applied this run; refused counts plan
 // refusals and write refusals alike.
 type summaryCounts struct {
-	converged, applied, pending, refused, failed, unreachable int
+	converged, applied, pending, refused, failed, unreachable, unproven, lockout int
 }
 
 func countSummary(plans []ServerPlan) summaryCounts {
@@ -340,6 +343,10 @@ func countSummary(plans []ServerPlan) summaryCounts {
 				c.refused++
 			case OutcomeFailed:
 				c.failed++
+			case OutcomeUnproven:
+				c.unproven++
+			case OutcomeLockoutUnrestored:
+				c.lockout++
 			default:
 				c.pending++
 			}
@@ -349,9 +356,10 @@ func countSummary(plans []ServerPlan) summaryCounts {
 }
 
 // RenderSummary writes the phase-2 outcome lines (one per written, refused,
-// failed, or interrupted-before-writing server) and the final Summary. "Converged" counts servers that
-// needed nothing and servers applied-and-verified this run.
-func RenderSummary(w io.Writer, plans []ServerPlan, opts RenderOptions) {
+// failed, unproven, or interrupted-before-writing server) and the final
+// Summary. "Converged" counts servers that needed nothing and servers
+// applied-and-verified this run. cfg names the keys a rollback put back.
+func RenderSummary(w io.Writer, cfg *config.Config, plans []ServerPlan, opts RenderOptions) {
 	if len(plans) == 0 {
 		return // Render already printed the 0-servers summary
 	}
@@ -360,22 +368,8 @@ func RenderSummary(w io.Writer, plans []ServerPlan, opts RenderOptions) {
 	// prints again at most once here.
 	var hints audit.Hints
 	for _, p := range plans {
-		if p.Class != ClassChange {
-			continue
-		}
-		switch p.Outcome {
-		case OutcomeApplied:
-			fmt.Fprintf(w, "%s: %s\n", p.Server.Name, pal.paint(codeGreen, "applied · verified"))
-		case OutcomeRefused:
-			fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeBoldRed, "REFUSED:"), oneLine(p.OutcomeErr))
-			hints.Write(w, p.OutcomeErr)
-		case OutcomeFailed:
-			fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeRed, "FAILED:"), oneLine(p.OutcomeErr))
-			hints.Write(w, p.OutcomeErr)
-		default:
-			if p.OutcomeErr != nil {
-				fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeYellow, "NOT STARTED:"), oneLine(p.OutcomeErr))
-			}
+		if p.Class == ClassChange {
+			renderOutcome(w, cfg, p, pal, opts, &hints)
 		}
 	}
 	c := countSummary(plans)
@@ -386,10 +380,88 @@ func RenderSummary(w io.Writer, plans []ServerPlan, opts RenderOptions) {
 	for _, seg := range []struct {
 		n     int
 		label string
-	}{{c.pending, "pending"}, {c.failed, "failed"}, {c.refused, "refused"}, {c.unreachable, "unreachable"}} {
+	}{{c.pending, "pending"}, {c.failed, "failed"}, {c.refused, "refused"}, {c.unreachable, "unreachable"}, {c.unproven, "unproven"}, {c.lockout, "lockout not restored"}} {
 		if seg.n > 0 {
 			line += fmt.Sprintf(" · %d %s", seg.n, seg.label)
 		}
 	}
 	fmt.Fprintf(w, "%s  → exit %d\n", line, ExitCode(plans))
+}
+
+// renderOutcome is one change server's outcome line.
+func renderOutcome(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, opts RenderOptions, hints *audit.Hints) {
+	label, code := outcomeLabel(p)
+	switch {
+	case p.Outcome == OutcomeApplied:
+		fmt.Fprintf(w, "%s: %s\n", p.Server.Name, pal.paint(codeGreen, "applied · verified"))
+	case label != "":
+		fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(code, label), collapse(outcomeText(cfg, opts.Former, p)))
+		hints.Write(w, p.OutcomeErr)
+	case p.OutcomeErr != nil:
+		fmt.Fprintf(w, "%s: %s %s\n", p.Server.Name, pal.paint(codeYellow, "NOT STARTED:"), oneLine(p.OutcomeErr))
+	}
+}
+
+// outcomeLabel is an outcome line's word and color; bold red marks every
+// line that exits 2.
+func outcomeLabel(p ServerPlan) (label, code string) {
+	switch p.Outcome {
+	case OutcomeRefused:
+		return "REFUSED:", codeBoldRed
+	case OutcomeLockoutUnrestored:
+		return "LOCKOUT — NOT RESTORED:", codeBoldRed
+	case OutcomeFailed:
+		if needsHuman(p) {
+			return "FAILED:", codeBoldRed
+		}
+		return "FAILED:", codeRed
+	case OutcomeUnproven:
+		if needsHuman(p) {
+			return "UNPROVEN:", codeBoldRed
+		}
+		return "UNPROVEN:", codeYellow
+	}
+	return "", ""
+}
+
+// outcomeText is a failed server's message: the error, plus the keys a
+// rollback put back. The JSON report's error is the same text.
+func outcomeText(cfg, former *config.Config, p ServerPlan) string {
+	return p.OutcomeErr.Error() + rollbackDetail(cfg, former, p)
+}
+
+// rollbackDetail names each key a rollback reinstated, marking the ones on
+// the manifest's revoked: list; "" when there is no rollback or nothing was
+// removed.
+func rollbackDetail(cfg, former *config.Config, p ServerPlan) string {
+	if !p.RolledBack || len(p.Remove) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(p.Remove))
+	for _, k := range p.Remove {
+		mark := ""
+		if slices.Contains(p.RevokedRemovals, k.Fingerprint) {
+			mark = ", on the revoked: list"
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s%s)", rollbackLabel(cfg, former, k), k.Fingerprint, mark))
+	}
+	list := parts[len(parts)-1]
+	if n := len(parts); n > 1 {
+		list = strings.Join(parts[:n-1], ", ") + " and " + parts[n-1]
+	}
+	return fmt.Sprintf("; it still grants %s, which the manifest removed — fix the surviving key and re-run", list)
+}
+
+// rollbackLabel names a removed key: its owner in the rendered config, its
+// former owner, or the unknown-key label (a key nobody owned).
+func rollbackLabel(cfg, former *config.Config, k authkeys.Key) string {
+	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
+		return u.Name
+	}
+	if former != nil {
+		if u, ok := former.OwnerOf(k.Fingerprint); ok {
+			return u.Name
+		}
+	}
+	return audit.UnknownLabel(k)
 }

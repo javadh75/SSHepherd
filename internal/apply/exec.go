@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
@@ -58,6 +60,9 @@ func Execute(ctx context.Context, plans []ServerPlan, w Writer, opts ExecOptions
 	log := opts.logger()
 	held := opts.Held
 	sem := make(chan struct{}, opts.Parallel)
+	var inflight atomic.Int32
+	stop := context.AfterFunc(ctx, func() { interruptNotice(log, int(inflight.Load())) })
+	defer stop()
 	var wg sync.WaitGroup
 	for i := range plans {
 		if plans[i].Class != ClassChange {
@@ -77,10 +82,20 @@ func Execute(ctx context.Context, plans []ServerPlan, w Writer, opts ExecOptions
 				plans[i].OutcomeErr = errInterrupted
 				return
 			}
+			inflight.Add(1)
+			defer inflight.Add(-1)
 			applyOne(ctx, &plans[i], w, held, opts.PerServerTimeout, log)
 		}()
 	}
 	wg.Wait()
+}
+
+// interruptNotice tells the operator what the first Ctrl-C will not stop.
+func interruptNotice(log *slog.Logger, n int) {
+	if n > 0 {
+		log.Warn(fmt.Sprintf("interrupt: finishing %s (write, verify, login check — up to 2m); a second Ctrl-C abandons their login check and rollback",
+			Plural(n, "in-flight write", "in-flight writes")))
+	}
 }
 
 // applyOne writes one server. The guard re-check is authoritative: Build
@@ -95,14 +110,14 @@ func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []fleet.HeldKey
 		log.Warn(fmt.Sprintf("%s: %v", p.Server.Name, p.OutcomeErr))
 		return
 	}
-	fps := probeOrderFor(p.Desired, surviving)
+	req := requestFor(p, surviving, held, log)
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	start := time.Now()
-	err := w.Apply(ctx, p.Server, fleet.WriteRequest{Content: p.Rendered, Expect: p.Expect, Survivors: fps, DisableKeys2: p.DisableKeys2()})
+	err := w.Apply(ctx, p.Server, req)
 	switch {
 	case err == nil:
 		p.Outcome = OutcomeApplied
@@ -114,10 +129,73 @@ func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []fleet.HeldKey
 	case fleet.IsRefusal(err):
 		p.Outcome = OutcomeRefused
 	default:
-		p.Outcome = OutcomeFailed
+		p.Outcome, p.RolledBack = failureOutcome(err)
 	}
 	p.OutcomeErr = err
 	log.Warn(fmt.Sprintf("%s: %v", p.Server.Name, err))
+}
+
+// requestFor builds one server's write request. OnWarning runs on this
+// server's goroutine, its only writer.
+func requestFor(p *ServerPlan, surviving []authkeys.Key, held []fleet.HeldKey, log *slog.Logger) fleet.WriteRequest {
+	fps := probeOrderFor(p.Desired, surviving)
+	proof, paths := headlessProofFor(fps, surviving, held)
+	return fleet.WriteRequest{
+		Content: p.Rendered, Expect: p.Expect, Survivors: fps,
+		DisableKeys2: p.DisableKeys2(), SkipWrite: p.KeysUnchanged(), HeadlessProof: proof,
+		OnWarning: func(cause string) {
+			text := headlessWarning(paths, collapse(cause))
+			p.Warnings = append(p.Warnings, text)
+			log.Warn(p.Server.Name + ": " + text)
+		},
+	}
+}
+
+// headlessProofFor is D9b's condition: the production order proves an agent
+// key first, and a surviving key file's line is unrestricted (OfferRank 0).
+// It returns those key files' fingerprints and paths, in production order.
+func headlessProofFor(fps []string, surviving []authkeys.Key, held []fleet.HeldKey) (proof, paths []string) {
+	src := sourceMap(held)
+	if len(fps) == 0 || src[fps[0]] != fleet.SourceAgent {
+		return nil, nil
+	}
+	unrestricted := make(map[string]bool, len(surviving))
+	for _, k := range surviving {
+		if authkeys.OfferRank(k.Options) == 0 {
+			unrestricted[k.Fingerprint] = true
+		}
+	}
+	for _, fp := range fps {
+		if unrestricted[fp] && src[fp] != fleet.SourceAgent {
+			proof, paths = append(proof, fp), append(paths, src[fp])
+		}
+	}
+	return proof, paths
+}
+
+// headlessWarning is the D9b warning's text, on stderr and in JSON alike.
+func headlessWarning(paths []string, cause string) string {
+	if len(paths) == 1 {
+		return fmt.Sprintf("your --identity key %s could not log in on its own (%s); a headless run with only that key would fail", paths[0], cause)
+	}
+	return fmt.Sprintf("your --identity keys %s could not log in on their own (%s); a headless run with only those keys would fail", strings.Join(paths, ", "), cause)
+}
+
+// failureOutcome maps a started write's failure to its outcome, and whether
+// the previous file was restored.
+func failureOutcome(err error) (Outcome, bool) {
+	var unproven *fleet.UnprovenError
+	if errors.As(err, &unproven) {
+		return OutcomeUnproven, false
+	}
+	var lockout *fleet.LockoutError
+	if errors.As(err, &lockout) {
+		if lockout.Restore != nil {
+			return OutcomeLockoutUnrestored, false
+		}
+		return OutcomeFailed, true
+	}
+	return OutcomeFailed, false
 }
 
 // probeOrderFor returns what the post-write probe offers: the survivors in

@@ -36,12 +36,19 @@ const (
 // Outcome is the phase-2 result for a ClassChange server.
 type Outcome string
 
-// The four phase-2 outcomes for a ClassChange server.
+// The phase-2 outcomes for a ClassChange server.
 const (
 	OutcomePending Outcome = "pending" // not written: dry-run, declined, phase 2 not run, or interrupted before the write (OutcomeErr set)
 	OutcomeApplied Outcome = "applied" // written, byte-verified, and the surviving keys proved they can log in
 	OutcomeRefused Outcome = "refused" // refused at the server before any change (symlink, unsafe path, changed since plan, locked)
-	OutcomeFailed  Outcome = "failed"  // write, verify or login probe failed (a failed probe restores the previous file)
+	OutcomeFailed  Outcome = "failed"  // write or verify failed, or a rejected login check restored the previous file
+	// OutcomeUnproven: written and verified, but the login check never got
+	// past authentication; the file is kept.
+	OutcomeUnproven Outcome = "unproven"
+	// OutcomeLockoutUnrestored: a rejected login check whose restore failed,
+	// or a refused reconnect after the upload started — the operator may be
+	// locked out.
+	OutcomeLockoutUnrestored Outcome = "lockout_unrestored"
 )
 
 // RewriteRow is a matched key whose on-server form differs from the render.
@@ -124,6 +131,14 @@ type ServerPlan struct {
 
 	Outcome    Outcome
 	OutcomeErr error
+	// RevokedRemovals are the fingerprints in Remove on the manifest's
+	// revoked: list (D10a), in Remove order.
+	RevokedRemovals []string
+	// RolledBack: a rejected login check restored the previous file, so the
+	// keys in Remove are installed again.
+	RolledBack bool
+	// Warnings are the server's D9c warnings, in the order they arose.
+	Warnings []string
 }
 
 // DisableKeys2 reports whether the write moves a non-empty
@@ -135,6 +150,14 @@ type ServerPlan struct {
 // authorized_keys2 it is refused, since apply never wipes a server.
 func (p ServerPlan) DisableKeys2() bool {
 	return p.Class == ClassChange && p.AuthorizedKeys2
+}
+
+// KeysUnchanged reports a plan whose only work is moving
+// authorized_keys2 aside: the render equals the phase-1 snapshot, so the
+// file is not rewritten and .bak is not rotated. It is evaluated after the
+// commit, because Reserial may have re-rendered the header.
+func (p ServerPlan) KeysUnchanged() bool {
+	return p.DisableKeys2() && authkeys.ManagedSnapshot(false, p.Rendered) == p.Expect
 }
 
 // BuildWith computes the plan for every phase-1 result. held is what the
@@ -281,6 +304,7 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 	if !d.equalBody {
 		p.Add = r.Diff.Missing
 		p.Remove = r.Diff.Unauthorized
+		p.RevokedRemovals = revokedRemovals(cfg, p.Remove)
 		p.Rewrites = rewriteRows(r, entries)
 		explained := len(p.Add)+len(p.Remove)+len(p.Rewrites) > 0
 		p.Normalize = normalize(r, entries, explained)
@@ -294,6 +318,20 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 	p.Note, p.Warning, p.AgentOnly = v.Note, v.Warning, v.AgentOnly
 	p.Class = ClassChange
 	return p, nil
+}
+
+// revokedRemovals returns the fingerprints of remove on the manifest's
+// revoked: list. cfg is the rendered config, so revoke and rotate see the
+// tombstones their own edit appended. Key tombstones only: Revoked ignores
+// access tombstones.
+func revokedRemovals(cfg *config.Config, remove []authkeys.Key) []string {
+	var out []string
+	for _, k := range remove {
+		if _, ok := cfg.Revoked(k.Fingerprint); ok {
+			out = append(out, k.Fingerprint)
+		}
+	}
+	return out
 }
 
 // desiredEntries builds the render input for one server: DesiredFor order
@@ -599,17 +637,39 @@ func survivorLabel(cfg *config.Config, k authkeys.Key) string {
 func hasRestrictiveOption(options []string) bool { return authkeys.BlocksLogin(options) }
 
 // ExitCode maps plans to the process exit code (monitoring-style, mirroring
-// audit): 0 when every targeted server is converged — already, or applied
-// and verified this run; 1 otherwise (pending under --dry-run or a declined
-// prompt, refused, failed, unreachable). Tool errors (3) are the caller's
-// domain; 2 stays reserved (audit's critical drift; apply has no
-// equivalent class yet).
+// audit): 2 when any server needs a human now (needsHuman); 0 when every
+// targeted server is converged — already, or applied and verified this run;
+// 1 otherwise (pending under --dry-run or a declined prompt, refused,
+// failed, unproven, unreachable). Tool errors (3) are the caller's domain.
 func ExitCode(plans []ServerPlan) int {
+	code := 0
 	for _, p := range plans {
-		if p.Class == ClassConverged || (p.Class == ClassChange && p.Outcome == OutcomeApplied) {
-			continue
+		switch {
+		case needsHuman(p):
+			return 2
+		case p.Class == ClassConverged || (p.Class == ClassChange && p.Outcome == OutcomeApplied):
+		default:
+			code = 1
 		}
-		return 1
 	}
-	return 0
+	return code
+}
+
+// needsHuman is the D28 exit-2 rule for a written server: an unrestored
+// lockout (D10), a rollback that put back a key on the revoked: list
+// (D10a), or a login check stopped at a host-key alarm audit would page on
+// (D10b).
+func needsHuman(p ServerPlan) bool {
+	if p.Class != ClassChange {
+		return false
+	}
+	switch p.Outcome {
+	case OutcomeLockoutUnrestored:
+		return true
+	case OutcomeFailed:
+		return p.RolledBack && len(p.RevokedRemovals) > 0
+	case OutcomeUnproven:
+		return fleet.HostKeyAlert(fleet.ErrorKindOf(p.OutcomeErr))
+	}
+	return false
 }

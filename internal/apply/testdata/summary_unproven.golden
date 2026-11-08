@@ -1,0 +1,4 @@
+web-1: applied · verified
+web-2: UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (dial tcp 10.0.0.2:22: i/o timeout) — kept the new file; run sshepherd audit to confirm
+  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+Summary: 1/2 servers converged (1 applied) · 1 unproven  → exit 1

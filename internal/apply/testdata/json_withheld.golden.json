@@ -28,6 +28,8 @@
     "failed": 0,
     "refused": 1,
     "unreachable": 1,
+    "unproven": 0,
+    "lockout_unrestored": 0,
     "exit_code": 1
   },
   "servers": [

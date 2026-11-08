@@ -1,0 +1,2 @@
+web-1: UNPROVEN: written and verified, but the login check stopped at a host-key alarm (host key changed) — kept the new file; check known_hosts, then run sshepherd audit
+Summary: 0/1 servers converged · 1 unproven  → exit 2

@@ -1,0 +1,4 @@
+web-1: applied · verified
+web-2: UNPROVEN: written and verified, but the login check could not offer the surviving keys you hold after 2 attempts (none of the 1 surviving keys is offered (agent locked, or keys removed since the plan)) — kept the new file; unlock the agent or re-add the key, then run sshepherd audit to confirm
+web-3: LOCKOUT — NOT RESTORED: post-write login offering only the surviving keys you hold failed (ssh: unable to authenticate) AND restoring the previous file failed (restore on web-3 failed (exit 1): mv: denied) — the previous version is at ~/.ssh/authorized_keys.sshepherd.bak; repair it over a session that is still open
+Summary: 1/3 servers converged (1 applied) · 1 unproven · 1 lockout not restored  → exit 2

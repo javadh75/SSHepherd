@@ -116,8 +116,10 @@ type Outcome struct {
 	Plans []apply.ServerPlan
 }
 
-// ExitCode is 1 when the run was withheld or declined or any server did
-// not converge, else 0 (apply.ExitCode).
+// ExitCode is 2 when a human must act now on a written server (apply.ExitCode:
+// an unrestored lockout, a rollback that put back a revoked key, a host-key
+// alarm at the login check); else 1 when the run was withheld or declined or
+// any server did not converge, else 0.
 func (o Outcome) ExitCode() int {
 	if o.Stage == StageWithheld || o.Stage == StageDeclined {
 		return 1

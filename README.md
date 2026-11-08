@@ -1013,21 +1013,21 @@ the terminal (see [Authentication](#authentication)).
 the text report; logs stay on stderr. It needs `--dry-run` or `--yes` — a script
 cannot answer the prompt — otherwise the run exits `3` before the manifest is read:
 `--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)`.
-A document is written exactly when the run exits `0`, `1` or (for `revoke`/`rotate
---sweep`) `2` (including an interrupt
+A document is written exactly when the run exits `0`, `1` or `2` (`2`: a lockout not restored, a rollback that put back a key on the `revoked:` list, a changed or `@revoked` host key at the login check, or a `--sweep` hit) (including an interrupt
 after the plan, where unstarted servers are `pending` with `"error_kind":
 "canceled"`); exit-`3` tool errors print no document. A write that fails after the
 plan carries `error_kind` when the transport classified the failure (for example
 `host_key_changed` when the host key changed between plan and write, `auth`,
 `timeout`); refusals and verify failures carry none. Each server carries its
 `class` (`converged`, `change`, `refused`, `unreachable`), its `outcome` (`applied`,
-`refused`, `failed`, `pending` for a `change` server, `null` otherwise — always
+`refused`, `failed`, `pending` for a `change` server, `unproven` (written and verified, login not proven; its `error_kind` is the last login failure's, and one of `host_key_changed`, `host_key_revoked` means exit 2), `lockout_unrestored`, `null` otherwise — always
 `pending` under `--dry-run`), its `error`, and its `changes` (`add`, `remove`,
 `rewrite` with `loosens` naming dropped restrictive options verbatim and `widens`
 naming the relaxing options it adds (`[]` when none), `normalize`).
 Comments and options are sanitized (control and Unicode format characters
-removed), so they may not byte-match the server line. A dry run over a mixed
-fleet:
+removed), so they may not byte-match the server line.
+Treat an unknown `outcome` value as not converged. `summary` also counts `unproven` and `lockout_unrestored`. A `failed` server whose rollback put back removed keys names each in `error`, and `restored_revoked_keys` lists those on the `revoked:` list (omitted when empty). `warnings` lists per-server warnings (omitted when empty), today the `--identity` headless-proof warning.
+A dry run over a mixed fleet:
 
 ```json
 {
@@ -1044,6 +1044,8 @@ fleet:
     "failed": 0,
     "refused": 1,
     "unreachable": 1,
+    "unproven": 0,
+    "lockout_unrestored": 0,
     "exit_code": 1
   },
   "servers": [
@@ -1245,9 +1247,36 @@ c: FAILED: lockout prevented — restored previous file (post-write login offeri
 Summary: 1/3 servers converged (1 applied) · 1 pending · 1 failed  → exit 1
 ```
 
+A write whose login check never got past authentication is kept and reported `UNPROVEN`:
+
+```console
+web-1: applied · verified
+web-2: UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (dial tcp 10.0.0.2:22: i/o timeout) — kept the new file; run sshepherd audit to confirm
+  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+Summary: 1/2 servers converged (1 applied) · 1 unproven  → exit 1
+```
+
+A rejected login check whose restore failed needs a human now:
+
+```console
+web-1: applied · verified
+web-2: UNPROVEN: written and verified, but the login check could not offer the surviving keys you hold after 2 attempts (none of the 1 surviving keys is offered (agent locked, or keys removed since the plan)) — kept the new file; unlock the agent or re-add the key, then run sshepherd audit to confirm
+web-3: LOCKOUT — NOT RESTORED: post-write login offering only the surviving keys you hold failed (ssh: unable to authenticate) AND restoring the previous file failed (restore on web-3 failed (exit 1): mv: denied) — the previous version is at ~/.ssh/authorized_keys.sshepherd.bak; repair it over a session that is still open
+Summary: 1/3 servers converged (1 applied) · 1 unproven · 1 lockout not restored  → exit 2
+```
+
+A rollback names the keys it put back and marks those on the `revoked:` list:
+
+```console
+a: applied · verified
+b: applied · verified
+web-1: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate); it still grants alice (SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4, on the revoked: list) and bob (SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY), which the manifest removed — fix the surviving key and re-run
+Summary: 2/3 servers converged (2 applied) · 1 failed  → exit 2
+```
+
 **Ctrl-C / SIGTERM** during the writes stops new servers from starting; servers
 already being written finish their write, verify and login probe (bounded by a
-2-minute session budget). Unstarted servers show `NOT STARTED` and count as pending
+2-minute session budget), and a notice says so (`interrupt: finishing 2 in-flight writes (write, verify, login check — up to 2m); a second Ctrl-C abandons their login check and rollback`). Unstarted servers show `NOT STARTED` and count as pending
 (exit 1). A second Ctrl-C kills the process immediately. An interrupt before any
 write starts — during `apply`'s planning or at its `[y/N]` prompt — writes nothing
 and exits `3`. In `audit` and `adopt`, an interrupt at any point closes in-flight
@@ -1517,7 +1546,8 @@ with no granted keys):
         ],
         "keys": 1
       }
-    ]
+    ],
+    "revoked": []
   },
   "summary": {
     "servers": 1,
@@ -1528,6 +1558,8 @@ with no granted keys):
     "failed": 0,
     "refused": 0,
     "unreachable": 0,
+    "unproven": 0,
+    "lockout_unrestored": 0,
     "exit_code": 1
   },
   "servers": [
@@ -1970,6 +2002,8 @@ through group or other bits** — Kubernetes `fsGroup: 65532` with a secret
 refused (`permissions … are too open`); a file the uid cannot read at all fails with
 `cannot read key file FILE as uid 65532 (owner M, mode …)`.
 
+SIGKILL cannot be handled, so give a write time to finish: `docker stop -t 150`, or Kubernetes `terminationGracePeriodSeconds: 150`, more than the 2-minute session budget.
+
 ## Exit codes
 
 Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
@@ -1978,8 +2012,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers | Not converged; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator key, a host key that **changed** or is `@revoked` in `known_hosts` (possible impersonation), a revoked key still installed, a policy conflict, a forged header serial | — | `--sweep` found a revoked key still installed |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `2` | **Critical**: a missing operator key, a host key that **changed** or is `@revoked` in `known_hosts` (possible impersonation), a revoked key still installed, a policy conflict, a forged header serial | **Lockout not restored** (`lockout_unrestored`: the restore after a rejected login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save) |
 
 `--help` shows this summary. `audit --help`:
@@ -2004,10 +2038,15 @@ Exit codes:
      a newer manifest wrote whose keys already match); a revoke whose targets
      were already revoked; or, with revoke/rotate --no-apply, the edit is
      saved but not pushed (run the apply hint it prints)
-  1  pending changes, unreachable or refused servers (a newer manifest's
-     serial, a policy conflict), or a declined prompt; with --sweep, a server
+  1  pending changes, unreachable, refused or failed servers (a newer
+     manifest's serial, a policy conflict), a write whose login check could
+     not prove access (unproven), or a declined prompt; with --sweep, a server
      the sweep could not read
-  2  revoke/rotate --sweep found a revoked key still installed
+  2  a human must act now: a lockout not restored (the restore after a
+     rejected login check failed, or the reconnect after the upload started
+     was refused), a rollback that put back a key on the revoked: list, a
+     changed or @revoked host key at the post-write login check, or
+     revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written
@@ -2181,8 +2220,8 @@ per file (`dd conv=fsync`, never a global `sync`); the directory entry is not
 flushed, so after a crash you see either the old or the new complete file. Readers
 never see a half-written file. If the connection drops during the upload or the verify, SSHepherd opens one fresh connection, takes the file's lock and re-reads it. The render in place means the rename happened, so the run continues; the planned bytes mean `connection dropped before the rename; original untouched (re-checked under the lock)`; anything else, or a lock that never frees, is `connection dropped; the file is in an unknown state (previous version at <path>.sshepherd.bak) — run sshepherd audit`. If that fresh login is refused with an authentication error after the upload started, the server is reported `LOCKOUT — NOT RESTORED: connection dropped after the upload started and a fresh login offering the keys you hold was refused (…)` and the run exits `2`; the previous version is at `<path>.sshepherd.bak`.
 
-**Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced on
-every apply. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written
+**Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced by
+every write that rewrites `authorized_keys`. `.bak` is not rotated by a write that only moves `authorized_keys2` aside: `authorized_keys` is compared and left alone when it already matches. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written
 once, the first time an unmanaged file is replaced (flushed to disk before the rename,
 like `.bak`), and never overwritten. The one-time `.sshepherd.orig` is taken only when the
 file's first line is not a managed header — the exact `ParseHeader` grammar, decided on the
@@ -2203,7 +2242,7 @@ connection offering only the surviving keys you hold**, in exactly the order eve
 later connection offers them (see Connection posture), so the probe proves the key
 the next run logs in with; it no longer prefers `--identity` key files over agent
 keys. It runs a probe command over it, so a surviving key whose line forces a `command=` fails
-the probe just like a refused login. The check is sorted by how far it got. A login that never finished authentication proves nothing about the server: a dial or handshake failure is retried (up to 4 attempts, waits 0/2/5/10 s, all inside the 2-minute session budget), a locked or emptied agent once, and a host-key alarm not at all; then the new file is **kept** and the server reports `written and verified, but the login check could not reach the server after 4 attempts (…) — kept the new file; run sshepherd audit to confirm`, because undoing could reinstall a key the manifest removed. A login that was refused (every surviving key you hold offered and refused, or `MaxAuthTries`), or anything that goes wrong after it succeeded (a forced `command=`, a session that will not open, a probe command that hangs past 15 s), restores the previous file (and a disabled `authorized_keys2`) over the still-open session: `lockout prevented — restored previous file (…)`. The restore takes the lock again, waits out a busy lock (1, 3 and 6 s, naming the lock's owner and age if it never frees) and refuses to replace a file that changed since this apply wrote it (a concurrent apply); over a dropped connection it is retried once over a fresh login. If the restore fails or is refused, the message says so and names the `.bak` path.
+the probe just like a refused login. The check is sorted by how far it got. A login that never finished authentication proves nothing about the server: a dial or handshake failure is retried (up to 4 attempts, waits 0/2/5/10 s, all inside the 2-minute session budget), a locked or emptied agent once, and a host-key alarm not at all; then the new file is **kept** and the server reports `UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (…) — kept the new file; run sshepherd audit to confirm`, because undoing could reinstall a key the manifest removed. That is exit `1`, except that a login check stopped by a changed or `@revoked` host key is exit `2`. A login that was refused (every surviving key you hold offered and refused, or `MaxAuthTries`), or anything that goes wrong after it succeeded (a forced `command=`, a session that will not open, a probe command that hangs past 15 s), restores the previous file (and a disabled `authorized_keys2`) over the still-open session: `lockout prevented — restored previous file (…)`. The restore takes the lock again, waits out a busy lock (1, 3 and 6 s, naming the lock's owner and age if it never frees) and refuses to replace a file that changed since this apply wrote it (a concurrent apply); over a dropped connection it is retried once over a fresh login. If the restore fails or is refused, the message says so and names the `.bak` path. A restore that fails or is refused is reported `LOCKOUT — NOT RESTORED:` and is exit `2`. A rollback puts back the keys the plan removed; the `FAILED:` line names each one and marks those on the manifest's `revoked:` list, and a key on that list makes it exit `2`. In a run that mixes agent and `--identity` keys, after a passing login check one more login offers only the unrestricted key files; a failure there never undoes the write and only warns, on stderr as `warn: web-1: your --identity key /k/ci could not log in on its own (…); a headless run with only that key would fail` and in the JSON `warnings` array.
 
 **Connection posture.** Key files and/or agent (see
 [Authentication](#authentication)), strict `known_hosts` with no TOFU, per-server and dial timeouts, and bounded fan-out (`--parallel`, default 32,

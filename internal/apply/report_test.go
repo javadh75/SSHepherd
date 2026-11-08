@@ -154,7 +154,7 @@ func TestRenderSummaryFailedHint(t *testing.T) {
 		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomeFailed, OutcomeErr: dialRefused("10.0.0.2")},
 	}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	if n := strings.Count(buf.String(), "  hint: "+testDialHint+"\n"); n != 1 {
 		t.Errorf("hint printed %d times, want 1:\n%s", n, buf.String())
 	}
@@ -173,7 +173,7 @@ func TestRenderSummaryRefusedHint(t *testing.T) {
 		{Server: config.Server{Name: "b"}, Class: ClassChange, Outcome: OutcomeRefused, OutcomeErr: refused("b")},
 	}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	want := "a: REFUSED: a is locked by another run\n  hint: " + hint + "\nb: REFUSED: b is locked by another run\n"
 	if !strings.HasPrefix(buf.String(), want) {
 		t.Errorf("summary =\n%s\nwant it to start with\n%s", buf.String(), want)
@@ -279,7 +279,7 @@ func TestRenderSummaryAppliedGolden(t *testing.T) {
 		}
 	}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	out := buf.String()
 	for _, want := range []string{
 		"web-1: applied · verified",
@@ -295,7 +295,7 @@ func TestRenderSummaryAppliedGolden(t *testing.T) {
 func TestRenderSummaryPendingGolden(t *testing.T) {
 	_, plans := mixedPlans(t)
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	want := "Summary: 1/4 servers converged · 1 pending · 1 refused · 1 unreachable  → exit 1\n"
 	if buf.String() != want {
 		t.Errorf("dry-run summary = %q, want %q (no outcome lines for pending)", buf.String(), want)
@@ -311,7 +311,7 @@ func TestRenderSummaryFailedAndSymlink(t *testing.T) {
 			OutcomeErr: errors.New("/etc/keys is a symlink — refusing to replace it with a regular file (point authorized_keys_file at the real target if intended)")},
 	}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	out := buf.String()
 	for _, want := range []string{
 		"a: FAILED: verify on a",
@@ -327,7 +327,7 @@ func TestRenderSummaryFailedAndSymlink(t *testing.T) {
 func TestRenderAllConvergedSummary(t *testing.T) {
 	plans := []ServerPlan{{Server: config.Server{Name: "a"}, Class: ClassConverged}}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	if got, want := buf.String(), "Summary: 1/1 servers converged  → exit 0\n"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
 	}
@@ -340,7 +340,7 @@ func TestRenderEmptyPlans(t *testing.T) {
 		t.Errorf("empty render = %q, want %q", got, want)
 	}
 	buf.Reset()
-	RenderSummary(&buf, nil, RenderOptions{})
+	RenderSummary(&buf, nil, nil, RenderOptions{})
 	if buf.Len() != 0 {
 		t.Errorf("RenderSummary(nil) = %q, want no output", buf.String())
 	}
@@ -454,7 +454,7 @@ func TestRenderSummaryInterruptedGolden(t *testing.T) {
 			OutcomeErr: errors.New("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate)")},
 	}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	for _, want := range []string{
 		"b: NOT STARTED: interrupted before the write started",
 		"c: FAILED: lockout prevented — restored previous file",
@@ -485,7 +485,7 @@ func TestCountSummaryMatchesRenderSummary(t *testing.T) {
 		t.Fatalf("countSummary = %+v, want %+v", got, want)
 	}
 	var buf bytes.Buffer
-	RenderSummary(&buf, plans, RenderOptions{})
+	RenderSummary(&buf, nil, plans, RenderOptions{})
 	if !strings.Contains(buf.String(), "Summary: 2/7 servers converged (1 applied) · 1 pending · 1 failed · 2 refused · 1 unreachable  → exit 1") {
 		t.Errorf("summary line disagrees with countSummary:\n%s", buf.String())
 	}
@@ -558,5 +558,152 @@ func TestRenderHeaderOnlyFromNoSerial(t *testing.T) {
 	Render(&b, cfg, []ServerPlan{p}, RenderOptions{})
 	if !strings.Contains(b.String(), "update header: no serial → 7 (keys unchanged)") {
 		t.Errorf("report:\n%s", b.String())
+	}
+}
+
+func appliedPlan(name string) ServerPlan {
+	return ServerPlan{Server: config.Server{Name: name}, Class: ClassChange, Outcome: OutcomeApplied}
+}
+
+func unprovenPlan(name string, attempts int, hostKey bool, last error) ServerPlan {
+	return ServerPlan{Server: config.Server{Name: name}, Class: ClassChange, Outcome: OutcomeUnproven,
+		OutcomeErr: &fleet.UnprovenError{Path: "~/.ssh/authorized_keys", Attempts: attempts, HostKey: hostKey, Last: last}}
+}
+
+func TestRenderSummaryUnprovenGolden(t *testing.T) {
+	plans := []ServerPlan{appliedPlan("web-1"), unprovenPlan("web-2", 4, false,
+		&hintedErr{kind: fleet.ErrorKindDial, hint: testDialHint, err: errors.New("dial tcp 10.0.0.2:22: i/o timeout")})}
+	var buf bytes.Buffer
+	RenderSummary(&buf, nil, plans, RenderOptions{})
+	for _, want := range []string{
+		"web-2: UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (dial tcp 10.0.0.2:22: i/o timeout) — kept the new file; run sshepherd audit to confirm\n",
+		"Summary: 1/2 servers converged (1 applied) · 1 unproven  → exit 1\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, buf.String())
+		}
+	}
+	checkGolden(t, "summary_unproven.golden", buf.Bytes())
+}
+
+func TestRenderSummaryUnprovenHostKeyGolden(t *testing.T) {
+	plans := []ServerPlan{unprovenPlan("web-1", 1, true, &hintedErr{kind: fleet.ErrorKindHostKeyChanged, err: errors.New("host key changed")})}
+	var buf bytes.Buffer
+	RenderSummary(&buf, nil, plans, RenderOptions{})
+	for _, want := range []string{
+		"web-1: UNPROVEN: written and verified, but the login check stopped at a host-key alarm (host key changed) — kept the new file; check known_hosts, then run sshepherd audit\n",
+		"→ exit 2\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, buf.String())
+		}
+	}
+	checkGolden(t, "summary_unproven_hostkey.golden", buf.Bytes())
+}
+
+func TestRenderSummaryLockoutGolden(t *testing.T) {
+	plans := []ServerPlan{
+		appliedPlan("web-1"),
+		unprovenPlan("web-2", 2, false, &hintedErr{kind: fleet.ErrorKindAgent, err: errors.New("none of the 1 surviving keys is offered (agent locked, or keys removed since the plan)")}),
+		{Server: config.Server{Name: "web-3"}, Class: ClassChange, Outcome: OutcomeLockoutUnrestored,
+			OutcomeErr: &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errors.New("ssh: unable to authenticate"), Restore: errors.New("restore on web-3 failed (exit 1): mv: denied")}},
+	}
+	var buf bytes.Buffer
+	RenderSummary(&buf, nil, plans, RenderOptions{})
+	for _, want := range []string{
+		"web-3: LOCKOUT — NOT RESTORED: post-write login offering only the surviving keys you hold failed (ssh: unable to authenticate) AND restoring the previous file failed (restore on web-3 failed (exit 1): mv: denied) — the previous version is at ~/.ssh/authorized_keys.sshepherd.bak; repair it over a session that is still open\n",
+		"Summary: 1/3 servers converged (1 applied) · 1 unproven · 1 lockout not restored  → exit 2\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, buf.String())
+		}
+	}
+	checkGolden(t, "summary_lockout.golden", buf.Bytes())
+}
+
+// rolledBackPlans: a rollback that put back alice (on the revoked: list)
+// and bob, beside two applied servers.
+func rolledBackPlans(t *testing.T) []ServerPlan {
+	t.Helper()
+	alice, bob := testKey(t, 2), testKey(t, 3)
+	return []ServerPlan{appliedPlan("a"), appliedPlan("b"), {
+		Server: config.Server{Name: "web-1"}, Class: ClassChange, Outcome: OutcomeFailed, RolledBack: true,
+		Remove: []authkeys.Key{alice, bob}, RevokedRemovals: []string{alice.Fingerprint},
+		OutcomeErr: &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errors.New("ssh: unable to authenticate")},
+	}}
+}
+
+func TestRenderSummaryRestoredRevokedGolden(t *testing.T) {
+	var buf bytes.Buffer
+	RenderSummary(&buf, &config.Config{}, rolledBackPlans(t), RenderOptions{Former: planCfg(t)})
+	for _, want := range []string{
+		"web-1: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate); it still grants alice (" + fp(t, 2) + ", on the revoked: list) and bob (" + fp(t, 3) + "), which the manifest removed — fix the surviving key and re-run\n",
+		"Summary: 2/3 servers converged (2 applied) · 1 failed  → exit 2\n",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, buf.String())
+		}
+	}
+	checkGolden(t, "summary_restored_revoked.golden", buf.Bytes())
+}
+
+func TestRollbackDetail(t *testing.T) {
+	k1, k2, k3 := testKey(t, 1), testKey(t, 2), testKey(t, 3)
+	k9 := testKey(t, 9)
+	k9.Comment = "stray"
+	cfg := planCfg(t) // op owns k1, alice k2, bob k3
+	for _, tt := range []struct {
+		name string
+		p    ServerPlan
+		want string
+	}{
+		{"no rollback", ServerPlan{Remove: []authkeys.Key{k1}}, ""},
+		{"nothing removed", ServerPlan{RolledBack: true}, ""},
+		{"one key", ServerPlan{RolledBack: true, Remove: []authkeys.Key{k2}},
+			"; it still grants alice (" + k2.Fingerprint + "), which the manifest removed — fix the surviving key and re-run"},
+		{"three keys, a former owner by name", ServerPlan{RolledBack: true, Remove: []authkeys.Key{k1, k2, k3}, RevokedRemovals: []string{k3.Fingerprint}},
+			"; it still grants op (" + k1.Fingerprint + "), alice (" + k2.Fingerprint + ") and bob (" + k3.Fingerprint + ", on the revoked: list), which the manifest removed — fix the surviving key and re-run"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rollbackDetail(cfg, nil, tt.p); got != tt.want {
+				t.Errorf("got  %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+	t.Run("a key neither config owns", func(t *testing.T) {
+		p := ServerPlan{RolledBack: true, Remove: []authkeys.Key{k9}}
+		if got := rollbackDetail(cfg, nil, p); !strings.Contains(got, audit.UnknownLabel(k9)+" (") {
+			t.Errorf("got %s", got)
+		}
+	})
+	t.Run("the former owner, when only former has it", func(t *testing.T) {
+		p := ServerPlan{RolledBack: true, Remove: []authkeys.Key{k2}}
+		if got := rollbackDetail(&config.Config{}, cfg, p); !strings.Contains(got, "alice (") {
+			t.Errorf("got %s", got)
+		}
+	})
+}
+
+func TestRenderSummaryExitTwoLinesAreBoldRed(t *testing.T) {
+	boldRed := "\x1b[" + codeBoldRed + "m"
+	for _, tt := range []struct {
+		name  string
+		plan  ServerPlan
+		label string
+		red   bool
+	}{
+		{"revoked rollback", ServerPlan{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeFailed, RolledBack: true, RevokedRemovals: []string{"x"}, OutcomeErr: errors.New("e")}, "FAILED:", true},
+		{"plain failure", ServerPlan{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeFailed, OutcomeErr: errors.New("e")}, "FAILED:", false},
+		{"host-key unproven", unprovenPlan("a", 1, true, &hintedErr{kind: fleet.ErrorKindHostKeyRevoked, err: errors.New("e")}), "UNPROVEN:", true},
+		{"dial unproven", unprovenPlan("a", 1, false, &hintedErr{kind: fleet.ErrorKindDial, err: errors.New("e")}), "UNPROVEN:", false},
+		{"lockout", ServerPlan{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeLockoutUnrestored, OutcomeErr: errors.New("e")}, "LOCKOUT — NOT RESTORED:", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			RenderSummary(&buf, &config.Config{}, []ServerPlan{tt.plan}, RenderOptions{Color: true})
+			if got := strings.Contains(buf.String(), boldRed+tt.label); got != tt.red {
+				t.Errorf("bold red = %v, want %v:\n%q", got, tt.red, buf.String())
+			}
+		})
 	}
 }

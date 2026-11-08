@@ -14,10 +14,15 @@ Exit codes:
      a newer manifest wrote whose keys already match); a revoke whose targets
      were already revoked; or, with revoke/rotate --no-apply, the edit is
      saved but not pushed (run the apply hint it prints)
-  1  pending changes, unreachable or refused servers (a newer manifest's
-     serial, a policy conflict), or a declined prompt; with --sweep, a server
+  1  pending changes, unreachable, refused or failed servers (a newer
+     manifest's serial, a policy conflict), a write whose login check could
+     not prove access (unproven), or a declined prompt; with --sweep, a server
      the sweep could not read
-  2  revoke/rotate --sweep found a revoked key still installed
+  2  a human must act now: a lockout not restored (the restore after a
+     rejected login check failed, or the reconnect after the upload started
+     was refused), a rollback that put back a key on the revoked: list, a
+     changed or @revoked host key at the post-write login check, or
+     revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written

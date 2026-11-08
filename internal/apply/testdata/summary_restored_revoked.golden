@@ -1,0 +1,4 @@
+a: applied · verified
+b: applied · verified
+web-1: FAILED: lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate); it still grants alice (SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4, on the revoked: list) and bob (SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY), which the manifest removed — fix the surviving key and re-run
+Summary: 2/3 servers converged (2 applied) · 1 failed  → exit 2

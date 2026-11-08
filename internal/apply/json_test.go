@@ -658,7 +658,7 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg, kind, _ := jsonErrorFor(tt.p)
+			msg, kind, _ := jsonErrorFor(nil, JSONOptions{}, tt.p)
 			if msg == nil || kind != tt.want {
 				t.Errorf("jsonErrorFor = (%v, %q), want kind %q", msg, kind, tt.want)
 			}
@@ -789,5 +789,72 @@ revoked:
 		if len(doc.Warns) != 1 || !strings.HasPrefix(doc.Warns[0].Server, "db") || !strings.HasSuffix(doc.Warns[0].Server, "9") {
 			t.Errorf("%s: manifest_warnings = %+v", command, doc.Warns)
 		}
+	}
+}
+
+func TestRenderJSONFailuresGolden(t *testing.T) {
+	alice, bob := testKey(t, 2), testKey(t, 3)
+	server := func(n string) config.Server {
+		return config.Server{Name: n, Host: "10.0.0.1", Port: 22, User: "deploy"}
+	}
+	plans := []ServerPlan{
+		{Server: server("applied"), Class: ClassChange, Outcome: OutcomeApplied,
+			Warnings: []string{"your --identity key /k/ci could not log in on its own (ssh: unable to authenticate); a headless run with only that key would fail"}},
+		{Server: server("dial"), Class: ClassChange, Outcome: OutcomeUnproven,
+			OutcomeErr: &fleet.UnprovenError{Attempts: 4, Last: &hintedErr{kind: fleet.ErrorKindDial, err: errors.New("dial tcp 10.0.0.1:22: i/o timeout")}}},
+		{Server: server("alarm"), Class: ClassChange, Outcome: OutcomeUnproven,
+			OutcomeErr: &fleet.UnprovenError{Attempts: 1, HostKey: true, Last: &hintedErr{kind: fleet.ErrorKindHostKeyChanged, err: errors.New("host key changed")}}},
+		{Server: server("unrestored"), Class: ClassChange, Outcome: OutcomeLockoutUnrestored,
+			OutcomeErr: &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errors.New("refused"), Restore: errors.New("denied")}},
+		{Server: server("rollback"), Class: ClassChange, Outcome: OutcomeFailed, RolledBack: true,
+			Remove: []authkeys.Key{alice, bob}, RevokedRemovals: []string{alice.Fingerprint},
+			OutcomeErr: &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errors.New("refused")}},
+	}
+	out := renderJSONCfg(t, &config.Config{}, plans, JSONOptions{Command: "revoke", Former: planCfg(t)})
+	checkGolden(t, "json_failures.golden.json", out)
+
+	var doc struct {
+		Summary struct {
+			Unproven          int `json:"unproven"`
+			LockoutUnrestored int `json:"lockout_unrestored"`
+			ExitCode          int `json:"exit_code"`
+		} `json:"summary"`
+		Servers []struct {
+			Name                string   `json:"name"`
+			Outcome             string   `json:"outcome"`
+			Error               string   `json:"error"`
+			ErrorKind           string   `json:"error_kind"`
+			RestoredRevokedKeys []string `json:"restored_revoked_keys"`
+			Warnings            []string `json:"warnings"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Summary.Unproven != 2 || doc.Summary.LockoutUnrestored != 1 || doc.Summary.ExitCode != 2 {
+		t.Errorf("summary = %+v", doc.Summary)
+	}
+	byName := map[string]int{}
+	for i, s := range doc.Servers {
+		byName[s.Name] = i
+	}
+	applied, dial, alarm, unrestored, rollback := doc.Servers[byName["applied"]], doc.Servers[byName["dial"]], doc.Servers[byName["alarm"]], doc.Servers[byName["unrestored"]], doc.Servers[byName["rollback"]]
+	if len(applied.Warnings) != 1 || dial.Warnings != nil {
+		t.Errorf("warnings: applied %v, dial %v (must be omitted when empty)", applied.Warnings, dial.Warnings)
+	}
+	if dial.Outcome != "unproven" || dial.ErrorKind != "dial" {
+		t.Errorf("dial = %+v", dial)
+	}
+	if alarm.Outcome != "unproven" || alarm.ErrorKind != "host_key_changed" {
+		t.Errorf("alarm = %+v", alarm)
+	}
+	if unrestored.Outcome != "lockout_unrestored" {
+		t.Errorf("unrestored = %+v", unrestored)
+	}
+	if want := []string{alice.Fingerprint}; !slices.Equal(rollback.RestoredRevokedKeys, want) || dial.RestoredRevokedKeys != nil {
+		t.Errorf("restored_revoked_keys: rollback %v, dial %v", rollback.RestoredRevokedKeys, dial.RestoredRevokedKeys)
+	}
+	if !strings.Contains(rollback.Error, "alice ("+alice.Fingerprint+", on the revoked: list)") {
+		t.Errorf("rollback error = %q", rollback.Error)
 	}
 }

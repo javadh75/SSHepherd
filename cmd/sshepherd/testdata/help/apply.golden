@@ -11,8 +11,10 @@ verify. A server whose file changed after the plan was read is refused
 (re-run apply), and so is the whole run when the manifest itself changed
 since it was read. A self-lockout guard refuses any write that would leave
 no key you hold (identity files + agent) on a server; after each write a
-fresh login offering only the surviving keys must succeed, or the
-previous file is restored. --yes skips only the confirmation: an
+fresh login offering only the surviving keys must succeed: a refused
+login restores the previous file, and a login that never got past
+authentication (network, agent, host key) keeps the new file and reports
+UNPROVEN. --yes skips only the confirmation: an
 encrypted --identity key may still prompt for its passphrase.
 Ctrl-C stops new writes; started ones finish. --dry-run previews the
 plan and never writes.
@@ -22,10 +24,15 @@ Exit codes:
      a newer manifest wrote whose keys already match); a revoke whose targets
      were already revoked; or, with revoke/rotate --no-apply, the edit is
      saved but not pushed (run the apply hint it prints)
-  1  pending changes, unreachable or refused servers (a newer manifest's
-     serial, a policy conflict), or a declined prompt; with --sweep, a server
+  1  pending changes, unreachable, refused or failed servers (a newer
+     manifest's serial, a policy conflict), a write whose login check could
+     not prove access (unproven), or a declined prompt; with --sweep, a server
      the sweep could not read
-  2  revoke/rotate --sweep found a revoked key still installed
+  2  a human must act now: a lockout not restored (the restore after a
+     rejected login check failed, or the reconnect after the upload started
+     was refused), a rollback that put back a key on the revoked: list, a
+     changed or @revoked host key at the post-write login check, or
+     revoke/rotate --sweep found a revoked key still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written

@@ -3,6 +3,7 @@ package apply
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -568,6 +569,13 @@ func TestHasRestrictiveOption(t *testing.T) {
 
 func TestExitCode(t *testing.T) {
 	ch := func(o Outcome) ServerPlan { return ServerPlan{Class: ClassChange, Outcome: o} }
+	unproven := func(kind fleet.ErrorKind) ServerPlan {
+		return ServerPlan{Class: ClassChange, Outcome: OutcomeUnproven,
+			OutcomeErr: &fleet.UnprovenError{Attempts: 1, Last: &hintedErr{kind: kind, err: errors.New("x")}}}
+	}
+	rolled := func(revoked ...string) ServerPlan {
+		return ServerPlan{Class: ClassChange, Outcome: OutcomeFailed, RolledBack: true, RevokedRemovals: revoked}
+	}
 	tests := []struct {
 		name  string
 		plans []ServerPlan
@@ -581,6 +589,17 @@ func TestExitCode(t *testing.T) {
 		{"refused late (symlink)", []ServerPlan{ch(OutcomeRefused)}, 1},
 		{"refused in plan", []ServerPlan{{Class: ClassRefused}}, 1},
 		{"unreachable", []ServerPlan{{Class: ClassUnreachable}}, 1},
+		{"lockout not restored", []ServerPlan{ch(OutcomeLockoutUnrestored)}, 2},
+		{"applied plus lockout", []ServerPlan{ch(OutcomeApplied), ch(OutcomeLockoutUnrestored)}, 2},
+		{"unproven (dial)", []ServerPlan{unproven(fleet.ErrorKindDial)}, 1},
+		{"unproven, host key changed", []ServerPlan{unproven(fleet.ErrorKindHostKeyChanged)}, 2},
+		{"unproven, host key revoked", []ServerPlan{unproven(fleet.ErrorKindHostKeyRevoked)}, 2},
+		{"unproven, host key unknown", []ServerPlan{unproven(fleet.ErrorKindHostKeyUnknown)}, 1},
+		{"unproven, key type unrecorded", []ServerPlan{unproven(fleet.ErrorKindHostKeyTypeUnrecorded)}, 1},
+		{"rollback put back a revoked key", []ServerPlan{rolled("SHA256:x")}, 2},
+		{"rollback, no revoked key among the removals", []ServerPlan{rolled()}, 1},
+		{"revoked removals but no rollback", []ServerPlan{{Class: ClassChange, Outcome: OutcomeFailed, RevokedRemovals: []string{"SHA256:x"}}}, 1},
+		{"a refused plan never exits 2", []ServerPlan{{Class: ClassRefused, Outcome: OutcomeLockoutUnrestored}}, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -618,4 +637,53 @@ func TestNormalizeSkipsSerialHeader(t *testing.T) {
 	if p.Normalize.NonKeyLines != 0 {
 		t.Errorf("NonKeyLines = %d, want 0 (the serial header is not a hand comment)", p.Normalize.NonKeyLines)
 	}
+}
+
+// TestPlanRevokedRemovals (D10a): only key tombstones count, in Remove
+// order; an access tombstone removed nothing that sshd would still honour.
+func TestPlanRevokedRemovals(t *testing.T) {
+	const accessOnly = `  - {user: bob, servers: [web-1], date: "2026-11-01"}
+`
+	parse := func(t *testing.T, revoked string) *config.Config {
+		t.Helper()
+		cfg, err := config.Parse([]byte(`serial: 7
+users:
+  - {name: op, operator: true, keys: ["` + testkeys.Line(t, 1) + `"]}
+  - {name: bob, keys: ["` + testkeys.Line(t, 10) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+revoked:
+` + revoked))
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return cfg
+	}
+	bobLine := testkeys.Line(t, 10) + "\n"
+	t.Run("key tombstones in Remove order; an access tombstone does not count", func(t *testing.T) {
+		// The tombstones are listed opposite to the file: the result must
+		// follow Remove, which follows the file.
+		cfg := parse(t, `  - {fingerprint: "`+fp(t, 9)+`", date: "2026-11-01"}
+  - {fingerprint: "`+fp(t, 8)+`", date: "2026-11-01"}
+`+accessOnly)
+		stale := testkeys.Line(t, 8) + "\n" + bobLine + testkeys.Line(t, 9) + "\n"
+		p := planWeb1(t, cfg, authkeys.Header(7)+"\n"+web1Body(t, cfg)+stale, false, false)
+		if len(p.Remove) != 3 {
+			t.Fatalf("Remove = %+v, want all three stale keys", p.Remove)
+		}
+		if want := []string{fp(t, 8), fp(t, 9)}; !slices.Equal(p.RevokedRemovals, want) {
+			t.Errorf("RevokedRemovals = %v, want %v (Remove order, no access-tombstoned key)", p.RevokedRemovals, want)
+		}
+	})
+	t.Run("only an access-tombstoned key removed: a rollback is exit 1", func(t *testing.T) {
+		cfg := parse(t, accessOnly)
+		p := planWeb1(t, cfg, authkeys.Header(7)+"\n"+web1Body(t, cfg)+bobLine, false, false)
+		if len(p.Remove) != 1 || len(p.RevokedRemovals) != 0 {
+			t.Fatalf("Remove = %+v, RevokedRemovals = %v", p.Remove, p.RevokedRemovals)
+		}
+		p.Outcome, p.RolledBack = OutcomeFailed, true
+		if got := ExitCode([]ServerPlan{p}); got != 1 {
+			t.Errorf("ExitCode = %d, want 1", got)
+		}
+	})
 }

@@ -1,0 +1,167 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": null,
+  "summary": {
+    "servers": 5,
+    "skipped": 0,
+    "converged": 1,
+    "applied": 1,
+    "pending": 0,
+    "failed": 1,
+    "refused": 0,
+    "unreachable": 0,
+    "unproven": 2,
+    "lockout_unrestored": 1,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "applied",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "applied",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "warnings": [
+        "your --identity key /k/ci could not log in on its own (ssh: unable to authenticate); a headless run with only that key would fail"
+      ]
+    },
+    {
+      "name": "dial",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "unproven",
+      "error": "written and verified, but the login check could not reach the server after 4 attempts (dial tcp 10.0.0.1:22: i/o timeout) — kept the new file; run sshepherd audit to confirm",
+      "error_kind": "dial",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "alarm",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "unproven",
+      "error": "written and verified, but the login check stopped at a host-key alarm (host key changed) — kept the new file; check known_hosts, then run sshepherd audit",
+      "error_kind": "host_key_changed",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "unrestored",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "lockout_unrestored",
+      "error": "post-write login offering only the surviving keys you hold failed (refused) AND restoring the previous file failed (denied) — the previous version is at ~/.ssh/authorized_keys.sshepherd.bak; repair it over a session that is still open",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "rollback",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "failed",
+      "error": "lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: refused); it still grants alice (SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4, on the revoked: list) and bob (SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY), which the manifest removed — fix the surviving key and re-run",
+      "changes": {
+        "add": [],
+        "remove": [
+          {
+            "owner": null,
+            "former_owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": null,
+            "former_owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "restored_revoked_keys": [
+        "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4"
+      ]
+    }
+  ]
+}

@@ -52,8 +52,10 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			"(re-run apply), and so is the whole run when the manifest itself changed\n" +
 			"since it was read. A self-lockout guard refuses any write that would leave\n" +
 			"no key you hold (identity files + agent) on a server; after each write a\n" +
-			"fresh login offering only the surviving keys must succeed, or the\n" +
-			"previous file is restored. --yes skips only the confirmation: an\n" +
+			"fresh login offering only the surviving keys must succeed: a refused\n" +
+			"login restores the previous file, and a login that never got past\n" +
+			"authentication (network, agent, host key) keeps the new file and reports\n" +
+			"UNPROVEN. --yes skips only the confirmation: an\n" +
 			"encrypted --identity key may still prompt for its passphrase.\n" +
 			"Ctrl-C stops new writes; started ones finish. --dry-run previews the\n" +
 			"plan and never writes.\n\n" + exitCodesWrite,
@@ -203,15 +205,12 @@ func (pa *plainApply) finish(out workflow.Outcome, _ *fleetSession) error {
 			return apply.RenderJSON(pa.stdout, pa.cfg, plans, apply.JSONOptions{Command: "apply", DryRun: pa.rf.dryRun, Skipped: pa.skipped, SerialBump: pa.bump})
 		}, out, nil)
 	}
-	apply.RenderSummary(pa.stdout, out.Plans, pa.ropts)
+	apply.RenderSummary(pa.stdout, pa.cfg, out.Plans, pa.ropts)
 	if pa.skipped > 0 {
 		fmt.Fprintf(pa.stdout, "(%s skipped by --server)\n", apply.Plural(pa.skipped, "server", "servers"))
 	}
 	printDryRunBump(pa.stdout, pa.log, pa.rf.dryRun, pa.bump)
-	if out.ExitCode() != 0 {
-		return errNonCompliant
-	}
-	return nil
+	return exitFor(out.ExitCode())
 }
 
 // noBumpWarning: apply removes keys but cannot save the bumped serial.
@@ -325,6 +324,11 @@ type applySpec struct {
 	finish func(out workflow.Outcome, sess *fleetSession) error
 }
 
+// newWriter builds a run's write transport; a test seam.
+var newWriter = func(d *sshconn.Dialer, log *slog.Logger) apply.Writer {
+	return &sshwrite.FleetWriter{Dialer: d, Log: log}
+}
+
 // runWorkflow is apply's run body over s.servers: the header, preflight
 // (known_hosts, key files, credentials, held keys), then the write
 // workflow over the transport seams built here, then finish. Under --json
@@ -343,7 +347,7 @@ func runWorkflow(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids
 		Servers:          s.servers,
 		Held:             pre.held,
 		Reader:           pre.reader(s.preferKeys),
-		Writer:           &sshwrite.FleetWriter{Dialer: pre.dialer(s.preferKeys), Log: log},
+		Writer:           newWriter(pre.dialer(s.preferKeys), log),
 		Relister:         pre.creds,
 		RelistLabel:      relistPrefix(pre.creds),
 		Parallel:         pre.parallel,

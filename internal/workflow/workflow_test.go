@@ -443,6 +443,7 @@ func TestApplyInterruptedWraps(t *testing.T) {
 func TestOutcomeExitCode(t *testing.T) {
 	conv := []apply.ServerPlan{{Class: apply.ClassConverged}}
 	pending := []apply.ServerPlan{{Class: apply.ClassChange, Outcome: apply.OutcomePending}}
+	lockout := []apply.ServerPlan{{Class: apply.ClassChange, Outcome: apply.OutcomeLockoutUnrestored}}
 	for _, tt := range []struct {
 		name string
 		out  Outcome
@@ -453,6 +454,8 @@ func TestOutcomeExitCode(t *testing.T) {
 		{"confirmed converged", Outcome{Stage: StageConfirmed, Plans: conv}, 0},
 		{"withheld converged", Outcome{Stage: StageWithheld, Plans: conv}, 1},
 		{"declined converged", Outcome{Stage: StageDeclined, Plans: conv}, 1},
+		{"confirmed, lockout not restored", Outcome{Stage: StageConfirmed, Plans: lockout}, 2},
+		{"a withheld run stays 1", Outcome{Stage: StageWithheld, Plans: lockout}, 1},
 	} {
 		if got := tt.out.ExitCode(); got != tt.want {
 			t.Errorf("%s: ExitCode = %d, want %d", tt.name, got, tt.want)

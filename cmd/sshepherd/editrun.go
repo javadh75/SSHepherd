@@ -571,7 +571,7 @@ func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.Affec
 		return errNonCompliant
 	}
 	plans := out.Plans
-	apply.RenderSummary(stdout, plans, ropts)
+	apply.RenderSummary(stdout, ep.edited, plans, ropts)
 	if out.Stage == workflow.StageConfirmed {
 		var pending []string
 		for _, p := range plans {

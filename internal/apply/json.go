@@ -73,7 +73,10 @@ type jsonSummary struct {
 	Failed      int `json:"failed"`
 	Refused     int `json:"refused"`
 	Unreachable int `json:"unreachable"`
-	ExitCode    int `json:"exit_code"`
+	// Unproven and LockoutUnrestored are additive (schema stays 1).
+	Unproven          int `json:"unproven"`
+	LockoutUnrestored int `json:"lockout_unrestored"`
+	ExitCode          int `json:"exit_code"`
 }
 
 type jsonEdit struct {
@@ -148,6 +151,11 @@ type jsonServer struct {
 	DisablesAuthorizedKeys2 bool        `json:"disables_authorized_keys2"`
 	Notes                   jsonNotes   `json:"notes"`
 	Serial                  *jsonSerial `json:"serial,omitempty"`
+	// RestoredRevokedKeys and Warnings are additive-optional (schema stays
+	// 1): a rollback that reinstated keys on the revoked: list (D10a), and
+	// the D9c headless-proof warning; each omitted when empty.
+	RestoredRevokedKeys []string `json:"restored_revoked_keys,omitempty"`
+	Warnings            []string `json:"warnings,omitempty"`
 }
 
 // jsonSerial is the §3 verdict: header is null for no serial, writes null
@@ -240,7 +248,8 @@ type jsonNotes struct {
 
 // RenderJSON writes the write-path report as one indented JSON document
 // with a trailing newline. plans may be nil (empty fleet, edit-only run); a
-// document is written for exit 0, 1 or 2 (2: the sweep found a revoked key).
+// document is written for exit 0, 1 or 2 (consumers must treat an unknown
+// outcome as not converged).
 func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOptions) error {
 	c := countSummary(plans)
 	doc := jsonDoc{
@@ -251,6 +260,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 			Servers: len(plans), Skipped: opts.Skipped,
 			Converged: c.converged, Applied: c.applied, Pending: c.pending,
 			Failed: c.failed, Refused: c.refused, Unreachable: c.unreachable,
+			Unproven: c.unproven, LockoutUnrestored: c.lockout,
 			ExitCode: max(ExitCode(plans), opts.Sweep.ExitCode()),
 		},
 		Servers: make([]jsonServer, 0, len(plans)),
@@ -392,7 +402,9 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 			AgentOnlySurvivors: clean(p.AgentOnly),
 			Serial:             clean(p.SerialNote),
 		},
-		Serial: jsonSerialFor(p),
+		Serial:              jsonSerialFor(p),
+		RestoredRevokedKeys: cleanAll(rolledBackRevoked(p)),
+		Warnings:            cleanAll(p.Warnings),
 	}
 	if p.Class == ClassChange {
 		// Mapped explicitly: planOne sets Pending on every plan, but an
@@ -400,7 +412,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 		outcome := string(p.Outcome)
 		s.Outcome = &outcome
 	}
-	s.Error, s.ErrorKind, s.Hint = jsonErrorFor(p)
+	s.Error, s.ErrorKind, s.Hint = jsonErrorFor(cfg, opts, p)
 	for _, k := range p.Add {
 		jk := jsonKeyFor(cfg, opts.Former, k)
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
@@ -421,6 +433,15 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 	return s
 }
 
+// rolledBackRevoked is D10a's list: the removed keys on the revoked: list
+// that a rollback put back.
+func rolledBackRevoked(p ServerPlan) []string {
+	if p.RolledBack {
+		return p.RevokedRemovals
+	}
+	return nil
+}
+
 // jsonErrorFor picks the server's error text, kind and hint: the
 // unreachable error (kind from audit's classifier), the plan refusal (no
 // kind, no hint), or the phase-2 outcome error — "canceled" on a pending
@@ -431,8 +452,9 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 // reads "timeout"), none for refusals and unclassified write/verify errors. A
 // LockoutError unwraps to its probe error, so a refused probe reports
 // "auth". The hint is the error's remediation (audit.CleanHint), never part
-// of the message.
-func jsonErrorFor(p ServerPlan) (msg *string, kind, hint string) {
+// of the message. A rollback's error names the keys it put back
+// (rollbackDetail), the same text as the report line.
+func jsonErrorFor(cfg *config.Config, opts JSONOptions, p ServerPlan) (msg *string, kind, hint string) {
 	switch p.Class {
 	case ClassUnreachable:
 		if p.Err != nil {
@@ -444,7 +466,7 @@ func jsonErrorFor(p ServerPlan) (msg *string, kind, hint string) {
 		return &m, "", ""
 	case ClassChange:
 		if p.OutcomeErr != nil {
-			m := cleanLine(p.OutcomeErr.Error())
+			m := cleanLine(outcomeText(cfg, opts.Former, p))
 			if p.Outcome == OutcomePending && errors.Is(p.OutcomeErr, errInterrupted) {
 				return &m, string(fleet.ErrorKindCanceled), ""
 			}
