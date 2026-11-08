@@ -64,9 +64,9 @@ access:
 }
 
 // carolEntry is the shape adopt appends: name + description + one raw line.
-func carolEntry(tb testing.TB) UserEntry {
+func carolEntry(tb testing.TB) config.User {
 	tb.Helper()
-	return UserEntry{
+	return config.User{
 		Name:        "carol-laptop",
 		Description: "adopted from web-1, web-2",
 		Keys:        []string{testkeys.Line(tb, 7) + " carol@laptop"},
@@ -156,8 +156,8 @@ func TestAppendGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	users := []UserEntry{carolEntry(t)}
-	access := []AccessEntry{
+	users := []config.User{carolEntry(t)}
+	access := []config.Access{
 		{User: "bob", Servers: []string{"web-2"}},
 		{User: "carol-laptop", Servers: []string{"web-1", "web-2"}},
 	}
@@ -202,7 +202,7 @@ func TestAppendServers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	servers := []ServerEntry{
+	servers := []config.Server{
 		{Name: "db-9", Host: "10.0.0.9", User: "deploy"},
 		{Name: "db-8", Host: "10.0.0.8", Port: 2222, User: "root"},
 	}
@@ -250,7 +250,7 @@ func TestAppendServerSectionShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			servers := []ServerEntry{{Name: "db-9", Host: "10.0.0.9", User: "deploy"}}
+			servers := []config.Server{{Name: "db-9", Host: "10.0.0.9", User: "deploy"}}
 			if err := f.Append(mergeComments, nil, servers, nil); err != nil {
 				t.Fatalf("Append: %v", err)
 			}
@@ -284,8 +284,8 @@ func TestAppendCommentLandsOnFirstServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	servers := []ServerEntry{{Name: "db-9", Host: "10.0.0.9", User: "deploy"}}
-	access := []AccessEntry{{User: "bob", Servers: []string{"db-9"}}}
+	servers := []config.Server{{Name: "db-9", Host: "10.0.0.9", User: "deploy"}}
+	access := []config.Access{{User: "bob", Servers: []string{"db-9"}}}
 	if err := f.Append(mergeComments, nil, servers, access); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -345,8 +345,8 @@ func TestAppendSectionShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load: %v", err)
 			}
-			users := []UserEntry{carolEntry(t)}
-			access := []AccessEntry{{User: "carol-laptop", Servers: []string{"web-1"}}}
+			users := []config.User{carolEntry(t)}
+			access := []config.Access{{User: "carol-laptop", Servers: []string{"web-1"}}}
 			if err := f.Append(mergeComments, users, nil, access); err != nil {
 				t.Fatalf("Append: %v", err)
 			}
@@ -378,7 +378,7 @@ func TestAppendCommentLandsOnFirstNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := f.Append(mergeComments, nil, nil, []AccessEntry{{User: "bob", Servers: []string{"web-2"}}}); err != nil {
+	if err := f.Append(mergeComments, nil, nil, []config.Access{{User: "bob", Servers: []string{"web-2"}}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := f.Encode()
@@ -450,6 +450,63 @@ func TestLoadFlowNullValuesRoundTrip(t *testing.T) {
 		}
 		if _, err := config.Parse(out); err != nil {
 			t.Errorf("re-encoded %q rejected: %v\n%s", in, err, out)
+		}
+	}
+}
+
+// Generate's omitempty contract: required keys always present, optional zero
+// fields and the default port (0 or 22) omitted, field order = struct order.
+func TestGenerateOmitEmpty(t *testing.T) {
+	k := testkeys.Line(t, 1)
+	got, err := Generate("# hdr\n",
+		[]config.User{{Name: "a", Keys: []string{k}}, {Name: "op", Operator: true, Keys: []string{k}}},
+		[]config.Server{{Name: "w", Host: "h", Port: 22, User: "u"}, {Name: "d", Host: "h2", Port: 2222, User: "u", AuthorizedKeysFile: "~/.ssh/ak"}},
+		[]config.Access{{User: "a", Servers: []string{"*"}, Except: []string{"d"}}, {User: "a", Servers: []string{"w"}, Except: []string{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# hdr\nusers:\n  - name: a\n    keys:\n      - " + k + "\n  - name: op\n    operator: true\n    keys:\n      - " + k +
+		"\nservers:\n  - name: w\n    host: h\n    user: u\n  - name: d\n    host: h2\n    port: 2222\n    user: u\n    authorized_keys_file: ~/.ssh/ak\n" +
+		"access:\n  - user: a\n    servers:\n      - '*'\n    except:\n      - d\n  - user: a\n    servers:\n      - w\n"
+	if string(got) != want {
+		t.Errorf("Generate =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Empty sections render as `users: []` exactly like the old struct encoder.
+func TestGenerateEmptySections(t *testing.T) {
+	got, err := Generate("", nil, nil, nil)
+	if err != nil || string(got) != "users: []\nservers: []\naccess: []\n" {
+		t.Fatalf("Generate(empty) = %q, %v", got, err)
+	}
+}
+
+// TestAppendServerOptionalFields: an appended server carries Description and
+// AuthorizedKeysFile (the old ServerEntry could not), in struct field order.
+func TestAppendServerOptionalFields(t *testing.T) {
+	f, err := Load([]byte(commentedFixture(t)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	servers := []config.Server{{Name: "db-9", Description: "reporting replica", Host: "10.0.0.9", User: "deploy", AuthorizedKeysFile: "/etc/ssh/keys/deploy"}}
+	if err := f.Append(nil, nil, servers, nil); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := f.Encode()
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	want := "- name: db-9\n    description: reporting replica\n    host: 10.0.0.9\n    user: deploy\n    authorized_keys_file: /etc/ssh/keys/deploy\n"
+	if !strings.Contains(string(got), want) {
+		t.Errorf("output lacks block %q:\n%s", want, got)
+	}
+	out, err := config.Parse(got)
+	if err != nil {
+		t.Fatalf("merged manifest rejected by config.Parse: %v", err)
+	}
+	for _, s := range out.Servers {
+		if s.Name == "db-9" && (s.Description != "reporting replica" || s.AuthorizedKeysFile != "/etc/ssh/keys/deploy") {
+			t.Errorf("db-9 = %+v, want description and authorized_keys_file kept", s)
 		}
 	}
 }

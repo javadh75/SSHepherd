@@ -279,23 +279,23 @@ func renderMergedImport(mf *manifest.File, raw []byte, plan reconcile.Plan, src,
 	for _, w := range plan.Warnings {
 		comments = append(comments, "WARNING: "+w)
 	}
-	users := make([]manifest.UserEntry, 0, len(plan.NewUsers))
+	users := make([]config.User, 0, len(plan.NewUsers))
 	for _, u := range plan.NewUsers {
-		users = append(users, manifest.UserEntry{
+		users = append(users, config.User{
 			Name: u.Name, Description: u.Description, Comment: u.Comment,
 			Operator: u.Operator, Keys: u.Keys,
 		})
 	}
-	servers := make([]manifest.ServerEntry, 0, len(plan.NewServers))
+	servers := make([]config.Server, 0, len(plan.NewServers))
 	for _, s := range plan.NewServers {
-		servers = append(servers, manifest.ServerEntry{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User})
+		servers = append(servers, config.Server{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User})
 	}
-	access := make([]manifest.AccessEntry, 0, len(plan.Extensions)+len(plan.NewGrants))
+	access := make([]config.Access, 0, len(plan.Extensions)+len(plan.NewGrants))
 	for _, e := range plan.Extensions {
-		access = append(access, manifest.AccessEntry{User: e.User, Servers: e.Servers})
+		access = append(access, config.Access{User: e.User, Servers: e.Servers})
 	}
 	for _, g := range plan.NewGrants {
-		access = append(access, manifest.AccessEntry{User: g.User, Servers: g.Servers})
+		access = append(access, config.Access{User: g.User, Servers: g.Servers})
 	}
 	if err := mf.Append(comments, users, servers, access); err != nil {
 		return nil, fmt.Errorf("merge manifest: %w", err)

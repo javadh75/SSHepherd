@@ -81,24 +81,24 @@ func renderMergedManifest(mf *manifest.File, raw []byte, plan adopt.Plan, unread
 	for _, srv := range unreadable {
 		comments = append(comments, fmt.Sprintf("WARNING: server %s unreadable — its access is NOT represented", srv))
 	}
-	users := make([]manifest.UserEntry, 0, len(plan.NewUsers))
+	users := make([]config.User, 0, len(plan.NewUsers))
 	for _, nu := range plan.NewUsers {
-		users = append(users, manifest.UserEntry{
+		users = append(users, config.User{
 			Name:        nu.Name,
 			Description: "adopted from " + strings.Join(nu.FoundOn, ", "),
 			Keys:        []string{nu.Line},
 		})
 	}
-	access := make([]manifest.AccessEntry, 0, len(plan.Extensions)+len(plan.NewUsers))
+	access := make([]config.Access, 0, len(plan.Extensions)+len(plan.NewUsers))
 	for _, e := range plan.Extensions {
-		access = append(access, manifest.AccessEntry{User: e.User, Servers: e.Servers})
+		access = append(access, config.Access{User: e.User, Servers: e.Servers})
 	}
 	for _, nu := range plan.NewUsers {
 		servers := nu.FoundOn
 		if nu.Wildcard {
 			servers = []string{"*"}
 		}
-		access = append(access, manifest.AccessEntry{User: nu.Name, Servers: servers})
+		access = append(access, config.Access{User: nu.Name, Servers: servers})
 	}
 	if err := mf.Append(comments, users, nil, access); err != nil {
 		return nil, fmt.Errorf("merge manifest: %w", err)

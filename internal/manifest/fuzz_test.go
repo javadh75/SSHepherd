@@ -82,11 +82,11 @@ func FuzzMergeRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatalf("second Load of accepted input %q failed: %v", in, err)
 		}
-		if err := mf2.Append([]string{"fuzz merge marker"}, []UserEntry{
+		if err := mf2.Append([]string{"fuzz merge marker"}, []config.User{
 			{Name: "fuzz-added-user", Keys: []string{keyLine}},
-		}, []ServerEntry{
+		}, []config.Server{
 			{Name: "fuzz-added-server", Host: "10.0.0.99", User: "deploy"},
-		}, []AccessEntry{
+		}, []config.Access{
 			{User: "fuzz-added-user", Servers: []string{"fuzz-added-server"}},
 		}); err != nil {
 			t.Fatalf("Append on Load-accepted input %q: %v", in, err)

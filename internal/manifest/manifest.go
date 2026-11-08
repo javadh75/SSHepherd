@@ -1,10 +1,13 @@
-// Package manifest provides comment-preserving edits to an existing
-// SSHepherd manifest: the file is decoded into a yaml.v3 node tree (comments
-// intact) alongside the validated config, edited surgically, and the whole
-// document is re-encoded. The edits are exactly these:
+// Package manifest owns how SSHepherd writes manifests: Generate renders a
+// fresh manifest, Store/WriteFile publish one safely (lock, compare-and-swap,
+// atomic rename), and File provides comment-preserving edits to an existing
+// manifest: the file is decoded into a yaml.v3 node tree (comments intact)
+// alongside the validated config, edited surgically, and the whole document
+// is re-encoded. Generate and Append share one encoder driven by the
+// config.User/Server/Access types. The edits are exactly these:
 //
-//   - Append adds users, servers and access entries at the end of their
-//     sections (adopt --merge, import --merge);
+//   - Append adds users, servers and access entries (config types) at the
+//     end of their sections (adopt --merge, import --merge);
 //   - RemoveUser deletes a users: entry and every access: entry naming it;
 //   - RemoveKey deletes one keys: line, found by fingerprint;
 //   - ReplaceKey replaces one keys: line in place (same index);
@@ -29,7 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -42,35 +45,6 @@ import (
 type File struct {
 	root *yaml.Node // document node
 	cfg  *config.Config
-}
-
-// UserEntry is one user to append to the users: section. Zero-valued
-// optional fields (Description, Comment, Operator) are omitted from the
-// output, mirroring the generators' omitempty rendering.
-type UserEntry struct {
-	Name        string
-	Description string
-	Comment     string
-	Operator    bool
-	Keys        []string
-}
-
-// ServerEntry is one server to append to the servers: section — the fields
-// import can produce (no Description or AuthorizedKeysFile until a caller
-// exists). Port 0 is the caller's spelling of the effective default 22 and
-// is omitted from the output, mirroring the generators' omitempty rendering.
-type ServerEntry struct {
-	Name, Host string
-	Port       int
-	User       string
-}
-
-// AccessEntry is one grant to append to the access: section. Appends never
-// carry except: — a merge only ever adds plain grants; carve-outs are a
-// hand-written construct.
-type AccessEntry struct {
-	User    string
-	Servers []string
 }
 
 // UnsupportedError reports a manifest config.Parse accepts but this package
@@ -205,19 +179,21 @@ func (f *File) Config() *config.Config { return f.cfg }
 // without the leading "#") become the head comment of the first appended
 // node — first user, else first server, else first access entry — so the
 // merge marker lands exactly where the additions live. Appending nothing is
-// a no-op.
-func (f *File) Append(comments []string, users []UserEntry, servers []ServerEntry, access []AccessEntry) error {
-	userNodes := make([]*yaml.Node, 0, len(users))
-	for _, u := range users {
-		userNodes = append(userNodes, userNode(u))
+// a no-op. Entries are the config types, rendered by the same encoder as
+// Generate (required keys always, optional fields only when set, port 0/22
+// omitted); Encode's config.Parse self-check validates the result.
+func (f *File) Append(comments []string, users []config.User, servers []config.Server, access []config.Access) error {
+	userNodes, err := entryNodes(users)
+	if err != nil {
+		return err
 	}
-	serverNodes := make([]*yaml.Node, 0, len(servers))
-	for _, s := range servers {
-		serverNodes = append(serverNodes, serverNode(s))
+	serverNodes, err := entryNodes(servers)
+	if err != nil {
+		return err
 	}
-	accessNodes := make([]*yaml.Node, 0, len(access))
-	for _, a := range access {
-		accessNodes = append(accessNodes, accessNode(a))
+	accessNodes, err := entryNodes(access)
+	if err != nil {
+		return err
 	}
 	switch {
 	case len(userNodes) > 0:
@@ -329,51 +305,84 @@ func strScalar(v string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v}
 }
 
-func strSeq(vals []string) *yaml.Node {
-	n := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	for _, v := range vals {
-		n.Content = append(n.Content, strScalar(v))
+// requiredKeys are emitted even at their zero value (the loader requires
+// them); every other field is omitempty. A new config field is therefore
+// emitted by adopt, import and Append with no change here — and
+// cmd/sshepherd/schema_roundtrip_test.go fails until it round-trips.
+var requiredKeys = map[string]bool{"name": true, "host": true, "user": true, "keys": true, "servers": true}
+
+// entryNode renders one config.User/Server/Access as a mapping in struct
+// field order, from the yaml tags: required keys always, optional fields only
+// when non-zero (an empty slice counts as zero), and port omitted at 0 or 22
+// (validation defaults 0 to 22, so both spell the default).
+func entryNode(v any) (*yaml.Node, error) {
+	rv := reflect.ValueOf(v)
+	rt := rv.Type()
+	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := range rt.NumField() {
+		f := rt.Field(i)
+		key, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if !f.IsExported() || key == "" || key == "-" {
+			continue
+		}
+		fv := rv.Field(i)
+		empty := fv.IsZero() || (fv.Kind() == reflect.Slice && fv.Len() == 0)
+		if key == "port" && (fv.Int() == 0 || fv.Int() == 22) {
+			empty = true
+		}
+		if empty && !requiredKeys[key] {
+			continue
+		}
+		val := &yaml.Node{}
+		if err := val.Encode(fv.Interface()); err != nil {
+			return nil, fmt.Errorf("encode %s.%s: %w", rt.Name(), key, err)
+		}
+		n.Content = append(n.Content, strScalar(key), val)
 	}
-	return n
+	return n, nil
 }
 
-// userNode renders one appended user in the generators' field order:
-// name, description, comment, operator, keys — optional fields omitted.
-func userNode(u UserEntry) *yaml.Node {
-	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	pair := func(k string, v *yaml.Node) { n.Content = append(n.Content, strScalar(k), v) }
-	pair("name", strScalar(u.Name))
-	if u.Description != "" {
-		pair("description", strScalar(u.Description))
+func entryNodes[T any](items []T) ([]*yaml.Node, error) {
+	out := make([]*yaml.Node, 0, len(items))
+	for _, it := range items {
+		n, err := entryNode(it)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
 	}
-	if u.Comment != "" {
-		pair("comment", strScalar(u.Comment))
-	}
-	if u.Operator {
-		pair("operator", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
-	}
-	pair("keys", strSeq(u.Keys))
-	return n
+	return out, nil
 }
 
-// serverNode renders one appended server in the generators' field order:
-// name, host, port, user — port omitted when 0 (effective default 22).
-func serverNode(s ServerEntry) *yaml.Node {
-	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	pair := func(k string, v *yaml.Node) { n.Content = append(n.Content, strScalar(k), v) }
-	pair("name", strScalar(s.Name))
-	pair("host", strScalar(s.Host))
-	if s.Port != 0 {
-		pair("port", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(s.Port)})
+// Generate renders a fresh manifest — header (raw comment lines with their
+// own "#" and trailing newline) then users, servers, access — with the same
+// encoder settings as Encode (2-space indent). It is the one renderer for
+// adopt's and import's generated drafts.
+func Generate(header string, users []config.User, servers []config.Server, access []config.Access) ([]byte, error) {
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for _, sec := range []struct {
+		key   string
+		items func() ([]*yaml.Node, error)
+	}{
+		{"users", func() ([]*yaml.Node, error) { return entryNodes(users) }},
+		{"servers", func() ([]*yaml.Node, error) { return entryNodes(servers) }},
+		{"access", func() ([]*yaml.Node, error) { return entryNodes(access) }},
+	} {
+		items, err := sec.items()
+		if err != nil {
+			return nil, err
+		}
+		root.Content = append(root.Content, strScalar(sec.key), &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items})
 	}
-	pair("user", strScalar(s.User))
-	return n
-}
-
-func accessNode(a AccessEntry) *yaml.Node {
-	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	n.Content = append(n.Content,
-		strScalar("user"), strScalar(a.User),
-		strScalar("servers"), strSeq(a.Servers))
-	return n
+	var buf bytes.Buffer
+	buf.WriteString(header)
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}); err != nil {
+		return nil, fmt.Errorf("encode manifest: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("encode manifest: %w", err)
+	}
+	return buf.Bytes(), nil
 }
