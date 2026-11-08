@@ -731,3 +731,96 @@ func TestAddKeyAfter(t *testing.T) {
 		}
 	})
 }
+
+func TestBumpSerialCreatesFirstKey(t *testing.T) {
+	mf, err := Load([]byte(editFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := mf.BumpSerial(); err != nil || n != 1 {
+		t.Fatalf("BumpSerial = %d, %v; want 1", n, err)
+	}
+	out, err := mf.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(out), "# fleet manifest — hand-maintained\n# owner: platform team\nserial: 1\nusers:\n") {
+		t.Errorf("serial must be the first key, under the file header:\n%s", out)
+	}
+	checkGolden(t, "bump_serial_first.golden", out) // spec Testing: "(golden)" — every other byte of the fixture kept
+	again, err := Load([]byte("serial: 41\nusers: []\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := again.BumpSerial(); err != nil || n != 42 {
+		t.Errorf("BumpSerial from 41 = %d, %v", n, err)
+	}
+	top, err := Load([]byte("serial: 9007199254740991\nusers: []\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := top.BumpSerial(); err == nil || !strings.Contains(err.Error(), "9007199254740991") {
+		t.Errorf("BumpSerial at the bound = %v, want an error", err)
+	}
+}
+
+func TestAddTombstonesPreservesComments(t *testing.T) {
+	mf, err := Load([]byte(editFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mf.RemoveUser("bob"); err != nil {
+		t.Fatal(err)
+	}
+	// The access tombstone below records a real trim: a tombstone over a
+	// grant that stays is a policy conflict.
+	if _, err := mf.RemoveAccess("alice", []string{"db-1"}); err != nil {
+		t.Fatal(err)
+	}
+	added, err := mf.AddTombstones([]config.Tombstone{
+		{Fingerprint: keyFP(t, 4), User: "bob", Date: "2026-11-08", Reason: "offboarded"},
+		{User: "alice", Servers: []string{"db-1"}, Date: "2026-11-08"},
+	})
+	if err != nil || len(added) != 2 {
+		t.Fatalf("AddTombstones = %v, %v", added, err)
+	}
+	if _, err := mf.BumpSerial(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := mf.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, "edit_memory.golden", out)
+	for _, c := range []string{"# fleet manifest — hand-maintained", "# alice laptop", "# break-glass account", "# reviewed 2026-10-01"} {
+		if !strings.Contains(string(out), c) {
+			t.Errorf("lost comment %q:\n%s", c, out)
+		}
+	}
+	cfg, err := config.Parse(out)
+	if err != nil || len(cfg.Tombstones) != 2 || cfg.Serial() != 1 || len(cfg.Conflicts()) != 0 {
+		t.Fatalf("reparse: %+v, %v", cfg, err)
+	}
+}
+
+func TestAddTombstonesSkipsKnownFingerprint(t *testing.T) {
+	mf, err := Load([]byte("users: []\nrevoked:\n  - {fingerprint: " + keyFP(t, 9) + ", date: 2026-11-01}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := mf.AddTombstones([]config.Tombstone{
+		{Fingerprint: keyFP(t, 9), Date: "2026-11-08"},
+		{Fingerprint: keyFP(t, 8), Date: "2026-11-08"},
+		{Fingerprint: keyFP(t, 8), Date: "2026-11-08"},
+	})
+	if err != nil || len(added) != 1 || added[0].Fingerprint != keyFP(t, 8) {
+		t.Fatalf("added = %+v, %v; want only key 8, once", added, err)
+	}
+	out, err := mf.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := config.Parse(out); err != nil || len(cfg.Tombstones) != 2 || cfg.Tombstones[0].Date != "2026-11-01" {
+		t.Fatalf("reparse: %+v, %v (the earliest entry wins)", cfg, err)
+	}
+}

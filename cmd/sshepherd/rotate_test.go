@@ -45,7 +45,7 @@ func TestRotateOwnKeyWithNewIdentity(t *testing.T) {
 		"alice (rotated out)",
 		"removes the key this session logged in with",
 		"web-1: applied · verified",
-		"scope: only servers whose grants changed were contacted (1 of 1)",
+		"check every server: sshepherd audit --config " + cfg + " --known-hosts " + kh,
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out.String())

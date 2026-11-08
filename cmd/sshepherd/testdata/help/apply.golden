@@ -18,10 +18,14 @@ Ctrl-C stops new writes; started ones finish. --dry-run previews the
 plan and never writes.
 
 Exit codes:
-  0  converged: nothing left to do; or, with revoke/rotate --no-apply, the
-     edit is saved but not pushed (run the apply hint it prints)
-  1  pending changes, unreachable or refused servers, or a declined prompt
-  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+  0  converged: nothing left to do (a header-only update applied, or a server
+     a newer manifest wrote whose keys already match); a revoke whose targets
+     were already revoked; or, with revoke/rotate --no-apply, the edit is
+     saved but not pushed (run the apply hint it prints)
+  1  pending changes, unreachable or refused servers (a newer manifest's
+     serial, a policy conflict), or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
+     that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written
 
 Usage:

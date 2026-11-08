@@ -3,10 +3,12 @@ package manifest
 import (
 	"fmt"
 	"slices"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
+	"github.com/javadh75/SSHepherd/internal/config"
 )
 
 // UserRemoval reports what RemoveUser deleted.
@@ -396,4 +398,70 @@ func (f *File) AddKeyAfter(user, oldFP, newLine string) error {
 	item := strScalar(newLine)
 	keys.Content = append(keys.Content[:idx+1], append([]*yaml.Node{item}, keys.Content[idx+1:]...)...)
 	return nil
+}
+
+// AddTombstones appends entries to revoked: — created as the last top-level
+// key when absent — and returns the entries it added. A key entry whose
+// fingerprint is already tombstoned (in the file, or earlier in entries) is
+// skipped: the earliest entry wins, so a retried revoke never produces a
+// duplicate-fingerprint load error. Entries render through the config
+// types' encoder (Generate's). Node tree only.
+func (f *File) AddTombstones(entries []config.Tombstone) ([]config.Tombstone, error) {
+	m, err := f.rootMapping()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	if seq := valueOf(m, "revoked"); seq != nil && seq.Kind == yaml.SequenceNode {
+		for _, it := range seq.Content {
+			if fp := scalarField(it, "fingerprint"); fp != "" {
+				seen[fp] = true
+			}
+		}
+	}
+	var added []config.Tombstone
+	for _, t := range entries {
+		if t.IsKey() {
+			if seen[t.Fingerprint] {
+				continue
+			}
+			seen[t.Fingerprint] = true
+		}
+		added = append(added, t)
+	}
+	nodes, err := entryNodes(added)
+	if err != nil {
+		return nil, err
+	}
+	return added, f.appendToSection("revoked", nodes)
+}
+
+// BumpSerial raises serial: by one — inserting `serial: 1` as the first
+// top-level key when absent, under the file's header comment — and returns
+// the new value. At config.MaxSerial it fails and changes nothing. Node
+// tree only (Load validated the current value).
+func (f *File) BumpSerial() (uint64, error) {
+	m, err := f.rootMapping()
+	if err != nil {
+		return 0, err
+	}
+	if v := valueOf(m, "serial"); v != nil {
+		cur, err := strconv.ParseUint(v.Value, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("bug: serial %q passed validation but does not parse: %w", v.Value, err)
+		}
+		if cur >= config.MaxSerial {
+			return 0, fmt.Errorf("serial %d is the largest serial a manifest may carry; it cannot be bumped", cur)
+		}
+		v.Value = strconv.FormatUint(cur+1, 10)
+		return cur + 1, nil
+	}
+	m.Style = 0
+	key := strScalar("serial")
+	if len(m.Content) > 0 {
+		// The file's header comment rides the first key; keep it on top.
+		key.HeadComment, m.Content[0].HeadComment = m.Content[0].HeadComment, ""
+	}
+	m.Content = append([]*yaml.Node{key, {Kind: yaml.ScalarNode, Tag: "!!int", Value: "1"}}, m.Content...)
+	return 1, nil
 }

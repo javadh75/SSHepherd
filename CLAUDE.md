@@ -511,7 +511,13 @@ apply plans by the serial table (`internal/apply/serial.go`: newer serial refuse
 removal-only, equal-body newer converged with a note, forged headers rewritten,
 header-only writes on affected older-serial servers) and refuses servers a policy
 conflict names; audit adds REVOKED (critical), access-revoked (drift), serial-ahead
-(drift), forged-header and policy-conflict (critical) classes and additive JSON fields).
+(drift), forged-header and policy-conflict (critical) classes and additive JSON fields;
+revoke/rotate write tombstones through `manifest.AddTombstones`, bump the serial
+(`manifest.BumpSerial`) and take `--reason`, `revoke --key` of an unowned key records it
+(D1b), a repeated revoke exits 0 (D1c), saving commands refuse a manifest that would keep
+a policy conflict (exit 3), a revoke/rotate's affected servers get header-only writes,
+every key-removing run prints `check every server: sshepherd audit`, and a confirmed apply
+that removes keys bumps the serial (D4b, `apply.NeedsSerialBump`, `serial_bump` in JSON)).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one

@@ -18,6 +18,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
+	"github.com/javadh75/SSHepherd/internal/manifest"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshread"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
@@ -96,6 +97,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				apply.Render(stdout, cfg, nil, ropts)
 				return nil
 			}
+			pa := &plainApply{m: m, cfg: cfg, log: log, stdout: stdout, rf: &rf, skipped: skipped, ropts: ropts}
 			return runWorkflow(cmd, a, stdout, &rf, ids, applySpec{
 				cfg:     cfg,
 				servers: targets,
@@ -106,36 +108,160 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				question: func(_ []apply.ServerPlan, toWrite int) (string, error) {
 					return fmt.Sprintf("apply %d of %s?", toWrite, apply.Plural(len(targets), "server", "servers")), nil
 				},
-				// A concurrent revoke may have replaced the manifest while
-				// this run planned against the old one: writing that plan
-				// would reinstall the revoked key. Plain apply saves nothing.
-				commit: func(context.Context, []apply.ServerPlan, []fleet.HeldKey) (bool, error) {
-					return false, m.Unchanged()
-				},
-				finish: func(out workflow.Outcome) error {
-					if out.Stage == workflow.StageDeclined {
-						log.Error("aborted; no changes made")
-					}
-					if rf.json {
-						return finishDoc(func(plans []apply.ServerPlan, _ bool) error {
-							return apply.RenderJSON(stdout, cfg, plans, apply.JSONOptions{Command: "apply", DryRun: rf.dryRun, Skipped: skipped})
-						}, out)
-					}
-					apply.RenderSummary(stdout, out.Plans, ropts)
-					if skipped > 0 {
-						fmt.Fprintf(stdout, "(%s skipped by --server)\n", apply.Plural(skipped, "server", "servers"))
-					}
-					if out.ExitCode() != 0 {
-						return errNonCompliant
-					}
-					return nil
-				},
+				commit: pa.commit,
+				finish: pa.finish,
 			})
 		},
 	}
 	rf.register(cmd)
 	cmd.Flags().StringArrayVar(&serverSel, "server", nil, "restrict the run to this server (repeatable; canary rollout)")
 	return cmd
+}
+
+// plainApply is plain apply's commit and finish seams, as methods so the
+// command's own function stays small (gocyclo).
+type plainApply struct {
+	m       manifestTarget
+	cfg     *config.Config
+	log     *slog.Logger
+	stdout  io.Writer
+	rf      *runFlags
+	skipped int
+	ropts   apply.RenderOptions
+	bump    *apply.SerialBump // D4b: what this run bumped (or would), for the text and JSON reports
+}
+
+// commit runs after the prompt, before the first write. A concurrent
+// revoke may have replaced the manifest while this run planned against the
+// old one: writing that plan would reinstall the revoked key. Then D4b: a
+// removal on a server whose header serial is not above the manifest's
+// bumps serial: once, saved here, and every write carries it (Reserial).
+func (pa *plainApply) commit(_ context.Context, plans []apply.ServerPlan, _ []fleet.HeldKey) (bool, error) {
+	if err := pa.m.Unchanged(); err != nil {
+		return false, err //nolint:wrapcheck // "changed since it was read" is the user-facing text
+	}
+	from := pa.cfg.Serial()
+	if !apply.NeedsSerialBump(plans, from) {
+		return false, nil
+	}
+	to, err := saveSerialBump(pa.m)
+	if errors.Is(err, errNoSerialSave) {
+		pa.log.Warn(noBumpWarning)
+		pa.bump = &apply.SerialBump{From: from, Warning: noBumpWarning}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := apply.Reserial(plans, to); err != nil {
+		return false, err //nolint:wrapcheck // a bug: … message
+	}
+	pa.bump = &apply.SerialBump{From: from, To: &to, Saved: true}
+	if !pa.rf.json {
+		fmt.Fprintf(pa.stdout, "manifest serial: %d → %d (saved; this apply removes keys)\n", from, to)
+	}
+	return true, nil
+}
+
+// finish renders the run's outcome: the JSON document, or the summary and
+// the dry-run's would-bump line.
+func (pa *plainApply) finish(out workflow.Outcome) error {
+	if out.Stage == workflow.StageDeclined {
+		pa.log.Error("aborted; no changes made")
+	}
+	if pa.rf.dryRun {
+		pa.bump = dryRunBump(pa.m, pa.cfg, out.Plans)
+	}
+	if pa.rf.json {
+		return finishDoc(func(plans []apply.ServerPlan, _ bool) error {
+			return apply.RenderJSON(pa.stdout, pa.cfg, plans, apply.JSONOptions{Command: "apply", DryRun: pa.rf.dryRun, Skipped: pa.skipped, SerialBump: pa.bump})
+		}, out)
+	}
+	apply.RenderSummary(pa.stdout, out.Plans, pa.ropts)
+	if pa.skipped > 0 {
+		fmt.Fprintf(pa.stdout, "(%s skipped by --server)\n", apply.Plural(pa.skipped, "server", "servers"))
+	}
+	printDryRunBump(pa.stdout, pa.log, pa.rf.dryRun, pa.bump)
+	if out.ExitCode() != 0 {
+		return errNonCompliant
+	}
+	return nil
+}
+
+// noBumpWarning: apply removes keys but cannot save the bumped serial.
+const noBumpWarning = "removing keys without a serial bump: an older copy could re-grant them"
+
+// errNoSerialSave: the manifest cannot be saved in place — a pipe, or a
+// shape the comment-preserving editor refuses (anchors); apply then warns
+// and writes without the bump.
+var errNoSerialSave = errors.New("manifest cannot be saved in place")
+
+// serialEditable loads the manifest for the D4b edit — the one
+// classification saveSerialBump and dryRunBump share, so a dry run never
+// promises a bump the real run would only warn about: a pipe, or a shape
+// the comment-preserving editor refuses (anchors, aliases), cannot be
+// saved in place (errNoSerialSave: warn and write without the bump).
+func serialEditable(m manifestTarget) (*manifest.File, error) {
+	if m.Stream {
+		return nil, errNoSerialSave
+	}
+	mf, err := manifest.Load(m.Loaded)
+	var ue *manifest.UnsupportedError
+	if errors.As(err, &ue) {
+		return nil, errNoSerialSave
+	}
+	if err != nil {
+		return nil, fmt.Errorf("serial bump: %w", err)
+	}
+	return mf, nil
+}
+
+// saveSerialBump raises the manifest's serial: by one through the locked
+// store (its compare-and-swap included) and returns the new value. A failed
+// save is a tool error: nothing is written (spec §6).
+func saveSerialBump(m manifestTarget) (uint64, error) {
+	mf, err := serialEditable(m)
+	if err != nil {
+		return 0, err
+	}
+	to, err := mf.BumpSerial()
+	if err != nil {
+		return 0, fmt.Errorf("serial bump: %w", err)
+	}
+	out, err := mf.Encode()
+	if err != nil {
+		return 0, fmt.Errorf("serial bump: %w", err)
+	}
+	if err := m.Save(out); err != nil {
+		return 0, err //nolint:wrapcheck // "save manifest …" / "changed since it was read" are the user-facing text
+	}
+	return to, nil
+}
+
+// dryRunBump is what a confirmed run of these plans would bump (nil:
+// none), classified exactly as saveSerialBump would (serialEditable).
+func dryRunBump(m manifestTarget, cfg *config.Config, plans []apply.ServerPlan) *apply.SerialBump {
+	from := cfg.Serial()
+	if !apply.NeedsSerialBump(plans, from) {
+		return nil
+	}
+	if _, err := serialEditable(m); err != nil {
+		return &apply.SerialBump{From: from, Warning: noBumpWarning}
+	}
+	to := from + 1
+	return &apply.SerialBump{From: from, To: &to}
+}
+
+// printDryRunBump prints the dry-run's would-bump line (or the warning a
+// piped --config gets).
+func printDryRunBump(stdout io.Writer, log *slog.Logger, dryRun bool, b *apply.SerialBump) {
+	switch {
+	case !dryRun || b == nil:
+	case b.To == nil:
+		log.Warn(b.Warning)
+	default:
+		fmt.Fprintf(stdout, "would bump serial: %d → %d (this apply removes keys)\n", b.From, *b.To)
+	}
 }
 
 // applySpec is what apply, revoke and rotate vary: plain apply passes the
@@ -152,6 +278,10 @@ type applySpec struct {
 	// alwaysConfirm asks even when no server needs a write (the manifest
 	// edit is itself a change).
 	alwaysConfirm bool
+	// bumped: the run saves a higher serial: and servers is its bump scope
+	// (revoke/rotate's affected set): equal-body servers get header-only
+	// writes (workflow.Request.Bumped).
+	bumped bool
 	// question returns the confirmation question (confirm appends
 	// " [y/N] "), workflow.ErrWithheld to withhold the run before any
 	// prompt, or a tool error.
@@ -191,6 +321,7 @@ func runWorkflow(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids
 		PerServerTimeout: perServerTimeout,
 		DryRun:           rf.dryRun,
 		AlwaysConfirm:    s.alwaysConfirm,
+		Bumped:           s.bumped,
 		Question:         s.question,
 		Confirmer: workflow.ConfirmFunc(func(ctx context.Context, q string) (bool, error) {
 			return confirmGate(ctx, cmd, rf.yes, q)

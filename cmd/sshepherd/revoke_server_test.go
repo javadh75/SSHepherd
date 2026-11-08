@@ -124,7 +124,7 @@ func TestRevokeServerHermetic(t *testing.T) {
 	}
 	for _, want := range []string{
 		"manifest edit: remove bob's access to web-1 (1 access entry changed); bob keeps access to 1 other server — 1 server affected\n",
-		"manifest " + cfg + " updated — commit and push it: an apply from a copy without this edit re-grants the removed access\n",
+		"manifest " + cfg + " updated — commit and push it: an apply from a copy without this edit is refused on the servers this run writes (serial 1)\n",
 		"web-1: applied · verified",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -248,7 +248,7 @@ func TestRevokeServerNoApplyDryRun(t *testing.T) {
 			t.Fatalf("exit = %d\n%s", code, errBuf.String())
 		}
 		for _, want := range []string{
-			"re-grants the removed access\n",
+			"servers learn serial 1 only when an apply writes them; until then a copy without this edit can re-grant there\n",
 			"no servers contacted — 1 affected server still carries the old keys; run 'sshepherd apply --config " + cfg + " --server web-1' to push\n",
 		} {
 			if !strings.Contains(out.String(), want) {

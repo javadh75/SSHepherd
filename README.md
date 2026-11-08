@@ -215,14 +215,13 @@ so a CI job that forgot `--yes` fails instead of writing unattended.
 ### 4. Offboard someone
 
 ```console
-$ sshepherd revoke alice --no-apply                   # edit and save the manifest only
-$ git commit -am "offboard alice" && git push         # publish the edit first
-$ sshepherd apply                                     # then converge the fleet
-$ sshepherd audit
+$ sshepherd revoke alice                              # edit the manifest and push it to every affected server
+$ git commit -am "offboard alice" && git push         # publish the edit
+$ sshepherd audit                                     # the command the run prints; exits 2 while a revoked key is still installed
 ```
 
-Publishing the edit before any server changes means no stale copy of the manifest
-can re-grant alice later.
+Running `revoke` with its apply phase (not `--no-apply`) is what stops an older copy
+of the manifest from re-granting alice: every affected server learns the new serial.
 
 `revoke` removes the user and every `access:` entry naming them, keeps the
 manifest's comments, and writes only the servers whose rendered `authorized_keys`
@@ -1226,6 +1225,28 @@ and exits `3`. In `audit` and `adopt`, an interrupt at any point closes in-fligh
 sessions and exits `3` without rendering a report or writing a manifest (servers cut
 short are never passed off as unreachable).
 
+**Serial bump.** A confirmed apply that removes a key from a server whose header serial
+is not above the manifest's bumps `serial:` once, saving it under the manifest lock
+after the prompt and before the first write:
+
+```console
+manifest serial: 0 → 1 (saved; this apply removes keys)
+```
+
+`--dry-run` prints `would bump serial: 0 → 1 (this apply removes keys)`. A piped
+`--config` (or one the comment-preserving editor cannot save, e.g. with YAML anchors)
+cannot be saved and warns `removing keys without a serial bump: an older copy could re-grant them` —
+under `--dry-run` too — and the write proceeds. A failed save exits `3` with nothing
+written and, under `--json`, no document. `--json` reports the bump as `serial_bump`:
+
+```json
+  "serial_bump": {
+    "from": 7,
+    "to": 8,
+    "saved": true
+  }
+```
+
 ### `sshepherd revoke`
 
 Removes users, keys, or a user's access to named servers from the manifest — comments
@@ -1246,6 +1267,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | `--server` | none | Remove the users' access to this server only (repeatable); the users and their keys stay |
 | `--operator` | off | Confirm that a target is, or belongs to, an operator user (fleet-wide, protected) |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
+| `--reason` | none | Free text recorded with each `revoked:` entry this run adds (printed by every tool; at most 256 bytes) |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
@@ -1261,16 +1283,29 @@ entry whose `user:` is that user (unknown users are listed and nothing happens).
 `revoke NAME` looks NAME up in the manifest first, so users called `tunnel` or
 `Alice Smith` are revoked by name. Only an unknown name that looks like a key or
 fingerprint gets `NAME looks like a key — did you mean --key?`.
-Re-running a revoke whose save landed but whose push did not finish exits `3` with
-`not in the manifest (already revoked?)` and the `apply --dry-run`/`audit` commands to
-finish and verify.
+Re-running a revoke for a user already revoked prints a note and exits `0` —
+`bob was already revoked (2026-11-08); run 'sshepherd apply' to converge any server that still has the key`
+(the hint carries your own non-default flags); with several users, the already-revoked
+ones get the note and the rest are revoked as usual. A name that was never revoked
+still exits `3` with `not in the manifest (already revoked?)`.
 `revoke --key KEY...` removes each key line from its owner; a user left with no keys
 stays with `keys: []`. A `KEY` is a `SHA256:` fingerprint (pasted `ssh-keygen -lf`
 output works), a public-key line (quote it), or a path to a `.pub` file holding
 exactly one key. MD5 fingerprints, certificates (`*-cert.pub`) and private keys are
-refused with the fix; an error never quotes a file's contents. A key the manifest
-does not grant is refused too — `apply` already removes it; `sshepherd audit` shows
-where it is installed.
+refused with the fix; an error never quotes a file's contents. `revoke --key` of a key
+no user has records it
+(`manifest edit: record revoked key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU (no user has it; no server is written) — no servers affected`)
+instead of failing; repeating it prints
+`SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU was already revoked (2026-11-08)` and exits `0`.
+
+**Revocation memory.** Every revoke that saves records what it removed in `revoked:` —
+`revoke USER` one key entry per key, `revoke --key` one per key (labelled with its
+owner), `revoke USER --server NAME` one access entry naming the servers removed from
+an explicit list (a wildcard's new `except:` already remembers its server) — and bumps
+`serial:` once. `revoke` refuses to save a manifest that would keep a policy conflict,
+exit `3`, nothing saved —
+`refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`;
+`revoke --key` of the conflicting key is the fix.
 
 **One server, not the whole user (`--server`).** `revoke USER... --server NAME...`
 takes the named servers away from each user and changes nothing else — the user
@@ -1285,8 +1320,8 @@ no longer granted automatically. Refused with exit `3` and nothing edited: `--se
 with `--key` (access is per user), with `--operator`, or on an operator user
 (operators have every server by definition), `--server '*'` (use `revoke USER`), an
 unknown server, and any user × server pair the user has no access to — every problem
-is listed in one message. Only the trimmed servers are contacted, there is no
-`scope:` line, and the save reminder ends `re-grants the removed access`. The edit
+is listed in one message. Only the trimmed servers are contacted, and there is no
+`check every server:` line (no key is removed). The edit
 header says how many other servers each user keeps; `revoke USER` without `--server`
 removes every grant.
 
@@ -1321,8 +1356,11 @@ note: bob has no keys left — 'sshepherd revoke bob' removes the user
 
 **Scope.** Only servers whose rendered file changes are contacted, and on those the
 full render also converges any other drift (shown in the plan). A revoked key still
-installed on a server that never granted it is drift `revoke` does not reach — the
-run ends with a `scope:` line pointing at `sshepherd audit` and `sshepherd apply`.
+installed on a server that never granted it is drift `revoke` does not reach — every
+run that removes a key ends with `check every server: sshepherd audit` (your own
+non-default flags included), which exits `2` while a revoked key is still installed
+anywhere. An affected server whose keys already match gets a header-only update
+carrying the new serial, so an older copy of the manifest is refused there too.
 
 **Confirmation.** `revoke` always asks — even when every affected server already
 matches, since the manifest edit is itself a change — or needs `--yes`. The prompt
@@ -1342,7 +1380,9 @@ Declining exits `1` with `aborted; manifest not changed, nothing written`. When 
 affected server can converge (every one refused), nothing is saved and the run
 exits `1` without a prompt. `--dry-run` saves nothing and exits exactly as
 `apply --dry-run` would. After the save the run prints
-`manifest PATH updated — commit and push it: …`; servers left unconverged (failed,
+`manifest PATH updated — commit and push it: an apply from a copy without this edit is refused on the servers this run writes (serial 2)`
+(under `--no-apply` the note is `servers learn serial 1 only when an apply writes them; until then a copy without this edit can re-grant there`);
+servers left unconverged (failed,
 refused for a fixable reason, unreachable, interrupted) are named in a ready-made
 `sshepherd apply --server …` command. Follow-up hints repeat the run's own
 `--config`, `--known-hosts` and `--identity*` flags (paths only), so they can be
@@ -1350,7 +1390,8 @@ pasted as is; `--no-apply` hints leave out servers that would be emptied.
 
 **`--no-apply`** shows the header, asks, saves, and contacts nothing; it refuses
 `--identity*`, `--known-hosts` and `--parallel` (they would be silently unused).
-`--dry-run --no-apply` prints the header only.
+`--dry-run --no-apply` prints the header (and the `check every server:` line when a
+key is removed).
 
 **JSON.** Under `--json` (see [`apply`](#sshepherd-apply)) the document adds an
 `edit` section — `saved` (the manifest was written: `false` under `--dry-run` and
@@ -1522,6 +1563,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | `--keep-old` | off | Add the new key alongside the old one instead of replacing it (overlap; the new key keeps the old line's options, `expiry-time` included); finish later with `sshepherd revoke --key OLD` |
 | `--operator` | off | Confirm that the user is an operator (fleet-wide, protected); the flag is kept |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
+| `--reason` | none | Free text recorded with the old key's `revoked:` entry (`rotated out` when not given; printed by every tool; at most 256 bytes) |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
@@ -1542,8 +1584,14 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 - The **comment** is the new key's, else the old line's inline comment.
 - A carried-over `expiry-time=` that has already passed is refused before any edit
   (the new key would be rejected by sshd); a future one is named in the header.
-- Confirmation, saving, `--dry-run`, `--no-apply`, operators and the scope line work
-  exactly as for `revoke` (no scope line under `--keep-old`: nothing is removed).
+- Plain `rotate` records the old key in `revoked:` (`reason` is `--reason`, or
+  `rotated out` when not given); `--keep-old` records nothing — the finishing
+  `revoke --key OLD` does — but bumps `serial:` all the same.
+- Confirmation, saving, `--dry-run`, `--no-apply`, operators and the `check every server: sshepherd audit` line work
+  exactly as for `revoke` (no check line under `--keep-old`: nothing is removed).
+- `rotate` refuses, exit `3`, to save a manifest that would keep a policy conflict —
+  in particular `--new` of a revoked key
+  (`refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`).
 - Under `--json` the document carries the same `edit` section as `revoke`'s, with a
   `rotate` entry (`user`, `fingerprint`, `new_fingerprint`, `keeps_expiry` when
   an `expiry-time=` carries over, and `keep_old` (always present on `rotate` entries;
@@ -1839,10 +1887,10 @@ say):
 
 | Code | Meaning |
 | ---- | ------- |
-| `0` | Compliant / converged — nothing to do; or `revoke`/`rotate --no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
+| `0` | Compliant / converged — nothing to do; a repeated `revoke` whose targets were already revoked; or `revoke`/`rotate --no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift, unreachable servers, or pending changes — compliance not proven |
 | `2` | `audit` only: **critical** drift (a server is missing an operator key), or a server whose host key **changed** or is `@revoked` in `known_hosts` (possible impersonation) — `apply`, `revoke` and `rotate` never return `2` |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a concurrent save) |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted `audit`/`adopt`, `apply` interrupted before any write, a manifest that changed since it was read, a `revoke`/`rotate` refused before anything is saved (unknown user or key, an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save), a failed `apply` serial save |
 
 `--help` shows this summary. `audit --help`:
 
@@ -1862,10 +1910,14 @@ Exit codes:
 
 ```console
 Exit codes:
-  0  converged: nothing left to do; or, with revoke/rotate --no-apply, the
-     edit is saved but not pushed (run the apply hint it prints)
-  1  pending changes, unreachable or refused servers, or a declined prompt
-  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+  0  converged: nothing left to do (a header-only update applied, or a server
+     a newer manifest wrote whose keys already match); a revoke whose targets
+     were already revoked; or, with revoke/rotate --no-apply, the edit is
+     saved but not pushed (run the apply hint it prints)
+  1  pending changes, unreachable or refused servers (a newer manifest's
+     serial, a policy conflict), or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
+     that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written
 ```
 

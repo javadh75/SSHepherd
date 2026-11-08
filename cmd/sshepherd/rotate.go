@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -77,7 +78,7 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ep, err := planRotate(mf, args[0], oldArg, newArg, rotateOpts{operator: f.operator, keepOld: keepOld, now: rotateNow()})
+			ep, err := planRotate(mf, args[0], oldArg, newArg, rotateOpts{operator: f.operator, keepOld: keepOld, now: rotateNow(), memo: f.memo()})
 			if err != nil {
 				return err
 			}
@@ -98,6 +99,7 @@ type rotateOpts struct {
 	operator bool      // --operator
 	keepOld  bool      // --keep-old: add the new key after the old one
 	now      time.Time // the expiry-time= check's clock
+	memo     editMemo  // date and --reason for the tombstone
 }
 
 // planRotate resolves and applies 'rotate USER --old --new' against the
@@ -142,6 +144,7 @@ func planRotate(mf *manifest.File, user string, oldArg, newArg keyArg, opts rota
 			NewFingerprint: newArg.Fingerprint, KeepsExpiry: expiry, KeepOld: opts.keepOld,
 		}}},
 	}
+	var tombs []config.Tombstone
 	if opts.keepOld {
 		err = mf.AddKeyAfter(user, oldArg.Fingerprint, line)
 		ep.stillHas = user + "'s new key would get no"
@@ -150,9 +153,16 @@ func planRotate(mf *manifest.File, user string, oldArg, newArg keyArg, opts rota
 	} else {
 		err = mf.ReplaceKey(user, oldArg.Fingerprint, line)
 		ep.formerNote, ep.removesKey, ep.stillHas = "rotated out", true, user+"'s old key still has"
+		reason := cmp.Or(opts.memo.reason, "rotated out")
+		tombs = []config.Tombstone{{Fingerprint: oldArg.Fingerprint, User: user, Date: opts.memo.date, Reason: reason}}
 	}
 	if err != nil {
 		return editPlan{}, fmt.Errorf("edit manifest: %w", err)
+	}
+	// Keep-old bumps too: a stale copy would otherwise remove the new key
+	// on the affected servers (the keep-old save note says so).
+	if err := ep.remember(mf, tombs); err != nil {
+		return editPlan{}, err
 	}
 	if ep.encoded, ep.edited, err = encodeEdit(mf); err != nil {
 		return editPlan{}, err

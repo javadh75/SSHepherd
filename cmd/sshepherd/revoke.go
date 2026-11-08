@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/apply"
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/manifest"
 )
@@ -63,13 +64,14 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			}
 			var ep editPlan
 			h := f.run.followUp()
+			memo := f.memo()
 			switch {
 			case len(trim) > 0:
-				ep, err = planRevokeAccess(mf, users, trim, h)
+				ep, err = planRevokeAccess(mf, users, trim, h, memo)
 			case len(users) > 0:
-				ep, err = planRevokeUsers(mf, users, f.operator, h)
+				ep, err = planRevokeUsers(mf, users, f.operator, h, memo)
 			default:
-				ep, err = planRevokeKeys(mf, keyArgs, f.operator, h)
+				ep, err = planRevokeKeys(mf, keyArgs, f.operator, memo)
 			}
 			if err != nil {
 				return err
@@ -151,86 +153,143 @@ func unique(in []string) []string {
 	return out
 }
 
-// planRevokeUsers resolves and applies 'revoke USER...'. A user not in the
-// manifest is refused (exit 3) with what a retried revoke needs: the save
-// may have landed while the push did not, so the hint shows what is left
-// to push (apply --dry-run: the user's former servers are no longer in the
-// manifest to name) and how to verify, both with the run's flags (h).
-func planRevokeUsers(mf *manifest.File, users []string, operator bool, h followUp) (editPlan, error) {
+// planRevokeUsers resolves and applies 'revoke USER...': each user and its
+// access entries go, and each of its keys is tombstoned (D1). A name not in
+// users: that a key tombstone labels was already revoked (D1c): a note, no
+// edit. A name never seen is refused (exit 3) with what a retried revoke
+// needs, carrying the run's flags (h).
+func planRevokeUsers(mf *manifest.File, users []string, operator bool, h followUp, memo editMemo) (editPlan, error) {
 	cfg := mf.Config()
-	var unknown []string
-	for _, name := range users {
-		if !slices.ContainsFunc(cfg.Users, func(u config.User) bool { return u.Name == name }) {
-			unknown = append(unknown, name)
-		}
-	}
+	live, unknown, already := splitRevokeUsers(cfg, users)
 	if len(unknown) > 0 {
 		return editPlan{}, fmt.Errorf("unknown %s: %s — not in the manifest (already revoked?); see what is left to push with '%s', verify with '%s'",
 			pluralWord(len(unknown), "user", "users"), strings.Join(unknown, ", "),
 			h.command("apply", []string{"--dry-run"}), h.command("audit", nil))
 	}
-	ops, err := operatorGate(cfg, users, operator)
+	ep := editPlan{former: cfg, summary: apply.EditSummary{AlreadyRevoked: already}}
+	if len(live) == 0 {
+		ep.noop = true
+		return ep, nil
+	}
+	ops, err := operatorGate(cfg, userNames(live), operator)
 	if err != nil {
 		return editPlan{}, err
 	}
-	ep := editPlan{former: cfg, summary: apply.EditSummary{Operators: ops}}
-	for _, name := range users {
-		r, err := mf.RemoveUser(name)
+	ep.summary.Operators = ops
+	var tombs []config.Tombstone
+	for _, u := range live {
+		r, err := mf.RemoveUser(u.Name)
 		if err != nil {
 			return editPlan{}, fmt.Errorf("edit manifest: %w", err)
 		}
-		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{Kind: apply.EditRemoveUser, User: name, Keys: r.Keys, Grants: r.Grants})
+		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{Kind: apply.EditRemoveUser, User: u.Name, Keys: r.Keys, Grants: r.Grants})
 		ep.removesKey = ep.removesKey || r.Keys > 0
+		for _, fp := range userFingerprints(u) {
+			tombs = append(tombs, config.Tombstone{Fingerprint: fp, User: u.Name, Date: memo.date, Reason: memo.reason})
+		}
 	}
-	ep.stillHas = strings.Join(users, ", ") + " still " + pluralWord(len(users), "has", "have")
+	ep.stillHas = strings.Join(userNames(live), ", ") + " still " + pluralWord(len(live), "has", "have")
+	if err := ep.remember(mf, tombs); err != nil {
+		return editPlan{}, err
+	}
 	if ep.encoded, ep.edited, err = encodeEdit(mf); err != nil {
 		return editPlan{}, err
 	}
 	return ep, nil
 }
 
-// planRevokeKeys resolves and applies 'revoke --key KEY...'. Keys are
-// unique across users (config rejects duplicates), so each owner is
-// unambiguous. An operator losing its last key loses the flag first
-// (operator: true with no keys fails validation). h carries the run's
-// flags into the not-in-the-manifest hint.
-func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, h followUp) (editPlan, error) {
+// splitRevokeUsers sorts revoke's user arguments: in users: (live, manifest
+// entries), already revoked (a key tombstone labels the name; D1c), or
+// unknown.
+func splitRevokeUsers(cfg *config.Config, names []string) (live []config.User, unknown []string, already []apply.AlreadyRevoked) {
+	for _, name := range names {
+		if i := slices.IndexFunc(cfg.Users, func(u config.User) bool { return u.Name == name }); i >= 0 {
+			live = append(live, cfg.Users[i])
+			continue
+		}
+		if t, ok := latestUserTombstone(cfg, name); ok {
+			already = append(already, apply.AlreadyRevoked{User: name, Date: t.Date})
+			continue
+		}
+		unknown = append(unknown, name)
+	}
+	return live, unknown, already
+}
+
+// latestUserTombstone is the last key tombstone labelled with name.
+func latestUserTombstone(cfg *config.Config, name string) (config.Tombstone, bool) {
+	var found config.Tombstone
+	ok := false
+	for _, t := range cfg.Tombstones {
+		if t.IsKey() && t.User == name {
+			found, ok = t, true
+		}
+	}
+	return found, ok
+}
+
+// userFingerprints lists u's key fingerprints (validated lines).
+func userFingerprints(u config.User) []string {
+	fps := make([]string, 0, len(u.Keys))
+	for _, line := range u.Keys {
+		if k, err := authkeys.ParseLine(line); err == nil && k != nil {
+			fps = append(fps, k.Fingerprint)
+		}
+	}
+	return fps
+}
+
+func userNames(us []config.User) []string {
+	out := make([]string, 0, len(us))
+	for _, u := range us {
+		out = append(out, u.Name)
+	}
+	return out
+}
+
+// planRevokeKeys resolves and applies 'revoke --key KEY...'. An owned key
+// is removed and tombstoned under its owner (an operator losing its last
+// key loses the flag first: operator: true with no keys fails validation).
+// A key no user has is tombstoned with no label and writes no server (D1b);
+// one already tombstoned is a no-op note.
+func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, memo editMemo) (editPlan, error) {
 	cfg := mf.Config()
-	var missing []string
-	var owners []string
+	ep := editPlan{former: cfg}
+	var owned []keyArg
+	var unowned, owners []string
 	removing := map[string]int{}
 	for _, k := range keys {
 		u, ok := cfg.OwnerOf(k.Fingerprint)
-		if !ok {
-			missing = append(missing, fmt.Sprintf("%s is not in the manifest; apply already removes keys the manifest does not grant — run '%s' to find where it is installed",
-				keyName(k), h.command("audit", nil)))
-			continue
+		switch {
+		case ok:
+			owned = append(owned, k)
+			if !slices.Contains(owners, u.Name) {
+				owners = append(owners, u.Name)
+			}
+			removing[u.Name]++
+		default:
+			if t, done := cfg.Revoked(k.Fingerprint); done {
+				ep.summary.AlreadyRevoked = append(ep.summary.AlreadyRevoked, apply.AlreadyRevoked{Fingerprint: k.Fingerprint, Date: t.Date})
+			} else {
+				unowned = append(unowned, k.Fingerprint)
+			}
 		}
-		if !slices.Contains(owners, u.Name) {
-			owners = append(owners, u.Name)
-		}
-		removing[u.Name]++
 	}
-	if len(missing) > 0 {
-		return editPlan{}, errors.New(strings.Join(missing, "; "))
+	if len(owned)+len(unowned) == 0 {
+		ep.noop = true
+		return ep, nil
 	}
 	ops, err := operatorGate(cfg, owners, operator)
 	if err != nil {
 		return editPlan{}, err
 	}
-	cleared := map[string]bool{}
-	for _, name := range ops {
-		for _, u := range cfg.Users {
-			if u.Name == name && removing[name] == len(u.Keys) {
-				if err := mf.SetOperator(name, false); err != nil {
-					return editPlan{}, fmt.Errorf("edit manifest: %w", err)
-				}
-				cleared[name] = true
-			}
-		}
+	cleared, err := clearEmptiedOperators(mf, cfg, ops, removing)
+	if err != nil {
+		return editPlan{}, err
 	}
-	ep := editPlan{former: cfg, removesKey: true, summary: apply.EditSummary{Operators: ops}}
-	for _, k := range keys {
+	ep.summary.Operators, ep.removesKey = ops, true
+	var tombs []config.Tombstone
+	for _, k := range owned {
 		owner, last, err := mf.RemoveKey(k.Fingerprint)
 		if err != nil {
 			return editPlan{}, fmt.Errorf("edit manifest: %w", err)
@@ -239,40 +298,82 @@ func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, h followUp)
 			Kind: apply.EditRemoveKey, User: owner, Fingerprint: k.Fingerprint,
 			NoKeysLeft: last, ClearsOperator: last && cleared[owner],
 		})
+		tombs = append(tombs, config.Tombstone{Fingerprint: k.Fingerprint, User: owner, Date: memo.date, Reason: memo.reason})
 	}
-	ep.stillHas = "the revoked " + pluralWord(len(keys), "key still has", "keys still have")
+	for _, fp := range unowned {
+		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{Kind: apply.EditRecordKey, Fingerprint: fp})
+		tombs = append(tombs, config.Tombstone{Fingerprint: fp, Date: memo.date, Reason: memo.reason})
+	}
+	ep.stillHas = "the revoked " + pluralWord(len(owned)+len(unowned), "key still has", "keys still have")
+	if err := ep.remember(mf, tombs); err != nil {
+		return editPlan{}, err
+	}
 	if ep.encoded, ep.edited, err = encodeEdit(mf); err != nil {
 		return editPlan{}, err
 	}
 	return ep, nil
 }
 
+// clearEmptiedOperators clears operator: on each operator target that
+// loses every key in this edit, and reports which.
+func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, ops []string, removing map[string]int) (map[string]bool, error) {
+	cleared := map[string]bool{}
+	for _, name := range ops {
+		for _, u := range cfg.Users {
+			if u.Name == name && removing[name] == len(u.Keys) {
+				if err := mf.SetOperator(name, false); err != nil {
+					return nil, fmt.Errorf("edit manifest: %w", err)
+				}
+				cleared[name] = true
+			}
+		}
+	}
+	return cleared, nil
+}
+
 // planRevokeAccess resolves and applies 'revoke USER... --server NAME...'.
 // There is no operator gate: an operator target is refused outright
 // (access to every server by definition). Every problem is listed in one
-// refusal before any edit (accessProblems).
-func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp) (editPlan, error) {
+// refusal before any edit (accessProblems). A pair an access tombstone
+// already records is a note (D1c). Servers removed from an explicit list
+// are tombstoned (D1a); a server that only gained an except: entry needs
+// none — the except: already remembers it.
+func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, memo editMemo) (editPlan, error) {
 	cfg := mf.Config()
-	if problems := accessProblems(cfg, users, servers, h); len(problems) > 0 {
+	problems, trims, already := accessProblems(cfg, users, servers, h)
+	if len(problems) > 0 {
 		return editPlan{}, errors.New(strings.Join(problems, "; "))
 	}
-	ep := editPlan{
-		former:   cfg,
-		stillHas: strings.Join(users, ", ") + " still " + pluralWord(len(users), "has", "have"),
-		saveNote: "an apply from a copy without this edit re-grants the removed access",
-	}
+	ep := editPlan{former: cfg, summary: apply.EditSummary{AlreadyRevoked: already}}
+	var trimmed []string
 	for _, name := range users {
-		r, err := mf.RemoveAccess(name, servers)
+		if len(trims[name]) > 0 {
+			trimmed = append(trimmed, name)
+		}
+	}
+	if len(trimmed) == 0 {
+		ep.noop = true
+		return ep, nil
+	}
+	ep.stillHas = strings.Join(trimmed, ", ") + " still " + pluralWord(len(trimmed), "has", "have")
+	for _, name := range trimmed {
+		r, err := mf.RemoveAccess(name, trims[name])
 		if err != nil {
 			return editPlan{}, fmt.Errorf("edit manifest: %w", err)
 		}
 		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{
-			Kind: apply.EditRemoveAccess, User: name, AccessServers: servers,
+			Kind: apply.EditRemoveAccess, User: name, AccessServers: trims[name],
 			EntriesChanged: r.EntriesChanged, EntriesRemoved: r.EntriesRemoved,
 			ServersExcepted: r.ServersExcepted, WildcardsRemoved: r.WildcardsRemoved,
 		})
 	}
-	var err error
+	_, mid, err := encodeEdit(mf) // only to see which servers an except: now remembers
+	if err != nil {
+		return editPlan{}, err
+	}
+	if err := ep.remember(mf, accessTombstones(mid, trimmed, trims, memo)); err != nil {
+		return editPlan{}, err
+	}
 	if ep.encoded, ep.edited, err = encodeEdit(mf); err != nil {
 		return editPlan{}, err
 	}
@@ -289,13 +390,33 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp) (e
 	return ep, nil
 }
 
+// accessTombstones: one entry per user, naming the trimmed servers no
+// wildcard except: remembers in mid (the manifest after the access edit).
+func accessTombstones(mid *config.Config, users []string, trims map[string][]string, memo editMemo) []config.Tombstone {
+	var tombs []config.Tombstone
+	for _, name := range users {
+		var lost []string
+		for _, s := range trims[name] {
+			if !mid.ExceptCarveOut(name, s) {
+				lost = append(lost, s)
+			}
+		}
+		if len(lost) > 0 {
+			tombs = append(tombs, config.Tombstone{User: name, Servers: lost, Date: memo.date, Reason: memo.reason})
+		}
+	}
+	return tombs
+}
+
 // accessProblems lists why 'revoke USER... --server NAME...' cannot run,
 // in this order: unknown users (one entry, the existing wording), unknown
 // servers, operator targets, then every non-operator user × known server
-// pair the user has no access to (config.Covers: wildcards and except:
-// included). h carries the run's flags into the operator hint.
-func accessProblems(cfg *config.Config, users, servers []string, h followUp) []string {
-	var problems, unknown, ops []string
+// pair the user has no access to and no access tombstone records
+// (config.Covers: wildcards and except: included). It also returns, per
+// user, the servers to trim, and the pairs already revoked (D1c). h
+// carries the run's flags into the operator hint.
+func accessProblems(cfg *config.Config, users, servers []string, h followUp) (problems []string, trims map[string][]string, already []apply.AlreadyRevoked) {
+	var unknown, ops []string
 	for _, name := range users {
 		i := slices.IndexFunc(cfg.Users, func(u config.User) bool { return u.Name == name })
 		switch {
@@ -320,17 +441,36 @@ func accessProblems(cfg *config.Config, users, servers []string, h followUp) []s
 		problems = append(problems, fmt.Sprintf("%s is an operator (access to every server by definition); remove the user with '%s', or clear operator: true by hand",
 			name, h.command("revoke", []string{hintArg(name)}, "--operator")))
 	}
+	trims = map[string][]string{}
 	for _, name := range users {
 		if slices.Contains(unknown, name) || slices.Contains(ops, name) {
 			continue
 		}
-		for _, s := range known {
-			if !cfg.Covers(name, s) {
-				problems = append(problems, fmt.Sprintf("%s has no access to %s", name, s))
-			}
+		trim, gone, date, missing := classifyPairs(cfg, name, known)
+		trims[name] = trim
+		problems = append(problems, missing...)
+		if len(gone) > 0 {
+			already = append(already, apply.AlreadyRevoked{User: name, Servers: gone, Date: date})
 		}
 	}
-	return problems
+	return problems, trims, already
+}
+
+// classifyPairs sorts one user's --server targets: covered (trim), already
+// revoked by an access tombstone (gone, with the latest date), or a problem.
+func classifyPairs(cfg *config.Config, name string, servers []string) (trim, gone []string, date string, problems []string) {
+	for _, s := range servers {
+		if cfg.Covers(name, s) {
+			trim = append(trim, s)
+			continue
+		}
+		if t, ok := cfg.AccessRevoked(name, s); ok {
+			gone, date = append(gone, s), t.Date
+			continue
+		}
+		problems = append(problems, fmt.Sprintf("%s has no access to %s", name, s))
+	}
+	return trim, gone, date, problems
 }
 
 // pluralWord picks the singular or plural form for n.

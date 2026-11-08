@@ -143,10 +143,10 @@ func TestRevokeUserHermetic(t *testing.T) {
 		"manifest edit: remove user bob (1 key, 1 access grant) — 2 servers affected\n",
 		"bob (revoked)",
 		"remove (unauthorized)",
-		"manifest " + cfg + " updated — commit and push it: an apply from a copy without this edit re-grants the removed key\n",
+		"manifest " + cfg + " updated — commit and push it: an apply from a copy without this edit is refused on the servers this run writes (serial 1)\n",
 		"web-1: applied · verified",
 		"web-2: applied · verified",
-		"scope: only servers whose grants changed were contacted (2 of 2)",
+		"check every server: sshepherd audit --config " + cfg + " --known-hosts " + kh + "\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out.String())
@@ -197,7 +197,7 @@ func TestRevokeHeaderBeforePreflight(t *testing.T) {
 // itself a change: always confirmed, then saved, exit 0.
 func TestRevokeAlreadyConverged(t *testing.T) {
 	hosts, kh, cfg := twoUserFleet(t)
-	render := authkeys.ManagedHeader + "\n" + testkeys.Line(t, 1) + " alice\n"
+	render := authkeys.Header(1) + "\n" + testkeys.Line(t, 1) + " alice\n"
 	for _, h := range hosts {
 		h.install(t, nil, strings.TrimSuffix(render, "\n"))
 	}
@@ -251,7 +251,7 @@ func TestRevokeDryRun(t *testing.T) {
 	t.Run("already converged: exit 0", func(t *testing.T) {
 		hosts, kh, cfg := twoUserFleet(t)
 		for _, h := range hosts {
-			h.install(t, nil, authkeys.ManagedHeader, testkeys.Line(t, 1)+" alice")
+			h.install(t, nil, authkeys.Header(1), testkeys.Line(t, 1)+" alice")
 		}
 		var out, errBuf bytes.Buffer
 		if code := run([]string{"revoke", "bob", "--dry-run", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
@@ -282,7 +282,7 @@ func TestRevokeDeduplicates(t *testing.T) {
 	if code := run([]string{"revoke", "bob", "bob", "--no-apply", "--dry-run", "--config", cfg}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d\n%s", code, errBuf.String())
 	}
-	if out.String() != "manifest edit: remove user bob (1 key, 1 access grant) — 2 servers affected\n" {
+	if out.String() != "manifest edit: remove user bob (1 key, 1 access grant) — 2 servers affected\ncheck every server: sshepherd audit --config "+cfg+"\n" {
 		t.Errorf("stdout = %q", out.String())
 	}
 	out.Reset()
@@ -429,7 +429,7 @@ func TestRevokePartialFailure(t *testing.T) {
 
 // TestRevokeHintsCarryRunFlags: a run with a key file, a passphrase file
 // and its own known_hosts prints hints that repeat all of them (paths
-// only), so the finish and the scope commands can be pasted as is.
+// only), so the finish and the check commands can be pasted as is.
 func TestRevokeHintsCarryRunFlags(t *testing.T) {
 	hosts, kh, _ := editFleet(t, []byte{1}, "web-1")
 	hosts["web-1"].install(t, []byte{1, 2})
@@ -448,7 +448,7 @@ func TestRevokeHintsCarryRunFlags(t *testing.T) {
 	flags := " --config " + cfg + " --known-hosts " + kh + " --identity " + id + " --identity-passphrase-file " + pp
 	for _, want := range []string{
 		"finish with: sshepherd apply" + flags + " --server web-2\n",
-		"run 'sshepherd audit" + flags + "' to confirm, 'sshepherd apply" + flags + "' to sweep\n",
+		"check every server: sshepherd audit" + flags + "\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out.String())
@@ -491,9 +491,11 @@ func TestRevokeNoApplyExcludesEmptied(t *testing.T) {
 }
 
 // TestRevokeRetryAfterSave: a revoke whose save landed but whose push did
-// not is retried as is; the retry exits 3, changes nothing, contacts no
-// server, and points at the apply that finishes the job.
+// not is retried as is; the retry exits 0 with the already-revoked note
+// (D1c), changes nothing, contacts no server, and points at the apply that
+// finishes the job.
 func TestRevokeRetryAfterSave(t *testing.T) {
+	fixedEditClock(t)
 	hosts, kh, cfg := twoUserFleet(t)
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"revoke", "bob", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
@@ -502,13 +504,12 @@ func TestRevokeRetryAfterSave(t *testing.T) {
 	before := fileBytes(t, cfg)
 	out.Reset()
 	errBuf.Reset()
-	if code := run([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 3 {
-		t.Fatalf("retry exit = %d, want 3", code)
+	if code := run([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("retry exit = %d, want 0 (D1c)\n%s", code, errBuf.String())
 	}
-	want := "unknown user: bob — not in the manifest (already revoked?); see what is left to push with 'sshepherd apply --dry-run --config " +
-		cfg + " --known-hosts " + kh + "', verify with 'sshepherd audit --config " + cfg + " --known-hosts " + kh + "'"
-	if !strings.Contains(errBuf.String(), want) {
-		t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+	want := "bob was already revoked (2026-11-09); run 'sshepherd apply --config " + cfg + " --known-hosts " + kh + "' to converge any server that still has the key\n"
+	if out.String() != want {
+		t.Errorf("stdout = %q, want %q", out.String(), want)
 	}
 	if !bytes.Equal(fileBytes(t, cfg), before) {
 		t.Error("the retry changed the manifest")
@@ -549,7 +550,7 @@ func TestRevokeHeldKeysGoneAfterPrompt(t *testing.T) {
 // and keeps its file: exit 1.
 func TestRevokeHeldKeysGoneAfterPromptConverged(t *testing.T) {
 	hosts, kh, cfg := twoUserFleet(t)
-	render := authkeys.ManagedHeader + "\n" + testkeys.Line(t, 1) + " alice\n"
+	render := authkeys.Header(1) + "\n" + testkeys.Line(t, 1) + " alice\n"
 	hosts["web-1"].install(t, nil, strings.TrimSuffix(render, "\n"))
 	sock := os.Getenv("SSH_AUTH_SOCK") // editFleet's agent
 	usePromptStreams(t, &actionReader{act: func() { _ = os.Remove(sock) }, r: strings.NewReader("y\n")}, io.Discard)
@@ -670,14 +671,14 @@ func TestRevokeNoApply(t *testing.T) {
 		t.Error("manifest not saved")
 	}
 
-	t.Run("--dry-run --no-apply prints the header only", func(t *testing.T) {
+	t.Run("--dry-run --no-apply prints the header and the check line", func(t *testing.T) {
 		_, _, cfg := twoUserFleet(t)
 		before := fileBytes(t, cfg)
 		var out, errBuf bytes.Buffer
 		if code := run([]string{"revoke", "bob", "--no-apply", "--dry-run", "--config", cfg}, &out, &errBuf); code != 0 {
 			t.Fatalf("exit = %d\n%s", code, errBuf.String())
 		}
-		if out.String() != "manifest edit: remove user bob (1 key, 1 access grant) — 2 servers affected\n" {
+		if out.String() != "manifest edit: remove user bob (1 key, 1 access grant) — 2 servers affected\ncheck every server: sshepherd audit --config "+cfg+"\n" {
 			t.Errorf("stdout = %q", out.String())
 		}
 		if !bytes.Equal(fileBytes(t, cfg), before) {
@@ -772,8 +773,7 @@ func TestRevokeKeyLeavesUngrantedDrift(t *testing.T) {
 	for _, want := range []string{
 		"manifest edit: remove key " + fpOf(t, 2) + " from bob — 1 server affected\n",
 		"note: bob has no keys left — 'sshepherd revoke bob --config " + cfg + " --known-hosts " + kh + "' removes the user\n",
-		"scope: only servers whose grants changed were contacted (1 of 2); the removed key may still be installed elsewhere as drift — run 'sshepherd audit --config " +
-			cfg + " --known-hosts " + kh + "' to confirm, 'sshepherd apply --config " + cfg + " --known-hosts " + kh + "' to sweep\n",
+		"check every server: sshepherd audit --config " + cfg + " --known-hosts " + kh + "\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, out.String())
@@ -827,8 +827,6 @@ func TestRevokeUsage(t *testing.T) {
 		{"--no-apply with --parallel", []string{"revoke", "bob", "--no-apply", "--parallel", "2"}, cfgBody, "--parallel would be unused"},
 		{"unknown users listed", []string{"revoke", "carol", "bob", "dave"}, cfgBody,
 			"unknown users: carol, dave — not in the manifest (already revoked?); see what is left to push with 'sshepherd apply --dry-run --config CFG', verify with 'sshepherd audit --config CFG'"},
-		{"key not in the manifest", []string{"revoke", "--key", fpOf(t, 9)}, cfgBody,
-			fpOf(t, 9) + " is not in the manifest; apply already removes keys the manifest does not grant — run 'sshepherd audit --config CFG' to find where it is installed"},
 		{"malformed --key", []string{"revoke", "--key", "SHA256:nope"}, cfgBody, "malformed fingerprint"},
 		{"anchors cannot be edited", []string{"revoke", "bob"}, "users: &u []\nservers: []\naccess: []\n",
 			"cannot edit CFG: manifest contains a YAML anchor or alias (line 1); comment-preserving edits do not support them — edit the manifest by hand and run 'sshepherd apply --config CFG'"},

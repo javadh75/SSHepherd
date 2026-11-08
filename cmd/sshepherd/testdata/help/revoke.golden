@@ -13,10 +13,14 @@ without contacting any server. A server whose only grantee is revoked is
 never emptied: the key stays installed there (a warning says so).
 
 Exit codes:
-  0  converged: nothing left to do; or, with revoke/rotate --no-apply, the
-     edit is saved but not pushed (run the apply hint it prints)
-  1  pending changes, unreachable or refused servers, or a declined prompt
-  3  tool error: bad flags, unloadable manifest, failed preflight, or refused
+  0  converged: nothing left to do (a header-only update applied, or a server
+     a newer manifest wrote whose keys already match); a revoke whose targets
+     were already revoked; or, with revoke/rotate --no-apply, the edit is
+     saved but not pushed (run the apply hint it prints)
+  1  pending changes, unreachable or refused servers (a newer manifest's
+     serial, a policy conflict), or a declined prompt
+  3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
+     that would keep a policy conflict, a failed serial save, or refused
      before anything was saved or written
 
 Usage:
@@ -48,6 +52,7 @@ Flags:
       --no-apply                        edit and save the manifest after confirmation; contact no server
       --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
       --parallel int                    max concurrent server connections (default 32)
+      --reason string                   free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)
       --server stringArray              remove the users' access to this server only (repeatable); the users and their keys stay
       --yes                             skip the confirmation prompt (automation)
 

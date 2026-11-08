@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
@@ -22,6 +23,7 @@ func FuzzManifestEdit(f *testing.F) {
 	f.Add(commentedFixture(f), uint8(2))
 	f.Add(`users: [{name: ops, operator: true, keys: ["`+testkeys.Line(f, 1)+`"]}]`, uint8(0))
 	f.Add("users: []\nservers: []\naccess: []\n", uint8(0))
+	f.Add("serial: 3\n"+editFixture(f)+"revoked:\n  - {user: bob, servers: [db-1], date: 2026-11-08}\n", uint8(1))
 	f.Fuzz(func(t *testing.T, in string, pick uint8) {
 		mf, err := Load([]byte(in))
 		if err != nil {
@@ -72,6 +74,20 @@ func FuzzManifestEdit(f *testing.F) {
 				}
 			}
 		}
+		before := mf.Config().Serial()
+		tombs := make([]config.Tombstone, 0, len(gone))
+		for _, fp := range gone {
+			tombs = append(tombs, config.Tombstone{Fingerprint: fp, Date: "2026-11-08"})
+		}
+		if _, err := mf.AddTombstones(tombs); err != nil {
+			t.Fatalf("AddTombstones: %v", err)
+		}
+		bumped := before < config.MaxSerial
+		if bumped {
+			if n, err := mf.BumpSerial(); err != nil || n != before+1 {
+				t.Fatalf("BumpSerial from %d = %d, %v", before, n, err)
+			}
+		}
 		out, err := mf.Encode()
 		if err != nil {
 			t.Fatalf("Encode after edit on input %q: %v", in, err)
@@ -84,6 +100,19 @@ func FuzzManifestEdit(f *testing.F) {
 			if u, ok := after.OwnerOf(fp); ok {
 				t.Errorf("removed key %s still owned by %q (input %q):\n%s", fp, u.Name, in, out)
 			}
+		}
+		for _, fp := range gone {
+			if _, ok := after.Revoked(fp); !ok {
+				t.Errorf("removed key %s not remembered (input %q)", fp, in)
+			}
+		}
+		for _, c := range after.Conflicts() {
+			if c.Kind == config.ConflictRevokedKey && slices.Contains(gone, c.Fingerprint) {
+				t.Errorf("removing then tombstoning %s left a conflict: %+v", c.Fingerprint, c)
+			}
+		}
+		if bumped && after.Serial() != before+1 {
+			t.Errorf("serial %d → %d, want +1", before, after.Serial())
 		}
 	})
 }

@@ -493,7 +493,7 @@ func TestEditJSONToolErrorsLeaveStdoutEmpty(t *testing.T) {
 	before := fileBytes(t, cfg)
 	for _, args := range [][]string{
 		{"revoke", "carol", "--json", "--yes", "--config", cfg, "--known-hosts", kh},
-		{"revoke", "--key", fpOf(t, 7), "--json", "--dry-run", "--config", cfg, "--known-hosts", kh},
+		{"revoke", "--key", "SHA256:nope", "--json", "--dry-run", "--config", cfg, "--known-hosts", kh},
 		{"revoke", "bob", "--operator", "--json", "--yes", "--config", cfg, "--known-hosts", kh},
 		{"revoke", "bob", "--json", "--yes", "--config", "/nonexistent.yaml"},
 		{"rotate", "bob", "--old", fpOf(t, 7), "--new", writePub(t, "n.pub", testkeys.Line(t, 5)), "--json", "--yes", "--config", cfg, "--known-hosts", kh},
@@ -520,4 +520,30 @@ func TestEditJSONToolErrorsLeaveStdoutEmpty(t *testing.T) {
 	if !bytes.Equal(fileBytes(t, cfg), before) {
 		t.Error("a refused edit saved the manifest")
 	}
+	// D29: a save refused for a policy conflict is exit 3 with no document
+	// (spec §2, §9) — for revoke, and for rotate --new of a revoked key.
+	t.Run("policy conflict save refusals", func(t *testing.T) {
+		_, ckh, ccfg, cbody := conflictFleet(t)
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"revoke", "carol", "--json", "--yes", "--config", ccfg, "--known-hosts", ckh}, &out, &errBuf); code != 3 || out.Len() != 0 {
+			t.Errorf("revoke on a conflicted manifest: exit = %d, stdout = %q\nstderr: %s", code, out.String(), errBuf.String())
+		}
+		if string(fileBytes(t, ccfg)) != cbody {
+			t.Error("the refused revoke saved the manifest")
+		}
+		_, rkh, rcfg := twoUserFleet(t)
+		if code := run([]string{"revoke", "--key", fpOf(t, 5), "--yes", "--config", rcfg, "--known-hosts", rkh}, io.Discard, io.Discard); code != 0 {
+			t.Fatal("recording key 5 failed")
+		}
+		recorded := fileBytes(t, rcfg)
+		out.Reset()
+		errBuf.Reset()
+		if code := run([]string{"rotate", "bob", "--old", fpOf(t, 2), "--new", writePub(t, "n.pub", testkeys.Line(t, 5)),
+			"--json", "--yes", "--config", rcfg, "--known-hosts", rkh}, &out, &errBuf); code != 3 || out.Len() != 0 {
+			t.Errorf("rotate --new of a revoked key: exit = %d, stdout = %q\nstderr: %s", code, out.String(), errBuf.String())
+		}
+		if !bytes.Equal(fileBytes(t, rcfg), recorded) {
+			t.Error("the refused rotate saved the manifest")
+		}
+	})
 }

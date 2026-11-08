@@ -85,12 +85,13 @@ func TestE2EApplyLoop(t *testing.T) {
 	dir := t.TempDir()
 
 	// m0: the operator's key (held by the harness agent) on server e2e.
-	m0 := writeE2EManifest(t, dir, "m0.yaml", `
+	m0Body := `
 users:
-  - {name: op, operator: true, keys: ["`+pub+`"]}
+  - {name: op, operator: true, keys: ["` + pub + `"]}
 servers:
-  - {name: e2e, host: `+host+`, port: `+port+`, user: e2e}
-`)
+  - {name: e2e, host: ` + host + `, port: ` + port + `, user: e2e}
+`
+	m0 := writeE2EManifest(t, dir, "m0.yaml", m0Body)
 	adopted := filepath.Join(dir, "adopted.yaml")
 
 	t.Run("adopt discovers the stale key", func(t *testing.T) {
@@ -196,17 +197,21 @@ servers:
 		}
 	})
 
+	// The revoke saved serial 1 and wrote it to the server: the hand-written
+	// m0 must say so too, or audit reports the newer header as drift (D4a).
+	m1 := writeE2EManifest(t, dir, "m1.yaml", "serial: 1\n"+m0Body)
+
 	t.Run("audit is clean after the revoke", func(t *testing.T) {
 		if code, out, stderr := runBin(t, bin, "audit", "--config", adopted, "--known-hosts", kh); code != 0 {
 			t.Fatalf("audit exit = %d, want 0 — the revoke loop must close (stderr: %s)\n%s", code, stderr, out)
 		}
-		if code, out, stderr := runBin(t, bin, "audit", "--config", m0, "--known-hosts", kh); code != 0 {
-			t.Fatalf("audit (m0) exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+		if code, out, stderr := runBin(t, bin, "audit", "--config", m1, "--known-hosts", kh); code != 0 {
+			t.Fatalf("audit (m1) exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
 		}
 	})
 
 	t.Run("lockout guard refuses and leaves the file alone", func(t *testing.T) {
-		ghost := writeE2EManifest(t, dir, "ghost.yaml", `
+		ghost := writeE2EManifest(t, dir, "ghost.yaml", `serial: 1
 users:
   - {name: ghost, keys: ["`+testkeys.Line(t, 42)+`"]}
 servers:
@@ -221,8 +226,8 @@ access:
 		if !strings.Contains(out, "REFUSED:") || !strings.Contains(out, "lock this session out") {
 			t.Errorf("output lacks the guard refusal:\n%s", out)
 		}
-		// The file is untouched: the m0 audit still passes byte-for-byte.
-		if code, out, stderr := runBin(t, bin, "audit", "--config", m0, "--known-hosts", kh); code != 0 {
+		// The file is untouched: the m1 audit still passes byte-for-byte.
+		if code, out, stderr := runBin(t, bin, "audit", "--config", m1, "--known-hosts", kh); code != 0 {
 			t.Fatalf("post-refusal audit exit = %d, want 0 (the refused write must not have touched the file) (stderr: %s)\n%s", code, stderr, out)
 		}
 	})

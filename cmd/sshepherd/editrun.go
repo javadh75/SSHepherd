@@ -9,12 +9,14 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/spf13/cobra"
 
 	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/manifest"
@@ -28,6 +30,7 @@ type editFlags struct {
 	run      runFlags
 	operator bool
 	noApply  bool
+	reason   string
 }
 
 func (f *editFlags) register(cmd *cobra.Command) {
@@ -36,6 +39,8 @@ func (f *editFlags) register(cmd *cobra.Command) {
 		"confirm that a target is, or belongs to, an operator user (fleet-wide, protected)")
 	cmd.Flags().BoolVar(&f.noApply, "no-apply", false,
 		"edit and save the manifest after confirmation; contact no server")
+	cmd.Flags().StringVar(&f.reason, "reason", "",
+		"free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)")
 }
 
 // connectionFlags are the flags --no-apply would leave silently unused.
@@ -47,6 +52,9 @@ var connectionFlags = []string{"identity", "identity-passphrase-file", "identity
 // refuses the connection flags; otherwise --parallel and the identity flags
 // are checked exactly as apply checks them.
 func (f *editFlags) validate(cmd *cobra.Command) (identities, error) {
+	if err := checkReason(f.reason); err != nil {
+		return identities{}, err
+	}
 	if err := f.run.checkModes(); err != nil {
 		return identities{}, err
 	}
@@ -59,6 +67,32 @@ func (f *editFlags) validate(cmd *cobra.Command) (identities, error) {
 		return identities{}, nil
 	}
 	return validateFlags(f.run.parallel, &f.run.idf)
+}
+
+// maxReason caps --reason like a tombstone's reason at load.
+const maxReason = 256
+
+// checkReason: --reason is printed by every tool that reads the manifest,
+// so it passes the same text rules as a revoked: entry's reason (exit 3,
+// before the manifest is read).
+func checkReason(s string) error {
+	if issue := authkeys.RenderTextIssue(s); issue != "" {
+		return usageError{fmt.Errorf("--reason %s", issue)}
+	}
+	if len(s) > maxReason {
+		return usageError{fmt.Errorf("--reason is %d bytes, over the %d-byte limit", len(s), maxReason)}
+	}
+	return nil
+}
+
+// editMemo is what a saving revoke/rotate records with each tombstone: the
+// run's date (the edit clock rotateNow, in UTC) and --reason.
+type editMemo struct {
+	date, reason string
+}
+
+func (f *editFlags) memo() editMemo {
+	return editMemo{date: rotateNow().UTC().Format(time.DateOnly), reason: f.reason}
 }
 
 // loadForEdit is step 2: read the manifest once (exact bytes + resolved
@@ -118,10 +152,27 @@ type editPlan struct {
 	edited     *config.Config // config.Parse(encoded)
 	summary    apply.EditSummary
 	formerNote string         // "" (revoked) or "rotated out"
-	removesKey bool           // print the scope line after the writes
+	removesKey bool           // print the check line after the writes
 	stillHas   string         // "alice still has" — for the nothing-can-land refusal
-	saveNote   string         // the save reminder's tail; "" = defaultSaveNote
+	saveNote   string         // the save reminder's tail; "" = serialSaveNote
 	overlap    *overlapFinish // rotate --keep-old: the finish hint to print; nil otherwise
+	noop       bool           // every target was already revoked (D1b/D1c): nothing saved, exit 0
+}
+
+// remember records the edit's revocation memory: the tombstones (an
+// already-tombstoned fingerprint is skipped) and one serial bump. Every
+// revoke and rotate that saves calls it exactly once, keep-old included.
+func (ep *editPlan) remember(mf *manifest.File, tombs []config.Tombstone) error {
+	added, err := mf.AddTombstones(tombs)
+	if err != nil {
+		return fmt.Errorf("edit manifest: %w", err)
+	}
+	serial, err := mf.BumpSerial()
+	if err != nil {
+		return fmt.Errorf("edit manifest: %w", err)
+	}
+	ep.summary.Revoked, ep.summary.Serial = added, serial
+	return nil
 }
 
 // overlapFinish is rotate --keep-old's pending finish: the revoke --key
@@ -163,10 +214,6 @@ func overlapHint(o overlapFinish, h followUp, affected int, noApply bool, notCon
 	return out
 }
 
-// defaultSaveNote is the save reminder's tail for edits that remove a key
-// (revoke USER, revoke --key, plain rotate).
-const defaultSaveNote = "an apply from a copy without this edit re-grants the removed key"
-
 // encodeEdit is step 3's one Encode; its built-in config.Parse self-check
 // is the only validation (a failure is an internal error, nothing saved).
 func encodeEdit(mf *manifest.File) ([]byte, *config.Config, error) {
@@ -186,6 +233,10 @@ func encodeEdit(mf *manifest.File) ([]byte, *config.Config, error) {
 // the affected servers with the save as the workflow's commit.
 func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids identities, ep editPlan) error {
 	log := a.logger
+	h := f.run.followUp()
+	if done, err := editPrelude(stdout, f, ep, h, cmd.Name()); done {
+		return err
+	}
 	for _, w := range ep.edited.Warnings {
 		if !slices.Contains(ep.former.Warnings, w) {
 			log.Warn(w)
@@ -196,8 +247,8 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 	ep.summary.Emptied = emptiedServers(ep.former, aff.Emptied)
 	// Every hint repeats the run's own flags (a --no-apply run sets no
 	// connection flags, so its hints carry --config only).
-	h := f.run.followUp()
 	ep.summary.FollowUp = h.suffix()
+	ep.summary.CheckCommand = checkCommand(ep, h)
 	ropts := apply.RenderOptions{Color: a.reportColor, Former: ep.former, FormerNote: ep.formerNote}
 	header := func(w io.Writer) { apply.RenderEditHeader(w, ep.summary, ropts) }
 	// doc renders the --json document; nil in text mode. Every exit-0/1
@@ -228,6 +279,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 		},
 		header:        header,
 		alwaysConfirm: true,
+		bumped:        true,
 		question: func(plans []apply.ServerPlan, toWrite int) (string, error) {
 			if apply.NothingCanLand(plans) {
 				log.Error(fmt.Sprintf("nothing saved — %s access on %s; fix the refusals and re-run, or record the change without touching servers with --no-apply",
@@ -246,7 +298,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 				log.Error("nothing saved — none of the keys you hold would survive on any server (did a key expire after the plan?)")
 				return false, workflow.ErrWithheld
 			}
-			if err := saveEdit(stdout, ep, doc != nil); err != nil {
+			if err := saveEdit(stdout, ep, doc != nil, false); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -255,6 +307,51 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 			return finishEdit(stdout, log, ep, aff, h, out, ropts, doc)
 		},
 	})
+}
+
+// editPrelude settles what runEdit decides before any apply phase: a run
+// whose every target was already revoked (D1b/D1c: the notes, exit 0, no
+// save), and the D29 save refusal (exit 3); otherwise it prints a mixed
+// run's already-revoked notes. done: runEdit returns err as is.
+func editPrelude(stdout io.Writer, f *editFlags, ep editPlan, h followUp, command string) (done bool, err error) {
+	if ep.noop {
+		return true, finishNoop(stdout, f, ep, h, command)
+	}
+	if err := conflictRefusal(ep.edited); err != nil {
+		return true, err
+	}
+	if !f.run.json {
+		printAlready(stdout, ep.summary.AlreadyRevoked, h)
+	}
+	return false, nil
+}
+
+// finishNoop ends a run whose every target an earlier revoke already
+// recorded (D1b/D1c): nothing saved, no serial bump, exit 0.
+func finishNoop(stdout io.Writer, f *editFlags, ep editPlan, h followUp, command string) error {
+	if f.run.json {
+		return apply.RenderJSON(stdout, ep.former, nil, apply.JSONOptions{ //nolint:wrapcheck // render json: …
+			Command: command, DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary,
+		})
+	}
+	printAlready(stdout, ep.summary.AlreadyRevoked, h)
+	return nil
+}
+
+// printAlready prints one note per target an earlier revoke recorded.
+func printAlready(w io.Writer, already []apply.AlreadyRevoked, h followUp) {
+	converge := h.command("apply", nil)
+	for _, a := range already {
+		switch {
+		case a.Fingerprint != "":
+			fmt.Fprintf(w, "%s was already revoked (%s)\n", a.Fingerprint, a.Date)
+		case len(a.Servers) > 0:
+			fmt.Fprintf(w, "%s's access to %s was already revoked (%s); run '%s' to converge any server that still has the key\n",
+				a.User, strings.Join(a.Servers, ", "), a.Date, converge)
+		default:
+			fmt.Fprintf(w, "%s was already revoked (%s); run '%s' to converge any server that still has the key\n", a.User, a.Date, converge)
+		}
+	}
 }
 
 // editDoc renders the --json document from the plans (nil on revoke's and
@@ -268,6 +365,9 @@ type editDoc func(plans []apply.ServerPlan, saved bool) error
 func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, doc editDoc, h followUp) error {
 	if f.run.dryRun {
 		log.Info("dry run — manifest not changed")
+		if doc == nil && ep.removesKey {
+			printCheck(stdout, h)
+		}
 		if doc != nil {
 			return doc(nil, false)
 		}
@@ -281,7 +381,7 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 		log.Error("aborted; manifest not changed, nothing written")
 		return errNonCompliant
 	}
-	if err := saveEdit(stdout, ep, doc != nil); err != nil {
+	if err := saveEdit(stdout, ep, doc != nil, f.noApply); err != nil {
 		return err
 	}
 	if doc != nil {
@@ -296,8 +396,8 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 
 // noApplyNote is saveOnly's text tail after the save: under --no-apply what
 // is left to push — only the servers apply would not refuse, as finishEdit
-// does, since an emptied server is never written — else the scope line of a
-// key removal that affected no server.
+// does, since an emptied server is never written; then the check line of a
+// run that removes a key.
 func noApplyNote(stdout io.Writer, f *editFlags, ep editPlan, aff apply.AffectedSet, h followUp) {
 	pushable := slices.DeleteFunc(slices.Clone(aff.Servers), func(s string) bool { return slices.Contains(aff.Emptied, s) })
 	switch {
@@ -308,15 +408,18 @@ func noApplyNote(stdout io.Writer, f *editFlags, ep editPlan, aff apply.Affected
 	case f.noApply:
 		fmt.Fprintf(stdout, "no servers contacted — %s still %s the old keys; run '%s' to push\n",
 			apply.Plural(len(pushable), "affected server", "affected servers"), pluralWord(len(pushable), "carries", "carry"), applyHint(h, pushable))
-	case ep.removesKey:
-		printScope(stdout, h, 0, len(ep.edited.Servers))
+	}
+	if ep.removesKey {
+		printCheck(stdout, h)
 	}
 }
 
 // saveEdit is step 7's save, then the reminder that the manifest is the
 // source of truth only once it is committed (skipped when quiet: --json,
-// whose edit.saved carries the fact).
-func saveEdit(stdout io.Writer, ep editPlan, quiet bool) error {
+// whose edit.saved carries the fact). pending: --no-apply — the only case
+// spec §4 gives the "servers learn serial N …" note; every other save
+// (D1b's save-only run included) gets the default note.
+func saveEdit(stdout io.Writer, ep editPlan, quiet, pending bool) error {
 	if err := ep.target.Save(ep.encoded); err != nil {
 		return err
 	}
@@ -325,10 +428,18 @@ func saveEdit(stdout io.Writer, ep editPlan, quiet bool) error {
 	}
 	note := ep.saveNote
 	if note == "" {
-		note = defaultSaveNote
+		note = serialSaveNote(ep.summary.Serial, pending)
 	}
 	fmt.Fprintf(stdout, "manifest %s updated — commit and push it: %s\n", ep.target.Path, note)
 	return nil
+}
+
+// serialSaveNote says what the saved serial protects (spec §4).
+func serialSaveNote(serial uint64, pending bool) string {
+	if pending {
+		return fmt.Sprintf("servers learn serial %d only when an apply writes them; until then a copy without this edit can re-grant there", serial)
+	}
+	return fmt.Sprintf("an apply from a copy without this edit is refused on the servers this run writes (serial %d)", serial)
 }
 
 // finishDoc is finish under --json, shared by apply, revoke and rotate:
@@ -377,25 +488,40 @@ func finishEdit(stdout io.Writer, log *slog.Logger, ep editPlan, aff apply.Affec
 			fmt.Fprintf(stdout, "manifest updated; %s not converged — finish with: %s\n",
 				apply.Plural(len(pending), "server", "servers"), applyHint(h, pending))
 		}
-		if ep.removesKey {
-			printScope(stdout, h, len(plans), len(ep.edited.Servers))
-		}
 		if ep.overlap != nil {
 			fmt.Fprint(stdout, overlapHint(*ep.overlap, h, len(aff.Servers), false, len(pending)))
 		}
 	}
+	finishTail(stdout, h, ep, out)
 	if apply.ExitCode(plans) != 0 {
 		return errNonCompliant
 	}
 	return nil
 }
 
-// printScope is the scope line after a key removal: only affected servers
-// were contacted, with the audit and apply commands (carrying the run's
-// flags) that confirm and sweep the rest of the fleet.
-func printScope(w io.Writer, h followUp, contacted, fleet int) {
-	fmt.Fprintf(w, "scope: only servers whose grants changed were contacted (%d of %d); the removed key may still be installed elsewhere as drift — run '%s' to confirm, '%s' to sweep\n",
-		contacted, fleet, h.command("audit", nil), h.command("apply", nil))
+// printCheck is the follow-up after a key removal when no sweep runs (spec
+// §7): the exact audit, with the run's flags, that exits 2 while the
+// revoked key is still installed anywhere.
+func printCheck(w io.Writer, h followUp) {
+	fmt.Fprintf(w, "check every server: %s\n", h.command("audit", nil))
+}
+
+// checkCommand is JSON edit.check_command: the printed follow-up audit,
+// present whenever the run removes a key ("" otherwise).
+func checkCommand(ep editPlan, h followUp) string {
+	if !ep.removesKey {
+		return ""
+	}
+	return h.command("audit", nil)
+}
+
+// finishTail prints the follow-up after the apply phase's summary: the
+// check line for a run that removed a key, once it planned or wrote (not
+// after a declined prompt). Task 39 adds the sweep report here.
+func finishTail(stdout io.Writer, h followUp, ep editPlan, out workflow.Outcome) {
+	if ep.removesKey && (out.Stage == workflow.StageConfirmed || out.Stage == workflow.StagePlanned) {
+		printCheck(stdout, h)
+	}
 }
 
 // shellSafe matches arguments that need no quoting in a hint.
