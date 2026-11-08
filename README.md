@@ -231,13 +231,15 @@ changes. See [`sshepherd revoke`](#sshepherd-revoke) and
 
 ## The manifest
 
-One YAML file — by default `sshepherd.yaml` — with three sections. Unknown fields
+One YAML file — by default `sshepherd.yaml` — with three sections, plus the optional
+`serial:` and `revoked:` (see [Revoked keys](#revoked-keys)). Unknown fields
 are **rejected**, so a typo like `commment:` fails loudly instead of being silently
 ignored. The file must be a **single YAML document**: a `---` separator (even a
 trailing empty one) or concatenated files fail with
 `manifest contains multiple YAML documents`.
 
 ```yaml
+serial: 7                               # optional; absent = 0. Integer 0..9007199254740991
 users:
   - name: alice
     description: platform team          # documentation only, never sent to a server
@@ -270,6 +272,15 @@ access:
   - user: bob
     servers: ["*"]                      # every server, including ones added later
     except: [ci]                        # … minus these
+
+revoked:                                # optional; revoke/rotate append; deleting an entry = deliberate un-revoke
+  - fingerprint: SHA256:abc…            # key entry: this key may never be listed again
+    user: carol                         # optional label: the former owner; need not exist
+    date: 2026-11-08                    # YYYY-MM-DD, required
+    reason: offboarded                  # optional free text
+  - user: bob                           # access entry: no fingerprint
+    servers: [db-1]                     # bob is never re-granted db-1
+    date: 2026-11-08
 ```
 
 ### Operator users
@@ -349,6 +360,46 @@ The loader fails the whole manifest (exit 3) on any of these:
   contain control or format characters, the Unicode line/paragraph separators
   U+2028/U+2029, or leading/trailing whitespace; option values may not contain the
   same control, format or separator characters. Non-ASCII letters are fine.
+- **`serial:`** must be a plain, unquoted decimal integer from 0 to 9007199254740991
+  (an empty value, `~` or `null` included):
+  `serial: want an integer from 0 to 9007199254740991, got "VALUE"`.
+- **`revoked:` entries** (`N` is the zero-based index in `revoked:`):
+  - a key entry's fingerprint must be `SHA256:` and 43 unpadded base64 characters:
+    `revoked[N]: fingerprint "VALUE" is not a SHA256 fingerprint (want SHA256: followed by 43 base64 characters)`;
+  - a key entry may not list servers:
+    `revoked[N]: servers is not allowed on a key entry (SHA256:…); record access with a separate entry that has user and servers`;
+  - a fingerprint is revoked once: `revoked[N]: SHA256:… is already revoked by revoked[M]`;
+  - an entry without a fingerprint needs both `user` and `servers`:
+    `revoked[N]: an entry without fingerprint needs user and servers`, and
+    `revoked[N]: servers must not be empty`;
+  - `*` is not a server: `revoked[N]: servers cannot be "*"; list the servers by name`;
+  - `date` is required and must be `YYYY-MM-DD`: `revoked[N]: date is required`,
+    `revoked[N]: date "VALUE" is not a YYYY-MM-DD date`;
+  - `user` and `reason` follow the names-and-comments rule above
+    (`revoked[N]: user contains control or format characters`,
+    `revoked[N]: reason has leading or trailing whitespace`) and are capped at 256
+    bytes: `revoked[N]: reason is B bytes, over the 256-byte limit` (same for `user`).
+
+A server named in an access entry of `revoked:` that is not in `servers:` is a
+warning, not a load error:
+`revoked[0]: unknown server "db-9" — this entry is ignored for it; remove db-9 from the entry once the server is gone for good`
+(the entry is ignored for that server; re-adding the server re-applies it).
+
+Policy conflicts are not load errors: a revoked key still listed, or a grant over an
+access tombstone, loads; `audit` reports it critical (exit 2), `apply` refuses the
+servers involved (exit 1), and `adopt`, `import --merge`, `revoke` and `rotate`
+refuse to write a manifest that would keep one (exit 3). The two messages:
+
+- `key SHA256:… of user "alice" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately`
+  (without a `user` label the parenthesis is the date alone);
+- `user "bob" is granted "db-1" by access[0], but revoked[0] removed that access (2026-11-08): remove the grant, or delete the revoked: entry to restore it deliberately`
+  (a wildcard grant conflicts too, unless its `except:` lists the server).
+
+A refused save reads, for example:
+
+```console
+error: refusing to write the manifest — it would keep 1 policy conflict: key SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8 of user "alice" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately
+```
 
 ### Comment policy
 
@@ -362,6 +413,18 @@ Setting `comment:` on a user with multiple keys is legal — it deliberately
 normalizes every key to the same comment — but the manifest loader warns about it,
 so it stays a conscious choice. `audit --comments` reports comment drift on present
 keys; it is informational and never affects the exit code.
+
+### Revoked keys
+
+`revoked:` is the manifest's memory of every revoke. A key entry (`fingerprint`,
+optional `user` label, `date`, optional `reason`) means that key may never be listed
+in `users:` again, and adopt and `import --merge` never bring it back; an access
+entry (`user`, `servers`, `date`, optional `reason`) means that user is never
+re-granted those servers. `revoke` and `rotate` append entries; deleting one by hand
+is a deliberate un-revoke (git history is the audit trail). A server removed from
+`servers:` but still named in an access entry is a warning —
+`revoked[N]: unknown server "NAME" — this entry is ignored for it; remove NAME from the entry once the server is gone for good`
+— never a load error; re-adding the server re-applies the entry.
 
 ## Commands
 
@@ -550,7 +613,11 @@ are never read. Run it where you actually `ssh` from.
 
 `--merge` is strictly additive: only genuinely new entries are appended, the
 existing manifest wins every conflict (with a loud warning), and re-running with no
-new input is a byte-identical no-op.
+new input is a byte-identical no-op. A `.pub` whose key is revoked is skipped, and a
+revoked (user, server) pair is never re-extended:
+`key SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported`.
+A `--merge` manifest that would keep a policy conflict is refused (exit 3; see
+[Validation rules](#validation-rules)).
 
 How the ssh config is read — matching OpenSSH (`ssh -G`):
 
@@ -615,6 +682,15 @@ accounted for: keys of known users found beyond their grants **extend** that use
 access; unknown keys become **new users** with access to exactly the servers where
 they were found. The input file is never modified unless `-o` names it (with
 `--force`; see Output files).
+
+Unknown keys are granted the servers where they were found, by name — never `["*"]`,
+which would also grant servers added later. A key the manifest's `revoked:` list
+remembers is skipped with a warning
+(`key SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE on web-2 is REVOKED (2026-11-08, alice) — not adopted; run 'sshepherd apply --server web-2' to remove it`),
+and so is a known key on a server whose access was revoked; adopt's exit code is
+unchanged. Adopt keeps `serial:` and `revoked:` in both modes (regenerate and
+`--merge`), and refuses (exit 3) to write a manifest that would keep a policy
+conflict (see [Validation rules](#validation-rules)).
 
 | Flag | Default | Description |
 | ---- | ------- | ----------- |
@@ -1579,8 +1655,8 @@ Exit codes:
      emitted), or --partial could not read some servers (the partial manifest
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
-     --output without --force, an in-place save refused, --partial with no
-     server read, interrupted
+     --output without --force, an in-place save refused, a manifest that
+     would keep a policy conflict, --partial with no server read, interrupted
 ```
 
 `import --help`:
@@ -1589,7 +1665,8 @@ Exit codes:
 Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
-     existing --output without --force, an in-place save refused
+     existing --output without --force, an in-place save refused, a --merge
+     manifest that would keep a policy conflict
 ```
 
 ## Safety model
@@ -1908,7 +1985,8 @@ specced in
 and `revoke --server` / `rotate --keep-old` in
 [`docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`](docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md).
 Revocation memory (tombstones, a manifest serial, an opt-in post-revoke sweep, no
-adopt wildcard) is designed and approved, not yet built:
+adopt wildcard) is designed and approved, and being built (the `revoked:` and `serial:`
+manifest fields have landed):
 [`docs/superpowers/specs/2026-11-08-revocation-memory-design.md`](docs/superpowers/specs/2026-11-08-revocation-memory-design.md).
 
 ## License

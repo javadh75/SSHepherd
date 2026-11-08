@@ -54,20 +54,32 @@ type Access struct {
 
 // Config is the parsed, validated manifest.
 type Config struct {
-	Users   []User   `yaml:"users"`
-	Servers []Server `yaml:"servers"`
-	Access  []Access `yaml:"access"`
+	// ManifestSerial is serial: (absent = 0). Revoke and rotate bump it; the
+	// managed header carries it, so apply can refuse a write from an older
+	// copy (spec 2026-11-08 §3). The accessor is Serial().
+	ManifestSerial Serial   `yaml:"serial"`
+	Users          []User   `yaml:"users"`
+	Servers        []Server `yaml:"servers"`
+	Access         []Access `yaml:"access"`
+	// Tombstones is revoked: — the revocation memory every tool honours.
+	// The accessors are Revoked and AccessRevoked.
+	Tombstones []Tombstone `yaml:"revoked"`
 
 	// Warnings collects non-fatal validation findings (e.g. a comment: set
 	// on a multi-key user). The manifest is still valid and safe to act on;
 	// callers surface these on stderr. Never part of the YAML itself.
 	Warnings []string `yaml:"-"`
+	// TombstoneWarnings are the D1e findings of Warnings in structured form
+	// (the JSON manifest_warnings objects).
+	TombstoneWarnings []TombstoneWarning `yaml:"-"`
 
 	// Built during validation.
 	keysByUser map[string][]authkeys.Key // user name -> parsed keys, manifest order
 	owners     map[string]User           // fingerprint -> owning user
 	grants     map[string][]string       // server name -> user names, access order
 	operators  []string                  // operator user names, users order
+	ignored    map[int]map[string]bool   // revoked index -> unknown servers it names (D1e)
+	conflicts  []Conflict                // policy conflicts (D29), computed after validation
 }
 
 // Load reads and parses the manifest at path.
@@ -95,9 +107,13 @@ func Parse(data []byte) (*Config, error) {
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, errors.New("parse manifest: manifest contains multiple YAML documents")
 	}
+	if err := rejectNullSerial(data); err != nil {
+		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	c.conflicts = c.computeConflicts()
 	return &c, nil
 }
 
@@ -106,6 +122,7 @@ func (c *Config) validate() error {
 	errs = append(errs, c.validateUsers()...)
 	errs = append(errs, c.validateServers()...)
 	errs = append(errs, c.validateAccess()...)
+	errs = append(errs, c.validateRevoked()...)
 	return errors.Join(errs...)
 }
 

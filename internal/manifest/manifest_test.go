@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -508,5 +509,56 @@ func TestAppendServerOptionalFields(t *testing.T) {
 		if s.Name == "db-9" && (s.Description != "reporting replica" || s.AuthorizedKeysFile != "/etc/ssh/keys/deploy") {
 			t.Errorf("db-9 = %+v, want description and authorized_keys_file kept", s)
 		}
+	}
+}
+
+// TestLoadAllowsSerialAndRevoked: both new top-level keys pass the
+// comment-preserving editor's gate (revoke must be able to edit a manifest
+// that already remembers a revoke).
+func TestLoadAllowsSerialAndRevoked(t *testing.T) {
+	src := "serial: 3\nusers: []\nservers: []\naccess: []\nrevoked:\n  - {fingerprint: " +
+		keyFP(t, 9) + ", date: 2026-11-08}\n"
+	mf, err := Load([]byte(src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	out, err := mf.Encode()
+	if err != nil || string(out) == "" {
+		t.Fatalf("Encode: %v", err)
+	}
+	if mf.Config().Serial() != 3 || len(mf.Config().Tombstones) != 1 {
+		t.Errorf("config = %+v", mf.Config())
+	}
+}
+
+// TestGenerateWithMemory: serial is the first key (omitted at 0), revoked
+// the last (omitted when empty); key and access tombstones keep only their
+// own fields; the output loads back with the same memory.
+func TestGenerateWithMemory(t *testing.T) {
+	d := Draft{
+		Serial:  7,
+		Users:   []config.User{{Name: "alice", Keys: []string{testkeys.Line(t, 1)}}},
+		Servers: []config.Server{{Name: "web-1", Host: "10.0.0.1", User: "deploy"}},
+		Access:  []config.Access{{User: "alice", Servers: []string{"web-1"}}},
+		Revoked: []config.Tombstone{
+			{Fingerprint: keyFP(t, 9), User: "carol", Date: "2026-11-08", Reason: "offboarded"},
+			{User: "alice", Servers: []string{"web-1"}, Date: "2026-11-08"},
+		},
+	}
+	out, err := GenerateWith("# header\n", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, "generate_memory.golden", out)
+	cfg, err := config.Parse(out)
+	if err != nil {
+		t.Fatalf("output does not load: %v\n%s", err, out)
+	}
+	if cfg.Serial() != 7 || !reflect.DeepEqual(cfg.Tombstones, d.Revoked) {
+		t.Errorf("round trip = serial %d, %+v", cfg.Serial(), cfg.Tombstones)
+	}
+	plain, err := GenerateWith("", Draft{Users: d.Users})
+	if err != nil || strings.Contains(string(plain), "serial") || strings.Contains(string(plain), "revoked") {
+		t.Errorf("zero memory must emit neither key:\n%s", plain)
 	}
 }

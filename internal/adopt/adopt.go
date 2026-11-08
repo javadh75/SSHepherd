@@ -1,6 +1,6 @@
 // Package adopt turns audit results into manifest additions: unknown keys
-// found on the fleet become new users with access to the servers where they
-// were found; keys of known users found beyond their grants become access
+// found on the fleet become new users with access to exactly the servers
+// where they were found (never a wildcard); keys of known users found beyond their grants become access
 // extensions. Pure logic — no I/O; the cmd layer owns SSH and rendering.
 package adopt
 
@@ -18,10 +18,9 @@ import (
 
 // NewUser is one unknown key adopted into a generated user.
 type NewUser struct {
-	Name     string
-	Line     string   // authorized_keys line as found (minus an unsafe comment); first line sshd honors wins
-	FoundOn  []string // sorted names of servers where the key was found
-	Wildcard bool     // grant renders as ["*"]: the key covers the whole fleet
+	Name    string
+	Line    string   // authorized_keys line as found (minus an unsafe comment); first line sshd honors wins
+	FoundOn []string // sorted names of servers where the key was found
 }
 
 // Extension grants an existing user the servers their key was found on
@@ -81,6 +80,13 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 		}
 		lines := linesByFingerprint(r.Content)
 		for _, first := range r.Diff.Unauthorized {
+			// Revocation memory first (D2a): a tombstoned key is never
+			// adopted — not even as an Issue that would move adopt's exit
+			// code — whatever its lines look like.
+			if w, revoked := revokedWarning(cfg, r.Server.Name, first.Fingerprint); revoked {
+				p.Warnings = append(p.Warnings, w)
+				continue
+			}
 			// sshd skips a line with an unknown option, a bad value or a
 			// repeated once-only clause and keeps scanning, so the key logs
 			// in through its first line sshd honors. When there is none the
@@ -94,10 +100,8 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 				continue
 			}
 			if owner, known := cfg.OwnerOf(k.Fingerprint); known {
-				if cfg.ExceptCarveOut(owner.Name, r.Server.Name) {
-					p.Warnings = append(p.Warnings, fmt.Sprintf(
-						"key %s of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
-						k.Fingerprint, owner.Name, r.Server.Name))
+				if w, skip := ownerSkip(cfg, owner.Name, r.Server.Name, k.Fingerprint); skip {
+					p.Warnings = append(p.Warnings, w)
 					continue
 				}
 				if extByUser[owner.Name] == nil {
@@ -139,10 +143,33 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 		}
 	}
 	p.Extensions = extensions(cfg, extByUser)
-	var nameWarnings []string
-	p.NewUsers, nameWarnings = nameUsers(cfg, byFP, order)
-	p.Warnings = append(p.Warnings, nameWarnings...)
+	p.NewUsers = nameUsers(cfg, byFP, order)
 	return p
+}
+
+// revokedWarning reports a key the manifest's revoked: list remembers.
+func revokedWarning(cfg *config.Config, server, fp string) (string, bool) {
+	t, ok := cfg.Revoked(fp)
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("key %s on %s is REVOKED (%s) — not adopted; run 'sshepherd apply --server %s' to remove it",
+		fp, server, t.Label(), server), true
+}
+
+// ownerSkip reports why a known owner's key found on server is not an
+// access extension: their except: list excludes the server, or an access
+// tombstone removed it (D1a). Either way audit flags the key as drift.
+func ownerSkip(cfg *config.Config, owner, server, fp string) (string, bool) {
+	if cfg.ExceptCarveOut(owner, server) {
+		return fmt.Sprintf("key %s of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
+			fp, owner, server), true
+	}
+	if t, ok := cfg.AccessRevoked(owner, server); ok {
+		return fmt.Sprintf("key %s of %q found on %q, whose access was revoked (%s) — not re-granted; audit flags this drift",
+			fp, owner, server, t.Date), true
+	}
+	return "", false
 }
 
 // linesByFingerprint indexes every parsed line of a server's file by
@@ -223,16 +250,15 @@ func (p Plan) UnreadableServers() []string {
 
 // nameUsers turns accumulated unknown keys into named users, resolving
 // collisions against manifest names and each other with numeric suffixes
-// (the allocator import uses too, see internal/naming).
-// A key found on every server of a 2+-server fleet compacts to a wildcard
-// grant, mirroring import's rule, with the same review warning.
-func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) ([]NewUser, []string) {
+// (the allocator import uses too, see internal/naming). Each user is
+// granted exactly the servers its key was found on, by name: never "*",
+// which would also grant servers added later (D5).
+func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []NewUser {
 	taken := make(map[string]bool, len(cfg.Users))
 	for _, u := range cfg.Users {
 		taken[u.Name] = true
 	}
-	var users []NewUser
-	var warnings []string
+	users := make([]NewUser, 0, len(order))
 	for _, fp := range order {
 		pd := byFP[fp]
 		var name string
@@ -245,15 +271,9 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) ([]
 			name = naming.ClaimNumbered(taken, "adopted-key-")
 		}
 		sort.Strings(pd.foundOn)
-		nu := NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn}
-		if len(cfg.Servers) >= 2 && len(pd.foundOn) == len(cfg.Servers) {
-			nu.Wildcard = true
-			warnings = append(warnings, fmt.Sprintf(
-				"access for %q covers every server; emitted as wildcard %q (includes servers added later)", name, "*"))
-		}
-		users = append(users, nu)
+		users = append(users, NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn})
 	}
-	return users, warnings
+	return users
 }
 
 // maxNameLen caps generated user names: a key comment is attacker-supplied

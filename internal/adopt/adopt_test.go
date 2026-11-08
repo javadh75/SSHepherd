@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -87,6 +88,71 @@ servers:
   - {name: web-1, host: 10.0.0.1, user: deploy}
   - {name: web-2, host: 10.0.0.2, user: deploy}
 `)
+}
+
+func fpOf(t *testing.T, seed byte) string {
+	t.Helper()
+	k, err := authkeys.ParseLine(testkeys.Line(t, seed))
+	if err != nil || k == nil {
+		t.Fatalf("fpOf(%d): %v", seed, err)
+	}
+	return k.Fingerprint
+}
+
+// TestBuildSkipsRevokedKey (D2a): a tombstoned key found on a server is
+// neither a new user nor an extension, with a loud warning naming the
+// server and the apply that removes it; an Issue-free plan keeps adopt's
+// exit code untouched.
+func TestBuildSkipsRevokedKey(t *testing.T) {
+	stale := testkeys.Line(t, 7)
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+  - {name: web-2, host: 10.0.0.2, user: deploy}
+revoked:
+  - {fingerprint: `+fpOf(t, 7)+`, user: alice, date: 2026-11-08}
+`)
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n")},
+		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n" + stale + " alice@laptop\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 0 || len(p.Extensions) != 0 || len(p.Issues) != 0 {
+		t.Fatalf("plan = %+v, want nothing adopted and no issue", p)
+	}
+	want := "key " + fpOf(t, 7) + " on web-2 is REVOKED (2026-11-08, alice) — not adopted; run 'sshepherd apply --server web-2' to remove it"
+	if len(p.Warnings) != 1 || p.Warnings[0] != want {
+		t.Errorf("Warnings = %q\nwant [%q]", p.Warnings, want)
+	}
+}
+
+// TestBuildHonoursAccessTombstone (D1a): bob's key found on db-1, whose
+// access a revoke --server removed, is not re-granted.
+func TestBuildHonoursAccessTombstone(t *testing.T) {
+	cfg := parseConfig(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+  - {name: bob, keys: ["`+testkeys.Line(t, 2)+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: bob, servers: [web-1]}
+revoked:
+  - {user: bob, servers: [db-1], date: 2026-11-08}
+`)
+	both := fleet.ReadResult{Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n")}
+	r := &fakeReader{byName: map[string]fleet.ReadResult{"db-1": both, "web-1": both}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Extensions) != 0 || len(p.NewUsers) != 0 {
+		t.Fatalf("plan = %+v, want db-1 not re-granted", p)
+	}
+	want := "key " + fpOf(t, 2) + ` of "bob" found on "db-1", whose access was revoked (2026-11-08) — not re-granted; audit flags this drift`
+	if len(p.Warnings) != 1 || p.Warnings[0] != want {
+		t.Errorf("Warnings = %q\nwant [%q]", p.Warnings, want)
+	}
 }
 
 func TestBuildUnknownKeyBecomesOneUser(t *testing.T) {
@@ -200,7 +266,10 @@ access:
 	}
 }
 
-func TestBuildWildcardCompaction(t *testing.T) {
+// TestBuildNeverWildcards (D5): a key found on every server of the fleet is
+// granted those servers by name — never "*", which would also grant every
+// server added later — and adopt says nothing about wildcards.
+func TestBuildNeverWildcards(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	everywhere := testkeys.Line(t, 7) + " carol@laptop"
@@ -209,31 +278,13 @@ func TestBuildWildcardCompaction(t *testing.T) {
 		"db-1": content, "web-1": content, "web-2": content,
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
-	if len(p.NewUsers) != 1 || !p.NewUsers[0].Wildcard {
-		t.Fatalf("NewUsers = %+v, want one wildcard user", p.NewUsers)
+	if len(p.NewUsers) != 1 || !reflect.DeepEqual(p.NewUsers[0].FoundOn, []string{"db-1", "web-1", "web-2"}) {
+		t.Fatalf("NewUsers = %+v, want one user found on all three servers", p.NewUsers)
 	}
-	if !reflect.DeepEqual(p.NewUsers[0].FoundOn, []string{"db-1", "web-1", "web-2"}) {
-		t.Errorf("FoundOn = %v, want all three servers (for the description)", p.NewUsers[0].FoundOn)
-	}
-	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "wildcard") {
-		t.Errorf("Warnings = %v, want one wildcard-compaction note", p.Warnings)
-	}
-}
-
-// A single-server fleet says nothing about "everywhere" — no compaction.
-func TestBuildNoCompactionSingleServer(t *testing.T) {
-	cfg := parseConfig(t, `
-users:
-  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
-servers:
-  - {name: web-1, host: 10.0.0.1, user: deploy}
-`)
-	r := &fakeReader{byName: map[string]fleet.ReadResult{
-		"web-1": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 7) + "\n")},
-	}}
-	p := Build(cfg, runAudit(t, cfg, r))
-	if len(p.NewUsers) != 1 || p.NewUsers[0].Wildcard {
-		t.Fatalf("NewUsers = %+v, want one non-wildcard user", p.NewUsers)
+	for _, w := range p.Warnings {
+		if strings.Contains(w, "wildcard") {
+			t.Errorf("unexpected wildcard warning %q", w)
+		}
 	}
 }
 
@@ -481,9 +532,10 @@ access:
 	}
 }
 
-// Divergence and compaction compose: a key on every server, one copy with a
-// different comment, still compacts to a wildcard and warns once about each.
-func TestBuildDivergenceAndCompactionCompose(t *testing.T) {
+// A key on every server, one copy with a different comment: one user keeps
+// the first copy, and one divergence note is the only warning (no wildcard
+// compaction, D5).
+func TestBuildDivergenceKeepsFirstCopy(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	first := testkeys.Line(t, 7) + " carol@a"
@@ -494,20 +546,11 @@ func TestBuildDivergenceAndCompactionCompose(t *testing.T) {
 		"web-2": {Content: []byte(op + "\n" + first + "\n")},
 	}}
 	p := Build(cfg, runAudit(t, cfg, r))
-	if len(p.NewUsers) != 1 || !p.NewUsers[0].Wildcard || p.NewUsers[0].Line != first {
-		t.Fatalf("NewUsers = %+v, want one wildcard user keeping the first copy", p.NewUsers)
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Line != first {
+		t.Fatalf("NewUsers = %+v, want one user keeping the first copy", p.NewUsers)
 	}
-	var divergence, wildcard int
-	for _, w := range p.Warnings {
-		if strings.Contains(w, "differs") {
-			divergence++
-		}
-		if strings.Contains(w, "wildcard") {
-			wildcard++
-		}
-	}
-	if divergence != 1 || wildcard != 1 || len(p.Warnings) != 2 {
-		t.Errorf("Warnings = %v, want one divergence + one wildcard note", p.Warnings)
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "differs") {
+		t.Errorf("Warnings = %v, want one divergence note", p.Warnings)
 	}
 }
 
@@ -532,9 +575,9 @@ func TestUnreadableServersOrderAndDedup(t *testing.T) {
 	}
 }
 
-// An unreadable server prevents wildcard compaction: found-on can't cover a
-// fleet we couldn't fully see.
-func TestBuildUnreadableServerSuppressesCompaction(t *testing.T) {
+// An unreadable server is an issue; the key is granted exactly the servers
+// it was read on.
+func TestBuildUnreadableServerListed(t *testing.T) {
 	cfg := testCfg(t)
 	op := testkeys.Line(t, 1)
 	stranger := testkeys.Line(t, 7) + " carol@x"
@@ -544,8 +587,8 @@ func TestBuildUnreadableServerSuppressesCompaction(t *testing.T) {
 		errs:   map[string]error{"db-1": errors.New("connection refused")},
 	}
 	p := Build(cfg, runAudit(t, cfg, r))
-	if len(p.NewUsers) != 1 || p.NewUsers[0].Wildcard {
-		t.Fatalf("NewUsers = %+v, want one non-wildcard user (db-1 was unreadable)", p.NewUsers)
+	if len(p.NewUsers) != 1 || !reflect.DeepEqual(p.NewUsers[0].FoundOn, []string{"web-1", "web-2"}) {
+		t.Fatalf("NewUsers = %+v, want one user found on web-1 and web-2 (db-1 was unreadable)", p.NewUsers)
 	}
 	if got := p.UnreadableServers(); !reflect.DeepEqual(got, []string{"db-1"}) {
 		t.Errorf("UnreadableServers = %v, want [db-1]", got)

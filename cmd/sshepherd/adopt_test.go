@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -135,16 +136,70 @@ func TestGenerateAdoptManifestMixedGolden(t *testing.T) {
 	if n := len(c.DesiredFor("web-2")); n != 5 {
 		t.Errorf("DesiredFor(web-2) = %d keys, want 5", n)
 	}
-	// db-1 desired: op(1) + carol wildcard(1) + adopted-key-1(1) = 3
+	// db-1 desired: op(1) + carol(1) + adopted-key-1(1) = 3
 	// (bob stays excepted; alice's extension is web-2 only).
 	if n := len(c.DesiredFor("db-1")); n != 3 {
 		t.Errorf("DesiredFor(db-1) = %d keys, want 3", n)
 	}
-	// bob's carve-out and carol's compaction each warn.
-	if len(plan.Warnings) != 2 {
-		t.Errorf("Warnings = %v, want two (except carve-out + wildcard note)", plan.Warnings)
+	// bob's carve-out warns; carol is listed by name (D5), with no warning.
+	if len(plan.Warnings) != 1 {
+		t.Errorf("Warnings = %v, want one (except carve-out)", plan.Warnings)
 	}
 	checkGolden(t, "adopt_mixed.golden", got)
+}
+
+// TestAdoptNeverCopiesHeaderSerial: servers whose files claim "(serial 99)"
+// never move the manifest's serial: regenerate emits the loaded manifest's
+// value (7), or no serial: at all when it had none. A regression pin — it
+// passes at once (adopt reads no header today) and guards the threat note;
+// mutation: emit Serial: 99 in generateAdoptManifest → FAIL.
+func TestAdoptNeverCopiesHeaderSerial(t *testing.T) {
+	// The literal header line: lane header's authkeys.Header lands in the
+	// same round, so this lane cannot call it.
+	const claims = "# Managed by SSHepherd (serial 99). Manual edits will be overwritten by 'sshepherd apply'."
+	r := mixedReader(t)
+	for name, res := range r.byName {
+		res.Content = append([]byte(claims+"\n"), res.Content...)
+		r.byName[name] = res
+	}
+	for _, serial := range []uint64{7, 0} {
+		cfg := mixedCfg(t)
+		cfg.ManifestSerial = config.Serial(serial)
+		out, err := generateAdoptManifest(cfg, adoptPlan(t, cfg, r), "sshepherd.yaml", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := config.Parse(out)
+		if err != nil {
+			t.Fatalf("adopt output does not load: %v\n%s", err, out)
+		}
+		if got.Serial() != serial || (serial == 0 && strings.Contains(string(out), "serial:")) {
+			t.Errorf("manifest serial %d: adopt emitted serial %d\n%s", serial, got.Serial(), out)
+		}
+	}
+}
+
+// TestAdoptMergeNoWildcard (D5): the merged manifest lists carol's three
+// servers by name.
+func TestAdoptMergeNoWildcard(t *testing.T) {
+	src := commentedMergeSrc(t)
+	mf, err := manifest.Load(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := renderMergedManifest(mf, src, adoptPlan(t, mf.Config(), mixedReader(t)), nil, "2026-07-16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := config.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range out.Access {
+		if a.User == "carol-laptop" && !reflect.DeepEqual(a.Servers, []string{"db-1", "web-1", "web-2"}) {
+			t.Errorf("carol-laptop servers = %v, want the three names", a.Servers)
+		}
+	}
 }
 
 func TestGenerateAdoptManifestNoopGolden(t *testing.T) {
@@ -301,7 +356,7 @@ func TestRenderMergedManifestGolden(t *testing.T) {
 		t.Fatalf("merged manifest rejected by config.Parse: %v", err)
 	}
 	// Same desired sets as the regenerate-mode mixed golden: web-2 gets
-	// op + bob(wildcard) + alice(extension, 2 keys) + carol; db-1 keeps
+	// op + bob(wildcard grant) + alice(extension, 2 keys) + carol (listed by name); db-1 keeps
 	// bob's carve-out.
 	if n := len(out.DesiredFor("web-2")); n != 5 {
 		t.Errorf("DesiredFor(web-2) = %d keys, want 5", n)

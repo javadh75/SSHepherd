@@ -189,6 +189,12 @@ func (b *builder) users(users []identity.User) error {
 		if k == nil {
 			return fmt.Errorf("user %q: invalid key line (bug: identity resolution validated it): blank entry", u.Name)
 		}
+		if t, revoked := b.cfg.Revoked(k.Fingerprint); revoked {
+			b.plan.conflicts++
+			b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
+				"key %s from %s is REVOKED (%s) — not imported", k.Fingerprint, pubPath(u.Source), t.Label()))
+			continue
+		}
 		if owner, known := b.cfg.OwnerOf(k.Fingerprint); known {
 			if err := b.knownKey(u, owner, k.Fingerprint); err != nil {
 				return err
@@ -200,13 +206,24 @@ func (b *builder) users(users []identity.User) error {
 	return nil
 }
 
+// pubPath is the .pub an identity was read from, as written: the
+// IdentityFile value itself when it already names the .pub, else value +
+// ".pub" (internal/identity's pubPaths rule; only .pub files are read).
+func pubPath(source string) string {
+	if strings.HasSuffix(source, ".pub") {
+		return source
+	}
+	return source + ".pub"
+}
+
 // knownKey handles an incoming key the manifest already owns: the owner
 // wins — no new user — and access proceeds against the owner's name. Each
 // server is checked in the locked coverage order: conflicted alias (grant
 // dropped with the server), operator owner (implicit fleet-wide grant, never
 // extended), Covers (explicit grant or wildcard absorption — a "*" user
 // gains every appended server automatically), except carve-out (never
-// re-granted), else an extension pair.
+// re-granted), an access tombstone (never re-granted, D1a), else an
+// extension pair.
 func (b *builder) knownKey(u identity.User, owner config.User, fp string) error {
 	if u.Operator && !owner.Operator {
 		return fmt.Errorf(
@@ -231,6 +248,13 @@ func (b *builder) knownKey(u identity.User, owner config.User, fp string) error 
 				"key of %q used for %q in the ssh config, which their except: list deliberately excludes — not re-granted; audit flags this drift",
 				owner.Name, srv))
 		default:
+			if t, gone := b.cfg.AccessRevoked(owner.Name, srv); gone {
+				b.plan.conflicts++
+				b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
+					"key %s of %q found on %q, whose access was revoked (%s) — not re-granted; audit flags this drift",
+					fp, owner.Name, srv, t.Date))
+				continue
+			}
 			extended = b.extend(owner.Name, srv) || extended
 		}
 	}

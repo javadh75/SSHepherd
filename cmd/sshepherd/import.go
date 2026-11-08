@@ -412,9 +412,14 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Self-check: never emit a manifest our own loader would reject.
-			if _, err := config.Parse(rendered); err != nil {
+			// Self-check: never emit a manifest our own loader would reject,
+			// nor (under --merge) one that keeps a policy conflict (D29).
+			saved, err := config.Parse(rendered)
+			if err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
+			}
+			if err := conflictRefusal(saved); err != nil {
+				return err
 			}
 			return emitManifest(stdout, m, outPath, rendered, force)
 		},

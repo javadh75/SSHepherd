@@ -1,0 +1,23 @@
+# header
+serial: 7
+users:
+  - name: alice
+    keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c
+servers:
+  - name: web-1
+    host: 10.0.0.1
+    user: deploy
+access:
+  - user: alice
+    servers:
+      - web-1
+revoked:
+  - fingerprint: SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo
+    user: carol
+    date: "2026-11-08"
+    reason: offboarded
+  - user: alice
+    servers:
+      - web-1
+    date: "2026-11-08"

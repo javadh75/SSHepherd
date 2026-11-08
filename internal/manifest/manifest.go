@@ -1,5 +1,6 @@
-// Package manifest owns how SSHepherd writes manifests: Generate renders a
-// fresh manifest, Store/WriteFile publish one safely (lock, compare-and-swap,
+// Package manifest owns how SSHepherd writes manifests: Generate/GenerateWith
+// render a fresh manifest (GenerateWith with serial: and revoked:),
+// Store/WriteFile publish one safely (lock, compare-and-swap,
 // atomic rename), and File provides comment-preserving edits to an existing
 // manifest: the file is decoded into a yaml.v3 node tree (comments intact)
 // alongside the validated config, edited surgically, and the whole document
@@ -33,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -109,8 +111,11 @@ func explicitFlowNulls(n *yaml.Node, inFlow bool) {
 	}
 }
 
+// topLevelKeys are the manifest's sections (config.Config's yaml keys).
+var topLevelKeys = map[string]bool{"serial": true, "users": true, "servers": true, "access": true, "revoked": true}
+
 // checkTopLevelKeys rejects manifests whose top-level mapping keys are not
-// plain users/servers/access scalars. config.Parse tolerates a few exotic
+// plain serial/users/servers/access/revoked scalars. config.Parse tolerates a few exotic
 // key shapes (e.g. an anchored empty scalar, found by fuzzing) that break
 // the re-encode → re-parse self-check; anything Load accepts must be
 // structurally re-encodable, so the whole class dies here.
@@ -124,8 +129,7 @@ func checkTopLevelKeys(root *yaml.Node) error {
 	}
 	for i := 0; i < len(m.Content); i += 2 {
 		k := m.Content[i]
-		if k.Kind != yaml.ScalarNode ||
-			(k.Value != "users" && k.Value != "servers" && k.Value != "access") {
+		if k.Kind != yaml.ScalarNode || !topLevelKeys[k.Value] {
 			return &UnsupportedError{Reason: fmt.Sprintf("manifest contains an unsupported top-level key %q", k.Value)}
 		}
 	}
@@ -305,11 +309,16 @@ func strScalar(v string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: v}
 }
 
-// requiredKeys are emitted even at their zero value (the loader requires
-// them); every other field is omitempty. A new config field is therefore
-// emitted by adopt, import and Append with no change here — and
-// cmd/sshepherd/schema_roundtrip_test.go fails until it round-trips.
-var requiredKeys = map[string]bool{"name": true, "host": true, "user": true, "keys": true, "servers": true}
+// requiredKeys are emitted even at their zero value, per config type (the
+// loader requires them); every other field is omitempty. A new config field
+// is therefore emitted by adopt, import and Append with no change here —
+// and cmd/sshepherd/schema_roundtrip_test.go fails until it round-trips.
+var requiredKeys = map[string]map[string]bool{
+	"User":      {"name": true, "keys": true},
+	"Server":    {"name": true, "host": true, "user": true},
+	"Access":    {"user": true, "servers": true},
+	"Tombstone": {"date": true},
+}
 
 // entryNode renders one config.User/Server/Access as a mapping in struct
 // field order, from the yaml tags: required keys always, optional fields only
@@ -330,7 +339,7 @@ func entryNode(v any) (*yaml.Node, error) {
 		if key == "port" && (fv.Int() == 0 || fv.Int() == 22) {
 			empty = true
 		}
-		if empty && !requiredKeys[key] {
+		if empty && !requiredKeys[rt.Name()][key] {
 			continue
 		}
 		val := &yaml.Node{}
@@ -354,25 +363,53 @@ func entryNodes[T any](items []T) ([]*yaml.Node, error) {
 	return out, nil
 }
 
-// Generate renders a fresh manifest — header (raw comment lines with their
-// own "#" and trailing newline) then users, servers, access — with the same
-// encoder settings as Encode (2-space indent). It is the one renderer for
-// adopt's and import's generated drafts.
+// Draft is everything a generated manifest holds, in output order: serial
+// (omitted at 0), users, servers, access, revoked (omitted when empty).
+type Draft struct {
+	Serial  uint64
+	Users   []config.User
+	Servers []config.Server
+	Access  []config.Access
+	Revoked []config.Tombstone
+}
+
+// Generate renders a fresh manifest with no revocation memory (import's
+// drafts); see GenerateWith.
 func Generate(header string, users []config.User, servers []config.Server, access []config.Access) ([]byte, error) {
+	return GenerateWith(header, Draft{Users: users, Servers: servers, Access: access})
+}
+
+// GenerateWith renders a fresh manifest — header (raw comment lines with
+// their own "#" and trailing newline), then d's sections — with the same
+// encoder settings as Encode (2-space indent). It is the one renderer for
+// adopt's and import's generated drafts; adopt passes the loaded manifest's
+// serial and revoked: so a regenerate never erases revocation memory.
+func GenerateWith(header string, d Draft) ([]byte, error) {
 	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	if d.Serial > 0 {
+		root.Content = append(root.Content, strScalar("serial"),
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatUint(d.Serial, 10)})
+	}
 	for _, sec := range []struct {
 		key   string
 		items func() ([]*yaml.Node, error)
 	}{
-		{"users", func() ([]*yaml.Node, error) { return entryNodes(users) }},
-		{"servers", func() ([]*yaml.Node, error) { return entryNodes(servers) }},
-		{"access", func() ([]*yaml.Node, error) { return entryNodes(access) }},
+		{"users", func() ([]*yaml.Node, error) { return entryNodes(d.Users) }},
+		{"servers", func() ([]*yaml.Node, error) { return entryNodes(d.Servers) }},
+		{"access", func() ([]*yaml.Node, error) { return entryNodes(d.Access) }},
 	} {
 		items, err := sec.items()
 		if err != nil {
 			return nil, err
 		}
 		root.Content = append(root.Content, strScalar(sec.key), &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items})
+	}
+	if len(d.Revoked) > 0 {
+		items, err := entryNodes(d.Revoked)
+		if err != nil {
+			return nil, err
+		}
+		root.Content = append(root.Content, strScalar("revoked"), &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items})
 	}
 	var buf bytes.Buffer
 	buf.WriteString(header)

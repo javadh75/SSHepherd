@@ -100,3 +100,29 @@ func TestSchemaRoundTripAppend(t *testing.T) {
 	}
 	checkRoundTrip(t, "Append", out, u, srv, a)
 }
+
+// TestAdoptRegenerateKeepsRevokedAndSerial: a plain adopt rebuilds the
+// manifest from structs; it must carry serial: and every revoked: field, or
+// one adopt would erase all revocation memory (PRD-1). Every Tombstone
+// field needs a sample (fill fails otherwise).
+func TestAdoptRegenerateKeepsRevokedAndSerial(t *testing.T) {
+	cfg, _, _, _ := roundTripConfig(t)
+	key := fill[config.Tombstone](t, map[string]map[string]any{"Tombstone": {
+		"Fingerprint": fpOf(t, 9), "User": "carol", "Servers": []string(nil),
+		"Date": "2026-11-08", "Reason": "offboarded",
+	}})
+	access := config.Tombstone{User: "bob", Servers: []string{"web-2"}, Date: "2026-11-08", Reason: "moved teams"}
+	cfg.ManifestSerial = 7
+	cfg.Tombstones = []config.Tombstone{key, access}
+	out, err := generateAdoptManifest(cfg, adopt.Plan{}, "rt.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.Parse(out)
+	if err != nil {
+		t.Fatalf("adopt output does not load: %v\n%s", err, out)
+	}
+	if got.Serial() != 7 || !reflect.DeepEqual(got.Tombstones, cfg.Tombstones) {
+		t.Errorf("adopt lost memory: serial %d, revoked %+v\n%s", got.Serial(), got.Tombstones, out)
+	}
+}

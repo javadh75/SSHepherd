@@ -213,13 +213,14 @@ const exitCodesAdopt = `Exit codes:
      emitted), or --partial could not read some servers (the partial manifest
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
-     --output without --force, an in-place save refused, --partial with no
-     server read, interrupted`
+     --output without --force, an in-place save refused, a manifest that
+     would keep a policy conflict, --partial with no server read, interrupted`
 
 const exitCodesImport = `Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
-     existing --output without --force, an in-place save refused`
+     existing --output without --force, an in-place save refused, a --merge
+     manifest that would keep a policy conflict`
 
 // exitCodeFor maps Execute's error to the monitoring-style process exit code
 // (see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md).

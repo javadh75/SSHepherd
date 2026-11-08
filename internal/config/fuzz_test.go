@@ -44,6 +44,10 @@ servers:
 access:
   - {user: bob, servers: ["*"], except: [s2]}
 `,
+		// revocation memory: serial, key and access tombstones, a conflict, D1e
+		"serial: 7\n" + manifest(k1, k2) + "revoked:\n  - {fingerprint: " + fpFor(f, k1) + ", user: alice, date: 2026-11-08, reason: offboarded}\n  - {user: bob, servers: [web-1, db-9], date: 2026-11-08}\n",
+		"serial: -1\nusers: []\n",
+		"revoked:\n  - {fingerprint: 'SHA256:x', servers: ['*'], date: '2026-1-8', user: \"a\\e\"}\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -69,7 +73,37 @@ access:
 			}
 			checkRenderRoundTrip(t, cfg, s.Name)
 		}
+		if cfg.Serial() > MaxSerial {
+			t.Fatalf("accepted serial %d over %d", cfg.Serial(), MaxSerial)
+		}
+		names := make(map[string]bool, len(cfg.Servers))
+		for _, s := range cfg.Servers {
+			names[s.Name] = true
+		}
+		for _, tb := range cfg.Tombstones {
+			for _, v := range []string{tb.User, tb.Reason} {
+				if authkeys.RenderTextIssue(v) != "" || len(v) > maxTombstoneText {
+					t.Fatalf("accepted tombstone text %q", v)
+				}
+			}
+		}
+		for _, c := range cfg.Conflicts() {
+			for _, s := range c.Servers {
+				if !names[s] {
+					t.Fatalf("conflict %+v names unknown server %q", c, s)
+				}
+			}
+		}
 	})
+}
+
+func fpFor(tb testing.TB, line string) string {
+	tb.Helper()
+	k, err := authkeys.ParseLine(line)
+	if err != nil || k == nil {
+		tb.Fatalf("fpFor: %v", err)
+	}
+	return k.Fingerprint
 }
 
 // checkRenderRoundTrip renders server's desired file exactly as apply does

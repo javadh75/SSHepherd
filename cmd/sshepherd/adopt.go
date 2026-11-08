@@ -33,27 +33,25 @@ func newUsers(plan adopt.Plan) []config.User {
 }
 
 // extensionsAndGrants is the plan's access additions: extensions of known
-// users first, then each new user's grant (the servers it was found on, or
-// "*" when it was found on every server).
+// users first, then each new user's grant — the servers it was found on, by
+// name (never "*", D5).
 func extensionsAndGrants(plan adopt.Plan) []config.Access {
 	access := make([]config.Access, 0, len(plan.Extensions)+len(plan.NewUsers))
 	for _, e := range plan.Extensions {
 		access = append(access, config.Access{User: e.User, Servers: e.Servers})
 	}
 	for _, nu := range plan.NewUsers {
-		servers := nu.FoundOn
-		if nu.Wildcard {
-			servers = []string{"*"}
-		}
-		access = append(access, config.Access{User: nu.Name, Servers: servers})
+		access = append(access, config.Access{User: nu.Name, Servers: nu.FoundOn})
 	}
 	return access
 }
 
 // generateAdoptManifest renders the input manifest plus the adoption plan:
 // existing sections verbatim, then new users, extensions, and new grants,
-// through the one encoder (manifest.Generate) driven by the config types, so
-// every schema field — authorized_keys_file included — round-trips.
+// through the one encoder (manifest.GenerateWith) driven by the config types,
+// so every schema field — authorized_keys_file included — round-trips.
+// serial: and revoked: are copied from the loaded manifest (never from a
+// server's header), so regenerating never erases revocation memory.
 // gaps (only non-empty under --partial, see gapNotes) name servers whose
 // access is missing from the output, as manifest comments so the gap
 // survives stderr.
@@ -65,7 +63,9 @@ func generateAdoptManifest(cfg *config.Config, plan adopt.Plan, src string, gaps
 	for _, g := range gaps {
 		header.WriteString("# " + g + "\n")
 	}
-	return manifest.Generate(header.String(), users, cfg.Servers, access) //nolint:wrapcheck // "encode manifest: …"
+	return manifest.GenerateWith(header.String(), manifest.Draft{ //nolint:wrapcheck // "encode manifest: …"
+		Serial: cfg.Serial(), Users: users, Servers: cfg.Servers, Access: access, Revoked: cfg.Tombstones,
+	})
 }
 
 // renderMergedManifest renders the plan as a comment-preserving append to
@@ -309,9 +309,14 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 				return err
 			}
 			reportPlan(log, plan, unreadable)
-			// Self-check: never emit a manifest our own loader would reject.
-			if _, err := config.Parse(rendered); err != nil {
+			// Self-check: never emit a manifest our own loader would reject,
+			// nor one that keeps a policy conflict (D29).
+			saved, err := config.Parse(rendered)
+			if err != nil {
 				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
+			}
+			if err := conflictRefusal(saved); err != nil {
+				return err
 			}
 			if err := emitManifest(stdout, m, outPath, rendered, force); err != nil {
 				return err

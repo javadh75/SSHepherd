@@ -14,8 +14,8 @@ Exit codes:
      emitted), or --partial could not read some servers (the partial manifest
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
-     --output without --force, an in-place save refused, --partial with no
-     server read, interrupted
+     --output without --force, an in-place save refused, a manifest that
+     would keep a policy conflict, --partial with no server read, interrupted
 
 Usage:
   sshepherd adopt [flags]

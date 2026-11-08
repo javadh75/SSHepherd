@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/identity"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
@@ -60,6 +61,64 @@ func wantContains(t *testing.T, kind string, got []string, subs ...string) {
 			t.Errorf("%s[%d] = %q, want it to contain %q", kind, i, got[i], sub)
 		}
 	}
+}
+
+func mustFP(t *testing.T, line string) string {
+	t.Helper()
+	k, err := authkeys.ParseLine(line)
+	if err != nil || k == nil {
+		t.Fatalf("mustFP: %v", err)
+	}
+	return k.Fingerprint
+}
+
+// TestReconcileSkipsRevokedPub (D2a for import --merge): a tombstoned
+// incoming .pub is neither a new user nor an extension.
+func TestReconcileSkipsRevokedPub(t *testing.T) {
+	k9 := testkeys.Line(t, 9)
+	fp9 := mustFP(t, k9)
+	cfg := parseCfg(t, `
+users:
+  - {name: op, operator: true, keys: ["`+testkeys.Line(t, 1)+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+revoked:
+  - {fingerprint: `+fp9+`, user: alice, date: 2026-11-08}
+`)
+	p := mustBuild(t, cfg, nil, []identity.User{{Name: "me-id_old", Source: "~/.ssh/id_old", Key: k9, Servers: []string{"web-1"}}})
+	if !p.Empty() {
+		t.Fatalf("plan = %+v, want nothing imported", p)
+	}
+	// IDENTITY is the .pub the import read (plan decision 13, spec §9).
+	wantContains(t, "Warnings", p.Warnings, "key "+fp9+" from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported")
+	if p.ConflictsSkipped() != 1 {
+		t.Errorf("ConflictsSkipped = %d, want 1", p.ConflictsSkipped())
+	}
+	// An IdentityFile that already names the .pub is printed as is.
+	q := mustBuild(t, cfg, nil, []identity.User{{Name: "me-id_old", Source: "~/.ssh/id_old.pub", Key: k9, Servers: []string{"web-1"}}})
+	wantContains(t, "Warnings", q.Warnings, "key "+fp9+" from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported")
+}
+
+// TestReconcileHonoursAccessTombstone (D1a): a known key used for a server
+// whose access was revoked is never extended there.
+func TestReconcileHonoursAccessTombstone(t *testing.T) {
+	cfg := parseCfg(t, `
+users:
+  - {name: bob, keys: ["`+testkeys.Line(t, 4)+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: bob, servers: [web-1]}
+revoked:
+  - {user: bob, servers: [db-1], date: 2026-11-08}
+`)
+	p := mustBuild(t, cfg, nil, []identity.User{{Name: "bob", Source: "~/.ssh/id_bob", Key: testkeys.Line(t, 4), Servers: []string{"db-1"}}})
+	if len(p.Extensions) != 0 {
+		t.Fatalf("Extensions = %+v, want none", p.Extensions)
+	}
+	wantContains(t, "Warnings", p.Warnings,
+		"key "+mustFP(t, testkeys.Line(t, 4))+` of "bob" found on "db-1", whose access was revoked (2026-11-08) — not re-granted; audit flags this drift`)
 }
 
 // --- Servers ---
