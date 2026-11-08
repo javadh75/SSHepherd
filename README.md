@@ -2160,8 +2160,8 @@ nothing changed (no file, backup or directory is created) — when:
 - the file **changed since the plan was read**
   (`… changed since the plan was read — refusing to overwrite unreviewed content; re-run apply`);
 - another apply holds the file's lock
-  (`another apply is in progress on <path> (lock directory <path>.sshepherd.lock; remove it only if no apply is running)`).
-  A lock left behind by a killed remote shell must be removed by hand; two applies
+  (`another apply is in progress on ~/.ssh/authorized_keys (lock held by ci-runner-3 pid 4121 for 3m12s); remove it only if no apply is running on ci-runner-3 (pid 4121): ssh -p 22 deploy@10.0.0.1 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rm -f -- "$p.sshepherd.lock/owner"; rmdir -- "$p.sshepherd.lock"' (a killed write can also leave ~/.ssh/authorized_keys.sshepherd.tmp and ~/.ssh/authorized_keys.sshepherd.cas; the next write reclaims both)`).
+  The refusal names who holds the lock and for how long (a lock with no record reports `an unknown owner (older sshepherd or killed shell)`) and prints the exact removal command. SSHepherd never removes a lock itself and has no flag to; check that no apply is running there first. A killed write can also leave `<path>.sshepherd.tmp` and `<path>.sshepherd.cas`; the next write reclaims both. Two applies
   racing for the lock never leave one behind.
 
 **One guarded write per server.** Each write is a single remote script in one
@@ -2192,7 +2192,7 @@ bytes the compare-and-swap just proved — use it to undo the first apply. A sym
 (default path or an equivalent spelling), the plan shows
 `disable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2.sshepherd.disabled` and the
 write moves it aside after the verify and before the login probe — even when
-`authorized_keys` itself already matches. A server apply does not write keeps a hand-removal warning instead; a server the
+`authorized_keys` itself already matches. A moved-aside copy is never overwritten: if `authorized_keys2.sshepherd.disabled` already exists, the copy is named `authorized_keys2.sshepherd.disabled.<UTC YYYYmmddTHHMMSSZ>` (plus `.<pid>` if that is taken too). The plan row always shows the base name. Copies accumulate; SSHepherd never deletes them. A server apply does not write keeps a hand-removal warning instead; a server the
 manifest grants nobody whose `authorized_keys2` holds keys is refused (exit 1), never
 written. If the move fails, the server is
 reported `FAILED` (its `authorized_keys` was still written and verified).

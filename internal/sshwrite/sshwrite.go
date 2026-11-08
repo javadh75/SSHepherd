@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -81,29 +83,12 @@ func SnapshotOf(absent bool, content []byte) Snapshot {
 	return authkeys.ManagedSnapshot(absent, content)
 }
 
-// lockPrologue takes the per-target lock (mkdir is atomic on every POSIX
-// filesystem) and arranges its removal on every exit path, together with
-// the temp file and the CAS staging copy only the lock holder may use (a
-// successful run has already renamed both). A lost race or a stale lock exits 47; any other mkdir
-// failure re-runs mkdir to surface its real error and exits 1. That re-run
-// happens before the EXIT trap exists, so if it succeeds (the holder
-// released the lock in between) it removes the directory it just made and
-// exits 47 — a retryable lost race, never a stale lock. Signals route
-// through exit so the EXIT trap runs.
-const lockPrologue = lockHead + lockTrap + `' EXIT; ` + signalTrap
-
 const (
-	lockHead   = `l="$p"` + lockSuffix + `; mkdir "$l" 2>/dev/null || { [ -d "$l" ] && exit 47; if mkdir "$l"; then rmdir "$l"; exit 47; fi; exit 1; }; `
-	lockTrap   = `trap 'x=$?; rm -f "$p"` + tmpSuffix + ` "$p"` + casSuffix + `; rmdir "$l" 2>/dev/null`
+	lockBusy   = `{ echo "sshepherd-lock $(date +%s)"; head -n 1 "$l/owner" 2>/dev/null | cut -c1-200; exit 47; }`
+	lockHead   = `l="$p"` + lockSuffix + `; mkdir "$l" 2>/dev/null || { [ -d "$l" ] && ` + lockBusy + `; if mkdir "$l"; then rmdir "$l"; exit 47; fi; exit 1; }; `
+	lockTrap   = `trap 'x=$?; rm -f "$p"` + tmpSuffix + ` "$p"` + casSuffix + ` "$l/owner"; rmdir "$l" 2>/dev/null`
 	signalTrap = `trap 'exit 1' HUP INT TERM PIPE`
 )
-
-// lockPrologueUndo is lockPrologue for the write script: its EXIT trap also
-// runs U (createDirs) on a nonzero exit, after the lock and scratch files
-// are gone, so a refusal or failure removes the directories this run
-// created (WP-9). A lost lock race (47) exits before this trap exists;
-// createDirs' own EXIT trap covers it.
-const lockPrologueUndo = lockHead + lockTrap + `; [ "$x" = 0 ] || U' EXIT; ` + signalTrap
 
 // createDirs creates the missing directories of "$d" (the pre-walk left
 // the shallowest missing spelling in "$m") one at a time, top-down along
@@ -206,7 +191,7 @@ func writeCmdFor(path string, expect Snapshot, size int) string {
 		// textual pre-walk could not see. On refusal the EXIT trap (U)
 		// removes what this run created.
 		`; ( set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi; ` + ancestorCheck + ` ) || exit $?` +
-		`; ` + lockPrologueUndo +
+		`; ` + lockPrologueUndo() +
 		`; if [ -L "$p" ]; then exit 45; fi; if [ -e "$p" ]; then set -- $(ls -ldn "$p"); if [ "$3" != "$u" ]; then exit 48; fi; fi` +
 		cksumPresent(expect) +
 		// Upload and length-check first (the slow part), then flush it.
@@ -273,27 +258,50 @@ func restoreCmdFor(path string, wasAbsent bool, wrote Snapshot) string {
 	if wasAbsent {
 		undo = `rm -f "$p"`
 	}
-	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); d=$(dirname "$p"); b="$p"` + bakSuffix + `; ` + ancestorCheck + `; ` + lockPrologue +
+	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); d=$(dirname "$p"); b="$p"` + bakSuffix + `; ` + ancestorCheck + `; ` + lockPrologue() +
 		`; if [ -L "$p" ]; then exit 45; fi; ` + casCheck(wrote) + `; ` + undo
 }
 
-// disableKeys2Cmd moves ~/.ssh/authorized_keys2 aside to
-// fleet.Keys2DisabledSuffix (replacing an older disabled copy). mv renames a
-// symlink itself, never writing through it; the directory passes the same
-// ancestor walk as the write, so only the login user (or root) can race the
-// rename. An absent file is a no-op.
+// disableKeys2Cmd moves ~/.ssh/authorized_keys2 aside and prints
+// "sshepherd-keys2 <basename>". A copy is never overwritten: the name is
+// fleet.Keys2DisabledSuffix when free, otherwise that plus a UTC timestamp,
+// plus .$$ if that is taken too; copies accumulate and SSHepherd never
+// deletes them. mv renames a symlink itself, never writing through it; the
+// directory passes the same ancestor walk as the write, so only the login
+// user (or root) can race the checks. An absent file is a no-op.
 func disableKeys2Cmd() string {
+	taken := func(v string) string { return `[ -e "` + v + `" ] || [ -L "` + v + `" ]` }
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
 		`; set -f; u=$(id -u); d=$(dirname "$p"); s="$p"` + fleet.Keys2DisabledSuffix + `; ` + ancestorCheck +
-		`; if [ -e "$p" ] || [ -L "$p" ]; then rm -f "$s" || exit 1; mv -f "$p" "$s" || exit 1; fi`
+		`; if ` + taken("$p") + `; then` +
+		` if ` + taken("$s") + `; then s="$s.$(date -u +%Y%m%dT%H%M%SZ)"; if ` + taken("$s") + `; then s="$s.$$"; fi; if ` + taken("$s") + `; then exit 1; fi; fi` +
+		`; mv -f "$p" "$s" || exit 1; echo "sshepherd-keys2 ${s##*/}"; fi`
 }
 
 // restoreKeys2Cmd undoes disableKeys2Cmd after a failed login probe,
+// moving back exactly the copy this run made (name passed parseKeys2Name),
 // refusing (46) to clobber an authorized_keys2 recreated meanwhile.
-func restoreKeys2Cmd() string {
+func restoreKeys2Cmd(name string) string {
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
-		`; set -f; s="$p"` + fleet.Keys2DisabledSuffix +
+		`; set -f; s="$(dirname "$p")"/` + sshconn.ShQuote(name) +
 		`; if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi; if [ -e "$s" ] || [ -L "$s" ]; then mv -f "$s" "$p" || exit 1; fi`
+}
+
+// keys2NameRE is the only copy name the client passes back to a script.
+var keys2NameRE = regexp.MustCompile(`^authorized_keys2\.sshepherd\.disabled(\.[0-9]{8}T[0-9]{6}Z(\.[0-9]+)?)?$`)
+
+// parseKeys2Name reads disableKeys2Cmd's stdout: "" when nothing was
+// there to move, the copy's basename otherwise; false for anything else.
+func parseKeys2Name(stdout string) (string, bool) {
+	line := strings.TrimSpace(stdout)
+	if line == "" {
+		return "", true
+	}
+	name, ok := strings.CutPrefix(line, "sshepherd-keys2 ")
+	if !ok || !keys2NameRE.MatchString(name) {
+		return "", false
+	}
+	return name, true
 }
 
 // SymlinkError reports a refused write: the target path is a symlink. The
@@ -323,14 +331,6 @@ type ChangedError struct{ Path string }
 
 func (e *ChangedError) Error() string {
 	return fmt.Sprintf("%s changed since the plan was read — refusing to overwrite unreviewed content; re-run apply", e.Path)
-}
-
-// LockedError reports a refused write: another apply holds the target's
-// lock directory.
-type LockedError struct{ Path string }
-
-func (e *LockedError) Error() string {
-	return fmt.Sprintf("another apply is in progress on %s (lock directory %s%s; remove it only if no apply is running)", e.Path, e.Path, lockSuffix)
 }
 
 // LockoutError reports a write that verified but whose surviving held keys
@@ -407,11 +407,11 @@ func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request)
 	log := w.log()
 
 	// Stage 1: the guarded write, rendered bytes on stdin.
-	code, _, stderr, err := w.execFn()(execCtx, conn.Client, writeCmdFor(path, req.Expect, len(req.Content)), bytes.NewReader(req.Content))
+	code, stdout, stderr, err := w.execFn()(execCtx, conn.Client, writeCmdFor(path, req.Expect, len(req.Content)), bytes.NewReader(req.Content))
 	if err != nil {
 		return sshconn.SanitizedError{Err: fmt.Errorf("write on %s: %w (the server installs only a complete upload)", srv.Name, err)}
 	}
-	if err := writeExitError(code, path, srv.Name, stderr); err != nil {
+	if err := writeExitError(code, path, srv, stdout, stderr); err != nil {
 		return err
 	}
 	log.Debug("write ok", "server", srv.Name, "bytes", len(req.Content))
@@ -427,9 +427,12 @@ func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request)
 	// the probe proves the survivors log in without it. A failure here
 	// cannot lock anyone out (the file only ever adds keys), so the probe
 	// still runs and the failure is reported after it.
-	var keys2Err error
+	var (
+		keys2Name string
+		keys2Err  error
+	)
 	if req.DisableKeys2 {
-		keys2Err = w.disableKeys2(execCtx, conn, srv.Name)
+		keys2Name, keys2Err = w.disableKeys2(execCtx, conn, srv.Name)
 		if keys2Err == nil {
 			log.Debug("authorized_keys2 disabled", "server", srv.Name)
 		}
@@ -442,24 +445,29 @@ func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request)
 	// survivor (from= fails the handshake, command= the probe command), or
 	// sshd rejecting the survivor's algorithm, locks out just as surely, and
 	// the cost is one handshake and one command per written server.
-	if err := w.probeOrRestore(execCtx, conn, srv, path, req, req.DisableKeys2 && keys2Err == nil); err != nil {
+	if err := w.probeOrRestore(execCtx, conn, srv, path, req, keys2Name); err != nil {
 		return err
 	}
 	return keys2Err
 }
 
-// disableKeys2 runs disableKeys2Cmd over conn.
-func (w *FleetWriter) disableKeys2(ctx context.Context, conn *sshconn.Conn, server string) error {
-	code, _, stderr, err := w.execFn()(ctx, conn.Client, disableKeys2Cmd(), nil)
+// disableKeys2 runs disableKeys2Cmd over conn and returns the moved copy's
+// basename ("" when there was nothing to move).
+func (w *FleetWriter) disableKeys2(ctx context.Context, conn *sshconn.Conn, server string) (string, error) {
+	code, stdout, stderr, err := w.execFn()(ctx, conn.Client, disableKeys2Cmd(), nil)
 	switch {
 	case err != nil:
-		return sshconn.SanitizedError{Err: fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s failed: %w", server, err)}
+		return "", sshconn.SanitizedError{Err: fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s failed: %w", server, err)}
 	case code == unsafePathExit:
-		return fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s was refused: its directory fails the ownership/mode walk", server)
+		return "", fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s was refused: its directory fails the ownership/mode walk", server)
 	case code != 0:
-		return fmt.Errorf("authorized_keys written and verified, but %w", stageFailure("disabling authorized_keys2", server, code, stderr))
+		return "", fmt.Errorf("authorized_keys written and verified, but %w", stageFailure("disabling authorized_keys2", server, code, stderr))
 	}
-	return nil
+	name, ok := parseKeys2Name(stdout.String())
+	if !ok {
+		return "", fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s printed an unrecognized name", server)
+	}
+	return name, nil
 }
 
 // connectFn and execFn resolve the test seams to the real implementations.
@@ -514,7 +522,7 @@ func (w *FleetWriter) connectForWrite(ctx context.Context, srv config.Server) (*
 
 // writeExitError maps the write script's exit status to its typed outcome;
 // nil for success.
-func writeExitError(code int, path, server string, stderr *sshconn.CappedBuffer) error {
+func writeExitError(code int, path string, srv config.Server, stdout, stderr *sshconn.CappedBuffer) error {
 	switch code {
 	case 0:
 		return nil
@@ -523,13 +531,13 @@ func writeExitError(code int, path, server string, stderr *sshconn.CappedBuffer)
 	case changedExit:
 		return fleet.Refused(&ChangedError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case lockedExit:
-		return fleet.Refused(&LockedError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
+		return fleet.Refused(lockedErrorFor(srv, path, stdout.String())) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case unsafePathExit:
 		return fleet.Refused(&UnsafePathError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case shortWriteExit:
-		return fmt.Errorf("write on %s: upload incomplete (the server received fewer bytes than rendered) — original left untouched", server)
+		return fmt.Errorf("write on %s: upload incomplete (the server received fewer bytes than rendered) — original left untouched", srv.Name)
 	default:
-		return stageFailure("write", server, code, stderr)
+		return stageFailure("write", srv.Name, code, stderr)
 	}
 }
 
@@ -565,7 +573,7 @@ const (
 // unable to manage the server, so the probe requires the command to run
 // and print probeOutput, not just a handshake. If either fails it restores
 // the previous file over the still-open conn and returns a *LockoutError.
-func (w *FleetWriter) probeOrRestore(ctx context.Context, conn *sshconn.Conn, srv config.Server, path string, req Request, keys2Disabled bool) error {
+func (w *FleetWriter) probeOrRestore(ctx context.Context, conn *sshconn.Conn, srv config.Server, path string, req Request, keys2Name string) error {
 	log := w.log()
 	perr := w.probe(ctx, srv, req.Survivors)
 	if perr == nil {
@@ -581,14 +589,14 @@ func (w *FleetWriter) probeOrRestore(ctx context.Context, conn *sshconn.Conn, sr
 	case code != 0:
 		lockout.Restore = restoreExitError(code, srv.Name, stderr)
 	}
-	if keys2Disabled {
-		code, _, stderr, err := w.execFn()(ctx, conn.Client, restoreKeys2Cmd(), nil)
+	if keys2Name != "" {
+		code, _, stderr, err := w.execFn()(ctx, conn.Client, restoreKeys2Cmd(keys2Name), nil)
 		var k2err error
 		switch {
 		case err != nil:
 			k2err = sshconn.SanitizedError{Err: fmt.Errorf("restore authorized_keys2 on %s: %w", srv.Name, err)}
 		case code == changedExit:
-			k2err = fmt.Errorf("restore authorized_keys2 on %s refused: it was recreated meanwhile (the disabled copy is at authorized_keys2%s)", srv.Name, fleet.Keys2DisabledSuffix)
+			k2err = fmt.Errorf("restore authorized_keys2 on %s refused: it was recreated meanwhile (the disabled copy is at %s)", srv.Name, keys2Name)
 		case code != 0:
 			k2err = stageFailure("restore authorized_keys2", srv.Name, code, stderr)
 		}

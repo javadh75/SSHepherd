@@ -1,0 +1,2 @@
+go test fuzz v1
+string("sshepherd-lock 1010\nv1 ci-runner-3 4121 99 1000\n")

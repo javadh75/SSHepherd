@@ -2,6 +2,7 @@ package sshwrite
 
 import (
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -67,6 +68,28 @@ func FuzzWriteCmds(f *testing.F) {
 		out, err := c.Output()
 		if err != nil || string(out) != expect {
 			t.Fatalf("PathAssign(%q) evaluates to %q (err %v), want %q", path, out, err, expect)
+		}
+	})
+}
+
+// FuzzParseLockOwner: whatever a server prints, the description is a fixed
+// string or the record's own safe alphabet, so remote bytes never reach a
+// report raw; the age is unknown or non-negative.
+func FuzzParseLockOwner(f *testing.F) {
+	f.Add("sshepherd-lock 1010\nv1 ci-runner-3 4121 99 1000\n")
+	f.Add("sshepherd-lock 1010\n")
+	f.Add("sshepherd-lock 1010\nv1 \x1b]0;x\a 1 2 3\n")
+	safe := regexp.MustCompile(`^[A-Za-z0-9._-]+ pid [0-9]+$`)
+	f.Fuzz(func(t *testing.T, stdout string) {
+		info := parseLockOwner(stdout)
+		if info.known && !safe.MatchString(info.owner) {
+			t.Fatalf("known owner %q is not in the record's alphabet", info.owner)
+		}
+		if !info.known && info.owner != ownerUnknown && info.owner != ownerUnrecognized {
+			t.Fatalf("unknown owner %q is not a fixed description", info.owner)
+		}
+		if info.age != ageUnknown && info.age < 0 {
+			t.Fatalf("age = %v", info.age)
 		}
 	})
 }

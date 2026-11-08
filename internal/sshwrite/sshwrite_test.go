@@ -767,7 +767,7 @@ func TestWriteCmdOrder(t *testing.T) {
 	at := -1
 	for _, step := range []string{
 		`while [ ! -e "$e" ]`, `trap '[ $? = 0 ] || U' EXIT`, `mkdir "$q"`, `( set -- $(ls -ldn "$d")`, `mkdir "$l"`,
-		`[ "$x" = 0 ] || U' EXIT`, `command -v cksum`,
+		`[ "$x" = 0 ] || U' EXIT`, `> "$l/owner"`, `command -v cksum`,
 		`cat > "$t"`, `wc -c < "$t"`, `of="$t" conv=notrunc,fsync`,
 		`cat "$p" > "$c"`, `cksum < "$c"`, `cat "$c" > "$o"`, `of="$o" conv=notrunc,fsync`, `mv -f "$c" "$b"`, `of="$b" conv=notrunc,fsync`,
 		`mv -f "$t" "$p"`,
@@ -777,6 +777,11 @@ func TestWriteCmdOrder(t *testing.T) {
 			t.Fatalf("step %q at %d, want after %d in:\n%s", step, i, at, cmd)
 		}
 		at = i
+	}
+	restore := restoreCmdFor("~/.ssh/authorized_keys", false, SnapshotOf(false, []byte("new\n")))
+	trap, owner := strings.Index(restore, `rmdir "$l" 2>/dev/null' EXIT`), strings.Index(restore, `> "$l/owner"`)
+	if trap < 0 || owner <= trap {
+		t.Errorf("restore: EXIT trap at %d, owner record at %d; the trap must come first in:\n%s", trap, owner, restore)
 	}
 }
 
@@ -1175,6 +1180,24 @@ func TestApplySentinelRefusals(t *testing.T) {
 	}
 }
 
+// TestApplyLockedCarriesOwner: exit 47's stdout reaches the typed refusal,
+// with a removal command built from the server's own coordinates.
+func TestApplyLockedCarriesOwner(t *testing.T) {
+	s := &scriptedExec{responses: []execResp{{code: lockedExit, stdout: "sshepherd-lock 1192\nv1 ci-runner-3 4121 99 1000\n"}}}
+	srv := config.Server{Name: "w", Host: "10.0.0.1", Port: 22, User: "deploy"}
+	err := seamedWriter(s, &seamedConnect{}).Apply(context.Background(), srv, req("x\n"))
+	var locked *LockedError
+	if !errors.As(err, &locked) || !fleet.IsRefusal(err) {
+		t.Fatalf("err = %v, want a *LockedError refusal", err)
+	}
+	if !locked.Known || locked.Owner != "ci-runner-3 pid 4121" || locked.Age != 192*time.Second {
+		t.Errorf("locked = %+v", locked)
+	}
+	if !strings.HasPrefix(locked.RemoveCmd, "ssh -p 22 deploy@10.0.0.1 ") {
+		t.Errorf("RemoveCmd = %q", locked.RemoveCmd)
+	}
+}
+
 func TestApplyStageFailures(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1556,16 +1579,82 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 			}
 			return home, filepath.Join(home, ".ssh", "authorized_keys2")
 		}
-		t.Run("disable moves the file aside, replacing an old copy", func(t *testing.T) {
+		t.Run("disable uses the free base name and says so", func(t *testing.T) {
 			home, k2 := setup(t)
 			writeFile(t, k2, "ssh-ed25519 AAAA revoked\n")
-			writeFile(t, k2+fleet.Keys2DisabledSuffix, "older\n")
-			if code := runSh(t, sh, disableKeys2Cmd(), home, nil); code != 0 {
+			code, out := runShOut(t, sh, disableKeys2Cmd(), home, nil)
+			if code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
 			assertAbsent(t, k2, "authorized_keys2 must be gone")
 			if got := readFile(t, k2+fleet.Keys2DisabledSuffix); got != "ssh-ed25519 AAAA revoked\n" {
 				t.Errorf("disabled copy = %q, want the moved file", got)
+			}
+			if name, ok := parseKeys2Name(out); !ok || name != "authorized_keys2"+fleet.Keys2DisabledSuffix {
+				t.Errorf("stdout %q parsed to %q, %v", out, name, ok)
+			}
+		})
+		t.Run("an earlier disabled copy is never overwritten", func(t *testing.T) {
+			home, k2 := setup(t)
+			writeFile(t, k2, "second\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "first\n")
+			code, out := runShOut(t, sh, disableKeys2Cmd(), home, nil)
+			if code != 0 {
+				t.Fatalf("exit = %d, want 0", code)
+			}
+			if got := readFile(t, k2+fleet.Keys2DisabledSuffix); got != "first\n" {
+				t.Errorf("earlier copy = %q, want it kept", got)
+			}
+			name, ok := parseKeys2Name(out)
+			if !ok || name == "authorized_keys2"+fleet.Keys2DisabledSuffix {
+				t.Fatalf("stdout %q parsed to %q, %v; want the timestamped name", out, name, ok)
+			}
+			if got := readFile(t, filepath.Join(filepath.Dir(k2), name)); got != "second\n" {
+				t.Errorf("timestamped copy = %q", got)
+			}
+		})
+		t.Run("a second copy in the same second gets the pid", func(t *testing.T) {
+			home, k2 := setup(t)
+			stub, mark := t.TempDir(), filepath.Join(t.TempDir(), "date.called")
+			writeFile(t, filepath.Join(stub, "date"), "#!/bin/sh\n: > '"+mark+"'\necho 20261108T010203Z\n")
+			if err := os.Chmod(filepath.Join(stub, "date"), 0o700); err != nil { // #nosec G302 -- test stub
+				t.Fatal(err)
+			}
+			writeFile(t, k2, "third\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "first\n")
+			stamped := k2 + fleet.Keys2DisabledSuffix + ".20261108T010203Z"
+			writeFile(t, stamped, "second\n")
+			argv := append(append([]string{}, sh[1:]...), "-c", disableKeys2Cmd())
+			c := exec.CommandContext(t.Context(), sh[0], argv...) // #nosec G204 -- test runs the package's own script
+			c.Env = append(os.Environ(), "HOME="+home, "PATH="+stub+":"+os.Getenv("PATH"))
+			out, err := c.Output()
+			if err != nil {
+				t.Fatalf("disable: %v", err)
+			}
+			if _, err := os.Stat(mark); os.IsNotExist(err) {
+				t.Skipf("%v runs date as a built-in applet; a PATH stub cannot observe it", sh)
+			}
+			name, ok := parseKeys2Name(string(out))
+			if !ok || !strings.HasPrefix(name, "authorized_keys2"+fleet.Keys2DisabledSuffix+".20261108T010203Z.") {
+				t.Fatalf("stdout %q parsed to %q, %v", out, name, ok)
+			}
+			if readFile(t, stamped) != "second\n" || readFile(t, filepath.Join(filepath.Dir(k2), name)) != "third\n" {
+				t.Error("a copy was overwritten")
+			}
+		})
+		t.Run("restore moves back exactly the named copy", func(t *testing.T) {
+			home, k2 := setup(t)
+			named := "authorized_keys2" + fleet.Keys2DisabledSuffix + ".20261108T010203Z"
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "older\n")
+			writeFile(t, filepath.Join(filepath.Dir(k2), named), "newest\n")
+			if code := runSh(t, sh, restoreKeys2Cmd(named), home, nil); code != 0 {
+				t.Fatalf("exit = %d", code)
+			}
+			if got := readFile(t, k2); got != "newest\n" {
+				t.Errorf("authorized_keys2 = %q", got)
+			}
+			if got := readFile(t, k2+fleet.Keys2DisabledSuffix); got != "older\n" {
+				t.Errorf("older copy = %q, want it kept", got)
 			}
 		})
 		t.Run("disable renames a symlink, never its target", func(t *testing.T) {
@@ -1593,7 +1682,7 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 		t.Run("restore puts it back", func(t *testing.T) {
 			home, k2 := setup(t)
 			writeFile(t, k2+fleet.Keys2DisabledSuffix, "keys\n")
-			if code := runSh(t, sh, restoreKeys2Cmd(), home, nil); code != 0 {
+			if code := runSh(t, sh, restoreKeys2Cmd("authorized_keys2"+fleet.Keys2DisabledSuffix), home, nil); code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
 			if got := readFile(t, k2); got != "keys\n" {
@@ -1604,7 +1693,7 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 			home, k2 := setup(t)
 			writeFile(t, k2, "new\n")
 			writeFile(t, k2+fleet.Keys2DisabledSuffix, "keys\n")
-			if code := runSh(t, sh, restoreKeys2Cmd(), home, nil); code != changedExit {
+			if code := runSh(t, sh, restoreKeys2Cmd("authorized_keys2"+fleet.Keys2DisabledSuffix), home, nil); code != changedExit {
 				t.Fatalf("exit = %d, want %d", code, changedExit)
 			}
 			if got := readFile(t, k2); got != "new\n" {
@@ -1614,11 +1703,32 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 	})
 }
 
+func TestParseKeys2Name(t *testing.T) {
+	base := "authorized_keys2" + fleet.Keys2DisabledSuffix
+	for _, tt := range []struct {
+		out  string
+		want string
+		ok   bool
+	}{
+		{"", "", true},
+		{"sshepherd-keys2 " + base + "\n", base, true},
+		{"sshepherd-keys2 " + base + ".20261108T010203Z\n", base + ".20261108T010203Z", true},
+		{"sshepherd-keys2 " + base + ".20261108T010203Z.4121\n", base + ".20261108T010203Z.4121", true},
+		{"sshepherd-keys2 ../../etc/passwd\n", "", false},
+		{"garbage\n", "", false},
+	} {
+		if got, ok := parseKeys2Name(tt.out); got != tt.want || ok != tt.ok {
+			t.Errorf("parseKeys2Name(%q) = %q, %v", tt.out, got, ok)
+		}
+	}
+}
+
 func TestApplyDisablesKeys2BeforeTheProbe(t *testing.T) {
+	const moved = "sshepherd-keys2 authorized_keys2" + fleet.Keys2DisabledSuffix + "\n"
 	r := req("x\n")
 	r.DisableKeys2 = true
 	t.Run("order", func(t *testing.T) {
-		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 0}}}
+		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 0, stdout: moved}}}
 		if err := seamedWriter(s, &seamedConnect{}).Apply(context.Background(), config.Server{Name: "w"}, r); err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
@@ -1627,14 +1737,21 @@ func TestApplyDisablesKeys2BeforeTheProbe(t *testing.T) {
 		}
 	})
 	t.Run("probe failure restores both files", func(t *testing.T) {
-		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 0}, {code: 0}, {code: 0}}}
+		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 0, stdout: moved}, {code: 0}, {code: 0}}}
 		err := seamedWriter(s, &seamedConnect{probeErr: errors.New("denied")}).Apply(context.Background(), config.Server{Name: "w"}, r)
 		var lo *LockoutError
 		if !errors.As(err, &lo) || lo.Restore != nil {
 			t.Fatalf("err = %v, want a restored *LockoutError", err)
 		}
-		if len(s.cmds) != 5 || s.cmds[4] != restoreKeys2Cmd() {
+		if len(s.cmds) != 5 || s.cmds[4] != restoreKeys2Cmd("authorized_keys2"+fleet.Keys2DisabledSuffix) {
 			t.Errorf("cmds = %q, want the authorized_keys2 restore after the file restore", s.cmds)
+		}
+	})
+	t.Run("unrecognized output is a failure, and nothing is moved back", func(t *testing.T) {
+		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 0, stdout: "sshepherd-keys2 /etc/passwd\n"}}}
+		err := seamedWriter(s, &seamedConnect{}).Apply(context.Background(), config.Server{Name: "w"}, r)
+		if err == nil || !strings.Contains(err.Error(), "unrecognized") {
+			t.Fatalf("err = %v, want the unrecognized-name failure", err)
 		}
 	})
 	t.Run("disable failure still probes and is a failure", func(t *testing.T) {
@@ -1726,7 +1843,11 @@ func TestOrigDecisionFollowsParseHeader(t *testing.T) {
 
 func TestWriteCmdHasNoShellHeaderCompare(t *testing.T) {
 	for _, s := range []Snapshot{SnapshotOf(false, []byte("x\n")), SnapshotOf(false, []byte(managed))} {
-		if cmd := writeCmdFor("~/.ssh/authorized_keys", s, 10); strings.Contains(cmd, "head -n 1") || strings.Contains(cmd, "Managed by") {
+		cmd := writeCmdFor("~/.ssh/authorized_keys", s, 10)
+		// A busy lock's owner record is the one first-line read allowed: it
+		// never touches the target.
+		rest := strings.ReplaceAll(cmd, `head -n 1 "$l/owner"`, "")
+		if strings.Contains(rest, "head -n 1") || strings.Contains(rest, "Managed by") {
 			t.Errorf("write script still compares the header in the shell:\n%s", cmd)
 		}
 	}
