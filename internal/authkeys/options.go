@@ -242,7 +242,12 @@ func ExpiryTime(opt string, local *time.Location) (time.Time, error) {
 func validExpiry(v string) error { _, err := parseExpiry(v, time.UTC); return err }
 
 func parseExpiry(v string, loc *time.Location) (time.Time, error) {
-	if strings.HasSuffix(v, "Z") || strings.HasSuffix(v, "z") {
+	// OpenSSH's parse_absolute_time: a "Z" or "UTC" suffix (case-insensitive)
+	// means UTC; otherwise the time is local to the reader.
+	switch {
+	case len(v) > 3 && strings.EqualFold(v[len(v)-3:], "UTC"):
+		v, loc = v[:len(v)-3], time.UTC
+	case len(v) > 1 && strings.EqualFold(v[len(v)-1:], "Z"):
 		v, loc = v[:len(v)-1], time.UTC
 	}
 	layout, ok := map[int]string{8: "20060102", 12: "200601021504", 14: "20060102150405"}[len(v)]

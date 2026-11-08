@@ -607,7 +607,8 @@ Comment-less keys are named `adopted-key-<n>` from the first free `n`, so
 as unparseable.
 
 A found key line that sshd would ignore (an unknown option such as `no-ptty`, an
-unquoted value such as `from=1.2.3.4`, a flag that has a value, or a repeated
+unquoted value such as `from=1.2.3.4`, a flag that has a value, a malformed
+`expiry-time` such as `expiry-time="2027"`, or a repeated
 `command=`/`from=`/`principals=` clause) is not access. sshd skips such a line and
 keeps reading, so if a later line of the same key is valid, the key still logs in,
 and adopt takes it from that line (in either line order). Only when sshd ignores

@@ -20,6 +20,14 @@ func TestCheckOption(t *testing.T) {
 		{"no-pty\x1b[31m", "contains control or format characters"},
 		{`expiry-time="20270101"`, ""},
 		{`expiry-time="202701011200Z"`, ""},
+		// OpenSSH's parse_absolute_time accepts a "Z" or "UTC" suffix,
+		// case-insensitively; sshd honors all of these lines.
+		{`expiry-time="202701011200z"`, ""},
+		{`expiry-time="20270101UTC"`, ""},
+		{`expiry-time="20270101utc"`, ""},
+		{`expiry-time="20270101120000UTC"`, ""},
+		{`expiry-time="20270101XUTC"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
+		{`expiry-time="UTC"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
 		{`expiry-time="2027"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
 		{`expiry-time="2027xx01"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
 	}
@@ -171,6 +179,12 @@ func TestExpiryTime(t *testing.T) {
 	got, err := ExpiryTime(`expiry-time="202701021504Z"`, time.Local)
 	if err != nil || !got.Equal(time.Date(2027, 1, 2, 15, 4, 0, 0, time.UTC)) {
 		t.Errorf("ExpiryTime = %v, %v", got, err)
+	}
+	for _, v := range []string{`expiry-time="202701021504UTC"`, `expiry-time="202701021504utc"`, `expiry-time="202701021504z"`} {
+		got, err := ExpiryTime(v, time.Local)
+		if err != nil || !got.Equal(time.Date(2027, 1, 2, 15, 4, 0, 0, time.UTC)) {
+			t.Errorf("ExpiryTime(%s) = %v, %v, want 2027-01-02 15:04 UTC", v, got, err)
+		}
 	}
 	if opt, ok := FindOption([]string{"no-pty", `Expiry-Time="20270101"`}, "expiry-time"); !ok || opt != `Expiry-Time="20270101"` {
 		t.Errorf("FindOption = %q, %v, want the option verbatim", opt, ok)
