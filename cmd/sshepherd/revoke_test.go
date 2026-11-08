@@ -167,6 +167,31 @@ func TestRevokeUserHermetic(t *testing.T) {
 	}
 }
 
+// TestRevokeHeaderBeforePreflight: the edit header prints before the
+// preflight (which may prompt for a passphrase), so a run whose preflight
+// fails — here no agent and no --identity — still shows what it was about
+// to do, and saves and contacts nothing.
+func TestRevokeHeaderBeforePreflight(t *testing.T) {
+	hosts, kh, cfg := twoUserFleet(t)
+	t.Setenv("SSH_AUTH_SOCK", "")
+	before := fileBytes(t, cfg)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (preflight failure)\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if want := "manifest edit: remove user bob (1 key, 1 access grant) — 2 servers affected\n"; !strings.HasPrefix(out.String(), want) {
+		t.Errorf("stdout = %q, want it to start with the edit header %q", out.String(), want)
+	}
+	if !bytes.Equal(fileBytes(t, cfg), before) {
+		t.Error("a failed preflight changed the manifest")
+	}
+	for name, h := range hosts {
+		if n := len(h.srv.Attempts()); n != 0 {
+			t.Errorf("%s: %d login attempts, want none", name, n)
+		}
+	}
+}
+
 // TestRevokeAlreadyConverged: the edit changes the desired file, but the
 // server already holds the new render — no write, yet the manifest edit is
 // itself a change: always confirmed, then saved, exit 0.
@@ -514,6 +539,35 @@ func TestRevokeHeldKeysGoneAfterPrompt(t *testing.T) {
 	}
 	if !bytes.Equal(fileBytes(t, cfg), before) {
 		t.Error("manifest saved without a surviving held key")
+	}
+}
+
+// TestRevokeHeldKeysGoneAfterPromptConverged: the agent vanishes while the
+// prompt waits, but one affected server already holds the edited render —
+// the edit has landed there, so the save goes ahead (the commit guard's
+// converged escape); the change-planned server fails its write-time guard
+// and keeps its file: exit 1.
+func TestRevokeHeldKeysGoneAfterPromptConverged(t *testing.T) {
+	hosts, kh, cfg := twoUserFleet(t)
+	render := authkeys.ManagedHeader + "\n" + testkeys.Line(t, 1) + " alice\n"
+	hosts["web-1"].install(t, nil, strings.TrimSuffix(render, "\n"))
+	sock := os.Getenv("SSH_AUTH_SOCK") // editFleet's agent
+	usePromptStreams(t, &actionReader{act: func() { _ = os.Remove(sock) }, r: strings.NewReader("y\n")}, io.Discard)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "nothing saved") {
+		t.Errorf("the save was withheld although web-1 is converged:\n%s", errBuf.String())
+	}
+	if users := readCfg(t, cfg).Users; len(users) != 1 || users[0].Name != "alice" {
+		t.Errorf("manifest users = %+v, want the edit saved (alice only)", users)
+	}
+	if got := hosts["web-1"].keys(t); got != render {
+		t.Errorf("web-1 = %q, want its converged render untouched", got)
+	}
+	if !strings.Contains(hosts["web-2"].keys(t), testkeys.Line(t, 2)) {
+		t.Error("web-2 was written with no held key surviving")
 	}
 }
 

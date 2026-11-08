@@ -102,6 +102,19 @@ func (m msgs) all() []string {
 	return slices.Clone(*m.list)
 }
 
+// seq is a slog handler that records each info-or-louder message into
+// the seam recorder as "log:<msg>", so log lines and seam calls share one
+// ordered sequence.
+type seq struct{ r *rec }
+
+func (s seq) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+func (s seq) Handle(_ context.Context, rec slog.Record) error {
+	s.r.add("log:" + rec.Message)
+	return nil
+}
+func (s seq) WithAttrs([]slog.Attr) slog.Handler { return s }
+func (s seq) WithGroup(string) slog.Handler      { return s }
+
 func (m msgs) has(t *testing.T, want string) {
 	t.Helper()
 	for _, s := range m.all() {
@@ -154,8 +167,7 @@ func fixture(t *testing.T, r *rec) Request {
 func TestApplyOrdering(t *testing.T) {
 	r := &rec{}
 	req := fixture(t, r)
-	logs := newMsgs()
-	req.Log = slog.New(logs)
+	req.Log = slog.New(seq{r}) // logs and seam calls in one sequence
 	req.RelistLabel = "re-listing agent keys after confirmation"
 	var question string
 	var gotFresh []fleet.HeldKey
@@ -173,7 +185,13 @@ func TestApplyOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"header", "planned", "question", "confirm", "relist", "commit", "write:a"}
+	// The "applying" line comes before the held-key re-list: the re-list
+	// may take a moment (or fail), and the user should see the write
+	// phase has begun.
+	want := []string{
+		"header", "log:planning 1 server (parallelism 2)…", "planned", "question", "confirm",
+		"log:applying 1 server (parallelism 2)…", "relist", "commit", "write:a",
+	}
 	if !slices.Equal(r.events, want) {
 		t.Fatalf("events = %v, want %v", r.events, want)
 	}
@@ -185,10 +203,6 @@ func TestApplyOrdering(t *testing.T) {
 	}
 	if question != "go?" || !slices.Equal(gotFresh, req.Held) || r.reads != 1 {
 		t.Errorf("question = %q, fresh = %v, reads = %d", question, gotFresh, r.reads)
-	}
-	wantLogs := []string{"planning 1 server (parallelism 2)…", "applying 1 server (parallelism 2)…"}
-	if got := logs.all(); !slices.Equal(got, wantLogs) {
-		t.Errorf("logs = %q, want %q", got, wantLogs)
 	}
 }
 
@@ -214,12 +228,15 @@ func TestApplyCases(t *testing.T) {
 	for _, tt := range []struct {
 		name string
 		// mod overrides the fixture; cancel cancels the run's context.
-		mod       func(req *Request, r *rec, cancel context.CancelFunc)
-		events    []string
-		stage     Stage
-		saved     bool
-		exit      int
-		err       error // errors.Is target; nil = no error
+		mod    func(req *Request, r *rec, cancel context.CancelFunc)
+		events []string
+		stage  Stage
+		saved  bool
+		exit   int
+		err    error // errors.Is target; nil = no error
+		// wrapped: err may be wrapped (ErrInterrupted). Otherwise the seam's
+		// own error must come back verbatim — its text is the exit-3 message.
+		wrapped   bool
 		outcome   apply.Outcome
 		outErrNil bool   // the plan's OutcomeErr must stay nil
 		log       string // a log line that must appear
@@ -358,8 +375,9 @@ func TestApplyCases(t *testing.T) {
 			mod: func(req *Request, _ *rec, cancel context.CancelFunc) {
 				req.Reader = fakeReader{content: map[string]string{"a": ""}, onRead: cancel}
 			},
-			events: []string{"header"},
-			err:    ErrInterrupted,
+			events:  []string{"header"},
+			err:     ErrInterrupted,
+			wrapped: true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -380,6 +398,9 @@ func TestApplyCases(t *testing.T) {
 			if tt.err != nil {
 				if !errors.Is(err, tt.err) {
 					t.Fatalf("err = %v, want %v", err, tt.err)
+				}
+				if !tt.wrapped && err.Error() != tt.err.Error() {
+					t.Errorf("err = %q, want the seam's error verbatim: %q", err, tt.err)
 				}
 				if out.Plans != nil {
 					t.Errorf("a tool error returns no outcome: %+v", out)
