@@ -755,3 +755,39 @@ func TestRenderJSONEditMemoryGolden(t *testing.T) {
 		t.Errorf("edit.revoked must be [] when none:\n%s", empty)
 	}
 }
+
+// TestRenderJSONManifestWarningsSanitized (spec §9): a D1e warning can name
+// any string as its server, control runes included (plan decision 3), and
+// apply, revoke and rotate all render it through the same document.
+func TestRenderJSONManifestWarningsSanitized(t *testing.T) {
+	cfg, err := config.Parse([]byte(`users:
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+revoked:
+  - {user: alice, servers: ["db\e9"], date: 2026-11-08}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TombstoneWarnings) != 1 || !strings.ContainsRune(cfg.TombstoneWarnings[0].Server, 0x1b) {
+		t.Fatalf("fixture: warnings = %+v, want one naming a server with ESC", cfg.TombstoneWarnings)
+	}
+	for _, command := range []string{"apply", "revoke", "rotate"} {
+		got := renderJSONCfg(t, cfg, nil, JSONOptions{Command: command, DryRun: true})
+		if bytes.ContainsRune(got, 0x1b) || bytes.Contains(got, []byte(`\u001b`)) {
+			t.Errorf("%s: a control rune from the manifest reached the document:\n%s", command, got)
+		}
+		var doc struct {
+			Warns []config.TombstoneWarning `json:"manifest_warnings"`
+		}
+		if err := json.Unmarshal(got, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if len(doc.Warns) != 1 || !strings.HasPrefix(doc.Warns[0].Server, "db") || !strings.HasSuffix(doc.Warns[0].Server, "9") {
+			t.Errorf("%s: manifest_warnings = %+v", command, doc.Warns)
+		}
+	}
+}

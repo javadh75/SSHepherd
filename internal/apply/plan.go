@@ -235,6 +235,15 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opt
 	return planWrite(cfg, p, r, entries, held, opts)
 }
 
+// refuseOversize refuses p because its render is over maxRender.
+func refuseOversize(p ServerPlan) ServerPlan {
+	p.Class = ClassRefused
+	p.Refusal = fmt.Sprintf(
+		"rendered file is %d bytes, over the %d-byte limit the read path accepts — refusing to write a file that could never be verified or audited (split the grant across accounts)",
+		len(p.Rendered), maxRender)
+	return p
+}
+
 // planWrite renders the server's file and classifies it by the §3 serial
 // table: converged, refused (a newer manifest's serial, a render too large
 // to verify), a header-only write, or a change with its key rows — then the
@@ -247,11 +256,7 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 	}
 	p.Rendered = rendered
 	if len(rendered) > maxRender {
-		p.Class = ClassRefused
-		p.Refusal = fmt.Sprintf(
-			"rendered file is %d bytes, over the %d-byte limit the read path accepts — refusing to write a file that could never be verified or audited (split the grant across accounts)",
-			len(rendered), maxRender)
-		return p, nil
+		return refuseOversize(p), nil
 	}
 	d := planSerial(m, r, entries, bodyOf(rendered), opts.Bumped)
 	p.Serial, p.SerialNote = d.sp, d.note
@@ -266,6 +271,10 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 	if d.sp.Writes != m { // row 3 keeps the server's (higher) serial
 		if p.Rendered, err = authkeys.RenderSerial(entries, d.sp.Writes); err != nil {
 			return p, fmt.Errorf("render %s: %w", r.Server.Name, err)
+		}
+		if len(p.Rendered) > maxRender { // S is longer than M, and these are the bytes written
+			p.SerialNote = ""
+			return refuseOversize(p), nil
 		}
 	}
 	p.HeaderOnly = d.headerOnly

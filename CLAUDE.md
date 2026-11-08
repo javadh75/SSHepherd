@@ -527,6 +527,11 @@ W4 repair: apply never bumps from a copy a newer server serial proves stale; a r
 preflight runs before the save; a deleted wildcard's `except:` becomes access tombstones;
 generated user names avoid access-tombstone names; a fresh `import -o --force` warns when
 it drops revocation memory.
+W4 follow-up: mutation-killing tests pin the unmanaged-first-line full write
+(`TestPlanPlantedFirstLineIsAFullWrite`), the header's `^` anchor, the sanitized
+`manifest_warnings`, the save-only `--sweep --json` exit 2 and the no-target and
+access-tombstone sweeps, and a row-3 write whose kept higher serial pushes the bytes
+over the read cap is refused (`TestPlanRemovalOnlySizeCheckSeesWrittenBytes`).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one

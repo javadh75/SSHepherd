@@ -2,6 +2,7 @@ package apply
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -222,5 +223,65 @@ revoked:
 	}
 	if w2.Class != ClassChange {
 		t.Errorf("web-2 = %+v, want an ordinary change", w2)
+	}
+}
+
+// TestPlanPlantedFirstLineIsAFullWrite (spec §3): a file whose first line
+// is not a managed header never has an equal body. A planted key above the
+// rendered body must get a full write that removes it, never a converged
+// verdict (it would stay installed) or a header-only write (line 1 would
+// be overwritten while the plan shows no key removed).
+func TestPlanPlantedFirstLineIsAFullWrite(t *testing.T) {
+	cfg := serialCfg(t)
+	planted := testkeys.Line(t, 9)
+	want := authkeys.Header(7) + "\n" + web1Body(t, cfg)
+	for _, bumped := range []bool{false, true} {
+		p := planWeb1(t, cfg, planted+"\n"+web1Body(t, cfg), false, bumped)
+		if p.Class != ClassChange || p.HeaderOnly {
+			t.Fatalf("bumped=%v: class %s, header-only %v; want a full write", bumped, p.Class, p.HeaderOnly)
+		}
+		if string(p.Rendered) != want {
+			t.Errorf("bumped=%v: rendered = %q, want %q", bumped, p.Rendered, want)
+		}
+		if strings.Contains(string(p.Rendered), planted) {
+			t.Errorf("bumped=%v: the planted key survives the write", bumped)
+		}
+		if len(p.Remove) != 1 || p.Remove[0].Fingerprint != fp(t, 9) {
+			t.Errorf("bumped=%v: Remove = %+v, want the planted key", bumped, p.Remove)
+		}
+	}
+}
+
+// TestPlanRemovalOnlySizeCheckSeesWrittenBytes: row 3 keeps the server's
+// serial S, so the bytes written are the S render, not the checked M one.
+// S = 10 is one byte longer than M = 7. The server's file (same keys, no
+// comments) is under the cap, as anything the read path returned is, yet
+// the render with S is one byte over it.
+func TestPlanRemovalOnlySizeCheckSeesWrittenBytes(t *testing.T) {
+	cfg := serialCfg(t)
+	atM := authkeys.Header(7) + "\n" + web1Body(t, cfg)
+	content := authkeys.Header(10) + "\n" + testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + "\n"
+	if len(content) >= len(atM) {
+		t.Fatalf("fixture: the server file (%d bytes) must be under the render (%d)", len(content), len(atM))
+	}
+	saved := maxRender
+	t.Cleanup(func() { maxRender = saved })
+
+	maxRender = len(atM)
+	p := planWeb1(t, cfg, content, false, false)
+	if p.Serial.Case != SerialNewerRemovalOnly || p.Class != ClassRefused || !strings.Contains(p.Refusal, "could never be verified") {
+		t.Fatalf("at the M limit: class %s, case %q, refusal %q; want the size refusal", p.Class, p.Serial.Case, p.Refusal)
+	}
+	if want := strconv.Itoa(len(atM) + 1); !strings.Contains(p.Refusal, want+" bytes") {
+		t.Errorf("refusal %q must name the %s bytes it would write", p.Refusal, want)
+	}
+	if p.SerialNote != "" {
+		t.Errorf("a refused write must not keep the note that it proceeds: %q", p.SerialNote)
+	}
+
+	maxRender = len(atM) + 1
+	p = planWeb1(t, cfg, content, false, false)
+	if p.Class != ClassChange || len(p.Rendered) != maxRender {
+		t.Fatalf("at the S limit: class %s, %d bytes; want a write of exactly %d", p.Class, len(p.Rendered), maxRender)
 	}
 }

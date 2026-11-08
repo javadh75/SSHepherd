@@ -252,3 +252,128 @@ func TestRevokeSweepJSON(t *testing.T) {
 		t.Error("check_command is present only when --sweep was not given")
 	}
 }
+
+// TestRevokeUnownedKeySweepJSON: D1b's save-only path under --json still
+// exits 2 for a key the sweep found, with the document as the only output.
+func TestRevokeUnownedKeySweepJSON(t *testing.T) {
+	hosts, kh, cfg := sweepFleet(t)
+	hosts["web-2"].install(t, []byte{1, 9})
+	var out, errBuf bytes.Buffer
+	code := run([]string{"revoke", "--key", fpOf(t, 9), "--sweep", "--yes", "--json", "--config", cfg, "--known-hosts", kh}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	var doc struct {
+		Edit struct {
+			Saved bool `json:"saved"`
+		} `json:"edit"`
+		Summary struct {
+			ExitCode int `json:"exit_code"`
+		} `json:"summary"`
+		Sweep apply.SweepReport `json:"sweep"`
+	}
+	oneJSONDoc(t, out.String())
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Edit.Saved || doc.Summary.ExitCode != 2 {
+		t.Errorf("document = %s", out.String())
+	}
+	want := []apply.SweepHit{{Server: "web-2", Fingerprint: fpOf(t, 9), File: "authorized_keys"}}
+	if !reflect.DeepEqual(doc.Sweep.StillInstalled, want) {
+		t.Errorf("still_installed = %+v, want %+v", doc.Sweep.StillInstalled, want)
+	}
+}
+
+// doneFleet: alice (k1, the agent's key) and bob (k2) granted web-1 and
+// web-2 and applied, then web-2 hand-brought to exactly what revoking bob
+// renders (serial 1): that revoke writes web-1 and finds web-2 converged.
+func doneFleet(t *testing.T) (map[string]editHost, string, string) {
+	t.Helper()
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1", "web-2")
+	hosts["web-1"].install(t, []byte{1, 2})
+	hosts["web-2"].install(t, []byte{1, 2})
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\n"+
+		"servers:\n"+hosts["web-1"].line("web-1")+hosts["web-2"].line("web-2")+
+		"access:\n  - {user: alice, servers: [web-1, web-2]}\n  - {user: bob, servers: [web-1, web-2]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"apply", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("seed apply: exit %d\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	var b strings.Builder
+	b.WriteString(authkeys.Header(1) + "\n")
+	for _, l := range strings.SplitAfter(hosts["web-2"].keys(t), "\n")[1:] {
+		if !strings.Contains(l, testkeys.Line(t, 2)) {
+			b.WriteString(l)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hosts["web-2"].home, ".ssh", "authorized_keys"), []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return hosts, kh, cfg
+}
+
+// TestRevokeSweepNothingLeftToRead (spec §7): when every server was applied
+// or found converged, --sweep has no target. It must not fall through to
+// audit.Run, which reads the whole fleet on an empty server list: no login
+// beyond the same revoke without --sweep, and a report of 0 swept.
+func TestRevokeSweepNothingLeftToRead(t *testing.T) {
+	revoke := func(t *testing.T, extra ...string) (int, map[string]int, string) {
+		t.Helper()
+		hosts, kh, cfg := doneFleet(t)
+		before := map[string]int{"web-1": len(hosts["web-1"].srv.Attempts()), "web-2": len(hosts["web-2"].srv.Attempts())}
+		var out, errBuf bytes.Buffer
+		code := run(append([]string{"revoke", "bob", "--yes", "--config", cfg, "--known-hosts", kh}, extra...), &out, &errBuf)
+		if !strings.Contains(out.String(), "web-1: applied") {
+			t.Fatalf("web-1 must be applied: exit %d\n%s\n%s", code, out.String(), errBuf.String())
+		}
+		return code, map[string]int{
+			"web-1": len(hosts["web-1"].srv.Attempts()) - before["web-1"],
+			"web-2": len(hosts["web-2"].srv.Attempts()) - before["web-2"],
+		}, out.String()
+	}
+	_, plain, _ := revoke(t)
+	code, swept, out := revoke(t, "--sweep")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s", code, out)
+	}
+	if !reflect.DeepEqual(swept, plain) {
+		t.Errorf("logins with --sweep = %v, without = %v: the sweep read a server it had no reason to", swept, plain)
+	}
+	if !strings.Contains(out, "swept 0 of 2 servers: 0 still have a revoked key, 0 unreachable\n") {
+		t.Errorf("want the empty sweep's report:\n%s", out)
+	}
+	for _, unwanted := range []string{"REVOKED KEY STILL INSTALLED", "cannot prove removal"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("false report %q:\n%s", unwanted, out)
+		}
+	}
+}
+
+// TestRevokeServerSweepAddsNoServers (spec §7): an access tombstone only
+// names servers the run already wrote, so revoke USER --server NAME --sweep
+// has no key to look for and contacts nothing beyond the affected server.
+func TestRevokeServerSweepAddsNoServers(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1", "web-2", "web-3")
+	hosts["web-1"].install(t, []byte{1, 2})
+	hosts["web-2"].install(t, []byte{1, 2})
+	hosts["web-3"].install(t, []byte{1})
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\n"+
+		"servers:\n"+hosts["web-1"].line("web-1")+hosts["web-2"].line("web-2")+hosts["web-3"].line("web-3")+
+		"access:\n  - {user: alice, servers: [web-1, web-2, web-3]}\n  - {user: bob, servers: [web-1, web-2]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--server", "web-1", "--sweep", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "web-1: applied") {
+		t.Errorf("web-1 must be applied:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "swept ") {
+		t.Errorf("an access tombstone must not start a sweep:\n%s", out.String())
+	}
+	for _, name := range []string{"web-2", "web-3"} {
+		if n := len(hosts[name].srv.Attempts()); n != 0 {
+			t.Errorf("%s saw %d login attempts; the run affects web-1 only", name, n)
+		}
+	}
+}

@@ -35,6 +35,8 @@ var parseHeaderCases = []struct {
 	{"trailing space", legacy + " ", 0, false},
 	{"trailing CR", legacy + "\r", 0, false},
 	{"prefix lookalike", "# Managed by SSHepherd-ish. Manual edits will be overwritten by 'sshepherd apply'.", 0, false},
+	{"text before legacy", "x" + legacy, 0, false},
+	{"text before serial", "x" + serialLine("7"), 0, false},
 	{"hand written", "ssh-ed25519 AAAA x", 0, false},
 	{"empty", "", 0, false},
 }
