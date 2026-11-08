@@ -140,25 +140,6 @@ linters:
           - errcheck
           - gocyclo
           - wrapcheck
-      # Layering (ARC-8) exceptions in tests that predate the rules, pinned
-      # to the file and the exact import so any other cross-layer import
-      # still fails: apply's and adopt's contract tests drive the real
-      # transport (sshconn.Error, DialHint, FleetWriter against sshtest) to
-      # prove the classified-error vocabulary end to end, and the write
-      # integration test probes in audit.OfferOrder. Drop an entry once its
-      # test moves out of the layer.
-      - path: '(^|/)internal/apply/json_test\.go$'
-        linters:
-          - depguard
-        text: '^import ''github\.com/javadh75/SSHepherd/internal/(sshconn|sshconn/sshtest|sshwrite)'' is not allowed from list ''domain'''
-      - path: '(^|/)internal/(apply/report|adopt/adopt)_test\.go$'
-        linters:
-          - depguard
-        text: '^import ''github\.com/javadh75/SSHepherd/internal/sshconn'' is not allowed from list ''domain'''
-      - path: '(^|/)internal/sshwrite/integration_test\.go$'
-        linters:
-          - depguard
-        text: '^import ''github\.com/javadh75/SSHepherd/internal/audit'' is not allowed from list ''transport'''
       # gosec is not in `enable` above: `make gosec` runs it here with
       # `--enable-only=gosec`, for the //go:build integration test files
       # only (standalone gosec skips every _test.go file; it covers the

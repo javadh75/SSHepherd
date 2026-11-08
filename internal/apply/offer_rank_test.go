@@ -3,7 +3,7 @@ package apply
 import (
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 )
 
 // TestOfferRankAgreesWithGuard: every option P05's table classifies is read
@@ -24,7 +24,7 @@ func TestOfferRankAgreesWithGuard(t *testing.T) {
 		{[]string{"cert-authority"}, 3, false},
 		{[]string{`principals="a"`}, 3, false},
 	} {
-		if got := audit.OfferRank(tt.opts); got != tt.rank {
+		if got := authkeys.OfferRank(tt.opts); got != tt.rank {
 			t.Errorf("OfferRank(%q) = %d, want %d", tt.opts, got, tt.rank)
 		}
 		if got := hasRestrictiveOption(tt.opts); got != tt.restrictive {

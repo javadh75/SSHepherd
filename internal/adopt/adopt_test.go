@@ -10,7 +10,6 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -391,15 +390,33 @@ func TestBuildUnreachableServerIsAnIssue(t *testing.T) {
 	}
 }
 
+// hintedErr is a classified transport error with its remediation kept out
+// of the message (the fleet.KindedError and fleet.Hinted pair that
+// sshconn.Error implements), built here so adopt's tests need no transport
+// import (ARC-8).
+type hintedErr struct {
+	kind fleet.ErrorKind
+	hint string
+	err  error
+}
+
+func (e *hintedErr) Error() string              { return e.err.Error() }
+func (e *hintedErr) Unwrap() error              { return e.err }
+func (e *hintedErr) ErrorKind() fleet.ErrorKind { return e.kind }
+func (e *hintedErr) ErrorHint() string          { return e.hint }
+
+// testDialHint stands in for the transport's dial hint.
+const testDialHint = "check the host, port, and firewall"
+
 // The dial hint is not part of the error text (sshconn keeps it out of
 // Error()), so an Issue carries it in its own field for the cmd layer to
 // print once; Detail stays the clean error.
 func TestBuildKeepsHint(t *testing.T) {
 	cfg := testCfg(t)
-	err := &sshconn.Error{
-		Kind: fleet.ErrorKindDial,
-		Err:  errors.New("dial tcp 127.0.0.1:1: connect: connection refused"),
-		Hint: sshconn.DialHint,
+	err := &hintedErr{
+		kind: fleet.ErrorKindDial,
+		err:  errors.New("dial tcp 127.0.0.1:1: connect: connection refused"),
+		hint: testDialHint,
 	}
 	p := Build(cfg, []audit.ServerResult{{Server: config.Server{Name: "db-1"}, Err: err}})
 	if len(p.Issues) != 1 {
@@ -408,7 +425,7 @@ func TestBuildKeepsHint(t *testing.T) {
 	if got, want := p.Issues[0].Hint, audit.CleanHint(err); got != want || got == "" {
 		t.Errorf("Issues[0].Hint = %q, want %q", got, want)
 	}
-	if strings.Contains(p.Issues[0].Detail, sshconn.DialHint) {
+	if strings.Contains(p.Issues[0].Detail, testDialHint) {
 		t.Errorf("Issues[0].Detail = %q, must not embed the dial hint", p.Issues[0].Detail)
 	}
 }

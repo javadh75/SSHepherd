@@ -19,7 +19,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
@@ -754,7 +753,7 @@ func itKeyFile(t *testing.T, name string) keyfile.Identity {
 // TestIntegrationProbeOrderMatchesNextRun (WP-5): the render lists a
 // forced-command line first (for the key file, which the default signer
 // order offers first) and a plain line second (the agent key); both keys
-// are held. The probe offers the survivors in audit.OfferOrder, so it
+// are held. The probe offers the survivors in authkeys.OfferOrder, so it
 // proves the plain key — and the next run, offering the same order, reads
 // the real file instead of running the forced command.
 func TestIntegrationProbeOrderMatchesNextRun(t *testing.T) {
@@ -774,7 +773,7 @@ func TestIntegrationProbeOrderMatchesNextRun(t *testing.T) {
 		}
 		desired = append(desired, *k)
 	}
-	order := audit.OfferOrder(desired)
+	order := authkeys.OfferOrder(desired)
 	if len(order) != 2 || order[0] != itSurvivors(t)[0] {
 		t.Fatalf("OfferOrder = %v, want the plain agent key first", order)
 	}

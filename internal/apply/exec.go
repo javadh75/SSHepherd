@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
@@ -122,7 +121,7 @@ func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []fleet.HeldKey
 }
 
 // probeOrderFor returns what the post-write probe offers: the survivors in
-// the order every later connection offers them (audit.OfferOrder over the
+// the order every later connection offers them (authkeys.OfferOrder over the
 // plan's desired keys — what GrantedFingerprints hands the Dialer). The
 // probe therefore proves exactly the key the next run logs in with, and a
 // forced command= line is offered only after every plain survivor.
@@ -132,7 +131,7 @@ func probeOrderFor(desired, surviving []authkeys.Key) []string {
 		keep[k.Fingerprint] = true
 	}
 	var order []string
-	for _, fp := range audit.OfferOrder(desired) {
+	for _, fp := range authkeys.OfferOrder(desired) {
 		if keep[fp] {
 			order = append(order, fp)
 			delete(keep, fp)

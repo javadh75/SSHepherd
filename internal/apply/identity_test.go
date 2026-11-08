@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
@@ -149,7 +148,7 @@ func TestExecuteRecheckAcrossSources(t *testing.T) {
 	})
 }
 
-// TestProbeOrder (WP-5): the probe offers audit.OfferOrder(desired)
+// TestProbeOrder (WP-5): the probe offers authkeys.OfferOrder(desired)
 // filtered to the survivors — the order every later connection offers —
 // whatever order the survivors arrive in, and with no preference for
 // --identity files over agent keys.
@@ -165,7 +164,7 @@ func TestProbeOrder(t *testing.T) {
 	surviving := []authkeys.Key{plainA, from, forced, plainB}
 	want := []string{plainB.Fingerprint, plainA.Fingerprint, from.Fingerprint, forced.Fingerprint}
 	var wantOffer []string
-	for _, fp := range audit.OfferOrder(desired) {
+	for _, fp := range authkeys.OfferOrder(desired) {
 		if fp != gone.Fingerprint {
 			wantOffer = append(wantOffer, fp)
 		}

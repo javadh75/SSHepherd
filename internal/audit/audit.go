@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -101,48 +100,13 @@ func duplicatesOf(actual []authkeys.Key) []Duplicate {
 	return dups
 }
 
-// OfferRank groups a granted key line for the connection layers, read from
-// authkeys' option table only: 0 lets any command run; 1 may reject the
-// login or narrow the session (from=, expiry-time=, restrict); 2 forces a
-// command (authenticating with it runs that command instead of sshepherd's
-// script); 3 never accepts the bare key (cert-authority, principals=).
-func OfferRank(options []string) int {
-	if authkeys.CertOnly(options) {
-		return 3
-	}
-	if _, forced := authkeys.FindOption(options, "command"); forced {
-		return 2
-	}
-	if authkeys.BlocksLogin(options) {
-		return 1
-	}
-	return 0
-}
-
-// OfferOrder is the one order in which every connection offers a server's
-// granted keys — audit and adopt reads, apply's read and write, and the
-// post-write probe: desired (DesiredFor order: operators, then grant order)
-// stably partitioned by OfferRank, so a forced-command line is never the
-// first key a session authenticates with while a plain one is held.
-func OfferOrder(desired []authkeys.Key) []string {
-	keys := slices.Clone(desired)
-	slices.SortStableFunc(keys, func(a, b authkeys.Key) int {
-		return cmp.Compare(OfferRank(a.Options), OfferRank(b.Options))
-	})
-	fps := make([]string, 0, len(keys))
-	for _, k := range keys {
-		fps = append(fps, k.Fingerprint)
-	}
-	return fps
-}
-
 // GrantedFingerprints lists the fingerprints the manifest grants on server,
-// in OfferOrder. Connection layers offer these keys (from --identity files
+// in authkeys.OfferOrder. Connection layers offer these keys (from --identity files
 // or the agent) first, so a run holding many keys does not exhaust sshd's
 // MaxAuthTries on keys the server was never meant to accept, and a session
 // authenticates with an unrestricted key whenever one is held.
 func GrantedFingerprints(cfg *config.Config, server string) []string {
-	return OfferOrder(cfg.DesiredFor(server))
+	return authkeys.OfferOrder(cfg.DesiredFor(server))
 }
 
 // auditOne audits a single server. It is self-contained and shares no mutable

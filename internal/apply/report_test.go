@@ -14,7 +14,6 @@ import (
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -82,9 +81,29 @@ func mixedPlans(t *testing.T) (*config.Config, []ServerPlan) {
 	return cfg, buildPlans(t, cfg, r, []string{fp(t, 2)})
 }
 
-// dialRefused is exactly what sshconn returns for a refused TCP connect.
+// testDialHint mirrors sshconn.DialHint (apply cannot import sshconn,
+// ARC-8); internal/sshconn's TestAuditGoldenCarriesDialHint pins the two
+// equal through summary_failed_hint.golden.
+const testDialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+
+// hintedErr is a classified transport error with its remediation kept out
+// of the message (the fleet.KindedError and fleet.Hinted pair that
+// sshconn.Error implements), built here so apply's tests need no transport
+// import.
+type hintedErr struct {
+	kind fleet.ErrorKind
+	hint string
+	err  error
+}
+
+func (e *hintedErr) Error() string              { return e.err.Error() }
+func (e *hintedErr) Unwrap() error              { return e.err }
+func (e *hintedErr) ErrorKind() fleet.ErrorKind { return e.kind }
+func (e *hintedErr) ErrorHint() string          { return e.hint }
+
+// dialRefused is what sshconn returns for a refused TCP connect.
 func dialRefused(ip string) error {
-	return &sshconn.Error{Kind: fleet.ErrorKindDial, Hint: sshconn.DialHint, Err: &net.OpError{Op: "dial", Net: "tcp",
+	return &hintedErr{kind: fleet.ErrorKindDial, hint: testDialHint, err: &net.OpError{Op: "dial", Net: "tcp",
 		Addr: &net.TCPAddr{IP: net.ParseIP(ip), Port: 22}, Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
 }
 
@@ -134,7 +153,7 @@ func TestRenderSummaryFailedHint(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	RenderSummary(&buf, plans, RenderOptions{})
-	if n := strings.Count(buf.String(), "  hint: "+sshconn.DialHint+"\n"); n != 1 {
+	if n := strings.Count(buf.String(), "  hint: "+testDialHint+"\n"); n != 1 {
 		t.Errorf("hint printed %d times, want 1:\n%s", n, buf.String())
 	}
 	checkGolden(t, "summary_failed_hint.golden", buf.Bytes())
@@ -145,7 +164,7 @@ func TestRenderSummaryFailedHint(t *testing.T) {
 func TestRenderSummaryRefusedHint(t *testing.T) {
 	const hint = "remove the stale lock by hand once no other run is writing"
 	refused := func(name string) error {
-		return fleet.Refused(&sshconn.Error{Kind: fleet.ErrorKindDial, Hint: hint, Err: errors.New(name + " is locked by another run")})
+		return fleet.Refused(&hintedErr{kind: fleet.ErrorKindDial, hint: hint, err: errors.New(name + " is locked by another run")})
 	}
 	plans := []ServerPlan{
 		{Server: config.Server{Name: "a"}, Class: ClassChange, Outcome: OutcomeRefused, OutcomeErr: refused("a")},
@@ -215,7 +234,7 @@ func TestRenderPlanMixedGolden(t *testing.T) {
 		"→ 2 keys desired · 1 add · 1 remove · 1 rewrite",
 		"web-2 (deploy@10.0.0.2:22)  converged (no changes)",
 		"db-1 (deploy@10.0.0.9:22)  REFUSED: 1 key installed but manifest grants none — refusing to wipe",
-		"web-3 (deploy@10.0.0.3:22)  ERROR [dial]: dial tcp 10.0.0.3:22: connect: connection refused\n  hint: " + sshconn.DialHint + "\n",
+		"web-3 (deploy@10.0.0.3:22)  ERROR [dial]: dial tcp 10.0.0.3:22: connect: connection refused\n  hint: " + testDialHint + "\n",
 		`-  (unknown) "stray@laptop"`,
 	} {
 		if !strings.Contains(out, want) {

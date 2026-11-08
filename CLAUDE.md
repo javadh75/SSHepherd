@@ -504,11 +504,11 @@ P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one
-`audit.OfferOrder` for every connection and the probe, keys2 on equivalent default
+`OfferOrder` for every connection and the probe, keys2 on equivalent default
 spellings, no-grant + keys2 refused, `sanitize.RemoteSnippet` bounds remote stderr
 and handshake/disconnect text. A refused or failed write removes only the directories it
 created; `.orig` is flushed too; a rejected session channel's text is bounded like
-stderr; the keys2 probe also follows a symlinked managed file. One offer order (`audit.OfferOrder`/`OfferRank`:
+stderr; the keys2 probe also follows a symlinked managed file. One offer order (`OfferOrder`/`OfferRank`, now in `internal/authkeys`:
 plain, then from=/expiry-time=/restrict, then command=, then cert-only; stable in
 manifest order) now feeds `GrantedFingerprints` and the post-write probe, so the
 probe proves the key the next run logs in with (no `--identity` preference, D31,
@@ -561,9 +561,13 @@ Layering is machine-enforced (P14 S5, ARC-8): `.golangci.yml` depguard rules `do
 sshconn/sshread/sshwrite/keyfile, x/term, ssh/agent or cobra), `transport`
 (sshconn/sshread/sshwrite never import audit/apply/adopt/workflow or cobra) and
 `fleet-leaf` (internal/fleet non-test code is stdlib only), plus the transitive
-`make layering` check (in `make check`). Four pre-existing test files are pinned by file
-and import in `exclusions.rules`: apply/json_test.go, apply/report_test.go,
-adopt/adopt_test.go and sshwrite/integration_test.go.
+`make layering` check (in `make check`). The rules cover test files too, with no
+exclusions: apply's and adopt's tests build classified, hinted errors from the fleet
+vocabulary (apply's `testDialHint` mirror is pinned to `sshconn.DialHint` by sshconn's
+`TestAuditGoldenCarriesDialHint`), the write-connect timeout contract test
+(`TestJSONWriteConnectTimeoutIsTimeout`, real `FleetWriter` against `sshtest`) lives in
+cmd, and `OfferRank`/`OfferOrder` moved from `audit` to `internal/authkeys`, so the
+sshwrite integration test no longer imports audit.
 Test hardening (P14 lane T): mutation-killing tests now cover apply's `applying N servers`
 plural and its granted-key-first offer order on the read and write dials, every
 manifestError call site (missing and invalid, per command), the ` · options:` suffix's

@@ -347,15 +347,21 @@ func TestConnectDialEndedByCtxHint(t *testing.T) {
 	}
 }
 
-// TestAuditGoldenCarriesDialHint: audit's goldens (and the README samples
-// copied from them) use a mirror of DialHint; this keeps the mirror honest.
+// TestAuditGoldenCarriesDialHint: audit's and apply's goldens (and the
+// README samples copied from them) use a mirror of DialHint, since neither
+// package may import sshconn (ARC-8); this keeps each mirror honest.
 func TestAuditGoldenCarriesDialHint(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("..", "audit", "testdata", "report_drift.golden"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(b, []byte("  hint: "+DialHint+"\n")) {
-		t.Error("internal/audit/testdata/report_drift.golden does not carry sshconn.DialHint verbatim; update testDialHint in internal/audit/report_test.go")
+	for _, tt := range []struct{ golden, mirror string }{
+		{"audit/testdata/report_drift.golden", "internal/audit/report_test.go"},
+		{"apply/testdata/summary_failed_hint.golden", "internal/apply/report_test.go"},
+	} {
+		b, err := os.ReadFile(filepath.Join("..", filepath.FromSlash(tt.golden)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(b, []byte("  hint: "+DialHint+"\n")) {
+			t.Errorf("internal/%s does not carry sshconn.DialHint verbatim; update testDialHint in %s", tt.golden, tt.mirror)
+		}
 	}
 }
 

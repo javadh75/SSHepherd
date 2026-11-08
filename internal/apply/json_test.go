@@ -2,23 +2,16 @@ package apply
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
-	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
-	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
-	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -482,7 +475,7 @@ func TestRenderJSONHintAndRemoveOptions(t *testing.T) {
 			}
 			continue
 		}
-		if s.ErrorKind != "dial" || s.Hint != sshconn.DialHint || strings.Contains(*s.Error, "hint") {
+		if s.ErrorKind != "dial" || s.Hint != testDialHint || strings.Contains(*s.Error, "hint") {
 			t.Errorf("%s: error %q kind %q hint %q", s.Name, *s.Error, s.ErrorKind, s.Hint)
 		}
 	}
@@ -670,33 +663,5 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 				t.Errorf("jsonErrorFor = (%v, %q), want kind %q", msg, kind, tt.want)
 			}
 		})
-	}
-}
-
-// TestJSONWriteConnectTimeoutIsTimeout: the per-server timeout firing
-// during the write connect is a started server that failed — "timeout",
-// never "canceled", which the document reserves for a pending server that
-// never started. The write connect's AfterFunc cancels its detached ctx
-// when the per-server deadline expires, so the transport sees a plain
-// cancellation and classifies it "canceled" (ARC-3 repair).
-func TestJSONWriteConnectTimeoutIsTimeout(t *testing.T) {
-	hostKey := sshtest.Signer(t, sshtest.Key(200))
-	s := sshtest.NewServer(t, sshtest.ServerConfig{HostKeys: []ssh.Signer{hostKey}, Stall: true})
-	w := &sshwrite.FleetWriter{Dialer: &sshconn.Dialer{
-		KnownHostsPath: sshtest.KnownHostsFile(t, s.KnownHostsLine(hostKey.PublicKey())),
-		Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, sshtest.Key(1))},
-		DialTimeout:    5 * time.Second,
-	}}
-	held := testKey(t, 1)
-	p := changePlan("web-1", held)
-	p.Server = config.Server{Name: "web-1", Host: s.Host, Port: s.Port, User: "deploy"}
-	plans := []ServerPlan{p}
-	Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, PerServerTimeout: 200 * time.Millisecond, Held: agentHeld(held.Fingerprint)})
-
-	if plans[0].Outcome != OutcomeFailed {
-		t.Fatalf("Outcome = %s (err %v), want failed", plans[0].Outcome, plans[0].OutcomeErr)
-	}
-	if msg, kind, _ := jsonErrorFor(plans[0]); msg == nil || kind != string(fleet.ErrorKindTimeout) {
-		t.Errorf("jsonErrorFor = (%v, %q), want kind timeout", msg, kind)
 	}
 }
