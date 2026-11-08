@@ -67,3 +67,39 @@ func FuzzShQuote(f *testing.F) {
 		}
 	})
 }
+
+// FuzzFinishPosture pins the fail-closed property: whatever a server prints,
+// a nil error means every line was a well-formed record, so garbage can
+// never be read as a clean posture.
+func FuzzFinishPosture(f *testing.F) {
+	f.Add("")
+	f.Add("SSHEPHERD-KEYS2 1\n")
+	f.Add("SSHEPHERD-POSTURE drwxrwxrwx 1001 world_writable /home/d/.ssh\n")
+	f.Add("hello\n")
+	f.Add("\n")
+	f.Fuzz(func(t *testing.T, out string) {
+		stdout := NewCappedBuffer(MaxRemoteOutput)
+		_, _ = stdout.Write([]byte(out))
+		issues, _, err := FinishPosture(0, stdout, NewCappedBuffer(16))
+		if err != nil {
+			return
+		}
+		if out == "" {
+			if issues != nil {
+				t.Fatalf("no output produced findings: %+v", issues)
+			}
+			return
+		}
+		if !strings.HasSuffix(out, "\n") {
+			t.Fatalf("accepted output without a final newline: %q", out)
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+			if line != postureKeys2Record && !postureRecord.MatchString(line) {
+				t.Fatalf("accepted a non-record line %q in %q", line, out)
+			}
+		}
+		if len(issues) > maxPostureRecords {
+			t.Fatalf("%d issues exceed the cap", len(issues))
+		}
+	})
+}

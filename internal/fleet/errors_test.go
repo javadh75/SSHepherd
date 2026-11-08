@@ -75,7 +75,8 @@ func TestErrorKindWireValues(t *testing.T) {
 	want := map[ErrorKind]string{
 		ErrorKindUnknown: "unknown", ErrorKindHostKeyUnknown: "host_key_unknown",
 		ErrorKindHostKeyChanged: "host_key_changed", ErrorKindHostKeyTypeUnrecorded: "host_key_type_unrecorded",
-		ErrorKindHostKeyRevoked: "host_key_revoked", ErrorKindHostKey: "host_key", ErrorKindAgent: "agent",
+		ErrorKindHostKeyTypeChanged: "host_key_type_changed",
+		ErrorKindHostKeyRevoked:     "host_key_revoked", ErrorKindHostKey: "host_key", ErrorKindAgent: "agent",
 		ErrorKindAuth: "auth", ErrorKindDial: "dial", ErrorKindTimeout: "timeout",
 		ErrorKindCanceled: "canceled", ErrorKindHandshake: "handshake", ErrorKindRemote: "remote",
 	}
@@ -90,6 +91,21 @@ func TestHostKeyAlert(t *testing.T) {
 	for kind, want := range map[ErrorKind]bool{
 		ErrorKindHostKeyChanged: true, ErrorKindHostKeyRevoked: true,
 		ErrorKindHostKeyUnknown: false, ErrorKindHostKeyTypeUnrecorded: false, ErrorKindHostKey: false, ErrorKindDial: false,
+	} {
+		if got := HostKeyAlert(kind); got != want {
+			t.Errorf("HostKeyAlert(%q) = %v, want %v", kind, got, want)
+		}
+	}
+}
+
+func TestHostKeyAlertIncludesTypeChanged(t *testing.T) {
+	for kind, want := range map[ErrorKind]bool{
+		ErrorKindHostKeyChanged:        true,
+		ErrorKindHostKeyRevoked:        true,
+		ErrorKindHostKeyTypeChanged:    true,
+		ErrorKindHostKeyTypeUnrecorded: false,
+		ErrorKindHostKey:               false,
+		ErrorKindAuth:                  false,
 	} {
 		if got := HostKeyAlert(kind); got != want {
 			t.Errorf("HostKeyAlert(%q) = %v, want %v", kind, got, want)

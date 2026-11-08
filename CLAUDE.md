@@ -449,7 +449,11 @@ tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`
 built-in weak/expired key rules via D29; specced in
 `docs/superpowers/specs/2026-11-08-audit-trust-posture-design.md`, planned in
 `docs/superpowers/plans/2026-11-08-audit-trust-posture.md`) is approved with D14–D19 and
-its open points answered; implementation is W6, after P08. The access-model roadmap spec
+its open points answered; implementation is W6, after P08. Landed so far: every read
+runs a fail-closed posture probe in its own session in place of the keys2 probe, still
+two sessions per read (`sshconn.PostureCmdFor`/`FinishPosture`, sharing `AncestorWalk`
+with the write scripts, now pinned by `scripts_golden_test.go`); `ReadResult.Posture`
+carries the findings, which audit does not grade yet. The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is a draft
 awaiting approval. Audit's claim is narrowed to
 the managed `authorized_keys` files (D18).

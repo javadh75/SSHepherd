@@ -23,6 +23,26 @@ type ReadResult struct {
 	// Only the post-revoke sweep asks.
 	Keys2    []byte
 	Keys2Err error
+	// Posture lists the StrictModes problems on the managed file and its
+	// directories, as the posture probe reported them. Nil on a clean path.
+	Posture []PostureIssue
+}
+
+// The posture issue names: the JSON "issue" values and the probe's grammar.
+const (
+	PostureSymlink       = "symlink"
+	PostureForeignOwner  = "foreign_owner"
+	PostureGroupWritable = "group_writable"
+	PostureWorldWritable = "world_writable"
+)
+
+// PostureIssue is one problem on the managed authorized_keys file or one of
+// its directories, the conditions sshd's StrictModes refuses.
+type PostureIssue struct {
+	Path  string // sanitized; remote-controlled once resolved
+	Issue string // one of the Posture* names
+	Mode  string // ls -ldn's first field, e.g. "drwxrwxrwx"
+	UID   string // the owner's uid as printed
 }
 
 // SourceAgent is HeldKey.Source for a key the ssh-agent holds.

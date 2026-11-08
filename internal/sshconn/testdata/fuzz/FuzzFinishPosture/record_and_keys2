@@ -1,0 +1,2 @@
+go test fuzz v1
+string("SSHEPHERD-POSTURE drwxrwxrwx 1001 world_writable /home/d/.ssh\nSSHEPHERD-KEYS2 1\n")

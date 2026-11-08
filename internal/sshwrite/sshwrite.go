@@ -108,19 +108,10 @@ const createDirs = `; C=; U() { for k in $C; do j=0; q="$d"; while [ $j -lt $k ]
 	`; while [ $k -ge 0 ]; do j=0; q="$d"; while [ $j -lt $k ]; do q=$(dirname "$q"); j=$((j+1)); done` +
 	`; if [ ! -e "$q" ] && [ ! -L "$q" ]; then mkdir "$q" || exit 1; C="$k $C"; fi; k=$((k-1)); done; fi`
 
-// ancestorCheck walks the target directory "$d" up to the login user's
-// home (or /, for a path outside it) twice — as written, and resolved with
-// cd -P — refusing (48) any component owned by someone other than the login
-// user or root, and any directory that is group- or other-writable. This is
-// sshd's StrictModes walk (which also stops at the home directory): whoever
-// can write an ancestor, or owns a symlink along the path, can redirect the
-// write, e.g. a link that turns root's write into /root/.ssh. Symlinks are
-// judged by owner only (their mode bits are meaningless); the resolved walk
-// covers the directories they lead to. ls -ldn reports a symlink itself,
-// so the as-written walk sees each link, not its target. Needs u and d.
-const ancestorCheck = `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
-	`; q="$d"; while :; do set -- $(ls -ldn "$q"); case $1 in l*) ;; ?????w*|????????w*) exit 48;; esac; if [ "$3" != "$u" ] && [ "$3" != 0 ]; then exit 48; fi; if [ "$q" = "$h" ] || [ "$q" = / ] || [ "$q" = . ]; then break; fi; q=$(dirname "$q"); done` +
-	`; q=$(cd -P "$d" && pwd -P) || exit 1; while :; do set -- $(ls -ldn "$q"); case $1 in ?????w*|????????w*) exit 48;; esac; if [ "$3" != "$u" ] && [ "$3" != 0 ]; then exit 48; fi; if [ "$q" = "$ph" ] || [ "$q" = / ]; then break; fi; q=$(dirname "$q"); done`
+// ancestorCheck is the write path's StrictModes walk: the shared
+// sshconn.AncestorWalk refusing (48) any component it objects to. Needs u
+// and d. Every write-path script carries it, byte for byte.
+var ancestorCheck = sshconn.AncestorWalk("exit "+strconv.Itoa(unsafePathExit), "exit "+strconv.Itoa(unsafePathExit))
 
 // writeCmdFor builds the single write script. Order matters:
 //

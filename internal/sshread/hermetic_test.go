@@ -2,8 +2,10 @@ package sshread
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
@@ -164,4 +167,156 @@ func TestReadKeys2Content(t *testing.T) {
 	if err != nil || res.Keys2 != nil || res.AuthorizedKeys2 {
 		t.Fatalf("empty keys2: %+v, err %v", res, err)
 	}
+}
+
+// TestReadPosture: the probe's findings reach ReadResult.Posture through a
+// real SSH session and a real shell.
+func TestReadPosture(t *testing.T) {
+	tests := []struct {
+		name  string
+		chmod func(t *testing.T, home string)
+		want  string // "" = clean
+	}{
+		{"0700 is clean", func(*testing.T, string) {}, ""},
+		{"0777 ~/.ssh is world-writable", func(t *testing.T, h string) { mustChmod(t, filepath.Join(h, ".ssh"), 0o777) }, fleet.PostureWorldWritable},
+		{"0775 ~/.ssh is group-writable", func(t *testing.T, h string) { mustChmod(t, filepath.Join(h, ".ssh"), 0o775) }, fleet.PostureGroupWritable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := shortTempDir(t)
+			mustChmod(t, home, 0o700)
+			writeHomeFile(t, home, ".ssh/authorized_keys", "key-line\n")
+			tt.chmod(t, home)
+			c, _, srv := hermeticClient(t, home)
+			res := readHermetic(t, c, srv)
+			if tt.want == "" {
+				if len(res.Posture) != 0 {
+					t.Fatalf("posture = %+v, want clean", res.Posture)
+				}
+				return
+			}
+			if !slices.ContainsFunc(res.Posture, func(i fleet.PostureIssue) bool { return i.Issue == tt.want }) {
+				t.Errorf("posture = %+v, want a %s finding", res.Posture, tt.want)
+			}
+		})
+	}
+	t.Run("symlinked file", func(t *testing.T) {
+		home := shortTempDir(t)
+		mustChmod(t, home, 0o700)
+		writeHomeFile(t, home, ".ssh/real", "key-line\n")
+		if err := os.Symlink("real", filepath.Join(home, ".ssh", "authorized_keys")); err != nil {
+			t.Fatal(err)
+		}
+		c, _, srv := hermeticClient(t, home)
+		res := readHermetic(t, c, srv)
+		if string(res.Content) != "key-line\n" {
+			t.Errorf("content = %q", res.Content)
+		}
+		if !slices.ContainsFunc(res.Posture, func(i fleet.PostureIssue) bool { return i.Issue == fleet.PostureSymlink }) {
+			t.Errorf("posture = %+v, want a symlink finding", res.Posture)
+		}
+	})
+	t.Run("absent file is clean", func(t *testing.T) {
+		home := shortTempDir(t)
+		mustChmod(t, home, 0o700)
+		c, _, srv := hermeticClient(t, home)
+		res := readHermetic(t, c, srv)
+		if !res.FileAbsent || len(res.Posture) != 0 {
+			t.Errorf("FileAbsent=%v posture=%+v, want absent and clean", res.FileAbsent, res.Posture)
+		}
+	})
+	t.Run("override path outside HOME", func(t *testing.T) {
+		home := shortTempDir(t)
+		mustChmod(t, home, 0o700)
+		outside := shortTempDir(t)
+		mustChmod(t, outside, 0o777)
+		if err := os.WriteFile(filepath.Join(outside, "keys"), []byte("key-line\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, _, srv := hermeticClient(t, home)
+		srv.AuthorizedKeysFile = filepath.Join(outside, "keys")
+		res := readHermetic(t, c, srv)
+		if !slices.ContainsFunc(res.Posture, func(i fleet.PostureIssue) bool {
+			return i.Issue == fleet.PostureWorldWritable && filepath.Base(i.Path) == filepath.Base(outside)
+		}) {
+			t.Errorf("posture = %+v, want the override's directory reported", res.Posture)
+		}
+	})
+}
+
+// TestReadCostsTwoSessions: the posture session replaced the keys2 probe, so
+// a read stays at two sessions on the default path and on an override.
+func TestReadCostsTwoSessions(t *testing.T) {
+	for _, override := range []string{"", "~/keys/deploy"} {
+		home := shortTempDir(t)
+		mustChmod(t, home, 0o700)
+		writeHomeFile(t, home, ".ssh/authorized_keys", "key-line\n")
+		writeHomeFile(t, home, "keys/deploy", "key-line\n")
+		c, fake, srv := hermeticClient(t, home)
+		srv.AuthorizedKeysFile = override
+		readHermetic(t, c, srv)
+		if got := len(fake.Commands()); got != 2 {
+			t.Errorf("override %q: %d sessions, want 2", override, got)
+		}
+	}
+}
+
+// TestReadFailsClosedOnBadPosture: a probe that exits non-zero or prints
+// garbage fails the read as ErrorKindRemote (D14b).
+func TestReadFailsClosedOnBadPosture(t *testing.T) {
+	tests := []struct {
+		name   string
+		stdout string
+		code   int
+		want   string
+	}{
+		{"garbage output", "not a record\n", 0, "posture probe output malformed"},
+		{"failed tool", "", 7, "posture probe failed (exit 7)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			user, host := sshtest.Key(1), sshtest.Signer(t, sshtest.Key(40))
+			srv := sshtest.NewServer(t, sshtest.ServerConfig{
+				HostKeys:   []ssh.Signer{host},
+				Authorized: []ssh.PublicKey{sshtest.Signer(t, user).PublicKey()},
+				Handle: func(_ context.Context, cmd string, _ io.Reader, stdout, _ io.Writer) int {
+					if strings.Contains(cmd, "SSHEPHERD-POSTURE") {
+						_, _ = io.WriteString(stdout, tt.stdout)
+						return tt.code
+					}
+					_, _ = io.WriteString(stdout, "key-line\n")
+					return 0
+				},
+			})
+			c := &Client{
+				KnownHostsPath: sshtest.KnownHostsFile(t, srv.KnownHostsLine(host.PublicKey())),
+				Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, user)},
+				DialTimeout:    5 * time.Second,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, err := c.ReadAuthorizedKeys(ctx, config.Server{Name: "web-1", Host: srv.Host, Port: srv.Port, User: "deploy"})
+			if fleet.ErrorKindOf(err) != fleet.ErrorKindRemote || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err = %v, want a remote error containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func mustChmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readHermetic(t *testing.T, c *Client, srv config.Server) fleet.ReadResult {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	res, err := c.ReadAuthorizedKeys(ctx, srv)
+	if err != nil {
+		t.Fatalf("ReadAuthorizedKeys: %v", err)
+	}
+	return res
 }

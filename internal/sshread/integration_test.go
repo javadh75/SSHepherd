@@ -136,3 +136,57 @@ func TestIntegrationReadKeys2Content(t *testing.T) {
 		t.Errorf("Keys2 = %q (err %v, present %v), want the seed key %q", res.Keys2, res.Keys2Err, res.AuthorizedKeys2, want)
 	}
 }
+
+// TestIntegrationPostureGroupWritable: on a real sshd and every distro's
+// shell, a 0775 directory reports group_writable. User "loose" logs in via
+// its 0700 ~/.ssh; the managed file is an override below a 0775 ~/loose, so
+// sshd's StrictModes (on in the container) still lets the login through.
+func TestIntegrationPostureGroupWritable(t *testing.T) {
+	c, host, port := itClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := c.ReadAuthorizedKeys(ctx, config.Server{Name: "it", Host: host, Port: port, User: "loose", AuthorizedKeysFile: "~/loose/keys"})
+	if err != nil {
+		t.Fatalf("ReadAuthorizedKeys: %v", err)
+	}
+	if len(res.Posture) != 1 || res.Posture[0].Issue != fleet.PostureGroupWritable || res.Posture[0].Path != "/home/loose/loose" {
+		t.Fatalf("posture = %+v, want one group_writable finding on /home/loose/loose", res.Posture)
+	}
+	if !strings.HasPrefix(res.Posture[0].Mode, "drwxrwx") {
+		t.Errorf("mode = %q", res.Posture[0].Mode)
+	}
+}
+
+// TestIntegrationPostureRootOwnedClean (D14a): sshd accepts root as owner of
+// the file and of its directory, so audit does too, although apply refuses
+// both (TestIntegrationOwnershipRefusals). The fixtures are read-only here.
+func TestIntegrationPostureRootOwnedClean(t *testing.T) {
+	c, host, port := itClient(t)
+	for _, user := range []string{"ffile", "fdir"} { // root-owned authorized_keys; root-owned ~/.ssh
+		t.Run(user, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			res, err := c.ReadAuthorizedKeys(ctx, config.Server{Name: user, Host: host, Port: port, User: user})
+			if err != nil {
+				t.Fatalf("ReadAuthorizedKeys: %v", err)
+			}
+			if len(res.Posture) != 0 {
+				t.Errorf("posture = %+v, want clean: root is an accepted owner", res.Posture)
+			}
+		})
+	}
+}
+
+// TestIntegrationPostureClean: a stock fixture user has no findings.
+func TestIntegrationPostureClean(t *testing.T) {
+	c, host, port := itClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := c.ReadAuthorizedKeys(ctx, config.Server{Name: "it", Host: host, Port: port, User: "present"})
+	if err != nil {
+		t.Fatalf("ReadAuthorizedKeys: %v", err)
+	}
+	if len(res.Posture) != 0 {
+		t.Errorf("posture = %+v, want clean", res.Posture)
+	}
+}

@@ -155,14 +155,13 @@ func (c *Client) getDialer() *sshconn.Dialer {
 
 // readAuthorizedKeys connects through sshconn.Dialer and reads the server's
 // authorized_keys — srv.AuthorizedKeysFile when set, ~/.ssh/authorized_keys
-// otherwise — via a one-shot session. When that path is the default one —
-// ~/.ssh/authorized_keys or an equivalent spelling that resolves to it on
-// the server, such as /home/alice/.ssh/authorized_keys — it also reports a
-// non-empty ~/.ssh/authorized_keys2, which sshd's default
-// AuthorizedKeysFile consults too. The probe (sshconn.SecondaryKeysCmdFor)
-// is a second short session on the same connection and runs for every
-// read: for a non-default path it costs that one extra session to decide
-// that the path is not equivalent. Deadline semantics live
+// otherwise — via a one-shot session. A second short session on the same
+// connection runs the posture probe (sshconn.PostureCmdFor), for every read:
+// the StrictModes state of the file and its directories, and whether a
+// non-empty ~/.ssh/authorized_keys2 sits beside a managed path that is the
+// default one or an equivalent spelling of it. A failed or malformed probe
+// fails the read (fail-closed: a server cannot look clean by hiding its
+// posture). Deadline semantics live
 // in Connect: the ctx deadline (or the derived 3×DialTimeout floor) bounds
 // the whole exchange, not just the dial; ctx cancellation ends it at once.
 func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
@@ -189,14 +188,15 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (fle
 	}
 	res.SessionKeyFP = conn.SessionKeyFP()
 
-	code, _, stderr, err = sshconn.Exec(ctx, conn.Client, sshconn.SecondaryKeysCmdFor(path), nil)
+	code, stdout, stderr, err = sshconn.Exec(ctx, conn.Client, sshconn.PostureCmdFor(path), nil)
 	if err != nil {
-		return zero, fmt.Errorf("authorized_keys2 probe on %s: %w", addr, err)
+		return zero, fmt.Errorf("posture probe on %s: %w", addr, err)
 	}
-	present, err := sshconn.FinishSecondaryProbe(code, stderr)
+	posture, present, err := sshconn.FinishPosture(code, stdout, stderr)
 	if err != nil {
 		return zero, fmt.Errorf("on %s: %w", addr, err)
 	}
+	res.Posture = posture
 	res.AuthorizedKeys2 = present
 	if present && c.ReadKeys2 {
 		res.Keys2, res.Keys2Err = c.readKeys2(ctx, conn, addr)

@@ -418,54 +418,6 @@ func TestFinishRead(t *testing.T) {
 	})
 }
 
-// TestSecondaryKeysCmd runs the authorized_keys2 probe through a real sh:
-// only an existing, non-empty file reports present.
-func TestSecondaryKeysCmd(t *testing.T) {
-	tests := []struct {
-		name    string
-		content *string // nil: file absent
-		want    bool
-	}{
-		{"absent", nil, false},
-		{"empty", new(""), false},
-		{"non-empty", new("ssh-ed25519 AAAA planted\n"), true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir()
-			if tt.content != nil {
-				if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys2"), []byte(*tt.content), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			c := exec.CommandContext(t.Context(), "sh", "-c", SecondaryKeysCmd())
-			c.Env = []string{"HOME=" + home}
-			code := 0
-			var exitErr *exec.ExitError
-			if err := c.Run(); errors.As(err, &exitErr) {
-				code = exitErr.ExitCode()
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			present, err := FinishSecondaryProbe(code, NewCappedBuffer(10))
-			if err != nil || present != tt.want {
-				t.Errorf("probe = (%v, %v), want (%v, nil)", present, err, tt.want)
-			}
-		})
-	}
-	t.Run("unexpected exit is a remote error", func(t *testing.T) {
-		stderr := NewCappedBuffer(100)
-		_, _ = stderr.Write([]byte("sh: boom\x1b[31m"))
-		_, err := FinishSecondaryProbe(2, stderr)
-		if fleet.ErrorKindOf(err) != fleet.ErrorKindRemote || strings.Contains(err.Error(), "\x1b") {
-			t.Errorf("err = %q, want a sanitized remote error", err)
-		}
-	})
-}
-
 func TestFinishReadErrorsAreRemoteKind(t *testing.T) {
 	_, err := FinishRead(1, NewCappedBuffer(10), NewCappedBuffer(10), "h:22", slog.New(slog.DiscardHandler))
 	if got := fleet.ErrorKindOf(err); got != fleet.ErrorKindRemote {
@@ -480,73 +432,6 @@ func must(t *testing.T, err error) {
 	}
 }
 
-// TestSecondaryKeysCmdFor (WP-10) runs the path-aware authorized_keys2
-// probe through a real sh: any spelling that resolves on the server to the
-// login user's ~/.ssh/authorized_keys is probed; everything else is not.
-func TestSecondaryKeysCmdFor(t *testing.T) {
-	tests := []struct {
-		name  string
-		path  func(home string) string
-		setup func(t *testing.T, home string)
-		ak2   bool
-		want  bool
-	}{
-		{"default spelling", func(string) string { return DefaultAuthorizedKeysPath }, nil, true, true},
-		{"absolute default", func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") }, nil, true, true},
-		{"through a symlinked dir", func(h string) string { return filepath.Join(h, "link", "authorized_keys") },
-			func(t *testing.T, h string) { must(t, os.Symlink(filepath.Join(h, ".ssh"), filepath.Join(h, "link"))) }, true, true},
-		{"absolute default, no keys2", func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") }, nil, false, false},
-		{"other file in ~/.ssh", func(h string) string { return filepath.Join(h, ".ssh", "other") }, nil, true, false},
-		{"tilde override elsewhere", func(string) string { return "~/keys/deploy" }, nil, true, false},
-		{"missing dir never matches", func(h string) string { return filepath.Join(h, "nodir", "authorized_keys") }, nil, true, false},
-		// A symlinked final component resolves too: audit reads through it,
-		// so it audits the default file and must see authorized_keys2.
-		{"symlinked file to the default", func(h string) string { return filepath.Join(h, "keys", "ak") },
-			linkFile(".ssh/authorized_keys"), true, true},
-		{"tilde symlinked file to the default", func(string) string { return "~/keys/ak" },
-			linkFile(".ssh/authorized_keys"), true, true},
-		{"symlinked file to the default, no keys2", func(h string) string { return filepath.Join(h, "keys", "ak") },
-			linkFile(".ssh/authorized_keys"), false, false},
-		{"symlinked file to another file in ~/.ssh", func(h string) string { return filepath.Join(h, "keys", "ak") },
-			linkFile(".ssh/other"), true, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir() // on macOS /var → /private/var: cd -P must resolve both sides
-			must(t, os.MkdirAll(filepath.Join(home, ".ssh"), 0o700))
-			if tt.ak2 {
-				must(t, os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys2"), []byte("ssh-ed25519 AAAA planted\n"), 0o600))
-			}
-			if tt.setup != nil {
-				tt.setup(t, home)
-			}
-			c := exec.CommandContext(t.Context(), "sh", "-c", SecondaryKeysCmdFor(tt.path(home))) // #nosec G204 -- the probe under test
-			c.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
-			code := 0
-			var exitErr *exec.ExitError
-			if err := c.Run(); errors.As(err, &exitErr) {
-				code = exitErr.ExitCode()
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			if present, err := FinishSecondaryProbe(code, NewCappedBuffer(10)); err != nil || present != tt.want {
-				t.Errorf("probe = (%v, %v), want (%v, nil)", present, err, tt.want)
-			}
-		})
-	}
-}
-
-// linkFile returns a setup that creates the file at rel under home and
-// symlinks ~/keys/ak to it.
-func linkFile(rel string) func(t *testing.T, home string) {
-	return func(t *testing.T, home string) {
-		t.Helper()
-		must(t, os.WriteFile(filepath.Join(home, rel), []byte("ssh-ed25519 AAAA managed\n"), 0o600))
-		must(t, os.MkdirAll(filepath.Join(home, "keys"), 0o700))
-		must(t, os.Symlink(filepath.Join(home, rel), filepath.Join(home, "keys", "ak")))
-	}
-}
-
 // TestRemoteErrorsBoundStderr (SEC-8): remote stderr embedded in a read or
 // keys2-probe error is bounded and carries no blank-looking padding runes.
 func TestRemoteErrorsBoundStderr(t *testing.T) {
@@ -554,7 +439,7 @@ func TestRemoteErrorsBoundStderr(t *testing.T) {
 	_, err := interpretExit(1, huge)
 	stderr := NewCappedBuffer(MaxRemoteOutput)
 	_, _ = stderr.Write([]byte(huge))
-	_, err2 := FinishSecondaryProbe(2, stderr)
+	_, _, err2 := FinishPosture(2, NewCappedBuffer(10), stderr)
 	for _, e := range []error{err, err2} {
 		if e == nil {
 			t.Error("err = nil, want a remote error")

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("SSHEPHERD-POSTURE -rw-r--r-- 1 world_writable /x")

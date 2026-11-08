@@ -26,6 +26,11 @@ const (
 	// ErrorKindHostKeyTypeUnrecorded: the host is known, but no key of the
 	// presented type is recorded — unverified, not proof of a change.
 	ErrorKindHostKeyTypeUnrecorded ErrorKind = "host_key_type_unrecorded"
+	// ErrorKindHostKeyTypeChanged: known_hosts records a key type x/crypto
+	// can verify for this host, and the server presented a key of another
+	// type, or (on a CA-vouched host) a certificate no matching CA signed.
+	// A possible impersonation: escalates the audit exit code to 2.
+	ErrorKindHostKeyTypeChanged ErrorKind = "host_key_type_changed"
 	// ErrorKindHostKeyRevoked: the presented key is marked @revoked in
 	// known_hosts. Escalates the audit exit code to 2.
 	ErrorKindHostKeyRevoked ErrorKind = "host_key_revoked"
@@ -100,5 +105,5 @@ func HintOf(err error) string {
 // server is being impersonated: exit 2 for audit and for apply's post-write
 // login check, not a mere unreachable.
 func HostKeyAlert(kind ErrorKind) bool {
-	return kind == ErrorKindHostKeyChanged || kind == ErrorKindHostKeyRevoked
+	return kind == ErrorKindHostKeyChanged || kind == ErrorKindHostKeyRevoked || kind == ErrorKindHostKeyTypeChanged
 }

@@ -26,10 +26,6 @@ const DefaultAuthorizedKeysPath = "~/.ssh/authorized_keys"
 // SSHepherd neither reads nor writes it.
 const SecondaryAuthorizedKeysPath = "~/.ssh/authorized_keys2"
 
-// secondaryPresentExit is the sentinel exit status of SecondaryKeysCmd
-// meaning "exists and is non-empty" (siblings: 44 absent, sshwrite's 45).
-const secondaryPresentExit = 46
-
 // FileAbsentExit is the sentinel exit status emitted by the command that
 // AuthorizedKeysCmdFor builds, signaling "file does not exist" (vs. cat
 // failing for other reasons). sshwrite's symlink sentinel 45 is its sibling.
@@ -76,50 +72,6 @@ func PathAssign(path string) string {
 // back through this exact command.
 func AuthorizedKeysCmdFor(path string) string {
 	return PathAssign(path) + `; if [ -e "$p" ]; then cat "$p"; else exit 44; fi`
-}
-
-// SecondaryKeysCmd builds the probe for SecondaryAuthorizedKeysPath: exit
-// 46 when it exists and is non-empty, 0 otherwise. It is the probe for the
-// default spelling (DefaultAuthorizedKeysPath); see SecondaryKeysCmdFor for
-// any other spelling of the managed path.
-func SecondaryKeysCmd() string {
-	return PathAssign(SecondaryAuthorizedKeysPath) + `; if [ -s "$p" ]; then exit 46; fi`
-}
-
-// SecondaryKeysCmdFor builds the authorized_keys2 probe for a server whose
-// managed file is path: exit 46 when path is — on the server, resolving
-// symlinks with cd -P — the login user's ~/.ssh/authorized_keys (sshd's
-// compiled-in first AuthorizedKeysFile entry, which keeps .ssh/authorized_keys2
-// beside it) and ~/.ssh/authorized_keys2 is non-empty; 0 otherwise. The
-// directory is resolved with cd -P; a symlinked final component (audit
-// reads through it) matches when test -ef finds both names are the same
-// existing file. A directory that does not resolve never matches, so two
-// missing directories cannot both collapse to "/authorized_keys". A shell
-// whose test lacks -ef degrades to the directory-only comparison.
-func SecondaryKeysCmdFor(path string) string {
-	if path == DefaultAuthorizedKeysPath {
-		return SecondaryKeysCmd()
-	}
-	return PathAssign(path) + `; h="${HOME:?}"` +
-		`; a=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || exit 0` +
-		`; s=$(cd -P "$h/.ssh" 2>/dev/null && pwd -P) || exit 0` +
-		`; if [ "$a/${p##*/}" != "$s/authorized_keys" ] && ! [ "$p" -ef "$s/authorized_keys" ] 2>/dev/null; then exit 0; fi` +
-		`; if [ -s "$h/.ssh/authorized_keys2" ]; then exit 46; fi`
-}
-
-// FinishSecondaryProbe maps SecondaryKeysCmd's outcome: present reports a
-// non-empty authorized_keys2; any other nonzero exit is a remote error
-// (stderr embedded as a bounded sanitize.RemoteSnippet).
-func FinishSecondaryProbe(code int, stderr *CappedBuffer) (present bool, err error) {
-	switch code {
-	case 0:
-		return false, nil
-	case secondaryPresentExit:
-		return true, nil
-	default:
-		return false, classify(fleet.ErrorKindRemote, fmt.Errorf("authorized_keys2 probe failed (exit %d): %s",
-			code, sanitize.RemoteSnippet(stderr.String())))
-	}
 }
 
 // interpretExit maps the remote command's exit status to read semantics.
