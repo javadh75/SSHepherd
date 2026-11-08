@@ -109,22 +109,38 @@ schema 1.
 ## Owner decisions
 
 Asked one at a time in the plan's order (Block 4: D14 → D15 → D16 → D17 → D18 → D19)
-and answered 2026-11-07. They are final. The spec-author defaults (D14a–c, D17a–b)
-stand unless the owner changes them at spec approval.
+and answered 2026-11-07. They are final. **Safe default (if unanswered)** is what the
+implementation would have built had the decision gone unanswered (the plan's rule:
+usually today's behavior); it is kept so a reader can see what each answer changes.
+The technical sub-choices D14a–c and D17a–b are not owner answers: they are
+spec-author defaults, listed in their own table below with their options and shown to
+the owner at spec approval. README line numbers are from `ee14c4d`.
 
-| # | Question | Answer (2026-11-07) | What it means here | README sections it changes |
-|---|---|---|---|---|
-| **D14** | Should audit check file and folder permissions and owners, the way apply does before writing? (SEC-1) | **Yes**: a new "unsafe permissions" drift at exit 1; exit 2 when something on the path is world-writable. | Section 1 (posture probe). | **`sshepherd audit`** drift classes (l.357) and JSON; **Per-server `authorized_keys_file`** (l.255); **Exit codes** (l.1373); **Safety model** (l.1385). |
-| **D14a** | *(author default)* Is a root-owned `authorized_keys` acceptable to audit? | **Yes, as sshd accepts it.** Note: the write path refuses a root-owned **file** (48); only its ancestors may be root-owned. Audit follows sshd, not the write path — see section 1. | No posture issue for a root-owned file; apply's 48 refusal is unchanged. | — |
-| **D14b** | *(author default)* A failed posture probe: unreachable, or "posture unknown" drift? | **Unreachable (`error_kind: remote`)**, the same as today's failed `authorized_keys2` probe. | Section 1, "Failure". | **`sshepherd audit`** error kinds. |
-| **D14c** | *(author default)* Probe an `authorized_keys_file` outside `$HOME`? | **Yes**: the walk stops at `/`, as the write walk does. | Section 1. | **Per-server `authorized_keys_file`**. |
-| **D15** | An operator key that is on a server but cannot log in (`cert-authority` / `principals=`): critical (exit 2)? (COR-5) | **Yes.** A key that cannot log in is the same as a missing one. | Section 2. With D19, a passed `expiry-time` on the server's operator line is the same class. | **Operator users** (l.239); **`sshepherd audit`** (rows, JSON); **Exit codes**. |
-| **D16** | *(re-asked with corrected options)* A server suddenly shows a different kind of host key than the one you saved: treat it as a possible attack (exit 2)? (COR-6) | **Yes** — corrected option (new 1): keep today's negotiation and add `host_key_type_changed` (exit 2). | Section 3. | **`sshepherd audit`** error kinds; **Exit codes**; **Safety model** connection posture. |
-| **D17** | Should each server only see the keys the manifest grants there (plus operator keys)? (SEC-5) | **Yes**: one rule on every command; when none of the loaded keys is granted on a server, offer all of them with a warning; `--offer-all-keys` turns the filter off. | Section 4. | **Authentication** (l.1161, key offering); flag tables of **`sshepherd audit`** (l.346), **`adopt`** (l.542), **`apply`** (l.571), **`revoke`** (l.800), **`rotate`** (l.1059); **Safety model**. |
-| **D17a** | *(author default)* Flag name and reach. | `--offer-all-keys` on audit, adopt, apply, revoke and rotate; default off on all five. | Section 4. | The five flag tables. |
-| **D17b** | *(author default)* Preflight warning when no held key is granted on any target server? | **Yes, warn only** (from `sshread.CheckCredentials`). | Section 4. | **Authentication**. |
-| **D18** | The README says audit answers "who can log in", but it reads only the managed files. Narrow the claim now, deeper opt-in check later? (PRD-9) | **Yes.** | Section 6: exact wording, applied by the next README-touching integrator; the deep probe gets its own later spec. | **Why** (l.37); **Per-server `authorized_keys_file`** (l.268-272); CLAUDE.md "Core capabilities → Audit". |
-| **D19** | Should weak or expired keys be flagged? (PRD-10) | **(1)** Built-in rules: DSA and RSA under 2048 bits are policy problems handled as D29 says (audit critical, apply skips those servers, a manifest that loads today keeps loading); a passed `expiry-time` warns. | Section 5. Not options (2) a configurable `policy:` block or (3) no rules. | **Validation rules** (l.274); **`sshepherd audit`**; **`sshepherd apply`**; **`sshepherd adopt`**, **`sshepherd import`**; **Exit codes**. |
+| # | Question | Options | Recommendation | Safe default (if unanswered) | Answer (2026-11-07) | What it means here | README sections it changes |
+|---|---|---|---|---|---|---|---|
+| **D14** | Should audit check file and folder permissions and owners, the way apply does before writing? (SEC-1) | (1) Yes: a new "unsafe permissions" drift at exit 1, and exit 2 when something on the path is world-writable. (2) Yes, but every posture problem at exit 1. (3) No: audit keeps reading only the file's content. | (1): a world-writable path lets any local user add a key, which is "a human must act now" (D28). | (3), today: no posture check; a file sshd ignores, or anyone can rewrite, audits compliant. | **(1) Yes.** | Section 1 (posture probe). | **`sshepherd audit`** drift classes (l.357) and JSON; **Per-server `authorized_keys_file`** (l.255); **Exit codes** (l.1373); **Safety model** (l.1385). |
+| **D15** | Should an operator key that is on a server but cannot log in (`cert-authority` or `principals=`) be critical (exit 2)? (COR-5) | (1) Yes: critical, the same as a missing operator key. (2) No: it stays options drift at exit 1, as today. | (1): a key that cannot log in is the same as a missing one. | (2), today: options drift, exit 1. | **(1) Yes.** | Section 2. With D19, a passed `expiry-time` on the server's operator line is the same class (open point OP3). | **Operator users** (l.239); **`sshepherd audit`** (rows, JSON); **Exit codes** (l.1373). |
+| **D16** | Should audit treat it as a possible attack (exit 2) when a server suddenly shows a different kind of host key than the one you saved? (COR-6) | Re-asked with corrected options (see below the table): (new 1) keep today's negotiation and add `host_key_type_changed` at exit 2; (2) restrict `HostKeyAlgorithms` to the recorded types and map a negotiation failure to the new kind; (3) keep today's `host_key_type_unrecorded` at exit 1. | (new 1). | (3), today: `host_key_type_unrecorded`, exit 1. | **(new 1) Yes.** | Section 3. | **`sshepherd audit`** error kinds; **Exit codes** (l.1373); **Safety model** (l.1385) connection posture. |
+| **D17** | Should each server only see the keys the manifest grants there (plus operator keys)? (SEC-5) | (1) Yes, one rule on every command: offer only granted (+operator) keys; when none of the loaded keys is granted on a server, offer all of them with a warning; `--offer-all-keys` turns the filter off. (2) Filter on audit only; the other commands keep offering every held key. (3) No: keep today's order (granted first, then every other held key). | (1): one rule with one default everywhere (review panel, product-ux). | (3), today: every managed server sees every held public key. | **(1) Yes.** | Section 4. | **Authentication** (l.1161, key offering); flag tables of **`sshepherd audit`** (l.346), **`adopt`** (l.542), **`apply`** (l.571), **`revoke`** (l.800), **`rotate`** (l.1059); **Safety model** (l.1385). |
+| **D18** | Should the README's claim that audit answers "who can log in" be narrowed now to the managed files audit actually reads, with a deeper opt-in check left for later? (PRD-9) | (1) Narrow the claim now; a deeper opt-in check (`sshd -T`, other accounts) gets its own later spec. (2) Narrow the claim now and plan no deeper check. (3) Keep the claim and build the deeper check first. | (1). | (2): the narrowing is doc-only and makes the README true whatever comes later; nothing deeper is built. | **(1) Yes.** | Section 6: exact wording, which landed with this spec's commit (`837fb49`); the deep probe gets its own later spec. | **Why** (l.37); **Per-server `authorized_keys_file`** (l.268-272); CLAUDE.md "Core capabilities → Audit". |
+| **D19** | Should weak or expired keys be flagged? (PRD-10) | (1) Built-in rules: DSA and RSA under 2048 bits are policy problems handled as D29 says (audit critical, apply skips those servers, a manifest that loads today keeps loading); a passed `expiry-time` warns. (2) A configurable `policy:` block in the manifest. (3) No key rules. | (1). Key age, an `added:` date and "overdue for rotation" are excluded: they overlap the on-hold scheduled rotation. | (3), today: DSA and 1024-bit RSA keys load, render and audit clean; only `rotate` reads `expiry-time`. | **(1).** | Section 5. | **Validation rules** (l.274); **The manifest → Operator users** (l.239): a weak operator key freezes apply on every server until `rotate` replaces it (see Risks); **`sshepherd audit`** (l.342); **`sshepherd apply`** (l.566): servers granting a weak key are refused; **`sshepherd adopt`** (l.534), **`sshepherd import`** (l.477): weak keys are skipped with a warning; **`sshepherd revoke`** (l.786), **`sshepherd rotate`** (l.1050): a save that would add a weak key is refused (exit 3), and the remediation always saves; **Exit codes** (l.1373). |
+
+### Spec-author defaults (shown at spec approval)
+
+The plan lets the spec author decide these technical sub-choices with a stated
+default (plan, Block 4); they were not asked. The owner may change any of them at
+spec approval. **Safe default (if unanswered)** is what the implementation builds
+when the owner approves the spec without answering that row: by the plan's rule the
+author default stands. Nothing here is built before approval, so until then today's
+behavior holds. The open points at the end use the same columns.
+
+| # | Question | Options | Author default | Safe default (if unanswered) | If the owner says otherwise | README sections it changes |
+|---|---|---|---|---|---|---|
+| **D14a** | Should audit accept a root-owned `authorized_keys` file, as sshd does, although apply refuses to write one? | (1) Yes: root is accepted as owner of the file and of every directory, as sshd's StrictModes does. (2) No: a root-owned file, or a root-owned directory of the file, is `foreign_owner` drift (exit 1), so audit and apply agree. | (1). The plan's default said "the same as the write walk", but the write path refuses a root-owned **file** and a root-owned **directory of the file** (48) and accepts root only for higher ancestors. Audit follows sshd, which decides the access that actually exists, so a root-owned file is audit-compliant while apply refuses to write it. | (1), the author default. | (2): section 1's owner check becomes "not `$u`" for the file and its directory (root still accepted above them, as the write walk does), and a root-owned file pages as drift. The same README sections say so instead. | **`sshepherd audit`** drift-class text (l.357): unsafe permissions accepts root as owner, and apply still refuses (48) a root-owned file; **Per-server `authorized_keys_file`** (l.255): an override path owned by root audits clean but apply refuses to write it. |
+| **D14b** | Should a failed or malformed posture probe make the server unreachable rather than a "posture unknown" drift? | (1) Unreachable (`error_kind: remote`), like today's failed `authorized_keys2` probe. (2) A "posture unknown" drift at exit 1, with the server's keys still graded. | (1): one failure path, and a server cannot get its keys graded clean while hiding its posture. | (1), the author default. | (2): a new drift class and JSON field instead of an error kind; the keys are still compared. | **`sshepherd audit`** error kinds (l.342); under (2) its drift classes (l.357) instead. |
+| **D14c** | Should the posture probe also walk an `authorized_keys_file` outside `$HOME`, up to `/`? | (1) Yes: the walk stops at `/`, as the write walk does. (2) No: outside `$HOME` only the file itself is checked, no directories. | (1). | (1), the author default. | (2): a writable directory above an override path outside `$HOME` goes unreported, while apply still refuses it (48). | **Per-server `authorized_keys_file`** (l.255): what posture covers on an override path. |
+| **D17a** | What should the flag that turns the key filter off be called, and which commands should have it? | (1) `--offer-all-keys` on audit, adopt, apply, revoke and rotate, default off on all five. (2) The same flag on audit and adopt only; the write commands always filter. (3) Another name, for example `--offer-keys=all`. | (1): one rule with one escape hatch on every command (D17). | (1), the author default. | (2): only two flag tables change, and a write run whose only working key is not granted must fix the manifest first. (3): the same five tables with the other name. | Flag tables of **`sshepherd audit`** (l.346), **`adopt`** (l.542), **`apply`** (l.571), **`revoke`** (l.800), **`rotate`** (l.1059); **Authentication** (l.1161). |
+| **D17b** | Should a run warn once, before connecting, when none of the loaded keys is granted on any target server? | (1) Yes, warn only (from `sshread.CheckCredentials`). (2) Refuse the run (exit 3). (3) No preflight warning; only the per-server warnings. | (1): (2) would break first contact after `import --servers-only`, which D17's fallback exists for. | (1), the author default. | (2): first contact needs `--offer-all-keys`, and Exit codes gain a refusal case. (3): Authentication documents only the per-server warning. | **Authentication** (l.1161); under (2) also **Exit codes** (l.1373). |
 
 **Why D16 was re-asked.** The first wording of D16's option 1 said "only accept
 recorded types, as OpenSSH's strict mode does". The verifier showed that
@@ -358,9 +374,9 @@ README says so in the drift-class text.
 
 ### 6. Narrowing the coverage claim (D18)
 
-**Now** — a doc-only change that this spec lane cannot make. It goes to the W1
-integrator (or the first README-touching integrator after D18 is answered; it is
-answered). The exact text:
+**Now** — a doc-only change that this spec lane cannot make. It went to the W1
+integrator (D18 is answered) and landed with this spec's commit, `837fb49`. The exact
+text:
 
 - README "Why" (line 37), replacing the Audit bullet:
 
@@ -601,23 +617,18 @@ real run and the hostile-output parsing of `FinishPosture`.
 ## Open points for spec approval
 
 Author choices where the plan was silent or, on a close read, inexact. None changes an
-answered decision; the owner may change any of them at approval.
+answered decision; the owner may change any of them at approval. The columns are the
+spec-author defaults table's: by the plan's rule an unanswered row keeps its author
+default. The root-owned-file question that used to open this list is **D14a** above.
 
-1. **D14a differs from the write path.** The plan said "root ownership accepted, the
-   same as the write walk"; the write path actually refuses a root-owned **file**
-   and a root-owned **directory of the file** (48), and accepts root only for higher
-   ancestors. Audit follows sshd (root fine everywhere), so a root-owned file is
-   audit-compliant but apply refuses to write it. Alternative: report a root-owned
-   file as `foreign_owner` so audit and apply agree.
-2. **A symlinked `authorized_keys` is drift**, although sshd follows it, because
-   apply cannot converge it (45).
-3. **Override-path servers gain a session** (1 → 2).
-4. **An expired operator line is critical even when the manifest declares the same
-   expiry** (section 2).
-5. **Weak-key saves are refused only when they add a weak key** (section 5 and
-   "Interactions with P04").
-6. **Plain `import` also skips weak `.pub` identities**, not only `import --merge`.
-7. **Per-server fallback warnings drop to debug after the D17b preflight warning.**
+| # | Question | Options | Author default | Safe default (if unanswered) | If the owner says otherwise | README sections it changes |
+|---|---|---|---|---|---|---|
+| **OP1** | Should audit report a symlinked managed `authorized_keys` as `symlink` drift although sshd follows the link? | (1) Yes, drift at exit 1: apply cannot converge it (45), and whoever owns the link can redirect it. (2) No: follow the link as sshd does and grade only the target. | (1) (section 1). | (1), the author default. | (2): no `symlink` issue class; audit says compliant where apply refuses (45), and the drift-class text says so. | **`sshepherd audit`** drift classes (l.357); **Per-server `authorized_keys_file`** (l.255). |
+| **OP2** | Should the posture probe run in its own session even though override-path servers then need two sessions instead of one? | (1) Yes: a separate session, so the read command's bytes, which `sshwrite`'s verify depends on, stay unchanged. (2) Append the posture script to the read session: one session, but the read command changes and verify needs a new parser. (3) Skip posture on override paths (contradicts D14c). | (1) (section 1). | (1), the author default. | (2): no README change; `sshwrite` verify and its goldens change. (3): Per-server `authorized_keys_file` says override paths are not posture-checked. | None under (1) or (2), unless the re-run `make bench` moves the default, which changes the `--parallel` row of **`sshepherd audit`** (l.346); under (3) **Per-server `authorized_keys_file`** (l.255). |
+| **OP3** | Should an expired operator line be critical even when the manifest declares the same expiry? | (1) Yes, critical (exit 2): the operator has lost access either way, which is what D15 protects. (2) Critical only when the server's expiry differs from the manifest's; a declared, matching expiry keeps only the informational ` · EXPIRED` annotation (no exit change) and the load warning. | (1) (section 2). | (1), the author default. | (2): section 2's expiry rule skips a line whose expiry the manifest declares; a planned operator expiry shows only as a warning, and the same README sections say so. | **The manifest → Operator users** (l.239); **`sshepherd audit`** (l.342) rows and JSON `cannot_log_in`; **Exit codes** (l.1373). |
+| **OP4** | Should a manifest save be refused only when it adds a weak key, rather than whenever the saved manifest still holds one? | (1) Only when it adds one (a fingerprint not in the loaded manifest), so unrelated revokes and the weak key's own remediation always save. (2) P04's general rule: refuse any save while a weak key remains, so `revoke bob` fails while alice holds a DSA key. | (1) (section 5 and "Interactions with P04"): (2) blocks every unrelated revoke, the opposite of what D29 is for. | (1), the author default. | (2): every saving command lists "the manifest still holds a weak key" as an exit-3 refusal, and the README tells the user to rotate or revoke that key first. | **`sshepherd revoke`** (l.786), **`sshepherd rotate`** (l.1050), **`sshepherd adopt`** (l.534), **`sshepherd import`** (l.477): the save refusal; **Exit codes** (l.1373) row 3. |
+| **OP5** | Should plain `import` also skip a weak `.pub` identity, not only `import --merge`? | (1) Yes, both modes skip it with a warning. (2) Only `--merge` skips it; plain import writes the key, and the new manifest's first audit is critical. | (1) (section 5): a fresh manifest should not start with a policy conflict. | (1), the author default. | (2): plain import's text says weak identities are kept and audit reports them as critical. | **`sshepherd import`** (l.477). |
+| **OP6** | Should the per-server "none of the keys granted here are loaded" warnings drop to debug level once the D17b preflight warning has fired? | (1) Yes: a first-contact run prints one line, not one per server. (2) No: print every per-server warning at normal level as well. | (1) (section 4). | (1), the author default. | (2): a first-contact run over N servers prints N+1 warnings. | **Authentication** (l.1161). |
 
 ## Out of scope
 
