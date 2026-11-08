@@ -56,3 +56,35 @@ func TestAdoptServerLineWithBadOption(t *testing.T) {
 		})
 	}
 }
+
+// COR-1 (repair): sshd skips a line it cannot read and keeps scanning, so
+// 'zzz KEY' followed by 'KEY' logs in (OpenSSH_10.3p1). Strict adopt adopts
+// the key from the line sshd honors, exit 0, whatever the line order.
+func TestAdoptBadLineThenGoodLineIsAccess(t *testing.T) {
+	home := shortHome(t)
+	srv, hostKey, cfg := hermeticFleet(t, home)
+	ak := filepath.Join(home, ".ssh", "authorized_keys")
+	f, err := os.OpenFile(ak, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := testkeys.Line(t, 7) + " carol@laptop"
+	_, _ = f.WriteString("zzz " + k + "\n" + k + "\n")
+	_ = f.Close()
+	kh := sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("strict exit = %d, want 0\nstderr: %s", code, errBuf.String())
+	}
+	m, err := config.Parse(out.Bytes())
+	if err != nil {
+		t.Fatalf("stdout is not a valid manifest: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), k) || strings.Contains(out.String(), "zzz") {
+		t.Errorf("want carol adopted from the honored line, not the zzz one:\n%s", out.String())
+	}
+	if _, ok := m.OwnerOf(fpOf(t, 7)); !ok {
+		t.Errorf("carol's key has no owner in the generated manifest:\n%s", out.String())
+	}
+}

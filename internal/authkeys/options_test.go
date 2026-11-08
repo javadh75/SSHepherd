@@ -44,6 +44,69 @@ func TestOptionIssue(t *testing.T) {
 	}
 }
 
+// sshd (auth-options.c) rejects a line with a second command=, from= or
+// principals= clause; repeated permitopen=/permitlisten=/environment= and
+// expiry-time= are accepted (union, first-wins, earliest).
+func TestOptionIssueRepeatedClause(t *testing.T) {
+	for _, opts := range [][]string{
+		{`command="echo A"`, `command="echo B"`},
+		{`from="0.0.0.0/0"`, `from="0.0.0.0/0"`},
+		{`principals="a"`, "cert-authority", `principals="b"`},
+		{`command="a"`, `COMMAND="b"`},
+	} {
+		for name, check := range map[string]func([]string) error{"OptionIssue": OptionIssue, "IgnoredBySSHD": IgnoredBySSHD} {
+			err := check(opts)
+			if err == nil || !strings.Contains(err.Error(), "which sshd allows once per line") {
+				t.Errorf("%s(%q) = %v, want a repeated-clause error", name, opts, err)
+			}
+		}
+	}
+	for _, opts := range [][]string{
+		{`permitopen="a:1"`, `permitopen="b:2"`},
+		{`permitlisten="1"`, `permitlisten="2"`},
+		{`environment="A=1"`, `environment="B=2"`},
+		{`expiry-time="20270101"`, `expiry-time="20280101"`},
+	} {
+		if err := OptionIssue(opts); err != nil {
+			t.Errorf("OptionIssue(%q) = %v, want nil", opts, err)
+		}
+	}
+}
+
+// IgnoredBySSHD is sshd's view only: a quoted value may carry any byte
+// (opt_dequote copies it), so control runes do not make sshd skip the line,
+// though the manifest (OptionIssue) still refuses to store them.
+func TestIgnoredBySSHD(t *testing.T) {
+	tab := []string{"command=\"echo\ta\""}
+	if err := IgnoredBySSHD(tab); err != nil {
+		t.Errorf("IgnoredBySSHD(%q) = %v, want nil", tab, err)
+	}
+	if err := OptionIssue(tab); err == nil || !strings.Contains(err.Error(), "control or format characters") {
+		t.Errorf("OptionIssue(%q) = %v, want the control-character refusal", tab, err)
+	}
+	for _, opts := range [][]string{{"zzz"}, {"no-ptty"}, {"from=1.2.3.4"}, {`no-pty="x"`}, {`expiry-time="2027"`}, {"no-pty\x1b"}} {
+		if err := IgnoredBySSHD(opts); err == nil {
+			t.Errorf("IgnoredBySSHD(%q) = nil, want an error", opts)
+		}
+	}
+	if err := IgnoredBySSHD([]string{"restrict", `from="10.0.0.1"`}); err != nil {
+		t.Errorf("clean options: err = %v", err)
+	}
+}
+
+func TestIsOptionName(t *testing.T) {
+	for _, n := range []string{"restrict", "No-PTY", "from", "verify-required", "X11-Forwarding"} {
+		if !IsOptionName(n) {
+			t.Errorf("IsOptionName(%q) = false, want true", n)
+		}
+	}
+	for _, n := range []string{"", "no-ptty", "zzz", "from=x", "alice"} {
+		if IsOptionName(n) {
+			t.Errorf("IsOptionName(%q) = true, want false", n)
+		}
+	}
+}
+
 func TestLoosening(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -52,7 +115,7 @@ func TestLoosening(t *testing.T) {
 	}{
 		{"none on server", nil, []string{"no-pty"}, nil, nil},
 		{"all dropped", []string{`from="10.0.0.5"`, `command="/x"`, "no-pty", "tty"}, nil,
-			[]string{`from="10.0.0.5"`, `command="/x"`, "no-pty"}, nil},
+			[]string{`from="10.0.0.5"`, `command="/x"`, "no-pty", "tty"}, nil}, // "tty" is unknown: sshd ignores the line
 		{"kept verbatim", []string{"restrict", `expiry-time="20270101"`}, []string{"restrict", `expiry-time="20270101"`}, nil, nil},
 		{"changed value counts", []string{`from="10.0.0.5"`}, []string{`from="0.0.0.0/0"`}, []string{`from="10.0.0.5"`}, nil},
 		{"forwarding and ca", []string{`permitopen="h:1"`, `permitlisten="2"`, "cert-authority", `principals="a"`}, nil,
@@ -65,7 +128,18 @@ func TestLoosening(t *testing.T) {
 		{"re-enabler without restrict is a no-op", nil, []string{"pty"}, nil, nil},
 		{"restrict newly added with pty", nil, []string{"restrict", "pty"}, nil, nil},
 		{"restrict dropped", []string{"restrict", "pty"}, []string{"pty"}, []string{"restrict"}, nil},
-		{"unknown server option not classified", []string{"no-ptty"}, nil, nil, nil},
+		// A server option sshd rejects makes the whole line dead: rewriting it
+		// into a live line grants access the key does not have today.
+		{"unknown server option dropped", []string{"no-ptty"}, nil, []string{"no-ptty"}, nil},
+		{"unknown server option dropped beside kept ones", []string{"no-pty", "zzz"}, []string{"no-pty"}, []string{"zzz"}, nil},
+		{"repeated command clause dropped", []string{`command="a"`, `command="a"`}, []string{`command="a"`}, []string{`command="a"`}, nil},
+		// permitopen=/permitlisten= entries are a union: one more widens,
+		// one fewer (others kept) narrows, the first one narrows.
+		{"added permitopen widens", []string{`permitopen="db:5432"`}, []string{`permitopen="db:5432"`, `permitopen="*:*"`}, nil, []string{`permitopen="*:*"`}},
+		{"added permitlisten widens", []string{`permitlisten="localhost:8080"`}, []string{`permitlisten="localhost:8080"`, `permitlisten="0.0.0.0:22"`}, nil, []string{`permitlisten="0.0.0.0:22"`}},
+		{"changed permitopen widens", []string{`permitopen="a:1"`}, []string{`PermitOpen="b:2"`}, nil, []string{`PermitOpen="b:2"`}},
+		{"first permitopen narrows", nil, []string{`permitopen="a:1"`}, nil, nil},
+		{"one of several permitopen dropped narrows", []string{`permitopen="a:1"`, `permitopen="b:2"`}, []string{`permitopen="a:1"`}, nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

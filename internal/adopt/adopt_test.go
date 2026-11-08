@@ -651,3 +651,129 @@ func TestBuildBadOptionKnownKeyNotExtended(t *testing.T) {
 		t.Errorf("NewUsers = %+v, want none (the key is alice's)", p.NewUsers)
 	}
 }
+
+// sshd skips a line it cannot read and keeps scanning, so a later valid line
+// of the same key still logs in (OpenSSH_10.3p1: 'zzz KEY' then 'KEY' lets
+// the key in). The key is access, adopted from the line sshd honors, in
+// either line order.
+func TestBuildBadThenGoodLineIsAccess(t *testing.T) {
+	op := testkeys.Line(t, 1)
+	t.Run("unknown key", func(t *testing.T) {
+		for _, content := range []string{
+			"zzz " + testkeys.Line(t, 7) + " carol@laptop\n" + testkeys.Line(t, 7) + " carol@laptop\n",
+			testkeys.Line(t, 7) + " carol@laptop\n" + "zzz " + testkeys.Line(t, 7) + " carol@laptop\n",
+			`command="a",command="b" ` + testkeys.Line(t, 7) + " carol@laptop\n" + testkeys.Line(t, 7) + " carol@laptop\n",
+		} {
+			cfg := testCfg(t)
+			r := &fakeReader{byName: map[string]audit.ReadResult{
+				"db-1":  {Content: []byte(op + "\n" + content)},
+				"web-1": {Content: []byte(op + "\n")},
+				"web-2": {Content: []byte(op + "\n")},
+			}}
+			p := Build(cfg, runAudit(t, cfg, r))
+			if len(p.Issues) != 0 {
+				t.Errorf("%q: Issues = %+v, want none (a later line logs in)", content, p.Issues)
+			}
+			want := testkeys.Line(t, 7) + " carol@laptop"
+			if len(p.NewUsers) != 1 || p.NewUsers[0].Line != want {
+				t.Errorf("%q: NewUsers = %+v, want carol adopted from the line sshd honors", content, p.NewUsers)
+			}
+		}
+	})
+	t.Run("known key", func(t *testing.T) {
+		cfg := extCfg(t)
+		al := testkeys.Line(t, 2)
+		r := &fakeReader{byName: map[string]audit.ReadResult{
+			"db-1":  {Content: []byte(op + "\n" + "zzz " + al + "\n" + al + "\n")},
+			"web-1": {Content: []byte(op + "\n" + al + "\n")},
+			"web-2": {Content: []byte(op + "\n")},
+		}}
+		p := Build(cfg, runAudit(t, cfg, r))
+		if len(p.Issues) != 0 {
+			t.Errorf("Issues = %+v, want none", p.Issues)
+		}
+		if len(p.Extensions) != 1 || p.Extensions[0].User != "alice" || !reflect.DeepEqual(p.Extensions[0].Servers, []string{"db-1"}) {
+			t.Errorf("Extensions = %+v, want alice extended to db-1", p.Extensions)
+		}
+	})
+}
+
+// Every line of the key is one sshd ignores: one Issue, nothing adopted.
+func TestBuildEveryLineIgnoredIsAnIssue(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	k := testkeys.Line(t, 7) + " carol@laptop"
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + "zzz " + k + "\n" + "no-ptty " + k + "\n")},
+		"web-1": {Content: []byte(op + "\n")},
+		"web-2": {Content: []byte(op + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Issues) != 1 || !strings.Contains(p.Issues[0].Detail, `sshd ignores each of its 2 lines; the first: option "zzz" is not a recognized authorized_keys option`) {
+		t.Errorf("Issues = %+v, want one issue naming both ignored lines", p.Issues)
+	}
+	if len(p.NewUsers) != 0 {
+		t.Errorf("NewUsers = %+v, want none", p.NewUsers)
+	}
+}
+
+// A repeated command=/from= clause makes sshd reject the line (auth-options.c).
+func TestBuildRepeatedClauseLineIsAnIssue(t *testing.T) {
+	cfg := testCfg(t)
+	op := testkeys.Line(t, 1)
+	r := &fakeReader{byName: map[string]audit.ReadResult{
+		"db-1":  {Content: []byte(op + "\n" + `command="echo A",command="echo B" ` + testkeys.Line(t, 7) + " carol@laptop\n")},
+		"web-1": {Content: []byte(op + "\n")},
+		"web-2": {Content: []byte(op + "\n")},
+	}}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.Issues) != 1 || !strings.Contains(p.Issues[0].Detail, "sshd ignores this line: option ") ||
+		!strings.Contains(p.Issues[0].Detail, "which sshd allows once per line") {
+		t.Errorf("Issues = %+v, want one 'sshd ignores this line' repeated-clause issue", p.Issues)
+	}
+	if len(p.NewUsers) != 0 {
+		t.Errorf("NewUsers = %+v, want none", p.NewUsers)
+	}
+}
+
+// sshd accepts control bytes inside a quoted value (opt_dequote copies them),
+// so such a line is access. For a known key the server's options never reach
+// the manifest: the extension stands. An unknown key's line cannot be stored
+// (the manifest refuses control runes): an Issue that says so, not "sshd
+// ignores".
+func TestBuildControlRuneOptionLine(t *testing.T) {
+	op := testkeys.Line(t, 1)
+	t.Run("known key extends", func(t *testing.T) {
+		cfg := extCfg(t)
+		al := testkeys.Line(t, 2)
+		r := &fakeReader{byName: map[string]audit.ReadResult{
+			"db-1":  {Content: []byte(op + "\n" + "command=\"echo\ta\" " + al + "\n")},
+			"web-1": {Content: []byte(op + "\n" + al + "\n")},
+			"web-2": {Content: []byte(op + "\n")},
+		}}
+		p := Build(cfg, runAudit(t, cfg, r))
+		if len(p.Issues) != 0 {
+			t.Errorf("Issues = %+v, want none", p.Issues)
+		}
+		if len(p.Extensions) != 1 || !reflect.DeepEqual(p.Extensions[0].Servers, []string{"db-1"}) {
+			t.Errorf("Extensions = %+v, want alice extended to db-1", p.Extensions)
+		}
+	})
+	t.Run("unknown key is an issue", func(t *testing.T) {
+		cfg := testCfg(t)
+		r := &fakeReader{byName: map[string]audit.ReadResult{
+			"db-1":  {Content: []byte(op + "\n" + "command=\"echo\ta\" " + testkeys.Line(t, 7) + " carol@laptop\n")},
+			"web-1": {Content: []byte(op + "\n")},
+			"web-2": {Content: []byte(op + "\n")},
+		}}
+		p := Build(cfg, runAudit(t, cfg, r))
+		if len(p.Issues) != 1 || strings.Contains(p.Issues[0].Detail, "sshd ignores") ||
+			!strings.Contains(p.Issues[0].Detail, "this line logs in, but the manifest cannot hold it: option ") ||
+			!strings.Contains(p.Issues[0].Detail, "contains control or format characters") {
+			t.Errorf("Issues = %+v, want one 'manifest cannot hold it' issue", p.Issues)
+		}
+		if len(p.NewUsers) != 0 {
+			t.Errorf("NewUsers = %+v, want none", p.NewUsers)
+		}
+	})
+}

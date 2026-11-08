@@ -306,6 +306,10 @@ The loader fails the whole manifest (exit 3) on any of these:
   `expiry-time` must be `YYYYMMDD[HHMM[SS]]` (optional `Z` for UTC): sshd skips a
   line it cannot read. A bad value fails with e.g.
   `user "alice" key 1: option "expiry-time=\"2027\"" has an invalid value (want YYYYMMDD[HHMM[SS]][Z])`.
+  `command`, `from` and `principals` may appear once per line. sshd rejects a line
+  that repeats one, so the loader does too:
+  `user "alice" key 1: option "command=\"echo B\"" repeats command=, which sshd allows once per line`.
+  `permitopen`, `permitlisten` and `environment` may repeat.
 - **Server `name`, `host` and `user`** may not contain whitespace or control, format
   or line-separator characters (U+2028/U+2029 included).
 - **One entry per remote file.** Two servers that resolve to the same host
@@ -602,14 +606,26 @@ Comment-less keys are named `adopted-key-<n>` from the first free `n`, so
 as unparseable.
 
 A found key line that sshd would ignore (an unknown option such as `no-ptty`, an
-unquoted value such as `from=1.2.3.4`, or a flag that has a value) is not access.
-adopt reports it like an unparseable line and does not adopt it. Strict mode aborts
-with exit 1, and `--partial` skips the line and keeps the server's other keys:
+unquoted value such as `from=1.2.3.4`, a flag that has a value, or a repeated
+`command=`/`from=`/`principals=` clause) is not access. sshd skips such a line and
+keeps reading, so if a later line of the same key is valid, the key still logs in,
+and adopt takes it from that line (in either line order). Only when sshd ignores
+every line of a key does adopt report it like an unparseable line and not adopt it
+(`sshd ignores this line: …`, or `sshd ignores each of its 2 lines; the first: …`).
+Strict mode aborts with exit 1, and `--partial` skips the key and keeps the server's
+other keys:
 
 ```console
 error: server web-1: key SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE: sshd ignores this line: option "no-ptty" is not a recognized authorized_keys option
 error: 1 server could not be fully read — nothing written; fix the errors above or re-run with --partial
 ```
+
+An unknown key whose line logs in but has control or format characters inside an
+option value (sshd accepts these; the manifest does not store them) is reported the
+same way, as
+`key <fp>: this line logs in, but the manifest cannot hold it: option "…" contains control or format characters — not adopted`.
+A known user's key on such a line still extends that user's access, because the
+manifest keeps the user's own line.
 
 ### `sshepherd apply`
 
@@ -812,10 +828,15 @@ See `internal/apply/testdata/json_*.golden.json` for every shape.
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
 restrictive option** (`from=`, `command=`, `restrict`, `no-agent-forwarding`,
 `no-port-forwarding`, `no-pty`, `no-user-rc`, `no-X11-forwarding`, `verify-required`,
-`expiry-time=`, `permitopen=`, `permitlisten=`, `cert-authority`, `principals=`) or
+`expiry-time=`, the last `permitopen=`/`permitlisten=` (dropping one while others
+stay narrows the union and is not flagged), `cert-authority`, `principals=`, or any
+on-server option that makes sshd ignore the line today (an unknown option such as
+`no-ptty`, a bad value, a repeated `command=`/`from=`/`principals=`): rewriting a
+dead line into a live one is the widest change) or
 **adds a relaxing option** (`no-touch-required` always, and `pty`,
 `port-forwarding`, `agent-forwarding`, `X11-forwarding`, `user-rc` when both lines
-carry `restrict`) is painted red and followed by a warning — highlighted, not
+carry `restrict`, and a further `permitopen=`/`permitlisten=` next to the server's
+(sshd allows the union of all of them)) is painted red and followed by a warning — highlighted, not
 refused. Dropping `no-touch-required` tightens access and is not flagged:
 
 ```console
@@ -827,8 +848,14 @@ web-1 (deploy@10.0.0.1:22)
   → 3 keys desired · 0 add · 0 remove · 1 rewrite
 ```
 
-A rewrite that adds a relaxing option is flagged the same way, with
-`warning: the rewrite of <user>'s key adds relaxing option(s) "no-touch-required" — the manifest line grants more than the server does today`.
+A rewrite that adds a relaxing option is flagged the same way:
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ~  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite options: (none) → "no-touch-required"
+  warning: the rewrite of alice (alice@work)'s key adds relaxing option(s) "no-touch-required" — the manifest line grants more than the server does today
+  → 2 keys desired · 0 add · 0 remove · 1 rewrite
+```
 
 After the writes, a summary reports each server's outcome:
 

@@ -193,6 +193,11 @@ func parseUserKey(u User, i int, line string) (*authkeys.Key, error) {
 			return nil, fmt.Errorf("user %q key %d: option %q %s", u.Name, i+1, opt, issue)
 		}
 	}
+	// Each option passed; what is left is line-level: a repeated once-only
+	// clause (command=, from=, principals=), on which sshd rejects the line.
+	if err := authkeys.OptionIssue(k.Options); err != nil {
+		return nil, fmt.Errorf("user %q key %d: %w", u.Name, i+1, err)
+	}
 	return k, nil
 }
 

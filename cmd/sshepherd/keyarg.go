@@ -43,14 +43,6 @@ var (
 	// whole type names, so a path like ssh-keys/alice.pub or a user named
 	// ssh-admin is not mistaken for a key.
 	keyTypePrefixes = []string{"ssh-ed25519", "ssh-ed448", "ssh-rsa", "ssh-dss", "ecdsa-sha2-", "sk-ssh-ed25519", "sk-ecdsa-sha2-"}
-	// keyOptionNames mirrors config's authorized_keys option allow-list:
-	// an argument starting with one ("restrict,…", "from=…") is a key line.
-	keyOptionNames = []string{
-		"agent-forwarding", "cert-authority", "command", "environment", "expiry-time", "from",
-		"no-agent-forwarding", "no-port-forwarding", "no-pty", "no-touch-required", "no-user-rc",
-		"no-x11-forwarding", "permitlisten", "permitopen", "port-forwarding", "principals", "pty",
-		"restrict", "tunnel", "user-rc", "verify-required", "x11-forwarding",
-	}
 )
 
 // parseKeyArg classifies a KEY argument from the real filesystem: ~/
@@ -111,7 +103,9 @@ func looksLikeKey(arg string) bool {
 		strings.HasPrefix(arg, "MD5:") || hexColonFP.MatchString(arg) || looksLikeKeyLine(arg)
 }
 
-// looksLikeKeyLine: whitespace, a key-type prefix, or an option prefix.
+// looksLikeKeyLine: whitespace, a key-type prefix, or an option prefix: an
+// argument starting with an authorized_keys option name ("restrict,…",
+// "from=…"; authkeys' option table, case-insensitive) is a key line.
 func looksLikeKeyLine(arg string) bool {
 	if strings.ContainsAny(arg, " \t") {
 		return true
@@ -121,16 +115,11 @@ func looksLikeKeyLine(arg string) bool {
 			return true
 		}
 	}
-	name := strings.ToLower(arg)
+	name := arg
 	if i := strings.IndexAny(name, "=,"); i >= 0 {
 		name = name[:i]
 	}
-	for _, o := range keyOptionNames {
-		if name == o {
-			return true
-		}
-	}
-	return false
+	return authkeys.IsOptionName(name)
 }
 
 // fingerprintArg validates a SHA256 fingerprint token: 43 characters of

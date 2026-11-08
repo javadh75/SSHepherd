@@ -154,6 +154,11 @@ func TestLooksLikeKey(t *testing.T) {
 		"restrict":               true,
 		"from=10.0.0.1":          true,
 		"no-pty,restrict":        true,
+		"No-PTY":                 true, // option names match case-insensitively (authkeys' table)
+		"Verify-Required":        true,
+		"X11-forwarding,pty":     true,
+		"no-ptty":                false, // not an option: a path
+		"fromage":                false,
 		testkeys.Line(t, 1):      true,
 		"alice bob":              true,
 		"ecdsa-sha2-nistp256":    true,

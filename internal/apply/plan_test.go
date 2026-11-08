@@ -453,6 +453,12 @@ func TestPlanRewriteLooseningByMeaning(t *testing.T) {
 		{"no-touch-required added", "no-touch-required ", "", nil, []string{"no-touch-required"}},
 		{"port-forwarding added under restrict", "restrict,port-forwarding ", "restrict ", nil, []string{"port-forwarding"}},
 		{"pty added without restrict is a no-op", "pty ", "", nil, nil},
+		// A server line sshd ignores grants nothing today; the rewrite makes it live.
+		{"server line sshd ignores (typo)", "", "no-ptty ", []string{"no-ptty"}, nil},
+		{"server line sshd ignores (unknown)", "", "zzz ", []string{"zzz"}, nil},
+		// permitopen= is a union: one more destination widens access.
+		{"permitopen added beside existing", `permitopen=\"db:5432\",permitopen=\"*:*\" `, `permitopen="db:5432" `, nil, []string{`permitopen="*:*"`}},
+		{"permitopen first one narrows", `permitopen=\"db:5432\" `, "", nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

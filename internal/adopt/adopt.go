@@ -19,7 +19,7 @@ import (
 // NewUser is one unknown key adopted into a generated user.
 type NewUser struct {
 	Name     string
-	Line     string   // authorized_keys line as found (minus an unsafe comment); first occurrence wins
+	Line     string   // authorized_keys line as found (minus an unsafe comment); first line sshd honors wins
 	FoundOn  []string // sorted names of servers where the key was found
 	Wildcard bool     // grant renders as ["*"]: the key covers the whole fleet
 }
@@ -32,8 +32,9 @@ type Extension struct {
 }
 
 // Issue is a server whose keys could not be (fully) read, or that holds a
-// line sshd ignores; the cmd layer enforces the strict/--partial gate on
-// these. Detail can embed
+// key whose every line sshd ignores, or an unknown key whose line the
+// manifest cannot hold; the cmd layer enforces the strict/--partial gate
+// on these. Detail can embed
 // remote-influenced text, but the sshread and authkeys layers control-strip
 // it at the source, so it is safe to print. Hint is the failure's operator
 // remediation (audit.CleanHint: one sanitized line, empty when there is
@@ -78,16 +79,18 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 		for _, pe := range r.ParseErrs {
 			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: pe.Error()})
 		}
-		for _, k := range r.Diff.Unauthorized {
-			// sshd rejects a line with an unknown option, an unquoted value
-			// or a bad expiry-time, so this key never logged in here. Adopting
-			// it would fail the manifest's own validation (the generated
-			// manifest is self-checked); report it like an unparseable line
-			// so the strict gate / --partial decide. err quotes the option
-			// with %q, so remote control bytes are escaped.
-			if err := authkeys.OptionIssue(k.Options); err != nil {
+		lines := linesByFingerprint(r.Content)
+		for _, first := range r.Diff.Unauthorized {
+			// sshd skips a line with an unknown option, a bad value or a
+			// repeated once-only clause and keeps scanning, so the key logs
+			// in through its first line sshd honors. When there is none the
+			// key never logged in here: report it like an unparseable line so
+			// the strict gate / --partial decide. err quotes the option with
+			// %q, so remote control bytes are escaped.
+			k, err := honoredLine(first, lines[first.Fingerprint])
+			if err != nil {
 				p.Issues = append(p.Issues, Issue{Server: r.Server.Name,
-					Detail: fmt.Sprintf("key %s: sshd ignores this line: %v", k.Fingerprint, err)})
+					Detail: fmt.Sprintf("key %s: %v", first.Fingerprint, err)})
 				continue
 			}
 			if owner, known := cfg.OwnerOf(k.Fingerprint); known {
@@ -112,6 +115,15 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 				pd.foundOn = append(pd.foundOn, r.Server.Name)
 				continue
 			}
+			// The line logs in, but it becomes the manifest line, and the
+			// manifest refuses option bytes it would render verbatim
+			// (control/format runes, which sshd accepts inside quotes).
+			// Adopting it would fail adopt's self-check.
+			if err := authkeys.OptionIssue(k.Options); err != nil {
+				p.Issues = append(p.Issues, Issue{Server: r.Server.Name,
+					Detail: fmt.Sprintf("key %s: this line logs in, but the manifest cannot hold it: %v — not adopted", k.Fingerprint, err)})
+				continue
+			}
 			byFP[k.Fingerprint] = &pending{line: k.Raw, comment: k.Comment, foundOn: []string{r.Server.Name}}
 			order = append(order, k.Fingerprint)
 			if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
@@ -131,6 +143,39 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	p.NewUsers, nameWarnings = nameUsers(cfg, byFP, order)
 	p.Warnings = append(p.Warnings, nameWarnings...)
 	return p
+}
+
+// linesByFingerprint indexes every parsed line of a server's file by
+// fingerprint, in file order. audit's Diff keeps only the first line per
+// fingerprint; sshd reads them all.
+func linesByFingerprint(content []byte) map[string][]authkeys.Key {
+	keys, _ := authkeys.ParseFile(content) // parse errors are already Issues (r.ParseErrs)
+	m := make(map[string][]authkeys.Key, len(keys))
+	for _, k := range keys {
+		m[k.Fingerprint] = append(m[k.Fingerprint], k)
+	}
+	return m
+}
+
+// honoredLine returns the first of a key's lines that sshd honors (sshd
+// skips a line whose options it cannot read and keeps scanning, so a bad
+// copy before a good one does not cost the key its access). first is the
+// key's first line (audit's Diff entry); lines are all of them. The error
+// describes the ignored lines when sshd honors none.
+func honoredLine(first authkeys.Key, lines []authkeys.Key) (authkeys.Key, error) {
+	if len(lines) == 0 {
+		lines = []authkeys.Key{first}
+	}
+	for _, l := range lines {
+		if authkeys.IgnoredBySSHD(l.Options) == nil {
+			return l, nil
+		}
+	}
+	err := authkeys.IgnoredBySSHD(lines[0].Options)
+	if len(lines) == 1 {
+		return first, fmt.Errorf("sshd ignores this line: %w", err)
+	}
+	return first, fmt.Errorf("sshd ignores each of its %d lines; the first: %w", len(lines), err)
 }
 
 // extensions turns the per-user found-on sets into Extensions, in manifest

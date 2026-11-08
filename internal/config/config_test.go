@@ -340,6 +340,15 @@ users:
 users:
   - {name: alice, keys: ['expiry-time="2027xx01" KEYA']}
 `, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
+		// sshd rejects a line with a second command=/from=/principals= clause.
+		{"repeated command clause", `
+users:
+  - {name: alice, keys: ['command="echo A",command="echo B" KEYA']}
+`, `user "alice" key 1: option "command=\"echo B\"" repeats command=, which sshd allows once per line`},
+		{"repeated from clause", `
+users:
+  - {name: alice, keys: ['from="10.0.0.1",FROM="10.0.0.2" KEYA']}
+`, "repeats from=, which sshd allows once per line"},
 		{"key type mismatch", `
 users:
   - {name: alice, keys: ["ssh-rsa BLOBA"]}
@@ -445,6 +454,7 @@ func TestKeyOptionsAccepted(t *testing.T) {
 		{"upper-case name", "NO-PTY,Restrict"},
 		{"valued", `command="echo a,b c",environment="A=1",expiry-time="20300101",from="10.0.0.0/8,!10.0.0.1"`},
 		{"more valued", `permitlisten="localhost:8080",permitopen="host:22",principals="a,b",tunnel="0"`},
+		{"repeatable valued", `permitopen="a:1",permitopen="b:2",permitlisten="1",permitlisten="2",environment="A=1",environment="B=2"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

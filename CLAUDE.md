@@ -364,8 +364,11 @@ Review remediation W1: authorized_keys option meaning lives in one table
 (`internal/authkeys/options.go`) used by manifest validation (a malformed
 `expiry-time` now fails the load), apply's loosening highlight (`verify-required`
 restricts; added relaxations flagged via `RewriteRow.Widens`), the lockout-guard
-warning and rotate's expiry check; adopt turns server lines sshd would ignore into
-strict/`--partial` issues. sshcfg `Include` skips cycles and caps reads (1024 files,
+warning and rotate's expiry check; it follows sshd's line semantics (a repeated
+`command=`/`from=`/`principals=` is rejected; adopt takes each key from its first
+line sshd honors and reports a key as a strict/`--partial` issue only when sshd
+ignores every one of its lines; a rewrite of a line sshd ignores, or a further
+`permitopen=`/`permitlisten=`, is flagged as loosening). sshcfg `Include` skips cycles and caps reads (1024 files,
 1 MiB each), and a `ssh -G` differential test checks sshcfg.
 Reports name unowned keys by on-server comment/options, connection errors carry
 their remediation as a separate `hint` (text: once per distinct hint; JSON:

@@ -491,9 +491,16 @@ func TestIncludeCycleThroughSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "config"), filepath.Join(dir, "link")); err != nil {
 		t.Skip("symlinks unavailable:", err)
 	}
-	_, warnings := loadDir(t, dir)
-	if !hasWarning(warnings, "Include cycle") {
-		t.Errorf("warnings = %v, want the symlinked self-include seen as a cycle", warnings)
+	hosts, warnings := loadDir(t, dir)
+	// The link resolves to config itself, so the cycle is caught at config's
+	// own Include: link is never read. Without symlink resolution, link would
+	// be read once (a second 'a') and the cycle caught one level later, at
+	// link:1.
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "config:1: Include cycle") {
+		t.Errorf("warnings = %v, want exactly one cycle warning at config:1", warnings)
+	}
+	if len(hosts) != 1 {
+		t.Errorf("hosts = %+v, want one 'a' (the link is never read)", hosts)
 	}
 }
 

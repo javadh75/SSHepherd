@@ -54,10 +54,14 @@ type RewriteRow struct {
 	OptionsDiffer  bool
 	// Loosens lists restrictive on-server options the rewrite drops (from=,
 	// command=, restrict, the no-* restrictions, verify-required,
-	// expiry-time=, permitopen=, permitlisten=, cert-authority, principals=).
+	// expiry-time=, the last permitopen=/permitlisten=, cert-authority,
+	// principals=), plus any on-server option that makes sshd ignore the
+	// line today (unknown, bad value, repeated once-only clause). See
+	// authkeys.Loosening.
 	Loosens []string
 	// Widens lists relaxing options the rewrite adds (no-touch-required;
-	// pty/port-/agent-/X11-forwarding/user-rc when both lines carry restrict).
+	// pty/port-/agent-/X11-forwarding/user-rc when both lines carry restrict;
+	// a further permitopen=/permitlisten= clause beside the server's).
 	// Together with Loosens: the key gains access it does not have today.
 	Widens []string
 }

@@ -19,10 +19,16 @@ const (
 // optionSpec is sshd(8)'s meaning of one authorized_keys option
 // (AUTHORIZED_KEYS FILE FORMAT). sshd rejects the whole line on any option
 // missing from this table, a valued option without a double-quoted value,
-// or a bad expiry-time.
+// a bad expiry-time, or a second clause of a once-only option (command=,
+// from=, principals=; auth-options.c "multiple … clauses").
 type optionSpec struct {
 	takesValue bool
 	effect     effect
+	// once: sshd rejects the line when the option appears twice.
+	once bool
+	// union: every clause adds to what the line allows (permitopen=,
+	// permitlisten=): one more widens access, one fewer narrows it.
+	union bool
 	// underRestrict marks a re-enabler (pty, port-forwarding, …): it only
 	// widens access on a line that also carries restrict; without restrict
 	// the feature is already on.
@@ -38,20 +44,20 @@ type optionSpec struct {
 var options = map[string]optionSpec{
 	"agent-forwarding":    {effect: loosens, underRestrict: true},
 	"cert-authority":      {effect: restricts, certOnly: true},
-	"command":             {takesValue: true, effect: restricts, blocksLogin: true},
+	"command":             {takesValue: true, effect: restricts, blocksLogin: true, once: true},
 	"environment":         {takesValue: true},
 	"expiry-time":         {takesValue: true, effect: restricts, blocksLogin: true, value: validExpiry},
-	"from":                {takesValue: true, effect: restricts, blocksLogin: true},
+	"from":                {takesValue: true, effect: restricts, blocksLogin: true, once: true},
 	"no-agent-forwarding": {effect: restricts},
 	"no-port-forwarding":  {effect: restricts},
 	"no-pty":              {effect: restricts},
 	"no-touch-required":   {effect: loosens}, // sk keys: no user-presence touch: a relaxation
 	"no-user-rc":          {effect: restricts},
 	"no-x11-forwarding":   {effect: restricts},
-	"permitlisten":        {takesValue: true, effect: restricts},
-	"permitopen":          {takesValue: true, effect: restricts},
+	"permitlisten":        {takesValue: true, effect: restricts, union: true},
+	"permitopen":          {takesValue: true, effect: restricts, union: true},
 	"port-forwarding":     {effect: loosens, underRestrict: true},
-	"principals":          {takesValue: true, effect: restricts, certOnly: true},
+	"principals":          {takesValue: true, effect: restricts, certOnly: true, once: true},
 	"pty":                 {effect: loosens, underRestrict: true},
 	"restrict":            {effect: restricts, blocksLogin: true},
 	"tunnel":              {takesValue: true},
@@ -60,19 +66,39 @@ var options = map[string]optionSpec{
 	"x11-forwarding":      {effect: loosens, underRestrict: true},
 }
 
-func lookup(opt string) (optionSpec, bool) {
+// nameOf is an option's lower-cased name (sshd matches names case-insensitively).
+func nameOf(opt string) string {
 	name, _, _ := strings.Cut(opt, "=")
-	s, ok := options[strings.ToLower(name)]
+	return strings.ToLower(name)
+}
+
+func lookup(opt string) (optionSpec, bool) {
+	s, ok := options[nameOf(opt)]
 	return s, ok
 }
 
-// CheckOption reports why one key option would make sshd reject the line;
-// "" means acceptable. Unsafe runes are rejected first: option values are
-// rendered verbatim into files and plan output.
+// IsOptionName reports whether name (no "=value") is an authorized_keys
+// option sshd knows, case-insensitively.
+func IsOptionName(name string) bool {
+	_, ok := options[strings.ToLower(name)]
+	return ok
+}
+
+// CheckOption reports why one key option is unfit for the manifest: an
+// unsafe rune, or a reason sshd rejects the line; "" means acceptable.
+// Unsafe runes are rejected first: option values are rendered verbatim into
+// files and plan output.
 func CheckOption(opt string) string {
 	if strings.ContainsFunc(opt, IsUnsafeRune) {
 		return "contains control or format characters"
 	}
+	return sshdIssue(opt)
+}
+
+// sshdIssue reports why one option makes sshd reject the line; "" means sshd
+// accepts it. Unsafe runes are not sshd's concern: a quoted value may carry
+// any byte, and an unknown name is caught by the table lookup.
+func sshdIssue(opt string) string {
 	_, value, hasValue := strings.Cut(opt, "=")
 	s, known := lookup(opt)
 	switch {
@@ -88,37 +114,98 @@ func CheckOption(opt string) string {
 	return ""
 }
 
-// OptionIssue returns the first option sshd would reject, as
+// OptionIssue returns the first reason a line with these options is unfit
+// for the manifest (CheckOption, or a repeated once-only clause), as
 // `option "<opt>" <issue>`; nil when every option is acceptable.
-func OptionIssue(opts []string) error {
-	for _, o := range opts {
-		if issue := CheckOption(o); issue != "" {
+func OptionIssue(opts []string) error { return linesIssue(opts, CheckOption) }
+
+// IgnoredBySSHD returns the first reason sshd skips a line with these
+// options (an unknown option, a bad value, a repeated once-only clause), in
+// OptionIssue's wording; nil when sshd honors the line. Unlike OptionIssue
+// it accepts control runes inside a quoted value, as sshd does.
+func IgnoredBySSHD(opts []string) error { return linesIssue(opts, sshdIssue) }
+
+func linesIssue(opts []string, check func(string) string) error {
+	for i, o := range opts {
+		if issue := check(o); issue != "" {
 			return fmt.Errorf("option %q %s", o, issue)
+		}
+		if repeatOf(opts, i) {
+			return fmt.Errorf("option %q repeats %s=, which sshd allows once per line", o, nameOf(o))
 		}
 	}
 	return nil
 }
 
+// repeatOf reports whether opts[i] is a second (or later) clause of a
+// once-only option.
+func repeatOf(opts []string, i int) bool {
+	s, ok := lookup(opts[i])
+	return ok && s.once && slices.ContainsFunc(opts[:i], func(o string) bool { return nameOf(o) == nameOf(opts[i]) })
+}
+
 // Loosening reports how rewriting a line from actual to desired options
 // widens access. dropped: restrictive options actual carries that desired
-// does not carry verbatim (a changed from= value counts). added: widening
-// options desired adds; a re-enabler counts only when both lines carry
-// restrict (otherwise it is a no-op, or dropping restrict is reported).
+// does not carry verbatim (a changed from= value counts), and every option
+// that makes sshd ignore the actual line (unknown, bad value, repeated
+// once-only clause): a live rewrite of a dead line is the widest change. A
+// permitopen=/permitlisten= clause is dropped only when desired carries
+// none of that name (fewer clauses narrow the union). added: widening
+// options desired adds — a loosening option (a re-enabler only when both
+// lines carry restrict; otherwise it is a no-op, or dropping restrict is
+// reported) or a new permitopen=/permitlisten= clause beside actual's.
 func Loosening(actual, desired []string) (dropped, added []string) {
-	for _, o := range actual {
-		if s, ok := lookup(o); ok && s.effect == restricts && !slices.Contains(desired, o) {
-			dropped = append(dropped, o)
+	for i := range actual {
+		if droppedWidens(actual, i, desired) {
+			dropped = append(dropped, actual[i])
 		}
 	}
+	return dropped, addedWidening(actual, desired)
+}
+
+// droppedWidens reports whether losing actual[i] in the rewrite to desired
+// widens access (see Loosening).
+func droppedWidens(actual []string, i int, desired []string) bool {
+	o := actual[i]
+	if repeatOf(actual, i) {
+		return countName(desired, nameOf(o)) < 2 // the repeat made sshd ignore the line
+	}
+	if slices.Contains(desired, o) {
+		return false
+	}
+	if sshdIssue(o) != "" {
+		return true // sshd ignores the line today
+	}
+	s, known := lookup(o)
+	if !known || s.effect != restricts {
+		return false
+	}
+	return !s.union || !hasName(desired, nameOf(o))
+}
+
+// addedWidening lists desired's options that widen access over actual (see Loosening).
+func addedWidening(actual, desired []string) (added []string) {
 	restrictBoth := hasName(actual, "restrict") && hasName(desired, "restrict")
 	for _, o := range desired {
 		s, ok := lookup(o)
-		if !ok || s.effect != loosens || slices.Contains(actual, o) || (s.underRestrict && !restrictBoth) {
+		if !ok || slices.Contains(actual, o) {
 			continue
 		}
-		added = append(added, o)
+		if (s.union && hasName(actual, nameOf(o))) || (s.effect == loosens && (!s.underRestrict || restrictBoth)) {
+			added = append(added, o)
+		}
 	}
-	return dropped, added
+	return added
+}
+
+func countName(opts []string, name string) int {
+	n := 0
+	for _, o := range opts {
+		if nameOf(o) == name {
+			n++
+		}
+	}
+	return n
 }
 
 // BlocksLogin reports whether any option can stop a non-interactive login
