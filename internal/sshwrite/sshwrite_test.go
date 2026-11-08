@@ -734,10 +734,12 @@ func replaceNth(t *testing.T, s, old string, n int, repl string) string {
 }
 
 // TestOwnerChecksBite removes one owner check at a time and requires the
-// row that targets it to stop refusing. This proves the ownerCases rows
-// cover each check alone, not only all of them together.
+// row that targets it to complete the write instead: exit 0 with the
+// managed content in place. This proves the ownerCases rows cover each
+// check alone, not only all of them together, and that removing a check
+// is not caught by some other, unrelated failure.
 func TestOwnerChecksBite(t *testing.T) {
-	mutants := map[string]struct {
+	ownerMutants := map[string]struct {
 		needle string
 		n      int
 	}{
@@ -752,11 +754,17 @@ func TestOwnerChecksBite(t *testing.T) {
 			if c.mutant == "" {
 				continue
 			}
-			m := mutants[c.mutant]
+			m, ok := ownerMutants[c.mutant]
+			if !ok {
+				t.Fatalf("row %q names mutant %q, which is not in ownerMutants", c.name, c.mutant)
+			}
 			t.Run(c.name, func(t *testing.T) {
-				code, _, _ := runOwnerCase(t, sh, c, func(s string) string { return replaceNth(t, s, m.needle, m.n, ":") })
-				if code == unsafePathExit {
-					t.Fatalf("with the %s owner check removed the script still exits 48 — the row does not isolate that check", c.mutant)
+				code, target, _ := runOwnerCase(t, sh, c, func(s string) string { return replaceNth(t, s, m.needle, m.n, ":") })
+				if code != 0 {
+					t.Fatalf("with the %s owner check removed the script exits %d, want 0 — the row does not isolate that check", c.mutant, code)
+				}
+				if got := readFile(t, target); got != managed {
+					t.Fatalf("with the %s owner check removed the target holds %q, want the rendered file %q", c.mutant, got, managed)
 				}
 			})
 		}
