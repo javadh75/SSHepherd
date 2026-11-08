@@ -174,8 +174,15 @@ test that fails before the fix and passes after.
 - **Integration** — exercise real `authorized_keys` files and a real `sshd` (dockerized or a
   throwaway container); guard behind a build tag (e.g. `//go:build integration`) so the unit
   path stays fast.
+  `scripts/integration.sh [alpine|debian|rocky]` (`make integration IT_DISTRO=…`) builds
+  `ci/images/sshd-<distro>.Dockerfile` and starts two sshd containers (A: every fixture user;
+  B: a custom `AuthorizedKeysFile`) on dynamic ports with unique names. The CI and release
+  `integration` jobs are an alpine/debian/rocky matrix.
 - **End-to-end (E2E)** — drive the actual CLI binary through full flows
   (distribute → audit → revoke → rotate) against a small fleet of test containers.
+  `TestE2EFleetFanOut` drives apply and audit across both containers. It checks the per-host
+  `known_hosts` (a swapped host key exits 2 with `host_key_changed`) and B's
+  `authorized_keys_file` override.
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
   `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
@@ -231,8 +238,8 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   --security-opt no-new-privileges`.
 - **Pins**: every container image is pinned by digest in a Dockerfile (the release image in
   `Dockerfile`, the scanners and sshd test images in `ci/images/`); Dependabot's docker
-  ecosystem covers `directories: ["/", "/ci/images"]`. Go tools are pinned in the Makefile and
-  bumped by hand.
+  ecosystem covers `directories: ["/", "/ci/images"]` (the sshd test images: alpine 3.24.2,
+  debian 13.6-slim, rocky 10.2). Go tools are pinned in the Makefile and bumped by hand.
 - **Multi-arch**: build `linux/amd64` + `linux/arm64` once with `docker buildx`; gate each variant
   with `scripts/docker-gates.sh --platform OS/ARCH`.
 
@@ -516,3 +523,5 @@ releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUM
 Fuzz oracles and corpus (P13, round 2): every one of the 19 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
+Distro matrix (P13, round 2): integration and E2E run against two sshd containers on
+alpine, debian and rocky (a CI and release matrix).

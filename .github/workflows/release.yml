@@ -3,7 +3,8 @@ name: Release image
 # A release is built once and published only after every gate passes:
 #   verify-ref   the tag is vMAJOR.MINOR.PATCH and its commit is on master
 #   check        make check: lint, gosec, govulncheck, gitleaks, race + coverage
-#   integration  make integration: real sshd containers
+#   integration  make integration: two real sshd containers, on alpine,
+#                debian and rocky (a matrix; every leg must pass)
 #   image        hadolint + Trivy config, then ONE multi-arch build (arm64 is
 #                cross-compiled) pushed to GHCR by digest only, with no tag
 #   gate         per arch on a native runner: docker-gates.sh, Trivy, dockle
@@ -127,9 +128,14 @@ jobs:
       - name: Quality gate
         run: make check
 
+  # The same alpine/debian/rocky matrix as CI: publish waits for every leg.
   integration:
-    name: Integration (sshd container)
+    name: Integration (${{ matrix.distro }} sshd)
     needs: verify-ref
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [alpine, debian, rocky]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -141,7 +147,7 @@ jobs:
           cache: true
 
       - name: Run integration tests
-        run: make integration
+        run: make integration IT_DISTRO=${{ matrix.distro }}
 
   # Least privilege: `image` can push but holds no OIDC token, `gate` is
   # read-only, and only `publish` (the image) and `release-binaries` (the

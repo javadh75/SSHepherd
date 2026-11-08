@@ -140,9 +140,16 @@ jobs:
       - name: Smoke, arch, size, user and signal gates
         run: ./scripts/docker-gates.sh
 
+  # Two sshd containers per leg (scripts/integration.sh), on three userlands:
+  # busybox (alpine), dash + GNU coreutils + PAM (debian), bash as /bin/sh +
+  # RHEL sshd + PAM (rocky). ci-ok fails if any leg fails.
   integration:
-    name: Integration (sshd container)
+    name: Integration (${{ matrix.distro }} sshd)
     if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [alpine, debian, rocky]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,7 +160,7 @@ jobs:
           cache: true
 
       - name: Run integration tests
-        run: make integration
+        run: make integration IT_DISTRO=${{ matrix.distro }}
 
   # Informational: benchstat of base vs head in the job summary. It fails only
   # if the head benchmarks themselves fail (panic or build error), never on a

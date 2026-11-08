@@ -1733,7 +1733,8 @@ Everything below runs the same commands CI runs.
 $ make check        # the full gate: tidy, fmt, vet, lint, deadcode, security, licenses, coverage (≥80%)
 $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 80% line coverage
-$ make integration  # dockerized sshd + build-tagged integration tests
+$ make integration  # two dockerized alpine sshd containers + build-tagged integration/E2E tests
+$ make integration IT_DISTRO=debian  # or alpine | rocky
 $ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each)
 $ make fuzz-list    # every Fuzz* target as 'importpath Target'
 $ make licenses     # dependency licenses of the shipped binary stay Apache-2.0-compatible (part of make check)
@@ -1781,7 +1782,8 @@ nothing to scan and the job passes. After that, a registry error fails it.
 
 **Releases.** Pushing a `vMAJOR.MINOR.PATCH` tag runs `.github/workflows/release.yml`.
 It refuses a tag whose commit is not on `master`, then runs `make check` (including
-`govulncheck` on the exact Go the image ships) and `make integration`. It builds the
+`govulncheck` on the exact Go the image ships) and `make integration` on alpine,
+debian and rocky. It builds the
 `linux/amd64` + `linux/arm64` image once (arm64 is cross-compiled) and pushes it by
 digest only. It lints the Dockerfile with hadolint and Trivy config before the build.
 Then it gates that exact digest on native amd64 and arm64 runners with Trivy (fails on
@@ -1826,8 +1828,20 @@ Every release tag must point at a commit at or after `ca50409`, the commit that 
 the gated release workflow; older commits run an ungated release workflow or one whose
 publish step always fails.
 
+Integration and E2E tests run against two throwaway sshd containers built from
+`ci/images/sshd-<distro>.Dockerfile` (alpine: busybox; debian: dash, GNU coreutils,
+PAM; rocky: bash as /bin/sh, RHEL sshd, PAM). Container A holds every fixture user.
+Container B's sshd reads `~/.ssh/fleet_keys`, so the two-host E2E proves real
+parallel fan-out, the `authorized_keys_file` override and per-host `known_hosts`.
+Host keys are generated when each container starts. Each run uses unique container
+names and ports that Docker picks, so parallel runs never collide.
+`SSHEPHERD_IT_PORT` pins container A's port, and `SSHEPHERD_IT_NAME` sets the
+container name prefix. CI and the release workflow run all three distros as a
+matrix, and a release waits for every leg.
+
 Test kinds in the repo: unit (table-driven), integration (real `sshd` in Docker,
-build-tagged), end-to-end (the CLI binary through adopt → apply → audit), fuzz
+build-tagged), end-to-end (the CLI binary through adopt → apply → audit, and apply +
+audit across two hosts), fuzz
 (every `Fuzz*` target, each with a committed seed corpus under
 `<pkg>/testdata/fuzz/<Target>/` that runs as ordinary test cases on every
 `go test`), benchmarks, race, goroutine-leak
@@ -1854,6 +1868,7 @@ internal/reconcile/  pure import-merge reconciliation, same-target collapse
 internal/naming/     collision-free user-name allocator (import, merge, adopt)
 internal/clog/       leveled, colorized logging and output sanitization
 scripts/             integration runner, Docker image gates
+ci/images/           digest-pinned scanner and sshd test images (Dependabot-visible)
 .github/             CI, release and Dependabot workflows
 ```
 

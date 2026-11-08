@@ -149,9 +149,11 @@ actionlint:
 test:
 	$(GO) test -race -covermode=atomic -coverprofile=$(COVERPROFILE) $(PKG)
 
-## integration: run integration tests against a throwaway sshd container
+## integration: run integration tests against two throwaway sshd containers
+## built from ci/images/sshd-$(IT_DISTRO).Dockerfile (alpine | debian | rocky)
+IT_DISTRO ?= alpine
 integration:
-	./scripts/integration.sh
+	./scripts/integration.sh "$(IT_DISTRO)"
 
 ## coverage: report coverage and fail below COVERAGE_MIN%
 coverage: test

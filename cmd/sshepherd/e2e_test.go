@@ -64,7 +64,7 @@ func runBin(t *testing.T, bin string, args ...string) (int, string, string) {
 func writeE2EManifest(t *testing.T, dir, name, body string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil { // #nosec G703 -- t.TempDir path
 		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
@@ -394,5 +394,105 @@ access:
 	}
 	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 0 {
 		t.Fatalf("audit after the finish exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+}
+
+// TestE2EFleetFanOut drives two sshd containers: fleet-a (default path) and
+// fleet-b (sshd reads ~/.ssh/fleet_keys; the manifest says so). One apply
+// converges both in parallel; audit closes the loop; a known_hosts entry with
+// B's keys swapped for A's must raise a host-key alarm (exit 2) for B alone.
+func TestE2EFleetFanOut(t *testing.T) {
+	bin, host, portA, kh, pub := itE2E(t)
+	portB := os.Getenv("SSHEPHERD_IT_PORT_B")
+	if portB == "" {
+		t.Fatal("SSHEPHERD_IT_PORT_B not set: scripts/integration.sh must start the second container")
+	}
+	dir := t.TempDir()
+	m := writeE2EManifest(t, dir, "fleet.yaml", `
+users:
+  - {name: op, operator: true, keys: ["`+pub+`"]}
+servers:
+  - {name: fleet-a, host: `+host+`, port: `+portA+`, user: fleet}
+  - {name: fleet-b, host: `+host+`, port: `+portB+`, user: fleet, authorized_keys_file: ~/.ssh/fleet_keys}
+`)
+	if a, b := hostKeyBlob(t, kh, portA), hostKeyBlob(t, kh, portB); a == b {
+		t.Fatalf("both containers present the same ed25519 host key; per-host known_hosts would be untested")
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 1 ||
+		!strings.Contains(out, "fleet-a") || !strings.Contains(out, "fleet-b") {
+		t.Fatalf("pre-apply audit exit = %d, want 1 (stale key on both) (stderr: %s)\n%s", code, stderr, out)
+	}
+	code, out, stderr := runBin(t, bin, "apply", "--json", "--yes", "--config", m, "--known-hosts", kh)
+	var doc struct {
+		Summary struct {
+			Applied int `json:"applied"`
+		} `json:"summary"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &doc) != nil || doc.Summary.Applied != 2 {
+		t.Fatalf("apply exit = %d applied = %d, want 0 and 2 (stderr: %s)\n%s", code, doc.Summary.Applied, stderr, out)
+	}
+	if code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("post-apply audit exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+	// apply wrote B's override path, not the default one sshd ignores there.
+	wrong := writeE2EManifest(t, dir, "wrong.yaml", strings.Replace(readFile(t, m), ", authorized_keys_file: ~/.ssh/fleet_keys", "", 1))
+	if code, _, _ := runBin(t, bin, "audit", "--config", wrong, "--known-hosts", kh); code == 0 {
+		t.Errorf("audit of B's default path exit 0: apply must not have written ~/.ssh/authorized_keys on fleet-b")
+	}
+	swapped := filepath.Join(dir, "known_hosts.swapped")
+	writeSwappedKnownHosts(t, kh, swapped, portA, portB)
+	code, out, stderr = runBin(t, bin, "audit", "--json", "--config", m, "--known-hosts", swapped)
+	if code != 2 || !strings.Contains(out, `"host_key_changed"`) {
+		t.Fatalf("swapped known_hosts: exit = %d, want 2 with host_key_changed (stderr: %s)\n%s", code, stderr, out)
+	}
+}
+
+// readFile is os.ReadFile that fails the test on error.
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path) // #nosec G304 -- harness known_hosts (SSHEPHERD_IT_KNOWN_HOSTS) or a t.TempDir path
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+// knownHostsBlobs maps key type to base64 blob for the [127.0.0.1]:port
+// lines of the known_hosts file kh.
+func knownHostsBlobs(t *testing.T, kh, port string) map[string]string {
+	t.Helper()
+	blobs := map[string]string{}
+	for line := range strings.Lines(readFile(t, kh)) {
+		if f := strings.Fields(line); len(f) >= 3 && f[0] == "[127.0.0.1]:"+port {
+			blobs[f[1]] = f[2]
+		}
+	}
+	return blobs
+}
+
+// hostKeyBlob returns the ssh-ed25519 host key blob recorded for port.
+func hostKeyBlob(t *testing.T, kh, port string) string {
+	t.Helper()
+	blob := knownHostsBlobs(t, kh, port)["ssh-ed25519"]
+	if blob == "" {
+		t.Fatalf("%s has no [127.0.0.1]:%s ssh-ed25519 line", kh, port)
+	}
+	return blob
+}
+
+// writeSwappedKnownHosts copies kh to dst, recording A's host key blob of
+// the same type on every one of B's lines (B now looks impersonated).
+func writeSwappedKnownHosts(t *testing.T, kh, dst, portA, portB string) {
+	t.Helper()
+	blobsA := knownHostsBlobs(t, kh, portA)
+	var b strings.Builder
+	for line := range strings.Lines(readFile(t, kh)) {
+		if f := strings.Fields(line); len(f) >= 3 && f[0] == "[127.0.0.1]:"+portB && blobsA[f[1]] != "" {
+			line = f[0] + " " + f[1] + " " + blobsA[f[1]] + "\n"
+		}
+		b.WriteString(line)
+	}
+	if err := os.WriteFile(dst, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write %s: %v", dst, err)
 	}
 }
