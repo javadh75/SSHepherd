@@ -273,6 +273,18 @@ func lockedReadCmdFor(path string) string {
 	return sshconn.PathAssign(path) + `; set -f; if [ ! -d "$(dirname "$p")" ]; then exit 44; fi; ` + lockPrologue() + read
 }
 
+// unchangedReadCmdFor reads path for a keys2-only plan (SkipWrite), after
+// the refusals the write script would have made: a symlinked target (45), a
+// symlinked directory, a file or directory not owned by the login user, or
+// an ancestor failing the walk (48). An absent file is 44. It takes no lock
+// and creates nothing.
+func unchangedReadCmdFor(path string) string {
+	read := strings.TrimPrefix(sshconn.AuthorizedKeysCmdFor(path), sshconn.PathAssign(path))
+	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); d=$(dirname "$p"); if [ -L "$p" ]; then exit 45; fi; if [ ! -e "$p" ]; then exit 44; fi; if [ -L "$d" ]; then exit 48; fi` +
+		`; ( set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi; ` + ancestorCheck + ` ) || exit $?` +
+		`; set -- $(ls -ldn "$p"); if [ "$3" != "$u" ]; then exit 48; fi` + read
+}
+
 // disableKeys2Cmd moves ~/.ssh/authorized_keys2 aside and prints
 // "sshepherd-keys2 <basename>". A copy is never overwritten: the name is
 // fleet.Keys2DisabledSuffix when free, otherwise that plus a UTC timestamp,

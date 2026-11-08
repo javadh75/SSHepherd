@@ -44,6 +44,7 @@ func FuzzWriteCmds(f *testing.F) {
 		"restore":        func(p string) string { return restoreCmdFor(p, false, SnapshotOf(false, []byte("x\n"))) },
 		"restore absent": func(p string) string { return restoreCmdFor(p, true, SnapshotOf(false, []byte("x\n"))) },
 		"locked read":    lockedReadCmdFor,
+		"unchanged read": unchangedReadCmdFor,
 	}
 	const ref = "/ref/authorized_keys"
 	f.Fuzz(func(t *testing.T, path string) {

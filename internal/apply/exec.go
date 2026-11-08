@@ -193,7 +193,7 @@ func failureOutcome(err error) (Outcome, bool) {
 		if lockout.Restore != nil {
 			return OutcomeLockoutUnrestored, false
 		}
-		return OutcomeFailed, true
+		return OutcomeFailed, !lockout.FileKept
 	}
 	return OutcomeFailed, false
 }

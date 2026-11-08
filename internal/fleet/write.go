@@ -53,8 +53,9 @@ type WriteRequest struct {
 	DisableKeys2 bool
 	// SkipWrite: authorized_keys already holds Content (a plan that only
 	// disables authorized_keys2), so no lock, backup, upload or rename runs:
-	// the writer re-reads and compares the file (a mismatch is a refusal),
-	// disables authorized_keys2 and proves the login. A rejected login check
+	// the writer applies the write path's symlink and ownership refusals,
+	// re-reads and compares the file (a mismatch is a refusal), disables
+	// authorized_keys2 and proves the login. A rejected login check
 	// restores only authorized_keys2.
 	SkipWrite bool
 	// HeadlessProof lists key-file fingerprints for one more login after a
@@ -127,13 +128,16 @@ var ErrNoSession = errors.New("no session left to restore over")
 // (key files or agent) could not log in on a fresh connection, or whose
 // reconnect after a dropped connection was refused. Restore is nil when the
 // previous authorized_keys was put back; RestoreKeys2 is the separate
-// authorized_keys2 move-back, whose failure cannot lock anyone out (the
-// file only ever adds keys).
+// authorized_keys2 move-back. A failed move-back does not raise the outcome
+// (spec section 2), but its text never claims the lockout was prevented: a
+// key whose authorized_keys line refuses this client (from=) may have logged
+// in only through authorized_keys2.
 type LockoutError struct {
 	Path         string
 	Probe        error // why the login failed
-	Restore      error // nil when the previous file was put back
+	Restore      error // nil when the previous file was put back, or FileKept
 	RestoreKeys2 error // nil when authorized_keys2 went back, or was not moved
+	FileKept     bool  // SkipWrite: authorized_keys was never written, so no file was restored
 }
 
 func (e *LockoutError) Error() string {
@@ -142,8 +146,12 @@ func (e *LockoutError) Error() string {
 		return fmt.Sprintf("connection dropped after the upload started and a fresh login offering the keys you hold was refused (%v) — the new file may lock you out; the previous version is at %s%s", e.Probe, e.Path, BackupSuffix)
 	case e.Restore != nil:
 		return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) AND restoring the previous file failed (%v) — the previous version is at %s%s; repair it over a session that is still open", e.Probe, errors.Join(e.Restore, e.RestoreKeys2), e.Path, BackupSuffix)
+	case e.FileKept && e.RestoreKeys2 != nil:
+		return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) and moving authorized_keys2 back failed (%v); authorized_keys was not changed", e.Probe, e.RestoreKeys2)
+	case e.FileKept:
+		return fmt.Sprintf("lockout prevented — moved authorized_keys2 back (post-write login offering only the surviving keys you hold failed: %v); authorized_keys was not changed", e.Probe)
 	case e.RestoreKeys2 != nil:
-		return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v), but restoring authorized_keys2 failed (%v)", e.Probe, e.RestoreKeys2)
+		return fmt.Sprintf("restored previous file (post-write login offering only the surviving keys you hold failed: %v), but restoring authorized_keys2 failed (%v)", e.Probe, e.RestoreKeys2)
 	}
 	return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v)", e.Probe)
 }

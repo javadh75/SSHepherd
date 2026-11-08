@@ -551,6 +551,52 @@ func TestIntegrationApplyDisablesAuthorizedKeys2(t *testing.T) {
 	}
 }
 
+// TestIntegrationSkipWrite: a keys2-only write against real sshd moves
+// authorized_keys2 aside without touching authorized_keys, and a symlinked
+// authorized_keys is refused with authorized_keys2 left in place.
+func TestIntegrationSkipWrite(t *testing.T) {
+	w, host, port := itWriter(t)
+	srv := config.Server{Name: "writer", Host: host, Port: port, User: "writer"}
+	rendered := string(itRendered(t))
+	line := testkeys.Line(t, 9) + " revoked@example"
+	skipReq := func(t *testing.T) Request {
+		t.Helper()
+		req := itRequest(t, w.Dialer, srv, itRendered(t))
+		req.DisableKeys2, req.SkipWrite = true, true
+		return req
+	}
+	const present = `if [ -e "$HOME/.ssh/authorized_keys2" ]; then echo present; fi`
+	t.Run("a plain file: only authorized_keys2 moves", func(t *testing.T) {
+		reseed(t, w.Dialer, srv, fixture{keys: &rendered, keys2: strp(line + "\n")})
+		if err := w.Apply(itCtx(t), srv, skipReq(t)); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		if out := remoteOut(t, w.Dialer, srv, present); strings.TrimSpace(out) != "" {
+			t.Error("authorized_keys2 still in place")
+		}
+		if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys"`); got != rendered {
+			t.Errorf("file = %q", got)
+		}
+		if out := remoteOut(t, w.Dialer, srv, `if [ -e "$HOME/.ssh/authorized_keys`+bakSuffix+`" ]; then echo present; fi`); strings.TrimSpace(out) != "" {
+			t.Error("a keys2-only write rotated the backup")
+		}
+	})
+	t.Run("a symlinked file is refused and authorized_keys2 stays", func(t *testing.T) {
+		reseed(t, w.Dialer, srv, fixture{keys: &rendered, keys2: strp(line + "\n")})
+		const realFile = `"$HOME/.ssh/authorized_keys.real"`
+		remoteOut(t, w.Dialer, srv, `cd "$HOME/.ssh" && mv authorized_keys authorized_keys.real && ln -s authorized_keys.real authorized_keys`)
+		t.Cleanup(func() { remoteOut(t, w.Dialer, srv, `mv -f `+realFile+` "$HOME/.ssh/authorized_keys"`) })
+		err := w.Apply(itCtx(t), srv, skipReq(t))
+		var sym *SymlinkError
+		if !errors.As(err, &sym) || !fleet.IsRefusal(err) {
+			t.Fatalf("err = %v, want a symlink refusal", err)
+		}
+		if out := remoteOut(t, w.Dialer, srv, present); strings.TrimSpace(out) != "present" {
+			t.Error("authorized_keys2 moved on a refused server")
+		}
+	})
+}
+
 // TestIntegrationOwnershipRefusals runs the write script's StrictModes-style
 // owner checks (ancestorCheck, and writeCmdFor's directory and file checks)
 // against real sshd fixtures.

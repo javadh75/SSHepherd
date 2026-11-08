@@ -276,13 +276,14 @@ func TestExecuteRequestsKeys2Disable(t *testing.T) {
 
 func TestExecuteFailureOutcomes(t *testing.T) {
 	held := testKey(t, 1)
-	plans := []ServerPlan{changePlan("unproven", held), changePlan("unrestored", held), changePlan("reconnect", held), changePlan("rolledback", held), changePlan("keys2", held)}
+	plans := []ServerPlan{changePlan("unproven", held), changePlan("unrestored", held), changePlan("reconnect", held), changePlan("rolledback", held), changePlan("keys2", held), changePlan("keys2only", held)}
 	w := &fakeWriter{errs: map[string]error{
 		"unproven":   &fleet.UnprovenError{Attempts: 4, Last: errors.New("dial")},
 		"unrestored": &fleet.LockoutError{Probe: errors.New("auth"), Restore: errors.New("denied")},
 		"reconnect":  &fleet.LockoutError{Probe: errors.New("auth"), Restore: fleet.ErrNoSession},
 		"rolledback": &fleet.LockoutError{Probe: errors.New("auth")},
 		"keys2":      &fleet.LockoutError{Probe: errors.New("auth"), RestoreKeys2: errors.New("kept")},
+		"keys2only":  &fleet.LockoutError{Probe: errors.New("auth"), FileKept: true},
 	}}
 	Execute(context.Background(), plans, w, ExecOptions{Parallel: 2, Held: agentHeld(held.Fingerprint)})
 	for name, want := range map[string]struct {
@@ -294,6 +295,7 @@ func TestExecuteFailureOutcomes(t *testing.T) {
 		"reconnect":  {OutcomeLockoutUnrestored, false},
 		"rolledback": {OutcomeFailed, true},
 		"keys2":      {OutcomeFailed, true},
+		"keys2only":  {OutcomeFailed, false},
 	} {
 		if got := planFor(t, plans, name); got.Outcome != want.outcome || got.RolledBack != want.rolled || got.OutcomeErr == nil {
 			t.Errorf("%s = %s rolled %v err %v", name, got.Outcome, got.RolledBack, got.OutcomeErr)

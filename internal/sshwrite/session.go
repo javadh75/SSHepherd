@@ -56,13 +56,21 @@ func (s *writeSession) run() error {
 
 // checkUnchanged replaces the guarded write when authorized_keys already
 // holds the render (SkipWrite): nothing is locked, backed up, uploaded or
-// renamed, so .bak is not rotated. The byte compare doubles as the
-// compare-and-swap, catching a CRC collision too. Nothing was written, so a
-// transport error needs no re-check.
+// renamed, so .bak is not rotated. The write path's symlink and ownership
+// refusals still apply (unchangedReadCmdFor), so authorized_keys2 is never
+// moved on a server the write would have refused. The byte compare doubles
+// as the compare-and-swap, catching a CRC collision too. Nothing was
+// written, so a transport error needs no re-check.
 func (s *writeSession) checkUnchanged() error {
-	code, stdout, stderr, err := s.exec(sshconn.AuthorizedKeysCmdFor(s.path), nil)
+	code, stdout, stderr, err := s.exec(unchangedReadCmdFor(s.path), nil)
 	if err != nil {
 		return sshconn.SanitizedError{Err: fmt.Errorf("read on %s: %w", s.srv.Name, err)}
+	}
+	switch code {
+	case symlinkExit:
+		return fleet.Refused(&SymlinkError{Path: s.path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
+	case unsafePathExit:
+		return fleet.Refused(&UnsafePathError{Path: s.path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	}
 	res, err := sshconn.FinishRead(code, stdout, stderr, s.srv.Name, s.w.log())
 	if err != nil {
@@ -141,7 +149,7 @@ func (s *writeSession) disableKeys2() (string, error) {
 // this run never wrote it) and the authorized_keys2 copy this run made.
 func (s *writeSession) rollback(keys2Name string, probeErr error) error {
 	s.w.log().Warn(fmt.Sprintf("%s: post-write login probe failed; restoring the previous file", s.srv.Name))
-	lo := &LockoutError{Path: s.path, Probe: sshconn.SanitizedError{Err: probeErr}}
+	lo := &LockoutError{Path: s.path, Probe: sshconn.SanitizedError{Err: probeErr}, FileKept: s.req.SkipWrite}
 	if !s.req.SkipWrite {
 		lo.Restore = s.restoreFile()
 	}
@@ -173,9 +181,12 @@ func (s *writeSession) waitLock(attempt int) bool {
 
 // restoreFile puts the previous authorized_keys back, retrying a busy lock
 // on the lockBackoff schedule and a dead connection over the one reconnect.
-// Any other exit is final.
+// The restore is not idempotent: a dropped run may have landed, so a retry's
+// compare-and-swap refusal is settled by a re-read (alreadyRestored). Any
+// other exit is final.
 func (s *writeSession) restoreFile() error {
 	script := restoreCmdFor(s.path, s.req.Expect.Absent, SnapshotOf(false, s.req.Content))
+	dropped := false
 	for attempt := 0; ; {
 		code, stdout, stderr, err := s.exec(script, nil)
 		switch {
@@ -183,6 +194,9 @@ func (s *writeSession) restoreFile() error {
 			if rerr := s.reconnect(); rerr != nil {
 				return sshconn.SanitizedError{Err: fmt.Errorf("%w (and no reconnect: %w)", err, rerr)}
 			}
+			dropped = true
+		case code == changedExit && dropped && s.alreadyRestored():
+			return nil
 		case code == lockedExit:
 			if !s.waitLock(attempt) {
 				info := parseLockOwner(stdout.String())
@@ -195,6 +209,14 @@ func (s *writeSession) restoreFile() error {
 			return nil
 		}
 	}
+}
+
+// alreadyRestored re-reads the file under the lock after a retried restore
+// was refused: holding the phase-1 snapshot means the dropped run's undo
+// landed and only its exit status was lost.
+func (s *writeSession) alreadyRestored() bool {
+	read, ok := s.lockedRead()
+	return ok && SnapshotOf(read.FileAbsent, read.Content) == s.req.Expect
 }
 
 // restoreKeys2 moves back the copy this run made.

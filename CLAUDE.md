@@ -361,8 +361,8 @@ against the plan snapshot via length + POSIX `cksum`, `.bak` + one-time `.orig`
 backups, length-checked upload before `mv`), followed by verify, moving a
 non-empty `~/.ssh/authorized_keys2` aside, and a fresh login probe offering only
 the surviving held keys that must run a probe command (catching forced
-`command=`) — a failed probe restores the previous file under a fresh lock and
-compare-and-swap; the guard ignores `cert-authority`/`principals=` lines and
+`command=`) — a REJECTED login check restores the previous file under a fresh lock and
+compare-and-swap (a login that never finished authentication keeps the new file, UNPROVEN); the guard ignores `cert-authority`/`principals=` lines and
 re-runs after the prompt; option loosening is highlighted; Ctrl-C stops new
 writes while started ones finish, and an interrupt before any write (or during
 audit/adopt) exits 3 with nothing rendered or written.
@@ -451,7 +451,7 @@ awaiting approval. Audit's claim is narrowed to
 the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
-exactly when the run exits 0, 1 or (for revoke/rotate --sweep) 2 (specced in
+exactly when the run exits 0, 1 or 2 (specced in
 `docs/superpowers/specs/2026-11-07-apply-json-design.md`); remote text in both JSON
 reports passes through the new `internal/sanitize` leaf.
 **`revoke --server` and `rotate --keep-old`** (specced in

@@ -318,7 +318,7 @@ func TestApplySkipWrite(t *testing.T) {
 		if err := seamedWriter(s, &seamedConnect{}).Apply(ctx, srv, r); err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
-		if s.cmds[0] != sshconn.AuthorizedKeysCmdFor(sshconn.DefaultAuthorizedKeysPath) || s.cmds[1] != disableKeys2Cmd() || s.cmds[2] != probeCmd {
+		if s.cmds[0] != unchangedReadCmdFor(sshconn.DefaultAuthorizedKeysPath) || s.cmds[1] != disableKeys2Cmd() || s.cmds[2] != probeCmd {
 			t.Errorf("cmds = %q", s.cmds)
 		}
 	})

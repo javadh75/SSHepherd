@@ -457,6 +457,8 @@ label bold red. Otherwise it stays exit 1. Implementation, in the pure layer:
   already spent); a refused or failed reconnect leaves `Restore` set, so the outcome is
   `lockout_unrestored`. At most one reconnect per server write. This reconnect is best
   effort within the budget (section 1): `restoreReserve` is sized for the open connection.
+  A retry refused with 46 re-reads under the lock; the file matching `req.Expect` means the
+  dropped restore landed, so it counts as restored.
 
 ### 5. Backup retention (D13, WP-8)
 
@@ -475,7 +477,8 @@ label bold red. Otherwise it stays exit 1. Implementation, in the pure layer:
   (`authkeys.ManagedSnapshot(false, p.Rendered)` against `p.Expect`, by size and cksum). It
   is evaluated in `applyOne`, **after** `Commit`, because `Reserial` may have re-rendered
   the header. `fleet.WriteRequest` gains `SkipWrite bool`. With `SkipWrite`, `Apply` skips
-  stage 1 (no lock, `.bak`, `.orig`, upload or `mv`), re-reads and byte-compares the file
+  stage 1 (no lock, `.bak`, `.orig`, upload or `mv`) but keeps stage 1's symlink and
+  ownership refusals, re-reads and byte-compares the file
   (the verify doubles as the compare-and-swap, so a CRC collision is also caught: a mismatch
   is a `*ChangedError`, a refusal, outcome `refused`), disables keys2 and probes. A REJECTED
   probe restores only keys2; an UNPROVEN login keeps keys2 disabled. A header that differs

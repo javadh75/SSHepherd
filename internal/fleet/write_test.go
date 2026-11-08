@@ -127,7 +127,11 @@ func TestLockoutErrorMessages(t *testing.T) {
 	}{
 		{"restored", LockoutError{Path: "~/k", Probe: probe}, restored},
 		{"keys2 alone failed", LockoutError{Path: "~/k", Probe: probe, RestoreKeys2: errors.New("kept")},
-			restored + ", but restoring authorized_keys2 failed (kept)"},
+			"restored previous file (post-write login offering only the surviving keys you hold failed: auth failed), but restoring authorized_keys2 failed (kept)"},
+		{"keys2-only, moved back", LockoutError{Path: "~/k", Probe: probe, FileKept: true},
+			"lockout prevented — moved authorized_keys2 back (post-write login offering only the surviving keys you hold failed: auth failed); authorized_keys was not changed"},
+		{"keys2-only, move-back failed", LockoutError{Path: "~/k", Probe: probe, FileKept: true, RestoreKeys2: errors.New("kept")},
+			"post-write login offering only the surviving keys you hold failed (auth failed) and moving authorized_keys2 back failed (kept); authorized_keys was not changed"},
 		{"restore failed", LockoutError{Path: "~/k", Probe: probe, Restore: errors.New("denied")},
 			"post-write login offering only the surviving keys you hold failed (auth failed) AND restoring the previous file failed (denied) — the previous version is at ~/k" + BackupSuffix + "; repair it over a session that is still open"},
 		{"reconnect refused", LockoutError{Path: "~/k", Probe: probe, Restore: ErrNoSession},
