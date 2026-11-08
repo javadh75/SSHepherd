@@ -147,7 +147,36 @@ func Cksum(b []byte) uint32 {
 // released the lock in between) it removes the directory it just made and
 // exits 47 — a retryable lost race, never a stale lock. Signals route
 // through exit so the EXIT trap runs.
-const lockPrologue = `l="$p"` + lockSuffix + `; mkdir "$l" 2>/dev/null || { [ -d "$l" ] && exit 47; if mkdir "$l"; then rmdir "$l"; exit 47; fi; exit 1; }; trap 'rm -f "$p"` + tmpSuffix + ` "$p"` + casSuffix + `; rmdir "$l" 2>/dev/null' EXIT; trap 'exit 1' HUP INT TERM PIPE`
+const lockPrologue = lockHead + lockTrap + `' EXIT; ` + signalTrap
+
+const (
+	lockHead   = `l="$p"` + lockSuffix + `; mkdir "$l" 2>/dev/null || { [ -d "$l" ] && exit 47; if mkdir "$l"; then rmdir "$l"; exit 47; fi; exit 1; }; `
+	lockTrap   = `trap 'x=$?; rm -f "$p"` + tmpSuffix + ` "$p"` + casSuffix + `; rmdir "$l" 2>/dev/null`
+	signalTrap = `trap 'exit 1' HUP INT TERM PIPE`
+)
+
+// lockPrologueUndo is lockPrologue for the write script: its EXIT trap also
+// runs U (createDirs) on a nonzero exit, after the lock and scratch files
+// are gone, so a refusal or failure removes the directories this run
+// created (WP-9). A lost lock race (47) exits before this trap exists;
+// createDirs' own EXIT trap covers it.
+const lockPrologueUndo = lockHead + lockTrap + `; [ "$x" = 0 ] || U' EXIT; ` + signalTrap
+
+// createDirs creates the missing directories of "$d" (the pre-walk left
+// the shallowest missing spelling in "$m") one at a time, top-down along
+// the textual dirname chain, and records each one it created by its depth
+// below "$d" in C (deepest first; only digits, so safe to word-split). It
+// never records a component that already resolves — with a ".." in the
+// path, "home/new/../shared" names a directory that existed before the run
+// once mkdir has created new — so U, which rmdirs exactly the recorded
+// depths deepest first, never removes a directory this run did not create
+// (WP-9). U runs from the EXIT trap on any nonzero exit; rmdir removes
+// only empty directories. Needs d and m.
+const createDirs = `; C=; U() { for k in $C; do j=0; q="$d"; while [ $j -lt $k ]; do q=$(dirname "$q"); j=$((j+1)); done; rmdir "$q" 2>/dev/null; done; }` +
+	`; trap '[ $? = 0 ] || U' EXIT; ` + signalTrap +
+	`; if [ -n "$m" ]; then k=0; q="$d"; while [ "$q" != "$m" ] && [ "$q" != / ] && [ "$q" != . ]; do k=$((k+1)); q=$(dirname "$q"); done` +
+	`; while [ $k -ge 0 ]; do j=0; q="$d"; while [ $j -lt $k ]; do q=$(dirname "$q"); j=$((j+1)); done` +
+	`; if [ ! -e "$q" ] && [ ! -L "$q" ]; then mkdir "$q" || exit 1; C="$k $C"; fi; k=$((k-1)); done; fi`
 
 // ancestorCheck walks the target directory "$d" up to the login user's
 // home (or /, for a path outside it) twice — as written, and resolved with
@@ -170,16 +199,20 @@ const ancestorCheck = `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
 //  2. Refuse a symlinked target (45) or a symlinked parent directory (48).
 //     Walk the nearest existing ancestor of the target directory
 //     (ancestorCheck) before creating anything, then create what is missing
-//     with mkdir -p (first contact: ~/.ssh comes out 0700).
+//     one directory at a time, recording exactly which ones this run
+//     created (createDirs; first contact: ~/.ssh comes out 0700).
 //  3. Walk the target directory as written and resolved: refuse it when it
 //     is not owned by the login user (48) — like sshd's StrictModes,
 //     running as root against another user's file must not write through
 //     anything that user controls — and walk every ancestor up to the home
 //     directory (ancestorCheck): each must be owned by the login user or
 //     root and not group/other-writable (48). This second walk catches what
-//     the textual pre-walk cannot see (a ".." component that mkdir -p
-//     followed into a foreign symlink or a writable directory); a refusal
-//     here removes, deepest first, the directories this run created.
+//     the textual pre-walk cannot see (a ".." component that mkdir
+//     followed into a foreign symlink or a writable directory). From here
+//     on, every nonzero exit — this refusal, a held lock (47), the
+//     compare-and-swap (46), a short upload (49) or a failure — removes,
+//     deepest first, the directories this run created and nothing else
+//     (the EXIT trap runs createDirs' U).
 //  4. Take the per-target lock (47), then re-check the target under it
 //     (symlink 45, foreign-owned file 48) and, when the compare-and-swap
 //     needs it, that cksum exists — all before the upload.
@@ -196,7 +229,9 @@ const ancestorCheck = `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
 //     — so a key another tool added during the upload refuses the write
 //     instead of vanishing. .sshepherd.orig is derived from the copy once,
 //     only while the file is not yet SSHepherd-managed, so a retry after a
-//     failed apply never loses the hand-maintained original; the copy then
+//     failed apply never loses the hand-maintained original, and flushed at
+//     once (it is never rewritten, so a crash must not leave it empty —
+//     WP-4); the copy then
 //     becomes .sshepherd.bak (the previous version, replaced every apply,
 //     holding exactly the bytes the CAS validated) and is flushed too. Every
 //     scratch name is created fresh with rm -f + set -C, so a symlink
@@ -207,9 +242,10 @@ const ancestorCheck = `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
 //     leaves the old complete file, never an empty one.
 //
 // The script creates no file or directory before its last refusal point
-// except the lock, the upload temp, the CAS staging copy and directories it
-// removes again on refusal; its EXIT trap removes the lock, the temp and
-// the staging copy.
+// except the lock, the upload temp, the CAS staging copy and the missing
+// directories it created; its EXIT trap removes the lock, the temp and the
+// staging copy and, on any nonzero exit, those directories (never one that
+// existed before the run).
 //
 // Content arrives on stdin — key material is never shell-encoded. The
 // script is a single line (sshconn.Exec runs it under /bin/sh -c) and
@@ -221,11 +257,12 @@ func writeCmdFor(path string, expect Snapshot, size int) string {
 		// WP-9: walk the nearest EXISTING ancestor before creating anything,
 		// so a refusal (48) leaves the tree exactly as it was.
 		`; m=; e="$d"; while [ ! -e "$e" ] && [ ! -L "$e" ]; do m="$e"; e=$(dirname "$e"); done; D="$d"; d="$e"; ` + ancestorCheck + `; d="$D"` +
-		`; if [ -n "$m" ]; then mkdir -p "$d" || exit 1; fi` +
+		createDirs +
 		// The full walk of $d after mkdir: catches ".." and symlinks the
-		// textual pre-walk could not see. On refusal, undo what mkdir created.
-		`; ( set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi; ` + ancestorCheck + ` ) || { r=$?; if [ -n "$m" ]; then q="$d"; while :; do rmdir "$q" 2>/dev/null; if [ "$q" = "$m" ] || [ "$q" = / ] || [ "$q" = . ]; then break; fi; q=$(dirname "$q"); done; fi; exit $r; }` +
-		`; ` + lockPrologue +
+		// textual pre-walk could not see. On refusal the EXIT trap (U)
+		// removes what this run created.
+		`; ( set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi; ` + ancestorCheck + ` ) || exit $?` +
+		`; ` + lockPrologueUndo +
 		`; if [ -L "$p" ]; then exit 45; fi; if [ -e "$p" ]; then set -- $(ls -ldn "$p"); if [ "$3" != "$u" ]; then exit 48; fi; fi` +
 		cksumPresent(expect) +
 		// Upload and length-check first (the slow part), then flush it.
@@ -262,7 +299,7 @@ func casBackupBlock(expect Snapshot) string {
 		`; set -- $(cksum < "$c"); if [ "$1" != ` + strconv.FormatUint(uint64(expect.Cksum), 10) +
 		` ] || [ "$2" != ` + strconv.Itoa(expect.Size) + ` ]; then rm -f "$c"; exit 46; fi` +
 		`; if [ ! -e "$o" ] && [ ! -L "$o" ] && [ "$(head -n 1 "$c")" != ` + sshconn.ShQuote(authkeys.ManagedHeader) +
-		` ]; then (set -C; cat "$c" > "$o") || exit 1; fi` +
+		` ]; then (set -C; cat "$c" > "$o") || exit 1; dd if=/dev/null of="$o" conv=notrunc,fsync 2>/dev/null || :; fi` +
 		`; rm -f "$b" || exit 1; mv -f "$c" "$b" || exit 1`
 }
 

@@ -499,6 +499,16 @@ func TestSecondaryKeysCmdFor(t *testing.T) {
 		{"other file in ~/.ssh", func(h string) string { return filepath.Join(h, ".ssh", "other") }, nil, true, false},
 		{"tilde override elsewhere", func(string) string { return "~/keys/deploy" }, nil, true, false},
 		{"missing dir never matches", func(h string) string { return filepath.Join(h, "nodir", "authorized_keys") }, nil, true, false},
+		// A symlinked final component resolves too: audit reads through it,
+		// so it audits the default file and must see authorized_keys2.
+		{"symlinked file to the default", func(h string) string { return filepath.Join(h, "keys", "ak") },
+			linkFile(".ssh/authorized_keys"), true, true},
+		{"tilde symlinked file to the default", func(string) string { return "~/keys/ak" },
+			linkFile(".ssh/authorized_keys"), true, true},
+		{"symlinked file to the default, no keys2", func(h string) string { return filepath.Join(h, "keys", "ak") },
+			linkFile(".ssh/authorized_keys"), false, false},
+		{"symlinked file to another file in ~/.ssh", func(h string) string { return filepath.Join(h, "keys", "ak") },
+			linkFile(".ssh/other"), true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -523,6 +533,17 @@ func TestSecondaryKeysCmdFor(t *testing.T) {
 				t.Errorf("probe = (%v, %v), want (%v, nil)", present, err, tt.want)
 			}
 		})
+	}
+}
+
+// linkFile returns a setup that creates the file at rel under home and
+// symlinks ~/keys/ak to it.
+func linkFile(rel string) func(t *testing.T, home string) {
+	return func(t *testing.T, home string) {
+		t.Helper()
+		must(t, os.WriteFile(filepath.Join(home, rel), []byte("ssh-ed25519 AAAA managed\n"), 0o600))
+		must(t, os.MkdirAll(filepath.Join(home, "keys"), 0o700))
+		must(t, os.Symlink(filepath.Join(home, rel), filepath.Join(home, "keys", "ak")))
 	}
 }
 

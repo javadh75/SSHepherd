@@ -300,7 +300,7 @@ characters. It is POSIX-single-quote escaped before it reaches a remote shell.
 
 When the effective path is the default — or any spelling that resolves on the server
 to the login user's `~/.ssh/authorized_keys`, such as `/home/alice/.ssh/authorized_keys`
-— `audit` also checks whether
+or a symlink to that existing file — `audit` also checks whether
 `~/.ssh/authorized_keys2` — OpenSSH's compiled-in second `AuthorizedKeysFile` —
 exists and is non-empty, and reports it as drift. SSHepherd never reads its keys;
 `apply` moves it aside to `~/.ssh/authorized_keys2.sshepherd.disabled` whenever it
@@ -1671,7 +1671,8 @@ nothing changed (no file, backup or directory is created) — when:
 **One guarded write per server.** Each write is a single remote script in one
 session, which in order: refuses an unsafe path — walking the nearest existing
 ancestor *before* creating any missing directory and the full path again after,
-removing anything it created on a refusal, so a refusal leaves nothing behind; takes
+removing only the directories it created (never one that existed before, even through
+a `..`) on any refusal or failure, so a refusal leaves nothing behind; takes
 the per-file lock `<path>.sshepherd.lock`; uploads to `<path>.sshepherd.tmp` under
 `umask 077`, checks the received byte count and flushes it to disk; then, in one
 tight step, copies the current file aside, compares that copy with the plan's
@@ -1686,7 +1687,8 @@ untouched (`upload incomplete … original left untouched`).
 
 **Backups.** `<path>.sshepherd.bak` holds the previous version and is replaced on
 every apply. `<path>.sshepherd.orig` holds the pre-SSHepherd original: it is written
-once, the first time an unmanaged file is replaced, and never overwritten — use it to
+once, the first time an unmanaged file is replaced (flushed to disk before the rename,
+like `.bak`), and never overwritten — use it to
 undo the first apply. A symlink planted at either name is never written through.
 
 **`authorized_keys2`.** When phase 1 found a non-empty `~/.ssh/authorized_keys2`
@@ -1727,8 +1729,8 @@ a key that gains a forced `command=` cannot capture later runs. Remote commands 
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.
-Server-supplied text in error lines (remote stderr, and disconnect or handshake text a
-server sends while connecting) is further reduced to printable ASCII plus Latin
+Server-supplied text in error lines (remote stderr, disconnect or handshake text a
+server sends while connecting, and the message of a rejected session channel) is further reduced to printable ASCII plus Latin
 letters (anything else shows as `?`), collapsed to one line, and cut at 256
 characters (`…(truncated)`).
 

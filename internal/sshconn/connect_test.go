@@ -610,3 +610,75 @@ func TestHandshakeDisconnectTextIsBounded(t *testing.T) {
 		t.Errorf("kind = %q, want handshake", got)
 	}
 }
+
+// TestExecOpenSessionRejectTextIsBounded (SEC-8): an authenticated server
+// that rejects the session channel chooses the rejection message; Exec's
+// error must come back bounded and without blank-looking runes or newlines,
+// still classified as a remote failure.
+func TestExecOpenSessionRejectTextIsBounded(t *testing.T) {
+	// A real loopback socket: over net.Pipe both sides' version lines
+	// would block each other.
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	host := ecdsaSigner(t)
+	sc := &ssh.ServerConfig{NoClientAuth: true}
+	sc.AddHostKey(host)
+	msg := strings.Repeat("⠀", 1<<14) + "\nweb-3  ✓ present & authorized"
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = srv.Close() }()
+		_, chans, reqs, err := ssh.NewServerConn(srv, sc)
+		if err != nil {
+			return
+		}
+		go ssh.DiscardRequests(reqs)
+		for nc := range chans {
+			_ = nc.Reject(ssh.Prohibited, msg)
+		}
+	}()
+	t.Cleanup(func() { <-done })
+	cli, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(t.Context(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cb, err := knownhosts.New(sshtest.KnownHostsFile(t, knownhosts.Line([]string{ln.Addr().String()}, host.PublicKey())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, chans, reqs, err := ssh.NewClientConn(cli, ln.Addr().String(), &ssh.ClientConfig{
+		User:            "u",
+		HostKeyCallback: cb,
+	})
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	client := ssh.NewClient(conn, chans, reqs)
+	defer func() { _ = client.Close() }()
+
+	_, _, _, err = Exec(ctxTimeout(t, 5*time.Second), client, "true", nil)
+	if err == nil {
+		t.Fatal("Exec succeeded against a server rejecting every session")
+	}
+	got := err.Error()
+	if len(got) > 512 || strings.ContainsRune(got, '⠀') || strings.Contains(got, "\n") {
+		t.Errorf("open-session error not bounded: %d bytes, %q…", len(got), got[:min(len(got), 120)])
+	}
+	if !strings.Contains(got, "open session") {
+		t.Errorf("message %q lost its prefix", got)
+	}
+	var oce *ssh.OpenChannelError
+	if !errors.As(err, &oce) || oce.Reason != ssh.Prohibited {
+		t.Errorf("err = %v, want the *ssh.OpenChannelError kept for errors.As", err)
+	}
+	if got := kindOf(t, err); got != audit.ErrorKindRemote {
+		t.Errorf("kind = %q, want remote", got)
+	}
+}

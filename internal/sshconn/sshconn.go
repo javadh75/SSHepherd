@@ -89,9 +89,12 @@ func SecondaryKeysCmd() string {
 // managed file is path: exit 46 when path is — on the server, resolving
 // symlinks with cd -P — the login user's ~/.ssh/authorized_keys (sshd's
 // compiled-in first AuthorizedKeysFile entry, which keeps .ssh/authorized_keys2
-// beside it) and ~/.ssh/authorized_keys2 is non-empty; 0 otherwise. A
-// directory that does not resolve never matches, so two missing
-// directories cannot both collapse to "/authorized_keys".
+// beside it) and ~/.ssh/authorized_keys2 is non-empty; 0 otherwise. The
+// directory is resolved with cd -P; a symlinked final component (audit
+// reads through it) matches when test -ef finds both names are the same
+// existing file. A directory that does not resolve never matches, so two
+// missing directories cannot both collapse to "/authorized_keys". A shell
+// whose test lacks -ef degrades to the directory-only comparison.
 func SecondaryKeysCmdFor(path string) string {
 	if path == DefaultAuthorizedKeysPath {
 		return SecondaryKeysCmd()
@@ -99,7 +102,7 @@ func SecondaryKeysCmdFor(path string) string {
 	return PathAssign(path) + `; h="${HOME:?}"` +
 		`; a=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) || exit 0` +
 		`; s=$(cd -P "$h/.ssh" 2>/dev/null && pwd -P) || exit 0` +
-		`; if [ "$a/${p##*/}" != "$s/authorized_keys" ]; then exit 0; fi` +
+		`; if [ "$a/${p##*/}" != "$s/authorized_keys" ] && ! [ "$p" -ef "$s/authorized_keys" ] 2>/dev/null; then exit 0; fi` +
 		`; if [ -s "$h/.ssh/authorized_keys2" ]; then exit 46; fi`
 }
 

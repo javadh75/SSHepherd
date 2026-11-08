@@ -502,7 +502,9 @@ after the upload with `.bak` = validated bytes, per-file flush of the temp and `
 (never a global `sync`), refusals create nothing (even through `..`), one
 `audit.OfferOrder` for every connection and the probe, keys2 on equivalent default
 spellings, no-grant + keys2 refused, `sanitize.RemoteSnippet` bounds remote stderr
-and handshake/disconnect text. One offer order (`audit.OfferOrder`/`OfferRank`:
+and handshake/disconnect text. A refused or failed write removes only the directories it
+created; `.orig` is flushed too; a rejected session channel's text is bounded like
+stderr; the keys2 probe also follows a symlinked managed file. One offer order (`audit.OfferOrder`/`OfferRank`:
 plain, then from=/expiry-time=/restrict, then command=, then cert-only; stable in
 manifest order) now feeds `GrantedFingerprints` and the post-write probe, so the
 probe proves the key the next run logs in with (no `--identity` preference, D31,

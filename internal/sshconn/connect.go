@@ -236,7 +236,8 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 }
 
 // remoteText bounds server-controlled transport text (disconnect reasons,
-// version and kex failures, sent before the host key is verified) for error
+// version and kex failures, sent before the host key is verified, and the
+// message of a rejected session channel, sent after it) for error
 // lines via sanitize.RemoteSnippet (SEC-8); Unwrap keeps errors.Is/As and
 // the kind classification on the original error.
 type remoteText struct{ err error }
@@ -334,7 +335,9 @@ func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reade
 	}
 	sess, err := client.NewSession()
 	if err != nil {
-		return 0, nil, nil, classify(audit.ErrorKindRemote, fmt.Errorf("open session: %w", err))
+		// A rejected channel (*ssh.OpenChannelError) carries the server's
+		// free-text message: bounded like stderr (SEC-8).
+		return 0, nil, nil, classify(audit.ErrorKindRemote, fmt.Errorf("open session: %w", remoteText{err}))
 	}
 	defer func() { _ = sess.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = sess.Close() })

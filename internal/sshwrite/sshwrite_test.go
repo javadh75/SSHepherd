@@ -330,6 +330,13 @@ func assertAbsent(t *testing.T, path, why string) {
 	}
 }
 
+func assertDir(t *testing.T, path, why string) {
+	t.Helper()
+	if fi, err := os.Lstat(path); err != nil || !fi.IsDir() {
+		t.Errorf("%s is not a directory (%v): %s", filepath.Base(path), err, why)
+	}
+}
+
 // assertNoResidue checks the protocol's scratch names are gone.
 func assertNoResidue(t *testing.T, target string) {
 	t.Helper()
@@ -578,6 +585,69 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 			}
 			assertAbsent(t, filepath.Join(home, "new"), "a refused write must remove the directory it created")
 			assertAbsent(t, filepath.Join(home, "shared", "dot-ssh"), "a refused write must remove the directory it created")
+			assertDir(t, filepath.Join(home, "shared"), "a refused write must keep a directory that existed before the run")
+		})
+
+		// WP-9: "home/new/../shared" spells a directory that existed before
+		// the run once mkdir has created new; the undo must remove only what
+		// this run created, never a pre-existing directory along the chain.
+		for _, tc := range []struct{ name, rel string }{
+			{"dotdot refusal keeps a pre-existing empty target directory", "/new/../shared/dot-ssh/auth"},
+			{"dotdot refusal keeps a pre-existing empty ancestor", "/new/../shared/auth"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				home := t.TempDir()
+				shared := filepath.Join(home, "shared")
+				if err := os.Mkdir(shared, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(shared, "dot-ssh"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(shared, 0o777); err != nil { // #nosec G302 -- the unsafe directory under test
+					t.Fatal(err)
+				}
+				code := runSh(t, sh, writeCmdFor(home+tc.rel, Snapshot{Absent: true}, len(managed)), home, []byte(managed))
+				if code != unsafePathExit {
+					t.Fatalf("exit = %d, want %d", code, unsafePathExit)
+				}
+				assertAbsent(t, filepath.Join(home, "new"), "a refused write must remove the directory it created")
+				assertDir(t, shared, "a refused write must keep a directory that existed before the run")
+				assertDir(t, filepath.Join(shared, "dot-ssh"), "a refused write must keep a directory that existed before the run")
+			})
+		}
+
+		t.Run("CAS refusal removes the directory it created", func(t *testing.T) {
+			// The plan saw a file, but ~/.ssh is gone at write time: mkdir
+			// recreates it, the CAS refuses (46), and IsRefusal promises
+			// nothing changed — so the directory goes again.
+			home := t.TempDir()
+			code := runSh(t, sh, writeCmdFor("~/.ssh/authorized_keys", SnapshotOf(false, []byte("old\n")), len(managed)), home, []byte(managed))
+			if code != changedExit {
+				t.Fatalf("exit = %d, want %d", code, changedExit)
+			}
+			assertAbsent(t, filepath.Join(home, ".ssh"), "a CAS refusal must remove the directory the run created")
+		})
+
+		t.Run("lock refusal removes the directories it created", func(t *testing.T) {
+			// A lock planted under a path whose lower directory is missing:
+			// mkdir creates sub, the lock is held (47), and sub goes again
+			// while the pre-existing ~/.ssh stays.
+			home := t.TempDir()
+			dir := filepath.Join(home, ".ssh")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := home + "/new/../.ssh/authorized_keys"
+			if err := os.Mkdir(filepath.Join(dir, "authorized_keys"+lockSuffix), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			code := runSh(t, sh, writeCmdFor(path, Snapshot{Absent: true}, len(managed)), home, []byte(managed))
+			if code != lockedExit {
+				t.Fatalf("exit = %d, want %d", code, lockedExit)
+			}
+			assertAbsent(t, filepath.Join(home, "new"), "a lock refusal must remove the directory the run created")
+			assertDir(t, filepath.Join(dir, "authorized_keys"+lockSuffix), "another run's lock must survive")
 		})
 
 		t.Run("ancestor symlink into a writable directory refuses", func(t *testing.T) {
@@ -730,9 +800,10 @@ func TestWriteCmdOrder(t *testing.T) {
 	cmd := writeCmdFor("~/.ssh/authorized_keys", SnapshotOf(false, []byte("old\n")), 10)
 	at := -1
 	for _, step := range []string{
-		`while [ ! -e "$e" ]`, `mkdir -p "$d"`, `( set -- $(ls -ldn "$d")`, `mkdir "$l"`, `command -v cksum`,
+		`while [ ! -e "$e" ]`, `trap '[ $? = 0 ] || U' EXIT`, `mkdir "$q"`, `( set -- $(ls -ldn "$d")`, `mkdir "$l"`,
+		`[ "$x" = 0 ] || U' EXIT`, `command -v cksum`,
 		`cat > "$t"`, `wc -c < "$t"`, `of="$t" conv=notrunc,fsync`,
-		`cat "$p" > "$c"`, `cksum < "$c"`, `cat "$c" > "$o"`, `mv -f "$c" "$b"`, `of="$b" conv=notrunc,fsync`,
+		`cat "$p" > "$c"`, `cksum < "$c"`, `cat "$c" > "$o"`, `of="$o" conv=notrunc,fsync`, `mv -f "$c" "$b"`, `of="$b" conv=notrunc,fsync`,
 		`mv -f "$t" "$p"`,
 	} {
 		i := strings.Index(cmd, step)
@@ -778,14 +849,19 @@ func TestWriteCmdFlushesPerFileNeverGlobalSync(t *testing.T) {
 		}
 		raw, _ := os.ReadFile(ddLog) // #nosec G304 -- the test's own stub log
 		lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
-		if len(lines) != 2 || lines[0] == "" {
-			t.Fatalf("dd calls = %q, want 2 (temp before mv, .bak before mv)", lines)
+		if len(lines) != 3 || lines[0] == "" {
+			t.Fatalf("dd calls = %q, want 3 (temp, the one-time .orig and .bak, each before mv)", lines)
 		}
 		if want := "if=/dev/null of=" + target + tmpSuffix + " conv=notrunc,fsync|old"; lines[0] != want {
 			t.Errorf("first flush = %q, want %q (temp flushed while the old file is still live)", lines[0], want)
 		}
-		if want := "if=/dev/null of=" + target + bakSuffix + " conv=notrunc,fsync|old"; lines[1] != want {
-			t.Errorf("second flush = %q, want %q (.bak flushed before the rename)", lines[1], want)
+		// WP-4: .orig is written once and never rewritten — an unflushed one
+		// can survive a crash as an empty file for good.
+		if want := "if=/dev/null of=" + target + origSuffix + " conv=notrunc,fsync|old"; lines[1] != want {
+			t.Errorf("second flush = %q, want %q (.orig flushed before the rename)", lines[1], want)
+		}
+		if want := "if=/dev/null of=" + target + bakSuffix + " conv=notrunc,fsync|old"; lines[2] != want {
+			t.Errorf("third flush = %q, want %q (.bak flushed before the rename)", lines[2], want)
 		}
 	})
 }
