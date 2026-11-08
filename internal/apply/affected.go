@@ -39,9 +39,11 @@ func Affected(old, edited *config.Config) AffectedSet {
 	return s
 }
 
-// renderFor renders a server's desired file exactly as Build does; nil on
-// a render failure (impossible for a validated config), which Affected
+// renderFor renders a server's desired file exactly as BuildWith does; nil
+// on a render failure (impossible for a validated config), which Affected
 // treats as "changed" — over-including a server is the safe direction.
+// Serial 0 on both sides (authkeys.Render): a serial bump alone never makes
+// a server affected.
 func renderFor(cfg *config.Config, server string) []byte {
 	out, err := authkeys.Render(desiredEntries(cfg, server))
 	if err != nil {

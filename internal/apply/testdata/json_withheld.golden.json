@@ -16,7 +16,8 @@
     "operators": [
       "carol"
     ],
-    "emptied": []
+    "emptied": [],
+    "revoked": []
   },
   "summary": {
     "servers": 4,

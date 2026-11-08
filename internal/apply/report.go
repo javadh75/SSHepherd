@@ -127,6 +127,9 @@ func Render(w io.Writer, cfg *config.Config, plans []ServerPlan, opts RenderOpti
 			fmt.Fprintln(w)
 		case ClassConverged:
 			fmt.Fprintf(w, "%s  converged (no changes)\n", head)
+			if p.SerialNote != "" {
+				fmt.Fprintf(w, "  note: %s\n", p.SerialNote)
+			}
 			renderKeys2Warning(w, p, pal)
 			fmt.Fprintln(w)
 		case ClassRefused:
@@ -169,6 +172,7 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 		fmt.Fprintf(tw, "  %s\t(authorized_keys2)\t\t\tdisable ~/.ssh/authorized_keys2 → ~/.ssh/authorized_keys2%s (unmanaged; sshd would keep accepting its keys)\n",
 			pal.paint(codeRed, "-"), Keys2DisabledSuffix)
 	}
+	headerOnlyRow(tw, p, pal)
 	_ = tw.Flush()
 
 	if p.FileAbsent {
@@ -177,6 +181,7 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 		fmt.Fprintln(w, "  note: the audited file is absent yet login succeeded — sshd may consult")
 		fmt.Fprintln(w, "        another key source; creating the file is purely additive")
 	}
+	serialWarning(w, p, pal)
 	if p.Note != "" {
 		fmt.Fprintf(w, "  note: %s\n", p.Note)
 	}
@@ -192,8 +197,47 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 	for _, rw := range p.Rewrites {
 		renderRewriteWarning(w, cfg, opts, pal, rw.Key, "adds relaxing", rw.Widens)
 	}
+	summaryLine(w, p)
+}
+
+// headerOnlyRow is a header-only write's one row in place of key rows (§3
+// "Report").
+func headerOnlyRow(tw io.Writer, p ServerPlan, pal palette) {
+	if p.HeaderOnly {
+		fmt.Fprintf(tw, "  %s\t(header)\t\t\tupdate header: %s → %d (keys unchanged)\n",
+			pal.paint(codeYellow, "~"), headerFrom(p.Serial), p.Serial.Writes)
+	}
+}
+
+// serialWarning prints rows 1 and 3's note (forged, removal-only) on a
+// change.
+func serialWarning(w io.Writer, p ServerPlan, pal palette) {
+	if p.SerialNote != "" {
+		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), p.SerialNote)
+	}
+}
+
+// summaryLine is a change's last line: the key counts, or "header only".
+func summaryLine(w io.Writer, p ServerPlan) {
+	if p.HeaderOnly {
+		fmt.Fprintf(w, "  → %s desired · header only\n", Plural(len(p.Desired), "key", "keys"))
+		return
+	}
 	fmt.Fprintf(w, "  → %s desired · %d add · %d remove · %d rewrite\n",
 		Plural(len(p.Desired), "key", "keys"), len(p.Add), len(p.Remove), len(p.Rewrites))
+}
+
+// headerFrom names the header a header-only write replaces: "no serial"
+// (legacy), "serial S", or "forged serial S".
+func headerFrom(sp SerialPlan) string {
+	switch {
+	case sp.Case == SerialForged:
+		return fmt.Sprintf("forged serial %d", sp.Header)
+	case sp.Header == 0:
+		return "no serial"
+	default:
+		return fmt.Sprintf("serial %d", sp.Header)
+	}
 }
 
 // renderRewriteWarning prints one bold-red warning naming the options a

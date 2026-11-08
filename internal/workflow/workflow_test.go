@@ -459,3 +459,71 @@ func TestOutcomeExitCode(t *testing.T) {
 		}
 	}
 }
+
+// captureWriter records each write's content.
+type captureWriter struct {
+	mu   sync.Mutex
+	sent map[string]string
+}
+
+func (w *captureWriter) Apply(_ context.Context, s config.Server, req fleet.WriteRequest) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.sent[s.Name] = string(req.Content)
+	return nil
+}
+
+// serialFixture: server "a" already holds exactly the render's body under
+// a legacy header; the manifest is at serial 3.
+func serialFixture(t *testing.T, r *rec) Request {
+	t.Helper()
+	req := fixture(t, r)
+	line := testkeys.Line(t, 1)
+	cfg, err := config.Parse([]byte("serial: 3\nusers:\n  - {name: alice, keys: [\"" + line + "\"]}\n" +
+		"servers:\n  - {name: a, host: 10.0.0.1, user: deploy}\n" +
+		"access:\n  - {user: alice, servers: [a]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Cfg, req.Servers = cfg, cfg.Servers
+	req.Reader = fakeReader{content: map[string]string{"a": authkeys.ManagedHeader + "\n" + line + " alice\n"}}
+	return req
+}
+
+// TestApplyBumpedPlansHeaderOnly: Bumped reaches apply.BuildWith — the
+// equal-body server is a header-only change instead of converged.
+func TestApplyBumpedPlansHeaderOnly(t *testing.T) {
+	for _, bumped := range []bool{false, true} {
+		r := &rec{}
+		req := serialFixture(t, r)
+		req.DryRun, req.Bumped = true, bumped
+		out, err := Apply(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Plans[0].HeaderOnly; got != bumped {
+			t.Errorf("Bumped=%v: HeaderOnly = %v (plan %+v)", bumped, got, out.Plans[0])
+		}
+	}
+}
+
+// TestCommitMayRewriteHeaders: what Commit leaves in plans[i].Rendered is
+// what the writer sends (apply's D4b re-renders headers after its save).
+// A regression pin: confirmAndWrite already passes out.Plans to both seams;
+// this keeps a future copy of the plans from breaking D4b.
+func TestCommitMayRewriteHeaders(t *testing.T) {
+	r := &rec{}
+	req := fixture(t, r)
+	w := &captureWriter{sent: map[string]string{}}
+	req.Writer = w
+	req.Committer = CommitFunc(func(_ context.Context, plans []apply.ServerPlan, _ []fleet.HeldKey) (bool, error) {
+		plans[0].Rendered = []byte("rewritten\n")
+		return true, nil
+	})
+	if _, err := Apply(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if w.sent["a"] != "rewritten\n" {
+		t.Fatalf("writer got %q, want the committer's bytes", w.sent["a"])
+	}
+}

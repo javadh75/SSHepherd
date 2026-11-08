@@ -23,7 +23,8 @@
     ],
     "affected": 2,
     "operators": [],
-    "emptied": []
+    "emptied": [],
+    "revoked": []
   },
   "summary": {
     "servers": 0,

@@ -506,7 +506,11 @@ P04, PRD-1/PRD-2/SEC-2/SEC-3; implementation in W4, in progress: the `revoked:`/
 schema with policy conflicts, adopt never writing `["*"]`, and adopt/`import --merge`
 skipping tombstoned keys and access have landed, and the managed header carries
 `(serial N)` via `authkeys.Header`/`ParseHeader` (`FuzzParseHeader`, 4-entry corpus), with
-`.orig` decided by `Snapshot.Managed` and sshread reading `authorized_keys2` content).
+`.orig` decided by `Snapshot.Managed` and sshread reading `authorized_keys2` content;
+apply plans by the serial table (`internal/apply/serial.go`: newer serial refused unless
+removal-only, equal-body newer converged with a note, forged headers rewritten,
+header-only writes on affected older-serial servers) and refuses servers a policy
+conflict names).
 Review remediation W2. Write-path correctness pass (P11): CAS on a snapshot copy
 after the upload with `.bak` = validated bytes, per-file flush of the temp and `.bak`
 (never a global `sync`), refusals create nothing (even through `..`), one

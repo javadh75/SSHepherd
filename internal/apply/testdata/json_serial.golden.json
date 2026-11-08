@@ -1,0 +1,225 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": true,
+  "edit": null,
+  "summary": {
+    "servers": 6,
+    "skipped": 0,
+    "converged": 1,
+    "applied": 0,
+    "pending": 4,
+    "failed": 0,
+    "refused": 1,
+    "unreachable": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "s-forged",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {
+        "serial": "header claims serial 5000, far above this manifest's 7 — treated as no serial"
+      },
+      "serial": {
+        "header": 5000,
+        "manifest": 7,
+        "writes": 7,
+        "case": "forged"
+      }
+    },
+    {
+      "name": "s-headeronly",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "serial": {
+        "header": 6,
+        "manifest": 7,
+        "writes": 7,
+        "case": "header_only"
+      }
+    },
+    {
+      "name": "s-newer",
+      "host": "10.0.0.3",
+      "port": 22,
+      "user": "deploy",
+      "class": "converged",
+      "outcome": null,
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {
+        "serial": "written by newer manifest serial 8 (yours is 7): pull the latest manifest"
+      },
+      "serial": {
+        "header": 8,
+        "manifest": 7,
+        "writes": null,
+        "case": "newer_converged"
+      }
+    },
+    {
+      "name": "s-older",
+      "host": "10.0.0.4",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "comment": "alice"
+          }
+        ],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "serial": {
+        "header": null,
+        "manifest": 7,
+        "writes": 7,
+        "case": "older"
+      }
+    },
+    {
+      "name": "s-refused",
+      "host": "10.0.0.5",
+      "port": 22,
+      "user": "deploy",
+      "class": "refused",
+      "outcome": null,
+      "error": "written by manifest serial 8, this manifest is 7 — a newer manifest revoked or rotated keys here; pull the latest manifest, or if you are sure, set serial: 8 in your manifest (this is the only override)",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "serial": {
+        "header": 8,
+        "manifest": 7,
+        "writes": null,
+        "case": "newer_refused"
+      }
+    },
+    {
+      "name": "s-removal",
+      "host": "10.0.0.6",
+      "port": 22,
+      "user": "deploy",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "comment": "stray"
+          }
+        ],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {
+        "serial": "written by newer manifest serial 8; this write only removes keys, so it proceeds"
+      },
+      "serial": {
+        "header": 8,
+        "manifest": 7,
+        "writes": 8,
+        "case": "newer_removal_only"
+      }
+    }
+  ]
+}

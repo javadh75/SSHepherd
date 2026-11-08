@@ -264,3 +264,11 @@ func TestRenderEditHeaderKeepOld(t *testing.T) {
 		t.Errorf("header = %q, want %q", buf.String(), want)
 	}
 }
+
+func TestEditHeaderRecordKey(t *testing.T) {
+	var b bytes.Buffer
+	RenderEditHeader(&b, EditSummary{Edits: []Edit{{Kind: EditRecordKey, Fingerprint: "SHA256:x"}}}, RenderOptions{})
+	if want := "manifest edit: record revoked key SHA256:x (no user has it; no server is written) — no servers affected\n"; b.String() != want {
+		t.Errorf("header = %q, want %q", b.String(), want)
+	}
+}

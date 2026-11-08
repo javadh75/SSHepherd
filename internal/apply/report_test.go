@@ -2,6 +2,7 @@ package apply
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
@@ -486,5 +488,75 @@ func TestCountSummaryMatchesRenderSummary(t *testing.T) {
 	RenderSummary(&buf, plans, RenderOptions{})
 	if !strings.Contains(buf.String(), "Summary: 2/7 servers converged (1 applied) · 1 pending · 1 failed · 2 refused · 1 unreachable  → exit 1") {
 		t.Errorf("summary line disagrees with countSummary:\n%s", buf.String())
+	}
+}
+
+// serialFleet: serial 7, op (k1) operator, alice (k2) on every server; one
+// server per row of the §3 table, planned in a bumped (revoke) run.
+func serialFleet(t *testing.T) (*config.Config, []ServerPlan) {
+	t.Helper()
+	cfg, err := config.Parse([]byte(`serial: 7
+users:
+  - {name: op, operator: true, keys: ["` + testkeys.Line(t, 1) + `"]}
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: s-forged, host: 10.0.0.1, user: deploy}
+  - {name: s-headeronly, host: 10.0.0.2, user: deploy}
+  - {name: s-newer, host: 10.0.0.3, user: deploy}
+  - {name: s-older, host: 10.0.0.4, user: deploy}
+  - {name: s-refused, host: 10.0.0.5, user: deploy}
+  - {name: s-removal, host: 10.0.0.6, user: deploy}
+access:
+  - {user: alice, servers: ["*"]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(bodyOf(renderedFor(t, cfg, "s-forged")))
+	opOnly := testkeys.Line(t, 1) + " op\n"
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"s-forged":     {Content: []byte(authkeys.Header(5000) + "\n" + body)},
+		"s-headeronly": {Content: []byte(authkeys.Header(6) + "\n" + body)},
+		"s-newer":      {Content: []byte(authkeys.Header(8) + "\n" + body)},
+		"s-older":      {Content: []byte(authkeys.ManagedHeader + "\n" + opOnly)},
+		"s-refused":    {Content: []byte(authkeys.Header(8) + "\n" + opOnly)},
+		"s-removal":    {Content: []byte(authkeys.Header(8) + "\n" + body + testkeys.Line(t, 9) + " stray\n")},
+	}}
+	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 2})
+	plans, err := BuildWith(cfg, results, agentHeld(fp(t, 1)), BuildOptions{Bumped: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, plans
+}
+
+func TestRenderPlanSerialGolden(t *testing.T) {
+	cfg, plans := serialFleet(t)
+	var b bytes.Buffer
+	Render(&b, cfg, plans, RenderOptions{})
+	checkGolden(t, "plan_serial.golden", b.Bytes())
+	for _, want := range []string{
+		"(header)", // the label column; tabwriter pads the row, so match its cells separately
+		"update header: forged serial 5000 → 7 (keys unchanged)\n",
+		"update header: serial 6 → 7 (keys unchanged)\n",
+		"  → 2 keys desired · header only",
+		"s-newer (deploy@10.0.0.3:22)  converged (no changes)\n  note: written by newer manifest serial 8 (yours is 7): pull the latest manifest\n",
+		"  warning: written by newer manifest serial 8; this write only removes keys, so it proceeds",
+		"  warning: header claims serial 5000, far above this manifest's 7 — treated as no serial",
+		"REFUSED: written by manifest serial 8, this manifest is 7",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("report lacks %q:\n%s", want, b.String())
+		}
+	}
+}
+
+func TestRenderHeaderOnlyFromNoSerial(t *testing.T) {
+	cfg := serialCfg(t)
+	p := planWeb1(t, cfg, authkeys.ManagedHeader+"\n"+web1Body(t, cfg), false, true)
+	var b bytes.Buffer
+	Render(&b, cfg, []ServerPlan{p}, RenderOptions{})
+	if !strings.Contains(b.String(), "update header: no serial → 7 (keys unchanged)") {
+		t.Errorf("report:\n%s", b.String())
 	}
 }

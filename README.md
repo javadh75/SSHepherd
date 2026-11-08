@@ -951,6 +951,25 @@ fleet:
 }
 ```
 
+Each server may carry a `serial` object (`header`, null for no serial; `manifest`; `writes`, null when nothing is written; `case`: `forged`, `newer_converged`, `newer_removal_only`, `newer_refused`, `equal`, `header_only` or `older`) and `notes.serial`; `serial` is omitted when no row applied or when both serials are 0. The document may carry top-level `policy_conflicts`, `manifest_warnings` and `serial_bump` (`from`, `to`, null when the manifest cannot be saved; `saved`; `warning`), each omitted when empty; the schema stays 1. For `revoke` and `rotate`, `edit` adds `revoked` (always present, `[]` when none), `serial` (only when the edit was saved), `already_revoked` and `check_command`, and a new edit kind `record-key` records a key no user holds.
+
+```
+      "serial": {
+        "header": 6,
+        "manifest": 7,
+        "writes": 7,
+        "case": "header_only"
+      }
+```
+
+```
+      {
+        "kind": "record-key",
+        "user": "",
+        "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo"
+      }
+```
+
 Optional fields, present only when they apply: `servers[].hint` (the remediation for
 an unreachable or failed server; `error` never contains it) and
 `changes.remove[].options` (on-server options of a key neither the manifest nor the
@@ -1680,6 +1699,35 @@ operator keys first, then the granted keys, with the decided comment policy appl
 Non-key lines — hand-written comments, blank lines — are **deleted** by the rewrite;
 the plan shows a `normalize` row with the exact count *before* anything is written.
 Output is deterministic, so a repeated `apply` is a byte-for-byte no-op.
+
+**Manifest serial.** Once the manifest has a `serial:`, the managed header carries it as `(serial N)`, and apply compares each server's header serial S with the manifest's M. A server written by a newer manifest (S > M) is refused unless the write only removes keys. With an equal body it is converged with a note (exit 0). A removal-only write proceeds and keeps S, so a server's serial never goes down. A header more than 1000 above M is treated as forged, as if it had no serial, and is rewritten. `revoke` and `rotate` write a header-only update on affected servers whose keys already match.
+
+```
+s-forged (deploy@10.0.0.1:22)
+  ~  (header)      update header: forged serial 5000 → 7 (keys unchanged)
+  warning: header claims serial 5000, far above this manifest's 7 — treated as no serial
+  → 2 keys desired · header only
+
+s-headeronly (deploy@10.0.0.2:22)
+  ~  (header)      update header: serial 6 → 7 (keys unchanged)
+  → 2 keys desired · header only
+
+s-newer (deploy@10.0.0.3:22)  converged (no changes)
+  note: written by newer manifest serial 8 (yours is 7): pull the latest manifest
+
+s-older (deploy@10.0.0.4:22)
+  +  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  add (authorized, missing)
+  → 2 keys desired · 1 add · 0 remove · 0 rewrite
+
+s-refused (deploy@10.0.0.5:22)  REFUSED: written by manifest serial 8, this manifest is 7 — a newer manifest revoked or rotated keys here; pull the latest manifest, or if you are sure, set serial: 8 in your manifest (this is the only override)
+
+s-removal (deploy@10.0.0.6:22)
+  -  (unknown) "stray"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  warning: written by newer manifest serial 8; this write only removes keys, so it proceeds
+  → 2 keys desired · 0 add · 1 remove · 0 rewrite
+```
+
+**Policy conflicts.** A server a policy conflict names is refused with the conflict message (exit 1); the rest of the fleet is planned normally.
 
 **Two-phase, one confirmation.** SSHepherd reads the entire fleet and shows a single
 plan, you confirm once (interactive prompt on a TTY, or `--yes`), and only then does

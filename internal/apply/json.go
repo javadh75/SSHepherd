@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
@@ -26,6 +27,18 @@ type JSONOptions struct {
 	Former  *config.Config // as-loaded config before the edit; nil for apply
 	Edit    *EditSummary   // nil for apply
 	Saved   bool           // the manifest was written (revoke/rotate)
+	// SerialBump is apply's D4b bump (apply only); nil unless the run would bump.
+	SerialBump *SerialBump
+}
+
+// SerialBump is apply's D4b serial bump (spec §6) for the JSON document:
+// From → To, saved or not. To is nil and Warning set when the manifest
+// cannot be saved (a piped --config).
+type SerialBump struct {
+	From    uint64  `json:"from"`
+	To      *uint64 `json:"to"`
+	Saved   bool    `json:"saved"`
+	Warning string  `json:"warning,omitempty"`
 }
 
 // The json* types are the wire shape of --json on apply/revoke/rotate,
@@ -39,6 +52,11 @@ type jsonDoc struct {
 	Edit    *jsonEdit    `json:"edit"`
 	Summary jsonSummary  `json:"summary"`
 	Servers []jsonServer `json:"servers"`
+	// PolicyConflicts, ManifestWarnings and SerialBump are additive-optional
+	// (schema stays 1), each omitted when empty.
+	PolicyConflicts  []config.Conflict         `json:"policy_conflicts,omitempty"`
+	ManifestWarnings []config.TombstoneWarning `json:"manifest_warnings,omitempty"`
+	SerialBump       *SerialBump               `json:"serial_bump,omitempty"`
 }
 
 type jsonSummary struct {
@@ -59,6 +77,22 @@ type jsonEdit struct {
 	Affected  int             `json:"affected"`
 	Operators []string        `json:"operators"`
 	Emptied   []jsonEmptied   `json:"emptied"`
+	// Serial, Revoked, AlreadyRevoked and CheckCommand are additive (schema
+	// stays 1). Serial is present only when the edit was saved; Revoked is
+	// [] when none.
+	Serial         *uint64          `json:"serial,omitempty"`
+	Revoked        []jsonTombstone  `json:"revoked"`
+	AlreadyRevoked []AlreadyRevoked `json:"already_revoked,omitempty"`
+	CheckCommand   string           `json:"check_command,omitempty"`
+}
+
+// jsonTombstone is a revoked: entry in the manifest's own shape.
+type jsonTombstone struct {
+	Fingerprint string   `json:"fingerprint,omitempty"`
+	User        string   `json:"user,omitempty"`
+	Servers     []string `json:"servers,omitempty"`
+	Date        string   `json:"date"`
+	Reason      string   `json:"reason,omitempty"`
 }
 
 // jsonEditEntry: pointer fields are present exactly for their kind, so a
@@ -108,6 +142,33 @@ type jsonServer struct {
 	AuthorizedKeys2Present  bool        `json:"authorized_keys2_present"`
 	DisablesAuthorizedKeys2 bool        `json:"disables_authorized_keys2"`
 	Notes                   jsonNotes   `json:"notes"`
+	Serial                  *jsonSerial `json:"serial,omitempty"`
+}
+
+// jsonSerial is the §3 verdict: header is null for no serial, writes null
+// when nothing is written.
+type jsonSerial struct {
+	Header   *uint64 `json:"header"`
+	Manifest uint64  `json:"manifest"`
+	Writes   *uint64 `json:"writes"`
+	Case     string  `json:"case"`
+}
+
+func jsonSerialFor(p ServerPlan) *jsonSerial {
+	sp := p.Serial
+	if sp.Case == "" || (sp.Header == 0 && sp.Manifest == 0) {
+		return nil
+	}
+	js := &jsonSerial{Manifest: sp.Manifest, Case: string(sp.Case)}
+	if sp.Header > 0 {
+		h := sp.Header
+		js.Header = &h
+	}
+	if p.Class == ClassChange {
+		w := sp.Writes
+		js.Writes = &w
+	}
+	return js
 }
 
 type jsonChanges struct {
@@ -169,6 +230,7 @@ type jsonNotes struct {
 	Guard              string `json:"guard,omitempty"`
 	RestrictiveOptions string `json:"restrictive_options,omitempty"`
 	AgentOnlySurvivors string `json:"agent_only_survivors,omitempty"`
+	Serial             string `json:"serial,omitempty"`
 }
 
 // RenderJSON writes the write-path report as one indented JSON document
@@ -190,6 +252,8 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 	if opts.Edit != nil {
 		doc.Edit = jsonEditFor(*opts.Edit, opts.Saved)
 	}
+	doc.PolicyConflicts, doc.ManifestWarnings = cleanMemory(cfg)
+	doc.SerialBump = opts.SerialBump
 	for _, p := range plans {
 		doc.Servers = append(doc.Servers, jsonServerFor(cfg, p, opts))
 	}
@@ -204,6 +268,23 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 // clean strips terminal-hostile runes (C0/DEL/C1, Cf) that encoding/json
 // would emit raw; idempotent on already-sanitized text.
 func clean(s string) string { return sanitize.Remote(s) }
+
+// cleanMemory is the manifest's policy conflicts and D1e warnings with
+// every manifest-derived text passed through clean (spec §9: "sanitized
+// like today's text fields"). A D1e warning's server can be any string —
+// even one with control runes (plan decision 3) — so this is not
+// cosmetic. Each list stays nil when empty (omitted).
+func cleanMemory(cfg *config.Config) ([]config.Conflict, []config.TombstoneWarning) {
+	cs := cfg.Conflicts() // a copy
+	for i := range cs {
+		cs[i].Message, cs[i].User = clean(cs[i].Message), clean(cs[i].User)
+	}
+	ws := slices.Clone(cfg.TombstoneWarnings)
+	for i := range ws {
+		ws[i].User, ws[i].Server, ws[i].Message = clean(ws[i].User), clean(ws[i].Server), clean(ws[i].Message)
+	}
+	return cs, ws
+}
 
 // cleanLine is clean plus oneLine's whitespace collapse, for error text.
 func cleanLine(s string) string { return clean(strings.Join(strings.Fields(s), " ")) }
@@ -252,12 +333,24 @@ func jsonEditFor(s EditSummary, saved bool) *jsonEdit {
 			je.Fingerprint, je.NewFingerprint, je.KeepsExpiry, je.KeepOld = ed.Fingerprint, ed.NewFingerprint, ed.KeepsExpiry, &keepOld
 		case EditRemoveAccess:
 			jsonRemoveAccess(&je, ed)
+		case EditRecordKey:
+			je.Fingerprint = ed.Fingerprint
 		}
 		e.Edits = append(e.Edits, je)
 	}
 	for _, em := range s.Emptied {
 		e.Emptied = append(e.Emptied, jsonEmptied{Server: em.Server, Users: append([]string{}, em.Users...), Keys: em.Keys})
 	}
+	e.Revoked = make([]jsonTombstone, 0, len(s.Revoked))
+	for _, t := range s.Revoked {
+		e.Revoked = append(e.Revoked, jsonTombstone{Fingerprint: t.Fingerprint, User: clean(t.User),
+			Servers: t.Servers, Date: t.Date, Reason: clean(t.Reason)})
+	}
+	if saved && s.Serial > 0 {
+		serial := s.Serial
+		e.Serial = &serial
+	}
+	e.AlreadyRevoked, e.CheckCommand = s.AlreadyRevoked, clean(s.CheckCommand)
 	return e
 }
 
@@ -290,7 +383,9 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 			Guard:              clean(p.Note),
 			RestrictiveOptions: clean(p.Warning),
 			AgentOnlySurvivors: clean(p.AgentOnly),
+			Serial:             clean(p.SerialNote),
 		},
+		Serial: jsonSerialFor(p),
 	}
 	if p.Class == ClassChange {
 		// Mapped explicitly: planOne sets Pending on every plan, but an

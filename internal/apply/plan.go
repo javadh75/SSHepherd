@@ -6,7 +6,6 @@
 package apply
 
 import (
-	"bytes"
 	"fmt"
 	"slices"
 	"strings"
@@ -114,6 +113,14 @@ type ServerPlan struct {
 	// Expect is the phase-1 snapshot the write is conditional on: phase 2
 	// refuses a file that changed after this plan was shown.
 	Expect fleet.Snapshot
+	// HeaderOnly marks a change that rewrites only line 1 — the managed
+	// header — to carry the manifest's serial (§3 rows 1 and 6): every byte
+	// after it is the server's own, so it cannot widen access.
+	HeaderOnly bool
+	// Serial is the header-serial verdict; SerialNote the human note of
+	// rows 1-3 (forged, newer converged, newer removal-only), "" otherwise.
+	Serial     SerialPlan
+	SerialNote string
 
 	Outcome    Outcome
 	OutcomeErr error
@@ -130,15 +137,15 @@ func (p ServerPlan) DisableKeys2() bool {
 	return p.Class == ClassChange && p.AuthorizedKeys2
 }
 
-// Build computes the plan for every phase-1 result. held is what the run
-// could authenticate with at preflight (the run's held-key listing: key files
-// and plain agent keys, with their sources) — the self-lockout guard's
-// ground truth. Pure; the only possible error is a render failure,
+// BuildWith computes the plan for every phase-1 result. held is what the
+// run could authenticate with at preflight (the run's held-key listing: key
+// files and plain agent keys, with their sources) — the self-lockout
+// guard's ground truth. Pure; the only possible error is a render failure,
 // impossible for a validated manifest (a tool bug, exit 3).
-func Build(cfg *config.Config, results []audit.ServerResult, held []fleet.HeldKey) ([]ServerPlan, error) {
+func BuildWith(cfg *config.Config, results []audit.ServerResult, held []fleet.HeldKey, opts BuildOptions) ([]ServerPlan, error) {
 	plans := make([]ServerPlan, 0, len(results))
 	for _, r := range results {
-		p, err := planOne(cfg, r, held)
+		p, err := planOne(cfg, r, held, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -189,7 +196,7 @@ func planNoGrants(p ServerPlan, r audit.ServerResult) ServerPlan {
 	return p
 }
 
-func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey) (ServerPlan, error) {
+func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opts BuildOptions) (ServerPlan, error) {
 	p := ServerPlan{
 		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
 		AuthorizedKeys2: r.AuthorizedKeys2,
@@ -200,12 +207,17 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey) (Se
 		p.Err = r.Err
 		return p, nil //nolint:nilerr // an unreachable server is a plan class, not a Build failure
 	}
+	// A policy conflict names this server (D29): nothing is written here —
+	// a revoked key is never installed, a revoked grant never restored.
+	if refusal := conflictRefusal(cfg, r.Server.Name); refusal != "" {
+		p.Class, p.Refusal = ClassRefused, refusal
+		return p, nil
+	}
 
 	entries := desiredEntries(cfg, r.Server.Name)
 	for _, e := range entries {
 		p.Desired = append(p.Desired, e.Key)
 	}
-
 	if len(entries) == 0 {
 		return planNoGrants(p, r), nil
 	}
@@ -220,8 +232,16 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey) (Se
 			Plural(n, "unparseable line", "unparseable lines"), theLines(n))
 		return p, nil
 	}
+	return planWrite(cfg, p, r, entries, held, opts)
+}
 
-	rendered, err := authkeys.Render(entries)
+// planWrite renders the server's file and classifies it by the §3 serial
+// table: converged, refused (a newer manifest's serial, a render too large
+// to verify), a header-only write, or a change with its key rows — then the
+// self-lockout guard, which judges every write alike.
+func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries []authkeys.RenderEntry, held []fleet.HeldKey, opts BuildOptions) (ServerPlan, error) {
+	m := cfg.Serial()
+	rendered, err := authkeys.RenderSerial(entries, m)
 	if err != nil {
 		return p, fmt.Errorf("render %s: %w", r.Server.Name, err)
 	}
@@ -233,25 +253,29 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey) (Se
 			len(rendered), maxRender)
 		return p, nil
 	}
-
-	// Byte-exact convergence: a server needs a write iff its current bytes
-	// differ from the render, or a non-empty authorized_keys2 must be
-	// disabled. (A file-absent server with desired keys is never converged
-	// — the file itself is missing.)
-	same := !r.FileAbsent && bytes.Equal(r.Content, rendered)
-	if same && !r.AuthorizedKeys2 {
+	d := planSerial(m, r, entries, bodyOf(rendered), opts.Bumped)
+	p.Serial, p.SerialNote = d.sp, d.note
+	switch {
+	case d.refusal != "":
+		p.Class, p.Refusal = ClassRefused, d.refusal
+		return p, nil
+	case d.converged:
 		p.Class = ClassConverged
 		return p, nil
 	}
-
-	if !same {
+	if d.sp.Writes != m { // row 3 keeps the server's (higher) serial
+		if p.Rendered, err = authkeys.RenderSerial(entries, d.sp.Writes); err != nil {
+			return p, fmt.Errorf("render %s: %w", r.Server.Name, err)
+		}
+	}
+	p.HeaderOnly = d.headerOnly
+	if !d.equalBody {
 		p.Add = r.Diff.Missing
 		p.Remove = r.Diff.Unauthorized
 		p.Rewrites = rewriteRows(r, entries)
 		explained := len(p.Add)+len(p.Remove)+len(p.Rewrites) > 0
 		p.Normalize = normalize(r, entries, explained)
 	}
-
 	v := guardCheck(cfg, r, entries, held)
 	if v.Refusal != "" {
 		p.Class = ClassRefused

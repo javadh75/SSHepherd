@@ -38,9 +38,9 @@ func buildPlans(t *testing.T, cfg *config.Config, r audit.KeyReader, agentFPs []
 func buildPlansHeld(t *testing.T, cfg *config.Config, r audit.KeyReader, held []fleet.HeldKey) []ServerPlan {
 	t.Helper()
 	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 4})
-	plans, err := Build(cfg, results, held)
+	plans, err := BuildWith(cfg, results, held, BuildOptions{})
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		t.Fatalf("BuildWith: %v", err)
 	}
 	return plans
 }
@@ -289,7 +289,7 @@ func TestApplyAuditAgreeOnKeys2WithoutGrants(t *testing.T) {
 	cfg := emptyDesiredCfg(t)
 	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: renderedFor(t, cfg, "web-1")}, "bare": {FileAbsent: true, AuthorizedKeys2: true}}}
 	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 1})
-	plans, err := Build(cfg, results, agentHeld(fp(t, 2)))
+	plans, err := BuildWith(cfg, results, agentHeld(fp(t, 2)), BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

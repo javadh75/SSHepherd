@@ -22,7 +22,8 @@
         ],
         "keys": 1
       }
-    ]
+    ],
+    "revoked": []
   },
   "summary": {
     "servers": 1,

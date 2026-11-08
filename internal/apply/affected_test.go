@@ -86,3 +86,26 @@ func TestAffectedCommentOnlyChange(t *testing.T) {
 		t.Errorf("Affected = %+v, want web-2", got)
 	}
 }
+
+// TestAffectedIgnoresSerialBump: a revoke's serial bump alone never widens
+// the affected set (renderFor renders serial 0 on both sides).
+func TestAffectedIgnoresSerialBump(t *testing.T) {
+	base := `users:
+  - {name: alice, keys: ["` + testkeys.Line(t, 1) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+`
+	old, err := config.Parse([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bumped, err := config.Parse([]byte("serial: 8\n" + base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Affected(old, bumped); len(got.Servers) != 0 {
+		t.Fatalf("Affected = %+v, want none", got)
+	}
+}

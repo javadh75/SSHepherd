@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "command": "revoke",
+  "dry_run": false,
+  "edit": {
+    "saved": true,
+    "edits": [
+      {
+        "kind": "remove-key",
+        "user": "bob",
+        "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+        "no_keys_left": false,
+        "clears_operator": false
+      },
+      {
+        "kind": "record-key",
+        "user": "",
+        "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo"
+      }
+    ],
+    "affected": 0,
+    "operators": [],
+    "emptied": [],
+    "serial": 8,
+    "revoked": [
+      {
+        "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+        "user": "bob",
+        "date": "2026-11-08",
+        "reason": "offboarded"
+      },
+      {
+        "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+        "date": "2026-11-08"
+      }
+    ],
+    "already_revoked": [
+      {
+        "user": "carol",
+        "date": "2026-11-01"
+      }
+    ],
+    "check_command": "sshepherd audit --config fleet.yaml"
+  },
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": []
+}

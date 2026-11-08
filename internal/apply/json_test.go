@@ -665,3 +665,93 @@ func TestJSONErrorKindWritePhase(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderJSONSerialGolden(t *testing.T) {
+	cfg, plans := serialFleet(t)
+	got := renderJSONCfg(t, cfg, plans, JSONOptions{Command: "revoke", DryRun: true})
+	checkGolden(t, "json_serial.golden.json", got)
+	for _, want := range []string{
+		`"case": "header_only"`, `"case": "forged"`, `"case": "newer_converged"`, `"case": "newer_removal_only"`,
+		`"case": "newer_refused"`, `"case": "older"`, `"header": null`, `"writes": null`,
+		`"serial": "written by newer manifest serial 8 (yours is 7): pull the latest manifest"`,
+	} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("document lacks %s", want)
+		}
+	}
+}
+
+// TestRenderJSONSerialOmittedAtZero: a serial-0 fleet's documents are
+// byte-identical to before (no serial object).
+func TestRenderJSONSerialOmittedAtZero(t *testing.T) {
+	cfg, plans := mixedPlans(t)
+	if got := renderJSONCfg(t, cfg, plans, JSONOptions{Command: "apply"}); bytes.Contains(got, []byte(`"serial"`)) {
+		t.Errorf("serial object on a serial-0 fleet:\n%s", got)
+	}
+}
+
+func TestRenderJSONManifestMemoryTopLevel(t *testing.T) {
+	cfg, err := config.Parse([]byte(`users:
+  - {name: alice, keys: ["` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: alice, servers: [web-1]}
+revoked:
+  - {fingerprint: ` + fp(t, 2) + `, user: alice, date: 2026-11-08}
+  - {user: alice, servers: [db-9], date: 2026-11-08}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	to := uint64(8)
+	got := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "apply", DryRun: true, SerialBump: &SerialBump{From: 7, To: &to}})
+	var doc struct {
+		PolicyConflicts []config.Conflict         `json:"policy_conflicts"`
+		ManifestWarns   []config.TombstoneWarning `json:"manifest_warnings"`
+		SerialBump      map[string]any            `json:"serial_bump"`
+	}
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.PolicyConflicts) != 1 || doc.PolicyConflicts[0].Kind != "revoked_key" || len(doc.ManifestWarns) != 1 ||
+		doc.ManifestWarns[0].Server != "db-9" || doc.SerialBump["to"] != float64(8) || doc.SerialBump["saved"] != false {
+		t.Errorf("document = %s", got)
+	}
+	piped := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "apply", SerialBump: &SerialBump{From: 7,
+		Warning: "removing keys without a serial bump: an older copy could re-grant them"}})
+	if !bytes.Contains(piped, []byte(`"to": null`)) || !bytes.Contains(piped, []byte(`"warning": "removing keys without a serial bump`)) {
+		t.Errorf("piped document = %s", piped)
+	}
+	saved := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "apply", SerialBump: &SerialBump{From: 7, To: &to, Saved: true}})
+	// One golden pins the three serial_bump shapes (spec §9: dry-run, saved,
+	// piped) and the policy_conflicts / manifest_warnings objects.
+	all := append(append(append([]byte(nil), got...), saved...), piped...)
+	checkGolden(t, "json_memory_top.golden.json", all)
+}
+
+func TestRenderJSONEditMemoryGolden(t *testing.T) {
+	cfg := planCfg(t)
+	s := EditSummary{
+		Edits: []Edit{
+			{Kind: EditRemoveKey, User: "bob", Fingerprint: fp(t, 3)},
+			{Kind: EditRecordKey, Fingerprint: fp(t, 9)},
+		},
+		Serial: 8,
+		Revoked: []config.Tombstone{
+			{Fingerprint: fp(t, 3), User: "bob", Date: "2026-11-08", Reason: "offboarded"},
+			{Fingerprint: fp(t, 9), Date: "2026-11-08"},
+		},
+		AlreadyRevoked: []AlreadyRevoked{{User: "carol", Date: "2026-11-01"}},
+		CheckCommand:   "sshepherd audit --config fleet.yaml",
+	}
+	got := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "revoke", Edit: &s, Saved: true})
+	checkGolden(t, "json_edit_memory.golden.json", got)
+	if unsaved := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "revoke", DryRun: true, Edit: &s}); bytes.Contains(unsaved, []byte(`"serial": 8`)) {
+		t.Errorf("edit.serial must be omitted when nothing was saved:\n%s", unsaved)
+	}
+	empty := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "revoke", Edit: &EditSummary{}})
+	if !bytes.Contains(empty, []byte(`"revoked": []`)) {
+		t.Errorf("edit.revoked must be [] when none:\n%s", empty)
+	}
+}

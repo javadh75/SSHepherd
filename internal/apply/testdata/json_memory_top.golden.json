@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": true,
+  "edit": null,
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": [],
+  "policy_conflicts": [
+    {
+      "kind": "revoked_key",
+      "message": "key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 of user \"alice\" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately",
+      "user": "alice",
+      "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+      "servers": [
+        "web-1"
+      ]
+    }
+  ],
+  "manifest_warnings": [
+    {
+      "kind": "tombstone_unknown_server",
+      "revoked_index": 1,
+      "user": "alice",
+      "server": "db-9",
+      "message": "revoked[1]: unknown server \"db-9\" — this entry is ignored for it; remove db-9 from the entry once the server is gone for good"
+    }
+  ],
+  "serial_bump": {
+    "from": 7,
+    "to": 8,
+    "saved": false
+  }
+}
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": false,
+  "edit": null,
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": [],
+  "policy_conflicts": [
+    {
+      "kind": "revoked_key",
+      "message": "key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 of user \"alice\" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately",
+      "user": "alice",
+      "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+      "servers": [
+        "web-1"
+      ]
+    }
+  ],
+  "manifest_warnings": [
+    {
+      "kind": "tombstone_unknown_server",
+      "revoked_index": 1,
+      "user": "alice",
+      "server": "db-9",
+      "message": "revoked[1]: unknown server \"db-9\" — this entry is ignored for it; remove db-9 from the entry once the server is gone for good"
+    }
+  ],
+  "serial_bump": {
+    "from": 7,
+    "to": 8,
+    "saved": true
+  }
+}
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": false,
+  "edit": null,
+  "summary": {
+    "servers": 0,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": [],
+  "policy_conflicts": [
+    {
+      "kind": "revoked_key",
+      "message": "key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 of user \"alice\" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately",
+      "user": "alice",
+      "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+      "servers": [
+        "web-1"
+      ]
+    }
+  ],
+  "manifest_warnings": [
+    {
+      "kind": "tombstone_unknown_server",
+      "revoked_index": 1,
+      "user": "alice",
+      "server": "db-9",
+      "message": "revoked[1]: unknown server \"db-9\" — this entry is ignored for it; remove db-9 from the entry once the server is gone for good"
+    }
+  ],
+  "serial_bump": {
+    "from": 7,
+    "to": null,
+    "saved": false,
+    "warning": "removing keys without a serial bump: an older copy could re-grant them"
+  }
+}

@@ -1,0 +1,23 @@
+s-forged (deploy@10.0.0.1:22)
+  ~  (header)      update header: forged serial 5000 → 7 (keys unchanged)
+  warning: header claims serial 5000, far above this manifest's 7 — treated as no serial
+  → 2 keys desired · header only
+
+s-headeronly (deploy@10.0.0.2:22)
+  ~  (header)      update header: serial 6 → 7 (keys unchanged)
+  → 2 keys desired · header only
+
+s-newer (deploy@10.0.0.3:22)  converged (no changes)
+  note: written by newer manifest serial 8 (yours is 7): pull the latest manifest
+
+s-older (deploy@10.0.0.4:22)
+  +  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  add (authorized, missing)
+  → 2 keys desired · 1 add · 0 remove · 0 rewrite
+
+s-refused (deploy@10.0.0.5:22)  REFUSED: written by manifest serial 8, this manifest is 7 — a newer manifest revoked or rotated keys here; pull the latest manifest, or if you are sure, set serial: 8 in your manifest (this is the only override)
+
+s-removal (deploy@10.0.0.6:22)
+  -  (unknown) "stray"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  warning: written by newer manifest serial 8; this write only removes keys, so it proceeds
+  → 2 keys desired · 0 add · 1 remove · 0 rewrite
+

@@ -4,17 +4,20 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/javadh75/SSHepherd/internal/config"
 )
 
 // EditKind names one manifest edit revoke/rotate performs.
 type EditKind string
 
-// The four edits.
+// The five edits.
 const (
 	EditRemoveUser   EditKind = "remove-user"   // revoke USER
 	EditRemoveKey    EditKind = "remove-key"    // revoke --key
 	EditRotate       EditKind = "rotate"        // rotate USER --old --new
 	EditRemoveAccess EditKind = "remove-access" // revoke USER --server
+	EditRecordKey    EditKind = "record-key"    // revoke --key of a key no user has (D1b): a tombstone, no server written
 )
 
 // Edit is one manifest edit, resolved against the as-loaded config.
@@ -62,12 +65,32 @@ type EmptiedServer struct {
 	Keys   int      // how many removed keys were granted there
 }
 
+// AlreadyRevoked is a revoke target an earlier revoke already recorded
+// (D1c: a user or a user's access; D1b: an unowned fingerprint): a no-op,
+// exit 0. The json tags are edit.already_revoked's wire shape.
+type AlreadyRevoked struct {
+	User        string   `json:"user,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
+	Servers     []string `json:"servers,omitempty"`
+	Date        string   `json:"date"`
+}
+
 // EditSummary is everything the edit header shows.
 type EditSummary struct {
 	Edits     []Edit
 	Affected  int      // servers whose rendered desired file changes
 	Operators []string // operator targets, acknowledged with --operator
 	Emptied   []EmptiedServer
+	// Serial is the manifest serial the edit saves (every saving revoke and
+	// rotate bumps it once).
+	Serial uint64
+	// Revoked are the tombstones this edit adds to revoked:.
+	Revoked []config.Tombstone
+	// AlreadyRevoked are the targets an earlier revoke already recorded.
+	AlreadyRevoked []AlreadyRevoked
+	// CheckCommand is the printed follow-up audit ("" when no key was
+	// removed, or when --sweep ran).
+	CheckCommand string
 	// FollowUp is the run's non-default flags appended to the header's
 	// 'sshepherd revoke USER' hints (" --config fleet.yaml"); "" for none.
 	// Not part of the JSON.
@@ -127,6 +150,8 @@ func editText(e Edit) string {
 			Plural(e.Keys, "key", "keys"), Plural(e.Grants, "access grant", "access grants"))
 	case EditRemoveKey:
 		return fmt.Sprintf("remove key %s from %s", e.Fingerprint, e.User)
+	case EditRecordKey:
+		return fmt.Sprintf("record revoked key %s (no user has it; no server is written)", e.Fingerprint)
 	case EditRemoveAccess:
 		t := fmt.Sprintf("remove %s's access to %s", e.User, strings.Join(e.AccessServers, ", "))
 		if c := accessCounts(e); c != "" {

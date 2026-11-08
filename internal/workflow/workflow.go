@@ -47,7 +47,10 @@ type ManifestCommitter interface {
 	// Commit runs exactly once, after confirmation and — when a server
 	// will be written — after the held-key re-list (fresh), before any
 	// write; fresh is nil when nothing will be written. saved reports
-	// that the manifest file was written.
+	// that the manifest file was written. Commit may re-render the managed
+	// header of plans in place (apply.Reserial, apply's D4b serial bump);
+	// it must change nothing else in them. Execute writes what Commit
+	// leaves in plans[i].Rendered.
 	Commit(ctx context.Context, plans []apply.ServerPlan, fresh []fleet.HeldKey) (saved bool, err error)
 }
 
@@ -92,6 +95,10 @@ type Request struct {
 	PerServerTimeout time.Duration
 	DryRun           bool
 	AlwaysConfirm    bool // ask even when nothing is written (the edit is itself a change)
+	// Bumped: the run saves a higher serial: and Servers is its bump scope
+	// (revoke/rotate's affected set) — servers whose keys already match get
+	// a header-only write carrying the new serial (apply.BuildOptions).
+	Bumped bool
 	// Question returns the confirmation question, ErrWithheld (wrapped is
 	// fine) to withhold the run, or a tool error.
 	Question  func(plans []apply.ServerPlan, toWrite int) (string, error)
@@ -139,7 +146,7 @@ func Apply(ctx context.Context, req Request) (Outcome, error) {
 	return confirmAndWrite(ctx, req, out, toWrite)
 }
 
-// plan is phase 1: audit's pipeline over req.Servers, then apply.Build.
+// plan is phase 1: audit's pipeline over req.Servers, then apply.BuildWith.
 func plan(ctx context.Context, req Request) ([]apply.ServerPlan, error) {
 	req.Log.Info(fmt.Sprintf("planning %s (parallelism %d)…", apply.Plural(len(req.Servers), "server", "servers"), req.Parallel))
 	start := time.Now()
@@ -150,7 +157,7 @@ func plan(ctx context.Context, req Request) ([]apply.ServerPlan, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInterrupted, err) // nothing written: phase 2 never started
 	}
-	plans, err := apply.Build(req.Cfg, results, req.Held)
+	plans, err := apply.BuildWith(req.Cfg, results, req.Held, apply.BuildOptions{Bumped: req.Bumped})
 	if err != nil {
 		return nil, fmt.Errorf("plan: %w", err)
 	}
