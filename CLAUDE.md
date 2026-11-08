@@ -382,9 +382,11 @@ reserved for `pending` servers), apply
 JSON's rewrites gain `widens`, and Ctrl-C stops audit's fan-out without dialing
 queued servers.
 The write-failure semantics spec (P08: login-check failures sorted by stage, exit 2
-for an unrestored lockout, stale-lock removal, interrupts, backup retention; specced in
+for an unrestored lockout, self-describing locks (owner, age, hand-removal command;
+never removed automatically), interrupts, backup retention; specced in
 `docs/superpowers/specs/2026-11-08-write-failure-semantics-design.md`) is drafted
-with D9–D10 answered and awaits approval; implementation is W5+.
+with D9–D10 answered and D10a, D10b and D9c pending, and awaits approval;
+implementation is W5+.
 The audit trust posture spec (P09: posture probe, operator cannot-log-in critical
 tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`,
 built-in weak/expired key rules via D29; specced in

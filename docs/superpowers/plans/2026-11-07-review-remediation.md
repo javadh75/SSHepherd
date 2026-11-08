@@ -149,8 +149,9 @@ Rules: ask **one decision at a time**, in the order below, in short plain Englis
 | 8 | D7 | before W2 | P13 Task 9 | image only |
 | 9–24 | D28, D1, D29, D2, D3, D4, D4b, D5, D1a, D1b, D1c, D2a, D4a, D4c, D1d, D1e | before the W4 plan | P04-impl (W4) | W4 waits |
 | 25–27 | D9, D9b, D10 (D11–D13 stated) | P08 spec approval | P08-impl (W5+) | — |
-| 28–33 | D14, D15, D16 (re-asked), D17, D18, D19 (D14a–c, D17a–b spec defaults) | P09 spec approval | P09-impl (W5+); D18's README narrowing goes to the next integrator | — |
-| 34–46 | D25, D25a, D25b, D23, D24, D24a, D26, D21, D21a, D20, D20a, D20b, D22 | P10 spec approval (after W4) | P10 slices (W5+) | — |
+| 28–30 | D10a, D10b, D9c | P08 spec approval | P08-impl (W5+); no fix wave | D10a: exit 1; D10b: exit 1 (UNPROVEN); D9c: stderr only |
+| 31–36 | D14, D15, D16 (re-asked), D17, D18, D19 (D14a–c, D17a–b spec defaults) | P09 spec approval | P09-impl (W5+); D18's README narrowing landed in 837fb49 | — |
+| 37–49 | D25, D25a, D25b, D23, D24, D24a, D26, D21, D21a, D20, D20a, D20b, D22 | P10 spec approval (after W4) | P10 slices (W5+) | — |
 
 ### Block 0: workflow setup
 
@@ -242,7 +243,7 @@ Rules: ask **one decision at a time**, in the order below, in short plain Englis
 
 ### Block 3: write-path failure semantics (P08 spec; implementation W5+)
 
-Ask in this order: D9 → D9b → D10. D10's meaning depends on D9 and on D28.
+Ask in this order: D9 → D9b → D10 → D10a → D10b → D9c. D10's meaning depends on D9 and on D28.
 
 **D9 — If the login check after a write can't even log in because of the network (the server never answered), should SSHepherd undo the write?** (WP-1)
 - Options: (1) Retry a few times; if it still can't log in, keep the new file and report UNPROVEN (exit 1). Anything that goes wrong after login (a forced command, a hang) still undoes the write. (2) Retry, then undo. (3) Keep today: undo on any failure.
@@ -253,6 +254,20 @@ Ask in this order: D9 → D9b → D10. D10's meaning depends on D9 and on D28.
 
 **D10 — If the login check fails and the undo also fails, so you might be locked out, should apply exit 2 so monitoring pages you?** (WP-6)
 - **Recommendation: yes.** Also retry the undo when the lock is busy.
+
+**D10a — If a failed login check undoes a write and the restored file lets in a key the manifest has revoked, should apply exit 2 at once, or exit 1 and leave the page to the next audit?** (WP-1; was the P08 spec's open point 1)
+- Options: (1) Exit 1; the FAILED line names each key the rollback put back, and the next audit reports it as critical (D2). (2) Exit 2 at once.
+- **Recommendation: (1)**, the default until answered. apply's exit 2 keeps one meaning ("you may be locked out"). Against it: a fleet audited daily may carry the revoked key for up to a day.
+
+**D10b — If the login check right after a write meets a host-key alarm (the host key changed or is `@revoked`), should apply exit 2 the way audit does, or report UNPROVEN at exit 1?** (WP-1; was open point 2)
+- Options: (1) UNPROVEN, exit 1, no retry, file kept. (2) Exit 2 for the host-key kinds audit exits 2 on.
+- **Recommendation: (1)**, the default until answered; the next audit exits 2 on the same alarm. Against it: a scheduled apply alone does not page.
+
+**D9c — When D9b's extra login check with only your `--identity` key fails, should `--json` carry the warning too, or only stderr?** (WP-5 follow-up; was open point 3)
+- Options: (1) Stderr only. (2) An additive per-server `warnings` array (schema stays 1).
+- **Recommendation: (1)**, the default until answered. Against it: a script that reads only the JSON never sees the warning.
+
+None of D10a, D10b and D9c blocks a fix wave.
 
 **Stated, not asked (recorded in the P08 spec; you can change them at spec approval):** D11 (WP-7) a lock records who and when, shows its age and the exact removal command, and is never removed automatically; D12 (WP-2) no server-side watchdog, a notice on the first Ctrl-C, and a reconnect-and-recheck under the lock after a broken connection; D13 (WP-8) a moved-aside `authorized_keys2` is never overwritten, and `authorized_keys` is not rewritten (so `.bak` is not rotated) when it already matches, which is what README already promises.
 

@@ -2,8 +2,10 @@
 
 - **Date:** 2026-11-08 (drafted in wave W1 of the review-remediation plan)
 - **Status:** Draft — owner decisions recorded (2026-11-07): **D9 = (1)**, **D9b = yes**,
-  **D10 = yes**. D11, D12 and D13 are stated defaults that stand unless the owner changes
-  them at spec approval. Awaiting spec approval. Nothing here is built until then; the
+  **D10 = yes**. **D10a, D10b and D9c are pending owner questions** (open points 1, 2 and
+  3 of the first draft, promoted because each changes an exit code or the JSON contract);
+  each has a stated default that holds until it is answered. D11, D12 and D13 are stated
+  defaults that stand unless the owner changes them at spec approval. Awaiting spec approval. Nothing here is built until then; the
   implementation plan (P08-impl) is written after approval against the tree that P11 (W2),
   P14 (W3) and P04-impl (W4) leave.
 - **Findings:** WP-1 (MEDIUM), WP-2, WP-6, WP-7, WP-8 (LOW) from the 2026-11-07 whole-repo
@@ -88,22 +90,36 @@ the dropped-connection gap without a server-side agent, and stop destroying back
 ## Decisions
 
 D9, D9b and D10 were asked one at a time and answered on 2026-11-07 (master plan,
-"Answers recorded"). D11–D13 are stated, not asked; the owner can change any of them at
-spec approval.
+"Answers recorded"). D10a, D10b and D9c were open points 1, 2 and 3 in the first draft;
+each changes an exit code or the JSON contract, so under the plan's rule ("Technical
+sub-choices that do not change what a user sees are decided by the spec author") they are
+owner questions, asked after D10 (the P04 spec did the same with D4c, D1d and D1e). Until
+they are answered, their stated default holds. D11–D13 are stated, not asked; the owner can
+change any of them at spec approval.
 
-| ID | Finding | Question | Options | Recommendation | Owner choice | Reverses |
-|---|---|---|---|---|---|---|
-| **D9** | WP-1 | If the login check after a write can't even log in because of the network (the server never answered), should SSHepherd undo the write? | (1) Retry a few times; if it still can't log in, keep the new file and report UNPROVEN (exit 1). Anything that goes wrong after login (a forced command, a hang) still undoes the write. (2) Retry, then undo. (3) Keep today: undo on any failure. | (1) — undoing can put a revoked key back. | **(1)** (2026-11-07) | review-hardening spec `2026-10-16-review-hardening-design.md:260-263` ("That holds for network failures too: if access cannot be proven, the server goes back to its previous file"); README "Verify, then prove you can still log in" (README:1470-1481, "If the probe fails, the previous file … is restored"). |
-| **D9b** | WP-5 follow-up | Should the login check also try your `--identity` key on its own, and only warn if that fails? | Yes (warn only, unrestricted key-file lines only) / No | Yes, warn only; never undoes a write. | **Yes** (2026-11-07) | Nothing documented; adds one warn-only connection in mixed-source runs (P11 removed the earlier restoring variant). |
-| **D10** | WP-6 | If the login check fails and the undo also fails, so you might be locked out, should apply exit 2 so monitoring pages you? | Yes (and retry the undo on a busy lock) / No (stay exit 1) | Yes — follows D28's meaning of exit 2 ("a human must act now on security"). | **Yes** (2026-11-07) | README "Exit codes" row 2 (README:1382, "`apply`, `revoke` and `rotate` never return `2`") and its lead "(code `2` is `audit`-only)" (README:1375-1376); `ExitCode` comment (`plan.go:588-593`); apply-json contract "written exactly when the run exits 0 or 1" (README:593). |
-| **D11** | WP-7 | (stated) What does a lock record, and who removes a stale one? | (1) Record who and when; show age and the exact removal command; never remove automatically, no flag. (2) Auto-break locks older than N. (3) A `--break-lock` flag. | (1) — today's behavior plus diagnostics; (2)/(3) overlap the on-hold `apply --force`. | **Stated default (1)** | `LockedError` text (`sshwrite.go:291-292`); README Refusals lock bullet (README:1443-1446) gains the owner, age and command, and still says removal is by hand. |
-| **D12** | WP-2 | (stated) How is a write protected when the client loses the connection or is interrupted? | (1) No server-side watchdog; a notice on the first Ctrl-C; after a broken connection, reconnect, re-check under the lock, then probe or report. (2) A detached server-side watchdog that rolls back unless confirmed. | (1) — (2) goes against the agentless design. | **Stated default (1)** | README "One guarded write per server" (README:1453-1455, "a dropped connection leaves the original untouched" — made true again by the re-check, or replaced by an honest "unknown state"); README "Ctrl-C / SIGTERM" (README:777-784) gains the notice; README "Container usage" (README:1363-1371) gains a grace-period note. |
-| **D13** | WP-8 | (stated) Which backups survive? | (1) A moved-aside `authorized_keys2` gets a name that is never overwritten; `authorized_keys` is not rewritten (so `.bak` is not rotated) when its bytes already match. (2) Keep today. | (1) — restores what README already promises about `.bak`. | **Stated default (1)** | `disableKeys2Cmd` doc and `rm -f "$s"` (`sshwrite.go:239-247`, "replacing an older disabled copy"); README "`authorized_keys2`" (README:1462-1468) and "Backups" (README:1457-1460). |
+**Reverses** names the documented decision or text the answer overturns. **README sections
+it changes** names each section by its heading, with its line at `ee14c4d`, for the
+recommended (or chosen) answer, and then what changes instead under the other options.
+P08-impl's integrator updates exactly these sections in the same commit, with sample
+output copied from the goldens.
+
+| ID | Finding | Question | Options | Recommendation | Owner choice | Reverses | README sections it changes |
+|---|---|---|---|---|---|---|---|
+| **D9** | WP-1 | If the login check after a write can't even log in because of the network (the server never answered), should SSHepherd undo the write? | (1) Retry a few times; if it still can't log in, keep the new file and report UNPROVEN (exit 1). Anything that goes wrong after login (a forced command, a hang) still undoes the write. (2) Retry, then undo. (3) Keep today: undo on any failure. | (1) — undoing can put a revoked key back. | **(1)** (2026-11-07) | review-hardening spec `2026-10-16-review-hardening-design.md:260-263` ("That holds for network failures too: if access cannot be proven, the server goes back to its previous file"); README "Verify, then prove you can still log in" (README:1470-1481, "If the probe fails, the previous file … is restored"). | **Safety model → Verify, then prove you can still log in** (l.1470): the stage-sorted verdicts, the retries, the 15 s probe deadline, UNPROVEN (file kept), and the FAILED line naming the removed keys a rollback put back; **Exit codes** (l.1373): row 1 for `apply`, `revoke` and `rotate` gains "unproven"; **`sshepherd apply` → JSON** (l.588): `outcome` gains `unproven`, `summary` gains its count, and an unproven server's `error_kind` is the last probe failure's; **`sshepherd apply` summary sample** (l.768): an UNPROVEN example. Under (2): only Verify (retries, then restore); no new outcome or exit row. Under (3): none. |
+| **D9b** | WP-5 follow-up | Should the login check also try your `--identity` key on its own, and only warn if that fails? | Yes (warn only, unrestricted key-file lines only) / No | Yes, warn only; never undoes a write. | **Yes** (2026-11-07) | Nothing documented (P11 removed the earlier restoring variant). | **Safety model → Verify, then prove you can still log in** (l.1470): the warn-only headless proof (one extra connection, mixed-source runs only) and its stderr line `<server>: warning: your --identity key <path> could not log in on its own (…); a headless run with only that key would fail`. JSON: nothing under D9c's default. Under No: none. |
+| **D10** | WP-6 | If the login check fails and the undo also fails, so you might be locked out, should apply exit 2 so monitoring pages you? | Yes (and retry the undo on a busy lock) / No (stay exit 1) | Yes — follows D28's meaning of exit 2 ("a human must act now on security"). | **Yes** (2026-11-07) | README "Exit codes" row 2 (README:1382, "`apply`, `revoke` and `rotate` never return `2`") and its lead "(code `2` is `audit`-only)" (README:1375-1376); `ExitCode` comment (`plan.go:588-593`); apply-json contract "written exactly when the run exits 0 or 1" (README:593). | **Exit codes** (l.1373): the lead "(code `2` is `audit`-only)" goes and row 2 gains `apply`, `revoke` and `rotate`: "lockout not restored"; **`sshepherd apply` → JSON** (l.588): `outcome` gains `lockout_unrestored`, `summary` gains its count, "written exactly when the run exits `0` or `1`" becomes "0, 1 or 2", and the open-enum rule; **Safety model → Verify, then prove you can still log in** (l.1470): the restore retry on a busy lock and exit 2 for an unrestored lockout; **`sshepherd apply` summary sample** (l.768): a `LOCKOUT — NOT RESTORED` example. Under No: none of these; the unrestored lockout stays a FAILED line at exit 1. |
+| **D10a** | WP-1 (open point 1) | When a failed login check undoes a write and the restored file grants again a key the manifest has revoked, should apply exit 2 at once, or exit 1 and leave the page to the next audit? | (1) Exit 1; the FAILED line names each key the rollback put back (label and fingerprint), and the next audit reports a reinstalled revoked key as critical (D2, P04). (2) Exit 2 at once when a restored file grants a key on the manifest's `revoked:` list (D28: "a human must act now on security"). | (1) — apply's exit 2 keeps one meaning ("you may be locked out"), the rollback is the step that kept you able to log in, and the FAILED line already names the keys. Against it: the page waits for the next scheduled audit, so a fleet audited daily may carry the revoked key for up to a day; (2) pages at once. | **pending** (default (1) until answered) | Under (2): README "Exit codes" row 2's audit-only scope, beyond D10. | **Safety model → Verify, then prove you can still log in** (l.1470): the FAILED line names the reinstalled keys (under D9 already). Under (2), in addition: **Exit codes** (l.1373): row 2 for `apply`, `revoke` and `rotate` also covers "a rollback put back a revoked key"; **`sshepherd apply` → JSON** (l.588): a `failed` server can come with exit 2 (its `error` names the keys); **`sshepherd apply` summary sample** (l.768): its example ends `→ exit 2`. |
+| **D10b** | WP-1 (open point 2) | If the login check right after a write meets a host-key alarm (the server's host key changed or is `@revoked`), should apply exit 2 the way audit does, or report UNPROVEN at exit 1? | (1) UNPROVEN, exit 1, no retry, file kept; the line names the alarm. (2) Exit 2 for the host-key kinds audit exits 2 on (`host_key_changed`, `host_key_revoked`, and `host_key_type_changed` if P09's D16 adds it), UNPROVEN at exit 1 for the other host-key kinds. | (1) — apply's exit 2 stays the unrestored lockout, and the next audit exits 2 on the same alarm. Against it: the server changed identity seconds after a write, which is exactly what audit pages on (README "Exit codes" row 2); under (1) a scheduled apply alone does not page. | **pending** (default (1) until answered) | Under (2): README "Exit codes" row 2's audit-only host-key clause. | **Safety model → Verify, then prove you can still log in** (l.1470): the host-key UNPROVEN line (under D9 already); **Exit codes** (l.1373): row 1's "unproven" (under D9 already). Under (2), in addition: **Exit codes** (l.1373): row 2's host-key clause ("a server whose host key changed or is `@revoked`") applies to `apply`, `revoke` and `rotate` too; **`sshepherd apply` → JSON** (l.588): an `unproven` server whose `error_kind` is one of those kinds means exit 2. |
+| **D9c** | WP-5 follow-up (open point 3) | When D9b's extra login check with only your `--identity` key fails, should `--json` output carry the warning too, or only stderr? | (1) Stderr only; no JSON field. (2) An additive per-server `warnings` array in the apply JSON (schema stays 1, omitted when empty). | (1) — D9b only runs when an agent key is first in the offer order, which is mostly an interactive run where stderr is read, and under `--json` logs stay on stderr, so a CI log still shows the line. Against it: a script that reads only the JSON never sees the warning; (2) lets it act on it. | **pending** (default (1) until answered) | Nothing documented. | **Safety model → Verify, then prove you can still log in** (l.1470): the warning is stderr only (under D9b already). Under (2), in addition: **`sshepherd apply` → JSON** (l.588): the per-server `warnings` array and when it appears. |
+| **D11** | WP-7 | (stated) What does a lock record, and who removes a stale one? | (1) Record who and when; show age and the exact removal command; never remove automatically, no flag. (2) Auto-break locks older than N. (3) A `--break-lock` flag. | (1) — today's behavior plus diagnostics; (2)/(3) overlap the on-hold `apply --force`. | **Stated default (1)** | `LockedError` text (`sshwrite.go:291-292`). | **Safety model → Refusals** lock bullet (l.1443): the owner, age and removal command; removal stays by hand only; **Safety model → Verify, then prove you can still log in** (l.1470): a restore refused by a busy lock names the same owner and age. |
+| **D12** | WP-2 | (stated) How is a write protected when the client loses the connection or is interrupted? | (1) No server-side watchdog; a notice on the first Ctrl-C; after a broken connection, reconnect, re-check under the lock, then probe or report. With D10 = yes this adds two exit-2 (`lockout_unrestored`) cases: the reconnect after the upload started is refused with an auth error, or a restore whose connection dropped cannot be retried over the one reconnect (section 4). (2) A detached server-side watchdog that rolls back unless confirmed. | (1) — (2) goes against the agentless design. | **Stated default (1)** | README "One guarded write per server" (README:1453-1455, "a dropped connection leaves the original untouched" — made true again by the re-check, or replaced by an honest "unknown state"). | **Safety model → One guarded write per server** (l.1448): the re-check under the lock and its outcomes, including the refused reconnect (exit 2); **Ctrl-C / SIGTERM** (l.777): the first-signal notice; **Container usage** (l.1363): the grace-period note; **Exit codes** (l.1373): row 2's "lockout not restored" also covers the refused reconnect and the restore that could not be retried; **Safety model → Verify, then prove you can still log in** (l.1470): a restore over a dropped connection is retried over one reconnect, and its failure is a lockout not restored. |
+| **D13** | WP-8 | (stated) Which backups survive? | (1) A moved-aside `authorized_keys2` gets a name that is never overwritten; `authorized_keys` is not rewritten (so `.bak` is not rotated) when its bytes already match. (2) Keep today. | (1) — restores what README already promises about `.bak`. | **Stated default (1)** | `disableKeys2Cmd` doc and `rm -f "$s"` (`sshwrite.go:239-247`, "replacing an older disabled copy"). | **Safety model → `authorized_keys2`** (l.1462): copies are never overwritten, the timestamped name, copies accumulate; **Safety model → Backups** (l.1457): `.bak` is not rotated when `authorized_keys` already matches. |
 
 Ask order was D9 → D9b → D10; D10's meaning depends on D9 (with D9 = (1), an unrestored
 lockout can only follow a REJECTED login check or a refused reconnect) and on D28 (Block 1,
 answered: exit 2 means "a human must act now on security" for every command, one shared
-README table).
+README table). The pending questions follow in the order **D10a → D10b → D9c**: the two
+exit-code questions first, both read against D10 and D28.
 
 ## Design
 
@@ -125,7 +141,7 @@ output). A failure inside `ConnectWith` carries its kind; a failure after it is 
 | Stage of the failure | Examples (kind / site) | Verdict | Action |
 |---|---|---|---|
 | **Before auth finished:** dial, kex/handshake, agent, timeout during dial or handshake | `dial`, `handshake` (MaxStartups, `kex_exchange_identification`), `agent` (a `Signers` failure, `connect.go:152`), `timeout` (`handshakeKind`, `errors.go:46-52`) | **TRANSIENT** | Retry with backoff; when the retries run out, **UNPROVEN** (file and disabled keys2 kept). |
-| **Before auth finished:** host-key alarm on the probe dial | `host_key_unknown`, `host_key_changed`, `host_key_type_unrecorded`, `host_key_revoked`, `host_key` (`internal/sshconn/hostkey.go`) | **TRANSIENT, flagged** | **No retry** (the answer will not change). UNPROVEN at once; the message names the host-key alarm. Proving access through an impostor proves nothing, so the file is kept. |
+| **Before auth finished:** host-key alarm on the probe dial | `host_key_unknown`, `host_key_changed`, `host_key_type_unrecorded`, `host_key_revoked`, `host_key` (`internal/sshconn/hostkey.go`) | **TRANSIENT, flagged** | **No retry** (the answer will not change). UNPROVEN at once; the message names the host-key alarm. Proving access through an impostor proves nothing, so the file is kept. Exit 1 by default; whether a changed or `@revoked` host key exits 2 is owner question D10b. |
 | **Auth refused** | `auth` ("unable to authenticate": a `from=` miss, an algorithm sshd refuses, a key not accepted) | **REJECTED** | Restore now (today's path). |
 | **After auth succeeded** | session channel refused (`*ssh.OpenChannelError`), exec failed, `*ssh.ExitMissingError` (channel closed with no exit status), EOF, the **probe-exec deadline** while waiting for the output, exit ≠ 0, or output ≠ `sshepherd-probe-ok\n` (a forced `command=`, `rrsync`/`internal-sftp`-style commands that wait on stdin, `command="sleep 3600"`) | **REJECTED** | Restore. A key that logs in but cannot run SSHepherd's command captures every later session. |
 | Unclassifiable (`unknown`, or `canceled`, which cannot normally occur under the detached context) | — | **REJECTED** if the stage is `stageAuthed`; **TRANSIENT** if it is `stageDial` | There is no "unknown is safe" rule; the stage decides. |
@@ -189,7 +205,7 @@ back the keys in the plan's `Remove` list. The FAILED line then names them, each
 plan's `-` rows name it (label and fingerprint), e.g.
 `web-1: FAILED: lockout prevented — restored previous file (…); it still grants alice (SHA256:…), which the manifest removed — fix the surviving key and re-run`.
 Exit stays 1 here; the next audit reports a revoked key as critical (D2, P04 spec). Whether
-apply itself should exit 2 in that case is open point 1.
+apply itself should exit 2 in that case is owner question D10a (default: exit 1).
 
 ### 2. Unrestored lockout (D10, WP-6)
 
@@ -357,7 +373,7 @@ file. With D9b = yes:
 
   `web-1: warning: your --identity key /k/ci could not log in on its own (ssh: unable to authenticate); a headless run with only that key would fail`
 
-  The outcome stays `applied`; no JSON field (spec-author default, open point 3).
+  The outcome stays `applied`; no JSON field (owner question D9c, default: stderr only).
 - **Cost:** one extra connection per written server, in mixed-source runs only. Against
   WP-1's rate-limit evidence (`--hitcount 4 --seconds 60`, `MaxStartups`): today a written
   server already sees 3 connections in a run (the phase-1 read, the write, the probe); the
@@ -390,7 +406,11 @@ rewrites README "Exit codes" from that table.
 | Code | apply | revoke / rotate |
 |---|---|---|
 | 1 | **unproven** (written and verified, login check never got past authentication) | the same |
-| 2 | **lockout not restored** (`lockout_unrestored`) | the same |
+| 2 | **lockout not restored** (`lockout_unrestored`: the restore after a REJECTED login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused) | the same |
+
+Under D10a's alternative, row 2 also gains "a rollback put back a revoked key"; under D10b's
+alternative, an unproven server stopped by a changed or `@revoked` host key moves from row 1
+to row 2. With the defaults, neither row changes.
 
 JSON: `outcome` enum + `unproven`, `lockout_unrestored`; `summary` + `unproven`,
 `lockout_unrestored`; `schema` stays 1 with the open-enum rule; a document is written on
@@ -399,27 +419,34 @@ exit 0, 1 or 2; `error_kind` on an unproven server is the last probe failure's k
 ## README sections this changes (applied by P08-impl, never before)
 
 Found by heading; line numbers as of `ee14c4d`. Samples are copied from the new goldens.
+This is the union of the decisions table's **README sections it changes** column for the
+recommended answers; an owner answer that picks an alternative (D10a, D10b, D9c) adds the
+sections that column names for it.
 
 - **Exit codes** (README:1373-1383): the lead "(code `2` is `audit`-only)" and the row-2
   text "`apply`, `revoke` and `rotate` never return `2`" go; rows come from the shared table
-  (apply/revoke/rotate 1: unproven; 2: lockout not restored).
+  (apply/revoke/rotate 1: unproven; 2: lockout not restored, including the refused
+  reconnect and the restore that could not be retried over a reconnect).
 - **`sshepherd apply` → JSON** (README:588-600): the outcome list gains `unproven` and
   `lockout_unrestored`; "written exactly when the run exits `0` or `1`" becomes "0, 1 or 2";
-  the open-enum rule.
+  the open-enum rule. (D9c's alternative adds the per-server `warnings` array.)
 - **`sshepherd apply` summary sample** (README:768-775): re-copied from `summary_*.golden`,
   plus an UNPROVEN and a LOCKOUT — NOT RESTORED example.
 - **Ctrl-C / SIGTERM** (README:777-784): the first-signal notice.
 - **Safety model → Refusals** lock bullet (README:1443-1446): owner, age and the removal
   command; still removed by hand only.
 - **Safety model → One guarded write per server** (README:1448-1455): the dropped-connection
-  sentence becomes the re-check under the lock and its outcomes.
+  sentence becomes the re-check under the lock and its outcomes, including the refused
+  reconnect after the upload started (lockout not restored, exit 2).
 - **Safety model → Backups** (README:1457-1460): `.bak` is not rotated when
   `authorized_keys` already matches.
 - **Safety model → `authorized_keys2`** (README:1462-1468): copies are never overwritten;
   the timestamped name; copies accumulate.
 - **Safety model → Verify, then prove you can still log in** (README:1470-1481): the
-  stage-sorted verdicts, retries, UNPROVEN, the 15 s probe deadline, the restore retry on a
-  busy lock, exit 2 for an unrestored lockout, and the warn-only headless proof.
+  stage-sorted verdicts, retries, UNPROVEN, the 15 s probe deadline, the FAILED line naming
+  removed keys a rollback put back, the restore retry on a busy lock (naming the lock's
+  owner and age), a restore over a dropped connection retried over one reconnect, exit 2
+  for an unrestored lockout, and the warn-only headless proof with its stderr line.
 - **Container usage** (README:1363-1371): `docker stop -t 150` /
   `terminationGracePeriodSeconds: 150`.
 - **CLAUDE.md Status** paragraph: one sentence for the landed slice.
@@ -539,14 +566,11 @@ types above in the plan before the agents fork.
 
 ## Open points for spec approval
 
-1. **A rollback that reinstalls a removed (revoked) key:** this spec keeps exit 1 and names
-   the keys on the FAILED line; the next audit pages (D2). Alternative under D28: exit 2 at
-   once when a restored file grants a key on the manifest's `revoked:` list. Default: exit 1.
-2. **A host-key alarm on the probe:** UNPROVEN, exit 1, no retry. Alternative under
-   D28/D16: exit 2, since the server changed identity seconds after the write. Default:
-   exit 1 (apply's exit 2 stays the unrestored lockout; audit reports the alarm as 2).
-3. **The D9b warning in JSON:** stderr only by default. Alternative: an additive per-server
-   `warnings` array.
+None remain. The first draft's three open points each changed an exit code or the JSON
+contract, so they are now owner questions in the Decisions table: **D10a** (was 1: a
+rollback that reinstalls a revoked key), **D10b** (was 2: a host-key alarm on the probe)
+and **D9c** (was 3: the D9b warning in JSON). Each keeps its stated default until it is
+answered.
 
 ## Out of scope
 
@@ -554,6 +578,6 @@ types above in the plan before the agents fork.
   on refusal), WP-10 (keys2 path spelling): P11.
 - Re-deciding on-hold items: no automatic lock breaking, no `--break-lock`/`--force`, no
   empty-server or wipe change.
-- How loud a rollback that reinstalls a revoked key is beyond naming the keys (open point
-  1; D2 belongs to P04).
+- How loud a rollback that reinstalls a revoked key is beyond naming the keys and D10a's
+  exit code (D2 belongs to P04).
 - A configurable session budget or retry flags.
