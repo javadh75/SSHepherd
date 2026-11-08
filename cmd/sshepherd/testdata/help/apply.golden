@@ -31,8 +31,9 @@ Exit codes:
   2  a human must act now: a lockout not restored (the restore after a
      rejected login check failed, or the reconnect after the upload started
      was refused), a rollback that put back a key on the revoked: list, a
-     changed or @revoked host key at the post-write login check, or
-     revoke/rotate --sweep found a revoked key still installed
+     changed or @revoked host key or a changed host key type at the
+     post-write login check, or revoke/rotate --sweep found a revoked key
+     still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict or add a weak key, a failed serial
      save, or refused before anything was saved or written
@@ -61,6 +62,7 @@ Flags:
       --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
       --json                            emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
       --parallel int                    max concurrent server connections (default 32)
       --server stringArray              restrict the run to this server (repeatable; canary rollout)
       --yes                             skip the confirmation prompt (automation)

@@ -24,8 +24,9 @@ Exit codes:
   2  a human must act now: a lockout not restored (the restore after a
      rejected login check failed, or the reconnect after the upload started
      was refused), a rollback that put back a key on the revoked: list, a
-     changed or @revoked host key at the post-write login check, or
-     revoke/rotate --sweep found a revoked key still installed
+     changed or @revoked host key or a changed host key type at the
+     post-write login check, or revoke/rotate --sweep found a revoked key
+     still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict or add a weak key, a failed serial
      save, or refused before anything was saved or written
@@ -57,6 +58,7 @@ Flags:
       --key KEY                         KEY to revoke: a SHA256: fingerprint, a public-key line, or a .pub file path (repeatable)
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
       --no-apply                        edit and save the manifest after confirmation; contact no server
+      --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
       --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
       --parallel int                    max concurrent server connections (default 32)
       --reason string                   free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)

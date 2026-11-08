@@ -199,8 +199,9 @@ const exitCodesAudit = `Exit codes:
   1  drift or unreachable servers (compliance not proven), including a server
      written by a newer manifest serial and a key installed where its access
      was revoked
-  2  critical: a missing operator key, a changed or @revoked host key, a
-     revoked key still installed, a forged header serial, or a policy
+  2  critical: a missing operator key or one that cannot log in, a changed or
+     @revoked host key or a changed host key type, a world-writable managed
+     path, a revoked key still installed, a forged header serial, or a policy
      conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted`
 
@@ -216,8 +217,9 @@ const exitCodesWrite = `Exit codes:
   2  a human must act now: a lockout not restored (the restore after a
      rejected login check failed, or the reconnect after the upload started
      was refused), a rollback that put back a key on the revoked: list, a
-     changed or @revoked host key at the post-write login check, or
-     revoke/rotate --sweep found a revoked key still installed
+     changed or @revoked host key or a changed host key type at the
+     post-write login check, or revoke/rotate --sweep found a revoked key
+     still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict or add a weak key, a failed serial
      save, or refused before anything was saved or written`

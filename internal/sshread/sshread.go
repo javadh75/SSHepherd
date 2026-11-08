@@ -107,6 +107,9 @@ type Client struct {
 	// PreferKeys optionally names the keys to offer first per server (see
 	// sshconn.Dialer.PreferKeys) — typically audit.GrantedFingerprints.
 	PreferKeys func(srv config.Server) []string
+	// OfferAll and QuietFallback: see sshconn.Dialer.
+	OfferAll      bool
+	QuietFallback bool
 	// ReadKeys2 also reads a non-empty ~/.ssh/authorized_keys2 (with the
 	// managed read's size cap) into ReadResult.Keys2 — the post-revoke
 	// sweep's proof that a revoked key is gone from it too.
@@ -147,6 +150,8 @@ func (c *Client) getDialer() *sshconn.Dialer {
 			Creds:          c.Creds,
 			DialTimeout:    c.DialTimeout,
 			PreferKeys:     c.PreferKeys,
+			OfferAll:       c.OfferAll,
+			QuietFallback:  c.QuietFallback,
 			Log:            c.Log,
 		}
 	})

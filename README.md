@@ -491,6 +491,7 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server audits |
+| `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `--json` | off | Machine-readable report on stdout (schema 1) |
 | `--comments` | off | Also report comment drift on present keys (informational) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
@@ -589,11 +590,12 @@ Summary: 0/2 servers compliant · 2 with drift (1 critical) · 0 unreachable  �
 ```
 
 **Classified errors.** An unreachable server's line names the failure kind:
-`host_key_unknown`, `host_key_changed`, `host_key_type_unrecorded`,
+`host_key_unknown`, `host_key_changed`, `host_key_type_changed`, `host_key_type_unrecorded`,
 `host_key_revoked`, `host_key`, `agent`, `auth`, `dial`, `timeout`, `canceled`,
 `handshake` or `remote`. Unclassified errors keep a plain `ERROR:` head. A host key
 that **changed** or is marked `@revoked` in `known_hosts` (possible impersonation)
 counts as a host-key alert and makes the run exit `2`.
+`host_key_type_changed` (exit 2): `known_hosts` records a key type x/crypto can verify and the server presented a different type, or a certificate from a signer no `@cert-authority` line for this host vouches for. `host_key_type_unrecorded` (exit 1) now remains only when every recorded type is unsupported. A certificate from a vouched CA that fails validation stays `host_key` (exit 1).
 When a failure has a remediation, it prints on its own `hint:` line under the first
 server that needs it; a hint shared by many servers prints once:
 
@@ -606,7 +608,7 @@ web-2 (deploy@10.0.0.2:22)  ERROR [auth]: ssh deploy@10.0.0.2:22: ssh: unable to
 Summary: 0/2 servers compliant · 0 with drift (0 critical) · 2 unreachable (1 HOST KEY ALERT)  → exit 2
 ```
 
-For an unknown host or an unrecorded key type, the hint asks you to verify the
+For an unknown host or a changed or unrecorded key type, the hint asks you to verify the
 presented fingerprint out of band (on the console,
 `ssh-keygen -lf /etc/ssh/ssh_host_<type>_key.pub`, or the cloud console), then
 compare it with `ssh-keyscan -t <type> -p <port> '<host>' | ssh-keygen -lf -` before
@@ -936,6 +938,7 @@ A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in bot
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server reads |
+| `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `-o, --output` | stdout | Write the manifest to this file |
 | `--force` | off | Allow `--output` to overwrite an existing file |
 | `--partial` | off | Proceed even if some servers cannot be read |
@@ -1008,6 +1011,7 @@ rendered desired state.
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
+| `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `--server` | all | Restrict the run to this server (repeatable; canary rollout) |
 | `--dry-run` | off | Plan and report only; never write |
 | `--yes` | off | Skip the confirmation prompt (automation) |
@@ -1025,14 +1029,14 @@ the terminal (see [Authentication](#authentication)).
 the text report; logs stay on stderr. It needs `--dry-run` or `--yes` — a script
 cannot answer the prompt — otherwise the run exits `3` before the manifest is read:
 `--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)`.
-A document is written exactly when the run exits `0`, `1` or `2` (`2`: a lockout not restored, a rollback that put back a key on the `revoked:` list, a changed or `@revoked` host key at the login check, or a `--sweep` hit) (including an interrupt
+A document is written exactly when the run exits `0`, `1` or `2` (`2`: a lockout not restored, a rollback that put back a key on the `revoked:` list, a changed or `@revoked` host key or a changed host key type at the login check, or a `--sweep` hit) (including an interrupt
 after the plan, where unstarted servers are `pending` with `"error_kind":
 "canceled"`); exit-`3` tool errors print no document. A write that fails after the
 plan carries `error_kind` when the transport classified the failure (for example
 `host_key_changed` when the host key changed between plan and write, `auth`,
 `timeout`); refusals and verify failures carry none. Each server carries its
 `class` (`converged`, `change`, `refused`, `unreachable`), its `outcome` (`applied`,
-`refused`, `failed`, `pending` for a `change` server, `unproven` (written and verified, login not proven; its `error_kind` is the last login failure's, and one of `host_key_changed`, `host_key_revoked` means exit 2), `lockout_unrestored`, `null` otherwise — always
+`refused`, `failed`, `pending` for a `change` server, `unproven` (written and verified, login not proven; its `error_kind` is the last login failure's, and one of `host_key_changed`, `host_key_revoked`, `host_key_type_changed` means exit 2), `lockout_unrestored`, `null` otherwise — always
 `pending` under `--dry-run`), its `error`, and its `changes` (`add`, `remove`,
 `rewrite` with `loosens` naming dropped restrictive options verbatim and `widens`
 naming the relaxing options it adds (`[]` when none), `normalize`).
@@ -1349,6 +1353,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
+| `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `--dry-run` | off | Plan and report only; never write (the manifest is not changed) |
 | `--yes` | off | Skip the confirmation prompt (automation) |
 | `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
@@ -1469,11 +1474,11 @@ exits `1` without a prompt. `--dry-run` saves nothing and exits exactly as
 servers left unconverged (failed,
 refused for a fixable reason, unreachable, interrupted) are named in a ready-made
 `sshepherd apply --server …` command. Follow-up hints repeat the run's own
-`--config`, `--known-hosts` and `--identity*` flags (paths only), so they can be
+`--config`, `--known-hosts`, `--identity*` (paths only) and `--offer-all-keys` flags, so they can be
 pasted as is; `--no-apply` hints leave out servers that would be emptied.
 
 **`--no-apply`** shows the header, asks, saves, and contacts nothing; it refuses
-`--identity*`, `--known-hosts` and `--parallel` (they would be silently unused).
+`--identity*`, `--known-hosts`, `--parallel` and `--offer-all-keys` (they would be silently unused).
 `--dry-run --no-apply` prints the header (and the `check every server:` line when a
 key is removed).
 
@@ -1703,6 +1708,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server connections |
+| `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `--dry-run` | off | Plan and report only; never write (the manifest is not changed) |
 | `--yes` | off | Skip the confirmation prompt (automation) |
 | `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
@@ -2021,6 +2027,12 @@ refused (`permissions … are too open`); a file the uid cannot read at all fail
 
 SIGKILL cannot be handled, so give a write time to finish: `docker stop -t 150`, or Kubernetes `terminationGracePeriodSeconds: 150`, more than the 2-minute session budget.
 
+### Key offering
+
+Each server is offered only the keys the manifest grants there (plus operator keys), so a managed server never learns the rest of your keys. A held key that matches through a certificate's key or its CA counts as granted.
+
+If you hold none of the keys granted on a server (normal right after `import --servers-only`), every loaded key is offered with one warning. Before any connection, a run warns once when no loaded key is granted on any target server and silences the per-server line. The fallback is about what you **hold**, not what the server has installed: a key granted and held but not yet installed (a new VM with only its cloud-init key, or a key changed by hand in the manifest) fails with `auth`, and the report's hint names `--offer-all-keys`. There is no automatic retry, because that would hand every held key to any server that refuses the granted ones. Bootstrap: `sshepherd apply --server NAME --offer-all-keys`.
+
 ## Exit codes
 
 Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
@@ -2030,7 +2042,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator key, a host key that **changed** or is `@revoked` in `known_hosts` (possible impersonation), a revoked key still installed, a policy conflict, a forged header serial | **Lockout not restored** (`lockout_unrestored`: the restore after a rejected login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
+| `2` | **Critical**: a missing operator key or an operator key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: the restore after a rejected login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 `--help` shows this summary. `audit --help`:
@@ -2041,8 +2053,9 @@ Exit codes:
   1  drift or unreachable servers (compliance not proven), including a server
      written by a newer manifest serial and a key installed where its access
      was revoked
-  2  critical: a missing operator key, a changed or @revoked host key, a
-     revoked key still installed, a forged header serial, or a policy
+  2  critical: a missing operator key or one that cannot log in, a changed or
+     @revoked host key or a changed host key type, a world-writable managed
+     path, a revoked key still installed, a forged header serial, or a policy
      conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted
 ```
@@ -2062,8 +2075,9 @@ Exit codes:
   2  a human must act now: a lockout not restored (the restore after a
      rejected login check failed, or the reconnect after the upload started
      was refused), a rollback that put back a key on the revoked: list, a
-     changed or @revoked host key at the post-write login check, or
-     revoke/rotate --sweep found a revoked key still installed
+     changed or @revoked host key or a changed host key type at the
+     post-write login check, or revoke/rotate --sweep found a revoked key
+     still installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict or add a weak key, a failed serial
      save, or refused before anything was saved or written
@@ -2260,15 +2274,17 @@ connection offering only the surviving keys you hold**, in exactly the order eve
 later connection offers them (see Connection posture), so the probe proves the key
 the next run logs in with; it no longer prefers `--identity` key files over agent
 keys. It runs a probe command over it, so a surviving key whose line forces a `command=` fails
-the probe just like a refused login. The check is sorted by how far it got. A login that never finished authentication proves nothing about the server: a dial or handshake failure is retried (up to 4 attempts, waits 0/2/5/10 s, all inside the 2-minute session budget), a locked or emptied agent once, and a host-key alarm not at all; then the new file is **kept** and the server reports `UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (…) — kept the new file; run sshepherd audit to confirm`, because undoing could reinstall a key the manifest removed. That is exit `1`, except that a login check stopped by a changed or `@revoked` host key is exit `2`. A login that was refused (every surviving key you hold offered and refused, or `MaxAuthTries`), or anything that goes wrong after it succeeded (a forced `command=`, a session that will not open, a probe command that hangs past 15 s), restores the previous file (and a disabled `authorized_keys2`) over the still-open session: `lockout prevented — restored previous file (…)`. The restore takes the lock again, waits out a busy lock (1, 3 and 6 s, naming the lock's owner and age if it never frees) and refuses to replace a file that changed since this apply wrote it (a concurrent apply); over a dropped connection it is retried once over a fresh login, and a retry that finds the previous file already back counts as restored. If the restore fails or is refused, the message says so and names the `.bak` path. A restore that fails or is refused is reported `LOCKOUT — NOT RESTORED:` and is exit `2`. A rollback puts back the keys the plan removed; the `FAILED:` line names each one and marks those on the manifest's `revoked:` list, and a key on that list makes it exit `2`. In a run that mixes agent and `--identity` keys, after a passing login check one more login offers only the unrestricted key files; a failure there never undoes the write and only warns, on stderr as `warn: web-1: your --identity key /k/ci could not log in on its own (…); a headless run with only that key would fail` and in the JSON `warnings` array.
+the probe just like a refused login. The check is sorted by how far it got. A login that never finished authentication proves nothing about the server: a dial or handshake failure is retried (up to 4 attempts, waits 0/2/5/10 s, all inside the 2-minute session budget), a locked or emptied agent once, and a host-key alarm not at all; then the new file is **kept** and the server reports `UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (…) — kept the new file; run sshepherd audit to confirm`, because undoing could reinstall a key the manifest removed. That is exit `1`, except that a login check stopped by a changed or `@revoked` host key, or a changed host key type, is exit `2`. A login that was refused (every surviving key you hold offered and refused, or `MaxAuthTries`), or anything that goes wrong after it succeeded (a forced `command=`, a session that will not open, a probe command that hangs past 15 s), restores the previous file (and a disabled `authorized_keys2`) over the still-open session: `lockout prevented — restored previous file (…)`. The restore takes the lock again, waits out a busy lock (1, 3 and 6 s, naming the lock's owner and age if it never frees) and refuses to replace a file that changed since this apply wrote it (a concurrent apply); over a dropped connection it is retried once over a fresh login, and a retry that finds the previous file already back counts as restored. If the restore fails or is refused, the message says so and names the `.bak` path. A restore that fails or is refused is reported `LOCKOUT — NOT RESTORED:` and is exit `2`. A rollback puts back the keys the plan removed; the `FAILED:` line names each one and marks those on the manifest's `revoked:` list, and a key on that list makes it exit `2`. In a run that mixes agent and `--identity` keys, after a passing login check one more login offers only the unrestricted key files; a failure there never undoes the write and only warns, on stderr as `warn: web-1: your --identity key /k/ci could not log in on its own (…); a headless run with only that key would fail` and in the JSON `warnings` array.
 
 **Connection posture.** Key files and/or agent (see
 [Authentication](#authentication)), strict `known_hosts` with no TOFU, per-server and dial timeouts, and bounded fan-out (`--parallel`, default 32,
 tuned from the fan-out benchmarks). `known_hosts` is parsed once per run. Host-key
 algorithms are negotiated in the order `known_hosts` implies, so a host with an sshd
 `HostCertificate` still works when its plain key is pinned; certificate algorithms
-are offered only when a matching `@cert-authority` line exists. Keys granted on the
-server are offered first, to avoid sshd `MaxAuthTries` lockouts with many held keys,
+are offered only when a matching `@cert-authority` line exists. A host that no longer
+presents any recorded key type fails as `host_key_type_changed` (exit `2`). Only the
+keys granted on the server are offered (see [Key offering](#key-offering)), which
+also avoids sshd `MaxAuthTries` lockouts with many held keys,
 in one order shared by audit, adopt, apply and the post-write probe: plain lines
 first, then lines that may reject the login (`from=`, `expiry-time=`, `restrict`),
 then forced `command=` lines, then certificate-only lines (`cert-authority`,

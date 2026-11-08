@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -34,14 +35,19 @@ type Dialer struct {
 	// nothing: every connect fails with ErrorKindAgent.
 	Creds       *Credentials
 	DialTimeout time.Duration
-	// PreferKeys optionally returns the fingerprints to offer first when
-	// connecting to srv — the keys the manifest grants there, operators
-	// first (audit.GrantedFingerprints). Remaining keys follow in
-	// Credentials.Signers order (key files, then the agent). Without it a
-	// many-key union is offered in that order, and sshd's MaxAuthTries
-	// (default 6) can disconnect before the granted key is tried.
+	// PreferKeys optionally returns the keys the manifest grants on srv
+	// (audit.GrantedFingerprints), in offer order. Only those of the held
+	// keys are offered, so a server never learns a key it was not granted
+	// (D17); when the run holds none of them, every held key is offered
+	// with a warning. Without it, nothing is granted: the fallback applies.
 	PreferKeys func(srv config.Server) []string
-	Log        *slog.Logger // optional stage-level telemetry; nil discards
+	// OfferAll is --offer-all-keys: offer the granted keys first, then every
+	// other held key, with no restriction.
+	OfferAll bool
+	// QuietFallback drops the per-server fallback warning to debug level,
+	// after a preflight that already warned once for the whole run.
+	QuietFallback bool
+	Log           *slog.Logger // optional stage-level telemetry; nil discards
 
 	khOnce sync.Once
 	kh     *KnownHosts
@@ -50,8 +56,8 @@ type Dialer struct {
 
 // ConnectOptions tunes one connection's key offering.
 type ConnectOptions struct {
-	// Prefer lists fingerprints to offer first, in order; nil falls back to
-	// Dialer.PreferKeys(srv).
+	// Prefer lists the granted fingerprints, in offer order; nil falls back
+	// to Dialer.PreferKeys(srv).
 	Prefer []string
 	// Only, when non-empty, offers exactly the held keys (key files or
 	// agent) with these fingerprints (in this order) and nothing else — the
@@ -182,7 +188,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	cb := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := kh.callback(hostname, remote, key)
 		if err != nil {
-			err = hostKeyHint(err, key, srv, kh.Path)
+			err = hostKeyHint(err, key, srv, kh)
 		} else {
 			log.Debug("host key verified", "server", srv.Name)
 		}
@@ -190,17 +196,13 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 		return err
 	}
 
-	prefer, only := opts.Prefer, opts.Only
-	if prefer == nil && d.PreferKeys != nil {
-		prefer = d.PreferKeys(srv)
-	}
-	rec := &sessionKey{}
-	ordered := orderSigners(signers, prefer, only)
-	if err := emptyOffer(opts, ordered); err != nil {
+	offer := d.offerFor(srv, signers, opts)
+	if err := emptyOffer(opts, offer.signers); err != nil {
 		return nil, err
 	}
-	missing := notOffered(only, ordered)
-	offered := wrapSigners(ordered, rec)
+	missing := notOffered(opts.Only, offer.signers)
+	rec := &sessionKey{}
+	offered := wrapSigners(offer.signers, rec)
 	auth := ssh.PublicKeysCallback(func() ([]ssh.Signer, error) { return offered, nil })
 
 	dialer := net.Dialer{Timeout: d.DialTimeout}
@@ -226,7 +228,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	})
 	if err != nil {
 		_ = conn.Close()
-		return nil, dialFacts{user: srv.User, addr: addr, hk: hk, rec: rec, asked: len(only), missing: missing}.failure(ctx, err)
+		return nil, dialFacts{user: srv.User, addr: addr, hk: hk, rec: rec, asked: len(opts.Only), missing: missing, offer: offer}.failure(ctx, err)
 	}
 	if !stopCancel() {
 		// ctx ended exactly as the handshake completed: the socket is closed.
@@ -268,6 +270,7 @@ type dialFacts struct {
 	rec        *sessionKey
 	asked      int // len(ConnectOptions.Only)
 	missing    int // how many of those fingerprints were not offered
+	offer      offering
 }
 
 // failure classifies a failed ssh.NewClientConn. An incomplete Only offer
@@ -288,7 +291,7 @@ func (f dialFacts) failure(ctx context.Context, err error) error {
 	case kind == fleet.ErrorKindHandshake && f.rec.signFailed():
 		return classify(fleet.ErrorKindAgent, wrapped)
 	}
-	return &Error{Kind: kind, Err: wrapped, AuthExhausted: exhausted}
+	return &Error{Kind: kind, Err: wrapped, Hint: f.offer.authHint(kind), AuthExhausted: exhausted}
 }
 
 // remoteText bounds server-controlled transport text (disconnect reasons,
@@ -328,33 +331,116 @@ func dialErr(addr string, err error) error {
 	return fmt.Errorf("dial %s: %w", addr, err)
 }
 
-// orderSigners applies the per-connection key offering: with only set,
-// exactly those keys in that order; otherwise prefer's keys first (in
-// prefer order), then every other key in Signers order (key files before
-// agent keys). Fingerprints nobody holds are skipped.
-func orderSigners(signers []ssh.Signer, prefer, only []string) []ssh.Signer {
+// offering is one connection's key offer.
+type offering struct {
+	signers  []ssh.Signer
+	withheld int  // held keys the restricted offer left out
+	fellBack bool // no granted key is held, so every held key is offered
+}
+
+// offerFor resolves the keys this connection offers and logs a fallback.
+func (d *Dialer) offerFor(srv config.Server, signers []ssh.Signer, opts ConnectOptions) offering {
+	prefer := opts.Prefer
+	if prefer == nil && d.PreferKeys != nil {
+		prefer = d.PreferKeys(srv)
+	}
+	offer := orderSigners(signers, prefer, opts.Only, d.OfferAll)
+	if offer.fellBack {
+		msg := fmt.Sprintf("%s: none of the keys granted here are loaded; offering all %s", srv.Name, heldKeys(len(signers)))
+		if d.QuietFallback {
+			d.log().Debug(msg)
+		} else {
+			d.log().Warn(msg)
+		}
+	}
+	return offer
+}
+
+// authHint is the remediation for a server that refused the granted keys
+// while other held keys were withheld. The offer is never widened by
+// itself: a retry would hand every held key to any server that refuses the
+// granted ones, which is what the restricted offer prevents.
+func (o offering) authHint(kind fleet.ErrorKind) string {
+	if kind != fleet.ErrorKindAuth || o.withheld == 0 {
+		return ""
+	}
+	keys := fmt.Sprintf("%d other loaded key was", o.withheld)
+	if o.withheld > 1 {
+		keys = fmt.Sprintf("%d other loaded keys were", o.withheld)
+	}
+	return "none of the keys the manifest grants here were accepted; " + keys +
+		" not offered — if one of them still logs in here, re-run with --offer-all-keys (this server then sees every loaded key)"
+}
+
+func heldKeys(n int) string {
+	if n == 1 {
+		return "1 held key"
+	}
+	return fmt.Sprintf("%d held keys", n)
+}
+
+// GrantIndex is the offering's one matcher: pub's position in granted, or
+// -1 when it is not granted. A certificate's fingerprint is not its key's,
+// so a certificate matches through its key or through its CA (a manifest
+// cert-authority line grants the signer).
+func GrantIndex(pub ssh.PublicKey, granted []string) int {
+	fps := []string{ssh.FingerprintSHA256(pub)}
+	if cert, ok := pub.(*ssh.Certificate); ok {
+		fps = append(fps, ssh.FingerprintSHA256(cert.Key), ssh.FingerprintSHA256(cert.SignatureKey))
+	}
+	best := -1
+	for _, fp := range fps {
+		if i := slices.Index(granted, fp); i >= 0 && (best < 0 || i < best) {
+			best = i
+		}
+	}
+	return best
+}
+
+// orderSigners applies the per-connection key offering. With only set:
+// exactly those keys, in that order, and never a fallback (the login probe's
+// IdentitiesOnly posture). Otherwise the held keys matching prefer, in
+// prefer order, and nothing else; when none matches, every held key in
+// Signers order (key files before agent keys) with fellBack set. offerAll
+// restores the unrestricted offer: granted first, then every other key.
+func orderSigners(signers []ssh.Signer, prefer, only []string, offerAll bool) offering {
+	if len(only) > 0 {
+		return offering{signers: pickExact(signers, only)}
+	}
+	var granted, rest []ssh.Signer
+	for _, s := range signers {
+		if GrantIndex(s.PublicKey(), prefer) >= 0 {
+			granted = append(granted, s)
+		} else {
+			rest = append(rest, s)
+		}
+	}
+	slices.SortStableFunc(granted, func(a, b ssh.Signer) int {
+		return cmp.Compare(GrantIndex(a.PublicKey(), prefer), GrantIndex(b.PublicKey(), prefer))
+	})
+	switch {
+	case offerAll:
+		return offering{signers: append(granted, rest...)}
+	case len(granted) == 0:
+		return offering{signers: signers, fellBack: len(signers) > 0}
+	default:
+		return offering{signers: granted, withheld: len(rest)}
+	}
+}
+
+// pickExact returns the held keys with exactly these fingerprints, in this
+// order, each once.
+func pickExact(signers []ssh.Signer, fps []string) []ssh.Signer {
 	byFP := make(map[string]ssh.Signer, len(signers))
 	for _, s := range signers {
 		byFP[ssh.FingerprintSHA256(s.PublicKey())] = s
 	}
-	pick := func(fps []string) []ssh.Signer {
-		var out []ssh.Signer
-		var seen []string
-		for _, fp := range fps {
-			if s, ok := byFP[fp]; ok && !slices.Contains(seen, fp) {
-				out = append(out, s)
-				seen = append(seen, fp)
-			}
-		}
-		return out
-	}
-	if len(only) > 0 {
-		return pick(only)
-	}
-	out := pick(prefer)
-	for _, s := range signers {
-		if !slices.Contains(prefer, ssh.FingerprintSHA256(s.PublicKey())) {
+	var out []ssh.Signer
+	var seen []string
+	for _, fp := range fps {
+		if s, ok := byFP[fp]; ok && !slices.Contains(seen, fp) {
 			out = append(out, s)
+			seen = append(seen, fp)
 		}
 	}
 	return out

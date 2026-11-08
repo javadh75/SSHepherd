@@ -103,10 +103,10 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			return runWorkflow(cmd, a, stdout, &rf, ids, applySpec{
 				cfg:     cfg,
 				servers: targets,
-				// Offer each server's granted keys first (operators first),
-				// so many held keys cannot exhaust sshd's MaxAuthTries
-				// before the key that matters is tried.
-				preferKeys: func(s config.Server) []string { return audit.GrantedFingerprints(cfg, s.Name) },
+				// Offer each server its granted keys (operators first), so
+				// it learns no other key and many held keys cannot exhaust
+				// sshd's MaxAuthTries before the key that matters is tried.
+				preferKeys: grantedOn(cfg),
 				question:   pa.question,
 				commit:     pa.commit,
 				finish:     pa.finish,
@@ -301,7 +301,7 @@ type applySpec struct {
 	former     *config.Config               // the as-loaded config before an edit; nil for plain apply
 	formerNote string                       // label note for keys only former owns: "" (revoked) or "rotated out"
 	servers    []config.Server              // the servers to plan, manifest order; never empty
-	preferKeys func(config.Server) []string // fingerprints offered first on every dial (read and write)
+	preferKeys func(config.Server) []string // fingerprints offered on every dial (read and write)
 	header     func(io.Writer)              // printed to stdout before anything connects (not under --json); nil prints nothing
 	// alwaysConfirm asks even when no server needs a write (the manifest
 	// edit is itself a change).
@@ -342,6 +342,7 @@ func runWorkflow(cmd *cobra.Command, a *app, stdout io.Writer, rf *runFlags, ids
 	if err != nil {
 		return err
 	}
+	pre.warnNoGrantedKeys(ctx, s.servers, s.preferKeys)
 	out, err := workflow.Apply(ctx, workflow.Request{
 		Cfg:              s.cfg,
 		Servers:          s.servers,

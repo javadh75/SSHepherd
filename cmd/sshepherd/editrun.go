@@ -47,7 +47,7 @@ func (f *editFlags) register(cmd *cobra.Command) {
 }
 
 // connectionFlags are the flags --no-apply would leave silently unused.
-var connectionFlags = []string{"identity", "identity-passphrase-file", "identity-passphrase", "known-hosts", "parallel"}
+var connectionFlags = []string{"identity", "identity-passphrase-file", "identity-passphrase", "known-hosts", "parallel", "offer-all-keys"}
 
 // validate is step 1's flag half (exit 3 before the manifest is read):
 // --dry-run and --yes exclude each other, and --json needs one of them
@@ -361,6 +361,7 @@ func sweepAll(ctx context.Context, sess *fleetSession, cfg *config.Config, tombs
 	if sess == nil {
 		return nil
 	}
+	sess.warnNoGrantedKeys(ctx, cfg.Servers, grantedOn(cfg))
 	rep := runSweep(ctx, sess, cfg, cfg.Servers, tombs)
 	return &rep
 }

@@ -135,14 +135,14 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			notWant:  []string{">>"},
 		},
 		{
-			name:     "unrecorded key type is flagged, not alarmed",
+			name:     "a verifiable type recorded and another presented is a type change",
 			hostKeys: []ssh.Signer{ecdsaSigner(t)},
 			khLines: func(f fixture) []string {
 				return []string{f.srv.KnownHostsLine(host.PublicKey())}
 			},
-			kind:    fleet.ErrorKindHostKeyTypeUnrecorded,
-			want:    []string{"not recorded", "recorded: ssh-ed25519"},
-			notWant: []string{"HOST KEY CHANGED", ">>"},
+			kind:    fleet.ErrorKindHostKeyTypeChanged,
+			want:    []string{"HOST KEY TYPE CHANGED", "recorded: ssh-ed25519", "out of band", "| ssh-keygen -lf -"},
+			notWant: []string{"HOST KEY CHANGED for", ">>"},
 		},
 		{
 			name:     "revoked key is refused",
@@ -409,7 +409,7 @@ func TestConnectKeyOffering(t *testing.T) {
 		return f.srv.Attempts()[before:], err
 	}
 
-	t.Run("agent order without preference", func(t *testing.T) {
+	t.Run("agent order when nothing is granted (fallback)", func(t *testing.T) {
 		got, err := connect(t, f.dialer(kh), ConnectOptions{})
 		if err != nil {
 			t.Fatalf("Connect: %v", err)
@@ -451,29 +451,66 @@ func TestOrderSigners(t *testing.T) {
 	tests := []struct {
 		name         string
 		prefer, only []string
+		offerAll     bool
 		want         []int
+		withheld     int
+		fellBack     bool
 	}{
-		{"no preference keeps agent order", nil, nil, []int{0, 1, 2}},
-		{"preferred first, rest in agent order", []string{fp(2)}, nil, []int{2, 0, 1}},
-		{"preference order wins", []string{fp(2), fp(1)}, nil, []int{2, 1, 0}},
-		{"unknown preferred fingerprints are skipped", []string{"SHA256:nope", fp(1)}, nil, []int{1, 0, 2}},
-		{"only restricts and orders", []string{fp(0)}, []string{fp(2), fp(1)}, []int{2, 1}},
-		{"only with nothing held offers nothing", nil, []string{"SHA256:nope"}, nil},
-		{"duplicates offered once", []string{fp(1), fp(1)}, nil, []int{1, 0, 2}},
+		{name: "no grant falls back to every key", want: []int{0, 1, 2}, fellBack: true},
+		{name: "granted keys only", prefer: []string{fp(2)}, want: []int{2}, withheld: 2},
+		{name: "grant order wins", prefer: []string{fp(2), fp(1)}, want: []int{2, 1}, withheld: 1},
+		{name: "unheld grants are skipped", prefer: []string{"SHA256:nope", fp(1)}, want: []int{1}, withheld: 2},
+		{name: "nothing held is granted: fall back", prefer: []string{"SHA256:nope"}, want: []int{0, 1, 2}, fellBack: true},
+		{name: "duplicates offered once", prefer: []string{fp(1), fp(1)}, want: []int{1}, withheld: 2},
+		{name: "offerAll: granted first, then the rest", prefer: []string{fp(2)}, offerAll: true, want: []int{2, 0, 1}},
+		{name: "offerAll with nothing granted is no fallback", prefer: []string{"SHA256:nope"}, offerAll: true, want: []int{0, 1, 2}},
+		{name: "only restricts and orders", prefer: []string{fp(0)}, only: []string{fp(2), fp(1)}, want: []int{2, 1}},
+		{name: "only with nothing held offers nothing", only: []string{"SHA256:nope"}},
+		{name: "only beats offerAll", only: []string{fp(1)}, offerAll: true, want: []int{1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := orderSigners(keys, tt.prefer, tt.only)
+			got := orderSigners(keys, tt.prefer, tt.only, tt.offerAll)
 			var idx []int
-			for _, s := range got {
+			for _, s := range got.signers {
 				for i, k := range keys {
 					if s == k {
 						idx = append(idx, i)
 					}
 				}
 			}
-			if !slices.Equal(idx, tt.want) {
-				t.Errorf("order = %v, want %v", idx, tt.want)
+			if !slices.Equal(idx, tt.want) || got.withheld != tt.withheld || got.fellBack != tt.fellBack {
+				t.Errorf("order = %v withheld=%d fellBack=%v, want %v withheld=%d fellBack=%v",
+					idx, got.withheld, got.fellBack, tt.want, tt.withheld, tt.fellBack)
+			}
+		})
+	}
+}
+
+// TestOrderSignersCertificates: a certificate's fingerprint is not its
+// key's, so it is offered when its key or its CA is granted.
+func TestOrderSignersCertificates(t *testing.T) {
+	user, ca, other := sshtest.Key(1), sshtest.Key(50), sshtest.Key(2)
+	cert := sshtest.UserCert(t, user, ca, "deploy")
+	certSigner, err := ssh.NewCertSigner(cert, sshtest.Signer(t, user))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := sshtest.Signer(t, other)
+	held := []ssh.Signer{plain, certSigner}
+	tests := []struct {
+		name  string
+		grant string
+		want  []ssh.Signer
+	}{
+		{"granted by its key", sshtest.Fingerprint(t, user), []ssh.Signer{certSigner}},
+		{"granted by its CA", sshtest.Fingerprint(t, ca), []ssh.Signer{certSigner}},
+		{"not granted", sshtest.Fingerprint(t, other), []ssh.Signer{plain}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := orderSigners(held, []string{tt.grant}, nil, false); !slices.Equal(got.signers, tt.want) {
+				t.Errorf("offered %d keys, want %d", len(got.signers), len(tt.want))
 			}
 		})
 	}

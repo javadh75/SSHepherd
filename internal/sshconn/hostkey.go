@@ -3,6 +3,7 @@ package sshconn
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -23,7 +24,13 @@ import (
 // straight into known_hosts: that is trust-on-first-use through the back
 // door. Every hint asks for out-of-band verification of the presented
 // fingerprint first. The result is always an *Error.
-func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, knownHostsPath string) error {
+//
+// A host that once had a key type x/crypto can verify and now presents only
+// another type is host_key_type_changed (exit 2), and so is a certificate
+// from a signer no matching @cert-authority line vouches for on a CA-vouched
+// host: negotiation offers the recorded types and the CA's certificates
+// first, so a genuine server reaches either case only by dropping them all.
+func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, kh *KnownHosts) error {
 	if presented != nil {
 		err = fmt.Errorf("presented %s key %s: %w", presented.Type(), ssh.FingerprintSHA256(presented), err)
 	}
@@ -31,31 +38,55 @@ func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, knownHos
 	if errors.As(err, &revoked) {
 		return classifyHint(fleet.ErrorKindHostKeyRevoked, fmt.Sprintf(
 			"this key is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
-			knownHostsPath), err)
+			kh.Path), err)
 	}
 	var ke *knownhosts.KeyError
 	if !errors.As(err, &ke) {
 		if strings.Contains(err.Error(), noAuthorityPrefix) {
+			if kh.authorityMatches(net.JoinHostPort(srv.Host, strconv.Itoa(srv.Port))) {
+				return classifyHint(fleet.ErrorKindHostKeyTypeChanged, fmt.Sprintf(
+					"HOST KEY TYPE CHANGED for %s:%d — the server presented a certificate no @cert-authority line for this host vouches for; possible impersonation; verify the CA out of band before touching known_hosts",
+					srv.Host, srv.Port), err)
+			}
 			return classifyHint(fleet.ErrorKindHostKey, fmt.Sprintf(
 				"the host presented a certificate but no @cert-authority line in %s vouches for it here; record the host's plain key or its CA (verified out of band)",
-				knownHostsPath), err)
+				kh.Path), err)
 		}
 		return classify(fleet.ErrorKindHostKey, err)
 	}
 	if len(ke.Want) == 0 {
 		return classifyHint(fleet.ErrorKindHostKeyUnknown, fmt.Sprintf(
 			"host is not in %s; verify the presented fingerprint out of band (on the server console: %s, or the cloud provider's console output), then compare before recording: %s — append only a line whose fingerprint matches",
-			knownHostsPath, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
+			kh.Path, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
 	}
 	if presented != nil && !typeRecorded(ke, presented.Type()) {
+		if anyVerifiableType(ke) {
+			return classifyHint(fleet.ErrorKindHostKeyTypeChanged, fmt.Sprintf(
+				"HOST KEY TYPE CHANGED for %s:%d — the server no longer presents any recorded key type (recorded: %s); possible impersonation; verify the presented fingerprint out of band (console: %s; compare with: %s) before touching known_hosts",
+				srv.Host, srv.Port, strings.Join(recordedTypes(ke, kh), ", "),
+				consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
+		}
 		return classifyHint(fleet.ErrorKindHostKeyTypeUnrecorded, fmt.Sprintf(
 			"host key type %s is not recorded in known_hosts for this host (recorded: %s) — unverified, not proof of a change; verify the presented fingerprint out of band (%s on the console), compare with: %s — and append only a matching line",
-			presented.Type(), strings.Join(recordedTypes(ke), ", "),
+			presented.Type(), strings.Join(recordedTypes(ke, kh), ", "),
 			consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
 	}
 	return classifyHint(fleet.ErrorKindHostKeyChanged, fmt.Sprintf(
 		"HOST KEY CHANGED for %s:%d — possible impersonation; investigate and verify the new fingerprint out of band before touching %s",
-		srv.Host, srv.Port, knownHostsPath), err)
+		srv.Host, srv.Port, kh.Path), err)
+}
+
+// anyVerifiableType reports whether known_hosts records, for this host, a
+// key type x/crypto can verify (Want holds the host's plain lines and its
+// @cert-authority lines). A host recorded only under an unsupported type
+// (ssh-dss) stays host_key_type_unrecorded: nothing is known to have changed.
+func anyVerifiableType(ke *knownhosts.KeyError) bool {
+	for _, k := range ke.Want {
+		if k.Key != nil && algosForKeyType(k.Key.Type()) != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // consoleFingerprintCmd names the on-server command that prints the host
@@ -104,16 +135,23 @@ func typeRecorded(ke *knownhosts.KeyError, keyType string) bool {
 	return false
 }
 
-// recordedTypes lists the distinct key types known_hosts records for the host.
-func recordedTypes(ke *knownhosts.KeyError) []string {
+// recordedTypes lists the distinct key types known_hosts records for the
+// host, a CA line's type marked "(CA)".
+func recordedTypes(ke *knownhosts.KeyError, kh *KnownHosts) []string {
 	var types []string
 	seen := make(map[string]bool)
 	for _, k := range ke.Want {
-		if k.Key == nil || seen[k.Key.Type()] {
+		if k.Key == nil {
 			continue
 		}
-		seen[k.Key.Type()] = true
-		types = append(types, k.Key.Type())
+		label := k.Key.Type()
+		if kh.isAuthority(k.Key) {
+			label += " (CA)"
+		}
+		if !seen[label] {
+			seen[label] = true
+			types = append(types, label)
+		}
 	}
 	return types
 }

@@ -24,6 +24,7 @@ type connFlags struct {
 	cfgPath    string
 	knownHosts string
 	parallel   int
+	offerAll   bool
 	idf        identityFlags
 }
 
@@ -33,6 +34,8 @@ func (f *connFlags) register(cmd *cobra.Command, parallelUsage string) {
 	cmd.Flags().StringVar(&f.cfgPath, "config", defaultConfigPath, "path to the manifest")
 	cmd.Flags().StringVar(&f.knownHosts, "known-hosts", defaultKnownHosts, "path to known_hosts (strict host-key checking)")
 	cmd.Flags().IntVar(&f.parallel, "parallel", defaultParallel, parallelUsage)
+	cmd.Flags().BoolVar(&f.offerAll, "offer-all-keys", false,
+		"offer every loaded key to every server (default: only the keys the manifest grants there)")
 	f.idf.register(cmd)
 }
 
@@ -65,6 +68,9 @@ func (f *connFlags) followUp() followUp {
 	}
 	for _, kv := range f.idf.perKey {
 		h.conn = append(h.conn, "--identity-passphrase "+hintArg(kv))
+	}
+	if f.offerAll {
+		h.conn = append(h.conn, "--offer-all-keys")
 	}
 	return h
 }
@@ -143,6 +149,10 @@ type fleetSession struct {
 	kh       *sshconn.KnownHosts
 	creds    *sshconn.Credentials
 	parallel int
+	offerAll bool // --offer-all-keys
+	// quietFallback: a preflight already warned once for the whole run, so
+	// the per-server fallback lines drop to debug level.
+	quietFallback bool
 }
 
 // openFleet runs the pre-dial checks in the documented order: known_hosts
@@ -165,11 +175,11 @@ func openFleet(ctx context.Context, log *slog.Logger, f *connFlags, ids identiti
 	if err := checkCredentials(ctx, creds, needHeld); err != nil {
 		return nil, err
 	}
-	return &fleetSession{log: log, khPath: khPath, kh: kh, creds: creds, parallel: f.parallel}, nil
+	return &fleetSession{log: log, khPath: khPath, kh: kh, creds: creds, parallel: f.parallel, offerAll: f.offerAll}, nil
 }
 
 // Read is phase 1 of every command: audit's pipeline over servers, offering
-// preferKeys first on each dial, with the phase and done lines, and a
+// preferKeys on each dial, with the phase and done lines, and a
 // canceled run reported as a tool error (nothing rendered or written).
 func (s *fleetSession) Read(ctx context.Context, verb string, cfg *config.Config, servers []config.Server,
 	preferKeys func(config.Server) []string,
@@ -187,16 +197,16 @@ func (s *fleetSession) Read(ctx context.Context, verb string, cfg *config.Config
 }
 
 // reader is phase 1's reader: the run's known_hosts snapshot and
-// credentials, offering preferKeys first on each dial.
+// credentials, offering preferKeys on each dial.
 func (s *fleetSession) reader(preferKeys func(config.Server) []string) *sshread.Client {
 	return &sshread.Client{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds,
-		DialTimeout: dialTimeout, PreferKeys: preferKeys, Log: s.log}
+		DialTimeout: dialTimeout, PreferKeys: preferKeys, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
 }
 
 // dialer is phase 2's dialer: the same known_hosts snapshot and credentials.
 func (s *fleetSession) dialer(preferKeys func(config.Server) []string) *sshconn.Dialer {
 	return &sshconn.Dialer{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds,
-		DialTimeout: dialTimeout, PreferKeys: preferKeys, Log: s.log}
+		DialTimeout: dialTimeout, PreferKeys: preferKeys, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
 }
 
 // readFleet is audit's and adopt's whole read: an empty fleet needs no
@@ -209,8 +219,41 @@ func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, f *con
 	if err != nil {
 		return nil, err
 	}
-	// Granted keys (operators first) go first, so many held keys cannot trip MaxAuthTries.
-	return s.Read(ctx, verb, cfg, cfg.Servers, func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) })
+	s.warnNoGrantedKeys(ctx, cfg.Servers, grantedOn(cfg))
+	return s.Read(ctx, verb, cfg, cfg.Servers, grantedOn(cfg))
+}
+
+// grantedOn is every command's PreferKeys for cfg: the keys it grants on srv.
+func grantedOn(cfg *config.Config) func(config.Server) []string {
+	return func(srv config.Server) []string { return audit.GrantedFingerprints(cfg, srv.Name) }
+}
+
+// warnNoGrantedKeys warns, before the first read of a run, when no
+// held key is granted on any target server: normal right after import
+// --servers-only, and then one line is enough, so the per-server fallback
+// warnings drop to debug level. Warn only: first contact is what the
+// fallback exists for. Skipped under --offer-all-keys; a credential error is
+// left for the first connection to report.
+func (s *fleetSession) warnNoGrantedKeys(ctx context.Context, servers []config.Server, preferKeys func(config.Server) []string) {
+	if s.offerAll {
+		return
+	}
+	signers, release, err := s.creds.Signers(ctx)
+	if err != nil {
+		return
+	}
+	defer release()
+	for _, srv := range servers {
+		granted := preferKeys(srv)
+		for _, signer := range signers {
+			if sshconn.GrantIndex(signer.PublicKey(), granted) >= 0 {
+				return
+			}
+		}
+	}
+	s.quietFallback = true
+	s.log.Warn("none of the loaded keys is granted on any target server; each server will be offered all " +
+		apply.Plural(len(signers), "held key", "held keys"))
 }
 
 // interrupted reports a canceled run (Ctrl-C/SIGTERM) as a tool error.

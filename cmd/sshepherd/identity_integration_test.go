@@ -106,6 +106,8 @@ servers:
 // TestIntegrationHeadlessRotation is the motivating case: the manifest
 // replaces ci_old with ci_new; one --identity is refused naming the fix;
 // both keys rotate (the probe proves ci_new); ci_new alone is then a no-op.
+// The rotation passes --offer-all-keys: the restricted offer would present
+// only ci_new, which is not installed yet, so old + new would fail auth.
 func TestIntegrationHeadlessRotation(t *testing.T) {
 	bin, host, port, kh, _ := itE2E(t)
 	keys := itKeys(t)
@@ -126,7 +128,7 @@ servers:
 		}
 	})
 	t.Run("old + new rotates; the probe proves the new key", func(t *testing.T) {
-		code, out, stderr := runHeadless(t, bin, append(append(base, oldKey...), newKey...)...)
+		code, out, stderr := runHeadless(t, bin, append(append(append(base, "--offer-all-keys"), oldKey...), newKey...)...)
 		if code != 0 || !strings.Contains(out, "applied · verified") {
 			t.Fatalf("exit = %d, want 0 + applied (stderr: %s)\n%s", code, stderr, out)
 		}

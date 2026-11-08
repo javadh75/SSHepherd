@@ -6,8 +6,9 @@ Exit codes:
   1  drift or unreachable servers (compliance not proven), including a server
      written by a newer manifest serial and a key installed where its access
      was revoked
-  2  critical: a missing operator key, a changed or @revoked host key, a
-     revoked key still installed, a forged header serial, or a policy
+  2  critical: a missing operator key or one that cannot log in, a changed or
+     @revoked host key or a changed host key type, a world-writable managed
+     path, a revoked key still installed, a forged header serial, or a policy
      conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted
 
@@ -30,6 +31,7 @@ Flags:
       --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
       --json                            emit the report as machine-readable JSON on stdout
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
+      --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
       --parallel int                    max concurrent server audits (default 32)
 
 Global Flags:

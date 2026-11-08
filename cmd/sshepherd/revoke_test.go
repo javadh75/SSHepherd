@@ -825,6 +825,7 @@ func TestRevokeUsage(t *testing.T) {
 		{"--no-apply with --identity", []string{"revoke", "bob", "--no-apply", "--identity", "/k/id"}, cfgBody, "--no-apply contacts no server, so --identity would be unused"},
 		{"--no-apply with --known-hosts", []string{"revoke", "bob", "--no-apply", "--known-hosts", "/x"}, cfgBody, "--known-hosts would be unused"},
 		{"--no-apply with --parallel", []string{"revoke", "bob", "--no-apply", "--parallel", "2"}, cfgBody, "--parallel would be unused"},
+		{"--no-apply with --offer-all-keys", []string{"revoke", "bob", "--no-apply", "--offer-all-keys"}, cfgBody, "--offer-all-keys would be unused"},
 		{"unknown users listed", []string{"revoke", "carol", "bob", "dave"}, cfgBody,
 			"unknown users: carol, dave — not in the manifest (already revoked?); see what is left to push with 'sshepherd apply --dry-run --config CFG', verify with 'sshepherd audit --config CFG'"},
 		{"malformed --key", []string{"revoke", "--key", "SHA256:nope"}, cfgBody, "malformed fingerprint"},
