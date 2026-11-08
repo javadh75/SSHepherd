@@ -14,6 +14,15 @@ GOSEC_VERSION    := v2.30.0
 GOVULN_VERSION   := v1.8.0
 GITLEAKS_VERSION := v8.30.1
 DEADCODE_VERSION := v0.51.0
+GOLICENSES_VERSION := v2.0.1
+ACTIONLINT_VERSION := v1.7.12
+# benchstat is not installed by `make tools`: CI's informational bench job runs
+# it with `go run` at this pin.
+BENCHSTAT_VERSION  := v0.0.0-20261009192801-be2c69fb417e
+
+# print-VAR: print a Makefile variable, so a workflow reads a tool pin instead
+# of repeating it (e.g. `make -s print-GOVULN_VERSION`).
+print-%: ; @echo $($*)
 
 # Tools are compiled from source by the active toolchain (`go install`). A
 # linter built by an older Go than the one on PATH fails to type-check the
@@ -35,18 +44,29 @@ ifeq ($(origin GOTOOLCHAIN),undefined)
 endif
 TOOLS_ENV   := GOTOOLCHAIN=$(or $(GOTOOLCHAIN),local)
 
-.PHONY: all check build fmt vet lint lint-toolchain deadcode security gosec vuln secrets test \
-        coverage integration fuzz bench tidy docker docker-lint docker-scan smoke tools hooks clean
+.PHONY: all check build dist fmt vet lint lint-toolchain deadcode security gosec vuln secrets \
+        secrets-history licenses actionlint test coverage integration fuzz fuzz-list bench tidy \
+        docker docker-lint docker-scan smoke tools hooks clean
 
 ## all: default target — run the full gate
 all: check
 
 ## check: full quality gate (the same command CI runs) — includes the coverage minimum
-check: tidy fmt vet lint deadcode security coverage
+check: tidy fmt vet lint deadcode security licenses coverage
+
+# LDFLAGS stamps VERSION into main.version, so --version reports it; a plain
+# `go install …@vX.Y.Z` falls back to the module version instead.
+LDFLAGS := -s -w -X main.version=$(VERSION)
 
 ## build: reproducible static binary into ./bin
 build:
-	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="-s -w" -o bin/$(BINARY) ./cmd/$(BINARY)
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
+
+## dist: release binary for GOOS/GOARCH into ./dist (used by release.yml)
+dist:
+	mkdir -p dist
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) $(GO) build -trimpath -ldflags="$(LDFLAGS)" \
+	  -o dist/$(BINARY)_$(VERSION)_$(GOOS)_$(GOARCH) ./cmd/$(BINARY)
 
 ## fmt: fail if any file is not gofmt-clean
 fmt:
@@ -84,8 +104,10 @@ security: gosec vuln secrets
 ## _test.go file). golangci-lint's gosec scans the //go:build integration test
 ## files, which are scoped and triaged in .golangci.yml. The target fails when
 ## gosec cannot type-check the code, because then only its syntax rules run.
+## .claude/ holds agent git worktrees (other checkouts of this module), which
+## gosec's own ./... walk would otherwise type-check too.
 gosec: lint-toolchain
-	@out=$$(gosec -fmt=text -tags=integration ./... 2>&1); rc=$$?; \
+	@out=$$(gosec -fmt=text -tags=integration -exclude-dir=.claude ./... 2>&1); rc=$$?; \
 	if printf '%s\n' "$$out" | grep -q 'Golang errors'; then \
 	  printf '%s\n' "$$out" | grep -m3 -A2 'Golang errors'; \
 	  echo "FAIL: gosec could not type-check the code; rebuild it with: make tools"; exit 1; \
@@ -100,8 +122,28 @@ gosec: lint-toolchain
 vuln:
 	govulncheck ./...
 
+## secrets: scan the working tree (also files not yet committed)
 secrets:
 	gitleaks dir --redact .
+
+## secrets-history: scan commits BASE..HEAD for secrets (the whole history when
+## BASE is unset, all-zero, or unknown, e.g. a new branch or workflow_dispatch)
+secrets-history:
+	@if [ -z "$(BASE)" ] || [ "$(BASE)" = 0000000000000000000000000000000000000000 ] \
+	    || ! git cat-file -e "$(BASE)^{commit}" 2>/dev/null; then \
+	  gitleaks git --redact --verbose .; \
+	else \
+	  gitleaks git --redact --verbose --log-opts="$(BASE)..HEAD" .; \
+	fi
+
+## licenses: the shipped binary's dependency licenses stay Apache-2.0-compatible
+licenses:
+	go-licenses check --disallowed_types=forbidden,restricted,unknown ./cmd/$(BINARY)
+
+## actionlint: lint the GitHub workflows. Not part of check (no finding asks for
+## it); shellcheck is disabled so the result never depends on what is installed.
+actionlint:
+	actionlint -shellcheck=""
 
 ## test: race detector + atomic coverage profile
 test:
@@ -122,24 +164,21 @@ coverage: test
 	  printf 'FAIL: coverage %s%% is below the %s%% minimum\n' "$$total" "$(COVERAGE_MIN)"; exit 1; \
 	fi
 
-## fuzz: short fuzz run of all parsers
+FUZZTIME ?= 15s
+
+## fuzz-list: every Fuzz* target as "importpath Target" (discovered, never hand-listed)
+fuzz-list:
+	@for pkg in $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(PKG)); do \
+	  $(GO) test -list '^Fuzz' $$pkg | sed -n "s|^\(Fuzz[A-Za-z0-9_]*\)$$|$$pkg \1|p"; \
+	done
+
+## fuzz: fuzz every target for FUZZTIME each (default 15s); runs all, fails if any failed
 fuzz:
-	$(GO) test -run='^$$' -fuzz=FuzzParseLine -fuzztime=15s ./internal/authkeys
-	$(GO) test -run='^$$' -fuzz=FuzzParseFile -fuzztime=15s ./internal/authkeys
-	$(GO) test -run='^$$' -fuzz=FuzzRenderRoundTrip -fuzztime=15s ./internal/authkeys
-	$(GO) test -run='^$$' -fuzz=FuzzSanitizeName -fuzztime=15s ./internal/adopt
-	$(GO) test -run='^$$' -fuzz=FuzzParse -fuzztime=15s ./internal/sshcfg
-	$(GO) test -run='^$$' -fuzz=FuzzMatchGlob -fuzztime=15s ./internal/sshcfg
-	$(GO) test -run='^$$' -fuzz=FuzzExpand -fuzztime=15s ./internal/identity
-	$(GO) test -run='^$$' -fuzz=FuzzSanitize -fuzztime=15s ./internal/clog
-	$(GO) test -run='^$$' -fuzz=FuzzShQuote -fuzztime=15s ./internal/sshconn
-	$(GO) test -run='^$$' -fuzz=FuzzWriteCmds -fuzztime=15s ./internal/sshwrite
-	$(GO) test -run='^$$' -fuzz=FuzzMergeRoundTrip -fuzztime=15s ./internal/manifest
-	$(GO) test -run='^$$' -fuzz=FuzzManifestEdit -fuzztime=15s ./internal/manifest
-	$(GO) test -run='^$$' -fuzz=FuzzKeyArg -fuzztime=15s ./cmd/sshepherd
-	$(GO) test -run='^$$' -fuzz=FuzzLoad -fuzztime=15s ./internal/config
-	$(GO) test -run='^$$' -fuzz=FuzzClassify -fuzztime=15s ./internal/keyfile
-	$(GO) test -run='^$$' -fuzz=FuzzDecrypt -fuzztime=15s ./internal/keyfile
+	@fail=0; $(MAKE) -s fuzz-list > .fuzz-targets || exit 1; \
+	while read -r pkg t; do \
+	  echo "== $$t ($$pkg)"; \
+	  $(GO) test -run='^$$' -fuzz="^$$t\$$" -fuzztime=$(FUZZTIME) $$pkg || fail=1; \
+	done < .fuzz-targets; rm -f .fuzz-targets; exit $$fail
 
 ## bench: run benchmarks
 bench:
@@ -164,7 +203,7 @@ docker-lint:
 ## docker-scan: scan the image + config for CVEs/misconfig
 docker-scan:
 	trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed $(IMAGE)
-	trivy config --exit-code 1 .
+	trivy config --exit-code 1 --skip-dirs ci/images .
 
 ## smoke: the image runs, reports its version and help, stays under the size
 ## budget, and does not run as root (the same gates CI applies)
@@ -179,6 +218,8 @@ tools:
 	$(TOOLS_ENV) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULN_VERSION)
 	$(TOOLS_ENV) $(GO) install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
 	$(TOOLS_ENV) $(GO) install golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION)
+	$(TOOLS_ENV) $(GO) install github.com/google/go-licenses/v2@$(GOLICENSES_VERSION)
+	$(TOOLS_ENV) $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 ## hooks: install git pre-commit/pre-push hooks (lefthook)
 hooks:
@@ -186,4 +227,4 @@ hooks:
 
 ## clean: remove build and coverage artifacts
 clean:
-	rm -rf bin $(COVERPROFILE) coverage.html
+	rm -rf bin dist $(COVERPROFILE) coverage.html .fuzz-targets

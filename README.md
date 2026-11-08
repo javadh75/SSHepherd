@@ -74,6 +74,12 @@ rotate → audit**.
 $ go install github.com/javadh75/SSHepherd/cmd/sshepherd@latest
 ```
 
+`go install github.com/javadh75/SSHepherd/cmd/sshepherd@vX.Y.Z` reports `vX.Y.Z` in
+`sshepherd --version`. `make build` stamps `git describe --tags --always --dirty`
+(for example `sshepherd 56713ff-dirty`). A plain `go build` inside a checkout reports
+the Go VCS pseudo-version, for example
+`sshepherd v0.0.0-20261108032608-56713ff9ffb0+dirty`.
+
 **Build locally** — produces a reproducible static binary at `bin/sshepherd`:
 
 ```console
@@ -1673,11 +1679,16 @@ characters (`…(truncated)`).
 Everything below runs the same commands CI runs.
 
 ```console
-$ make check        # the full gate: tidy, fmt, vet, lint, deadcode, security, coverage (≥80%)
+$ make check        # the full gate: tidy, fmt, vet, lint, deadcode, security, licenses, coverage (≥80%)
 $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 80% line coverage
 $ make integration  # dockerized sshd + build-tagged integration tests
-$ make fuzz         # short fuzz run of every parser
+$ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each)
+$ make fuzz-list    # every Fuzz* target as 'importpath Target'
+$ make licenses     # dependency licenses of the shipped binary stay Apache-2.0-compatible (part of make check)
+$ make actionlint   # lint .github/workflows (shellcheck disabled; not part of make check)
+$ make secrets-history BASE=<sha>  # gitleaks over BASE..HEAD (whole history when BASE is empty, all-zero or unknown)
+$ make dist GOOS=linux GOARCH=amd64 VERSION=vX.Y.Z  # release binary dist/sshepherd_<VERSION>_<GOOS>_<GOARCH>
 $ make bench        # fan-out benchmarks
 $ make hooks        # install the lefthook pre-commit/pre-push hooks
 $ make tools        # install pinned dev tooling (exact versions, no @latest)
@@ -1693,7 +1704,7 @@ target — and the pre-push hook, which goes through `make` — runs under the p
 yourself (`make GOTOOLCHAIN=local …`) to override.
 
 The gate includes `gofmt`, `go vet`, `golangci-lint`, whole-program `deadcode`,
-`gosec`, `govulncheck`, and `gitleaks`; `go vet`, `golangci-lint` and `gosec` also
+`gosec`, `govulncheck`, `gitleaks` and `go-licenses`; `go vet`, `golangci-lint` and `gosec` also
 cover the `//go:build integration` test files (gosec through golangci-lint, since
 standalone gosec skips test files; name them `*integration_test.go` or
 `*e2e_test.go`). Container work has its own targets:

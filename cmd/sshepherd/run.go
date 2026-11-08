@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -20,8 +21,23 @@ import (
 )
 
 // version is the binary version, overridden at build time via
-// -ldflags "-X main.version=<v>". Defaults to "dev" for local builds.
+// -ldflags "-X main.version=<v>" (make build, make dist, the Dockerfile).
+// resolveVersion falls back to the module version when it is left at "dev".
 var version = "dev"
+
+// resolveVersion picks the version --version prints: the -X main.version
+// value (make build, Dockerfile, release binaries) when set; otherwise the
+// module version the go command stamped (go install …@vX.Y.Z, or a VCS
+// pseudo-version for a build inside a git checkout); otherwise "dev".
+func resolveVersion(ldflag string, read func() (*debug.BuildInfo, bool)) string {
+	if ldflag != "dev" && ldflag != "" {
+		return ldflag
+	}
+	if bi, ok := read(); ok && bi != nil && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
 
 // errNonCompliant signals exit code 1: the audit ran but the fleet is not
 // (provably) compliant. Everything else non-nil maps to usage/config exit 3.
@@ -229,7 +245,7 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "sshepherd",
 		Short:         "Manage SSH authorized_keys across a fleet of servers",
-		Version:       version,
+		Version:       resolveVersion(version, debug.ReadBuildInfo),
 		SilenceUsage:  true,
 		SilenceErrors: true, // run() prints errors with consistent formatting
 		// Args: any, so cobra's legacyArgs never builds its multi-line

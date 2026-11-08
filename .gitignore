@@ -12,5 +12,9 @@ graphify-out/
 # Stray `go build ./cmd/sshepherd` output at the repo root
 /sshepherd
 
+# `make dist` release binaries and `make fuzz`'s scratch target list
+/dist/
+/.fuzz-targets
+
 # Workflow agent worktrees (local only)
 .claude/worktrees/

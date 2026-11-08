@@ -119,20 +119,29 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
   perms (G302/G306), command injection (G204), and weak crypto.
 - `govulncheck ./...` — official Go vulnerability scanner. Reachability-aware: only reports
   CVEs in deps/std-lib that your code actually calls, so few false positives. Run in CI.
-- `gitleaks detect --no-git` (and as a pre-commit hook) — this repo handles SSH keys; block
-  private keys, tokens, or secrets from ever being committed.
+- `gitleaks dir --redact .` (working tree, `make secrets`, in `make check`) + `gitleaks git`
+  over the pushed range (`make secrets-history BASE=<sha>`, CI) + `--staged` pre-commit — this
+  repo handles SSH keys; block private keys, tokens, or secrets from ever being committed.
 
 ### Dependency & supply chain
 - `go mod tidy` then fail CI if it dirties the tree: `git diff --exit-code go.mod go.sum`.
 - `go mod verify` — module contents match recorded checksums.
-- `go-licenses check ./...` — dependency licenses stay compatible with Apache-2.0.
+- `go-licenses check --disallowed_types=forbidden,restricted,unknown ./cmd/sshepherd`
+  (`make licenses`, in `make check`; pinned `GOLICENSES_VERSION` v2.0.1) — dependency
+  licenses stay compatible with Apache-2.0.
 - SBOM per release: `cyclonedx-gomod mod` (or `syft`) — archive the artifact for provenance.
 - Automate updates with Dependabot/Renovate, and run `govulncheck` on a daily CI schedule
   (not just on PRs) to catch newly disclosed CVEs in pinned deps.
 
 ### Build & tests
 - `go build ./...`, plus a reproducible static single binary for releases:
-  `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`.
+  `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`. `make build`/`make dist` stamp
+  `-X main.version=$(VERSION)`; `resolveVersion` (cmd/sshepherd/run.go) falls back to
+  `debug.ReadBuildInfo().Main.Version`, so `go install …@vX` reports vX.
+- Tool pins: the Makefile pins every Go dev tool (`make tools` installs them), including
+  `GOLICENSES_VERSION` v2.0.1 and `ACTIONLINT_VERSION` v1.7.12; `BENCHSTAT_VERSION` is used
+  with `go run` in CI. `make -s print-<VAR>` reads a pin back. `make actionlint`
+  (`-shellcheck=""`) lints the workflows; it is not part of `make check`.
 - Tests and coverage are mandatory and have their own policy — see **Testing** below.
 - **Toolchain lockstep** — go.mod's `go` line, the Dockerfile build stage tag, the Makefile's
   `GO_PIN` and CI's `setup-go` (`go-version-file: go.mod`) name the same Go patch release; CI
@@ -168,6 +177,9 @@ test that fails before the fix and passes after.
   (distribute → audit → revoke → rotate) against a small fleet of test containers.
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
+  `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
+  anchors each `-fuzz=^Target$`, runs all of them even after a failure, and fails if any
+  failed; `FUZZTIME` defaults to 15s.
 - **Benchmarks** — `go test -bench=. -benchmem` for hot paths (fan-out to many servers); watch
   for regressions.
 - **Race** — run the suite with `-race`.
