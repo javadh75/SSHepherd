@@ -461,3 +461,9 @@ manifest order) now feeds `GrantedFingerprints` and the post-write probe, so the
 probe proves the key the next run logs in with (no `--identity` preference, D31,
 WP-5); a no-grant server whose `authorized_keys2` holds keys is refused (exit 1),
 agreeing with audit (D30, COR-2).
+Manifest store and revoke names (P12, round 1): `internal/manifest` now holds the
+manifest store (`Read`/`Store.Save`/`WriteFile`; lock sidecar opened no-follow and
+owner-checked; mode, owner and group kept) and one encoder from the config types
+(`Append` takes `config.User/Server/Access`; `Generate`); cmd/sshepherd is rewired
+onto it in W2 round 2 (P12-C), until then deadcode lists the unwired store
+functions. `revoke NAME` resolves manifest users first.

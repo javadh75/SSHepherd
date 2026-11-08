@@ -58,6 +58,9 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := checkUserArgs(mf.Config(), users); err != nil {
+				return err
+			}
 			var ep editPlan
 			h := f.run.followUp()
 			switch {
@@ -84,16 +87,12 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 }
 
 // revokeTargets applies revoke's usage rules (revokeUsage) and classifies
-// --key arguments (step 1): a user argument that looks like a key is a
-// mistake, and duplicate users, keys and servers are dropped silently.
+// --key arguments (step 1); duplicate users, keys and servers are dropped
+// silently. User arguments are checked against the manifest later
+// (checkUserArgs), so a user called tunnel is never mistaken for a key.
 func revokeTargets(args, keys, servers []string, operator bool) (users []string, keyArgs []keyArg, trim []string, err error) {
 	if err := revokeUsage(args, keys, servers, operator); err != nil {
 		return nil, nil, nil, err
-	}
-	for _, u := range args {
-		if looksLikeKey(u) {
-			return nil, nil, nil, fmt.Errorf("%s looks like a key — did you mean --key?", u)
-		}
 	}
 	for _, k := range keys {
 		ka, err := parseKeyArg(roleKey, k)
@@ -105,6 +104,20 @@ func revokeTargets(args, keys, servers []string, operator bool) (users []string,
 		}
 	}
 	return unique(args), keyArgs, unique(servers), nil
+}
+
+// checkUserArgs: an argument naming a manifest user is that user, whatever
+// it looks like (a service account called tunnel, "Alice Smith"). Only an
+// unknown name that looks like a key is reported as a probable --key
+// mistake; other unknown names reach planRevokeUsers' "unknown users" error.
+func checkUserArgs(cfg *config.Config, users []string) error {
+	for _, u := range users {
+		known := slices.ContainsFunc(cfg.Users, func(x config.User) bool { return x.Name == u })
+		if !known && looksLikeKey(u) {
+			return fmt.Errorf("%s looks like a key — did you mean --key?", u)
+		}
+	}
+	return nil
 }
 
 // revokeUsage is revoke's flag/argument combination rules, before the

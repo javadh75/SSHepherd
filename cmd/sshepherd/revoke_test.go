@@ -733,6 +733,26 @@ func TestRevokeKeyLeavesUngrantedDrift(t *testing.T) {
 	}
 }
 
+// A real user name is always that user — even when it reads like an option
+// word, a key-type prefix, a hex-colon pair or has a space.
+func TestRevokeUserNamedLikeKey(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	for _, name := range []string{"tunnel", "pty", "Alice Smith", "ssh-rsa-legacy", "ab:cd"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := writeConfig(t, "users:\n  - {name: \""+name+"\", keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\n")
+			var out, errBuf bytes.Buffer
+			if code := run([]string{"revoke", name, "--config", cfg, "--no-apply", "--yes"}, &out, &errBuf); code != 0 {
+				t.Fatalf("exit = %d, want 0\n%s", code, errBuf.String())
+			}
+			for _, u := range readCfg(t, cfg).Users {
+				if u.Name == name {
+					t.Errorf("user %q still in the manifest", name)
+				}
+			}
+		})
+	}
+}
+
 func TestRevokeUsage(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	cfgBody := "users:\n  - {name: alice, keys: [" + qk(t, 1) + "]}\n  - {name: bob, keys: [" + qk(t, 2) + "]}\n"
@@ -745,6 +765,8 @@ func TestRevokeUsage(t *testing.T) {
 		{"no target", []string{"revoke"}, cfgBody, "nothing to revoke"},
 		{"users and --key", []string{"revoke", "bob", "--key", fpOf(t, 2)}, cfgBody, "users or --key, not both"},
 		{"user that looks like a key", []string{"revoke", fpOf(t, 2)}, cfgBody, "looks like a key — did you mean --key?"},
+		{"unknown option word", []string{"revoke", "tunnel"}, cfgBody, "tunnel looks like a key — did you mean --key?"},
+		{"unknown option word with --server", []string{"revoke", "tunnel", "--server", "web-1"}, cfgBody, "tunnel looks like a key — did you mean --key?"},
 		{"--dry-run with --yes", []string{"revoke", "bob", "--dry-run", "--yes"}, cfgBody, "dry-run"},
 		{"--no-apply with --identity", []string{"revoke", "bob", "--no-apply", "--identity", "/k/id"}, cfgBody, "--no-apply contacts no server, so --identity would be unused"},
 		{"--no-apply with --known-hosts", []string{"revoke", "bob", "--no-apply", "--known-hosts", "/x"}, cfgBody, "--known-hosts would be unused"},

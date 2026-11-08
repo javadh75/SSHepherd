@@ -122,6 +122,8 @@ or `--parallel` (they would be silently unused). `--dry-run --no-apply`
 is allowed. A `revoke` USER argument that classifies as a fingerprint or
 key line (steps 1–4 above) is exit 3: `ARG looks like a key — did you mean
 --key?`.
+Amended 2026-11 (P12): the looks-like-a-key check moved after the manifest
+read and applies only to unknown names.
 
 ### `revoke USER...`
 

@@ -97,7 +97,8 @@ func classifyKeyArg(role keyRole, arg, home string, read func(string) ([]byte, e
 }
 
 // looksLikeKey reports whether arg classifies as a fingerprint or a key
-// line (steps 1–4): a revoke USER argument that does is a usage error.
+// line (steps 1–4): a revoke USER argument that does, and names no
+// manifest user, is a usage error.
 func looksLikeKey(arg string) bool {
 	return strings.HasPrefix(arg, "SHA256:") || strings.Contains(arg, " SHA256:") ||
 		strings.HasPrefix(arg, "MD5:") || hexColonFP.MatchString(arg) || looksLikeKeyLine(arg)

@@ -911,6 +911,9 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 
 **Users or keys, not both.** `revoke USER...` deletes each user and every `access:`
 entry whose `user:` is that user (unknown users are listed and nothing happens).
+`revoke NAME` looks NAME up in the manifest first, so users called `tunnel` or
+`Alice Smith` are revoked by name. Only an unknown name that looks like a key or
+fingerprint gets `NAME looks like a key — did you mean --key?`.
 Re-running a revoke whose save landed but whose push did not finish exits `3` with
 `not in the manifest (already revoked?)` and the `apply --dry-run`/`audit` commands to
 finish and verify.
