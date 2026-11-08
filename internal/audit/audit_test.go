@@ -432,6 +432,21 @@ func fpOf(t *testing.T, seed byte) string {
 	return k.Fingerprint
 }
 
+func TestAuditOneReadsHeaderSerial(t *testing.T) {
+	cfg := reportConfig(t)
+	reader := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {Content: []byte(authkeys.Header(8) + "\n" + testkeys.Line(t, 1) + "\n"), Keys2: []byte("k2\n"), Keys2Err: errors.New("x")},
+		"web-2": {FileAbsent: true},
+	}}
+	res := Run(context.Background(), cfg, reader, Options{Parallel: 1})
+	if res[0].HeaderSerial != 8 || !res[0].HeaderManaged || string(res[0].Keys2) != "k2\n" || res[0].Keys2Err == nil {
+		t.Errorf("web-1 = %+v", res[0])
+	}
+	if res[1].HeaderManaged || res[1].HeaderSerial != 0 {
+		t.Errorf("an absent file has no header: %+v", res[1])
+	}
+}
+
 // TestGrantedFingerprintsDemotesRiskyLines (WP-5): every connection offers
 // a server's granted keys plain first, then lines that may reject the login
 // (from=, expiry-time=, restrict), then forced commands, then cert-only

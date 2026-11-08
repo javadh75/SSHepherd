@@ -195,9 +195,13 @@ func (e usageError) Unwrap() error { return e.error }
 // apply/revoke/rotate; adopt; import); README's Exit codes section carries
 // every one verbatim.
 const exitCodesAudit = `Exit codes:
-  0  compliant
-  1  drift or unreachable servers (compliance not proven)
-  2  critical: a missing operator key, or a changed or @revoked host key
+  0  compliant (a header serial below the manifest's is not drift)
+  1  drift or unreachable servers (compliance not proven), including a server
+     written by a newer manifest serial and a key installed where its access
+     was revoked
+  2  critical: a missing operator key, a changed or @revoked host key, a
+     revoked key still installed, a forged header serial, or a policy
+     conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted`
 
 const exitCodesWrite = `Exit codes:

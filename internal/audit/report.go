@@ -3,6 +3,7 @@ package audit
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -13,14 +14,19 @@ import (
 )
 
 // ExitCode maps audit results to the process exit code (monitoring-style,
-// see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md):
-// 0 every server compliant (an empty fleet is trivially compliant);
-// 1 drift and/or unreachable servers — compliance not proven;
-// 2 critical — at least one server is missing an operator key, or refused
-// to connect because its host key changed (or is @revoked): a possible
-// impersonation, never just a network blip.
-// Tool errors (exit 3) are the caller's domain; this function never sees them.
+// see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md and
+// the 2026-11-08 revocation-memory spec §8): 0 every server compliant (an
+// empty fleet is trivially compliant; a header serial below the manifest's
+// is not drift); 1 drift and/or unreachable servers — including a server
+// written by a newer manifest (D4a) and a key installed where its access
+// was revoked (D1d); 2 critical — a missing operator key, a revoked key
+// still installed (D2), a forged header serial, a policy conflict in the
+// manifest (D29, even with no server read), or a host key that changed (or
+// is @revoked). Tool errors (exit 3) are the caller's domain.
 func ExitCode(cfg *config.Config, results []ServerResult) int {
+	if len(cfg.Conflicts()) > 0 {
+		return 2
+	}
 	code := 0
 	for _, r := range results {
 		switch statusOf(cfg, r) {
@@ -82,17 +88,30 @@ func oneLine(err error) string {
 // stdout product; diagnostics beyond the report belong on stderr (caller's
 // concern).
 func Render(w io.Writer, cfg *config.Config, results []ServerResult, opts RenderOptions) {
+	pal := palette{on: opts.Color}
+	renderConflicts(w, cfg, pal)
 	if len(results) == 0 {
 		fmt.Fprintln(w, "Summary: 0 servers configured — nothing to audit")
 		return
 	}
-	pal := palette{on: opts.Color}
 	var hints Hints
 	for _, r := range results {
 		renderServer(w, cfg, r, pal, opts.Comments, &hints)
 		fmt.Fprintln(w)
 	}
 	renderSummary(w, cfg, results)
+}
+
+// renderConflicts prints the manifest's policy conflicts (D29) before any
+// server: each one is critical on its own.
+func renderConflicts(w io.Writer, cfg *config.Config, pal palette) {
+	cs := cfg.Conflicts()
+	for _, c := range cs {
+		fmt.Fprintf(w, "%s manifest: %s (%s: policy conflict)\n", pal.paint(codeBoldRed, "‼"), c.Message, pal.paint(codeBoldRed, "CRITICAL"))
+	}
+	if len(cs) > 0 {
+		fmt.Fprintln(w)
+	}
 }
 
 // ErrorTag is the head of an unreachable server's row: "ERROR [kind]:" for
@@ -166,6 +185,12 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 			pal.paint(codeRed, "MISSING"))
 	}
 	for _, k := range r.Diff.Unauthorized {
+		if t, revoked := cfg.Revoked(k.Fingerprint); revoked {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s (%s: revoked key)\n",
+				pal.paint(codeBoldRed, "‼"), revokedLabel(t), k.Fingerprint, k.Type,
+				pal.paint(codeRed, "REVOKED"), pal.paint(codeBoldRed, "CRITICAL"))
+			continue
+		}
 		// A key the manifest does not own also shows its on-server options:
 		// with the comment, the only clue to what it is and what it can do.
 		// A known owner's key keeps today's cell.
@@ -174,7 +199,7 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 			suffix = UnknownOptions(k)
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tinstalled but %s%s\n",
-			pal.paint(codeYellow, "⚠"), label(cfg, k), k.Fingerprint, k.Type,
+			pal.paint(codeYellow, "⚠"), unauthorizedLabel(cfg, r.Server.Name, k), k.Fingerprint, k.Type,
 			pal.paint(codeYellow, "UNAUTHORIZED"), suffix)
 	}
 	_ = tw.Flush()
@@ -191,6 +216,7 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 		fmt.Fprintln(w, "    sshd's default AuthorizedKeysFile accepts its keys too — this audit does not")
 		fmt.Fprintln(w, "    list them; apply moves the file aside when it writes this server")
 	}
+	renderMemoryNotes(w, cfg, r, pal)
 	renderFileNotes(w, r)
 	if r.NoUsersGranted {
 		fmt.Fprintln(w, "  note: no users granted access in the manifest")
@@ -199,6 +225,44 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 	fmt.Fprintf(w, "  → %d authorized · %d present · %d missing · %d unauthorized\n",
 		len(r.Diff.OK)+len(r.Diff.Missing), len(r.Diff.OK),
 		len(r.Diff.Missing), len(r.Diff.Unauthorized))
+}
+
+// renderMemoryNotes prints the server's serial and conflict findings: a
+// forged header (critical), a newer manifest's header (drift, D4a), and
+// membership in a policy conflict (critical, D29).
+func renderMemoryNotes(w io.Writer, cfg *config.Config, r ServerResult, pal palette) {
+	m := cfg.Serial()
+	switch {
+	case r.forged(m):
+		fmt.Fprintf(w, "  %s header claims serial %d, far above this manifest's %d — someone edited this file (%s: forged header)\n",
+			pal.paint(codeBoldRed, "‼"), r.HeaderSerial, m, pal.paint(codeBoldRed, "CRITICAL"))
+	case r.serialAhead(m):
+		fmt.Fprintf(w, "  ⚠ written by newer manifest serial %d (yours is %d): pull the latest manifest\n", r.HeaderSerial, m)
+	}
+	if inConflict(cfg, r.Server.Name) {
+		fmt.Fprintf(w, "  %s named by a manifest policy conflict above (%s: policy conflict)\n",
+			pal.paint(codeBoldRed, "‼"), pal.paint(codeBoldRed, "CRITICAL"))
+	}
+}
+
+// revokedLabel labels a tombstoned key: "alice (REVOKED 2026-11-08)", or
+// "(REVOKED 2026-11-08)" for an unlabelled tombstone.
+func revokedLabel(t config.Tombstone) string {
+	if t.User == "" {
+		return "(REVOKED " + t.Date + ")"
+	}
+	return t.User + " (REVOKED " + t.Date + ")"
+}
+
+// unauthorizedLabel is label, widened for a known owner whose access to
+// server an access tombstone removed (D1d): "bob (access revoked DATE)".
+func unauthorizedLabel(cfg *config.Config, server string, k authkeys.Key) string {
+	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
+		if t, gone := cfg.AccessRevoked(u.Name, server); gone {
+			return u.Name + " (access revoked " + t.Date + ")"
+		}
+	}
+	return label(cfg, k)
 }
 
 // okStatus renders a matched key's glyph and status cell.
@@ -325,14 +389,41 @@ func commentDrift(cfg *config.Config, r ServerResult, k authkeys.Key) (actual, d
 	return actual, desired, actual != desired
 }
 
-// criticalDrift reports whether this server's drift includes a missing
-// operator key — the drift class that threatens fleet access itself.
+// criticalDrift reports drift that threatens the fleet: a missing operator
+// key, a revoked key still installed (D2), a forged header serial, or a
+// policy conflict naming this server (D29).
 func criticalDrift(cfg *config.Config, r ServerResult) bool {
 	if r.Err != nil {
 		return false // unreachable: nothing knowable about its keys
 	}
 	for _, k := range r.Diff.Missing {
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
+			return true
+		}
+	}
+	for _, k := range r.Diff.Unauthorized {
+		if _, revoked := cfg.Revoked(k.Fingerprint); revoked {
+			return true
+		}
+	}
+	return r.forged(cfg.Serial()) || inConflict(cfg, r.Server.Name)
+}
+
+// forged: the header claims a serial more than authkeys.ForgedMargin above
+// the manifest's — someone edited the file.
+func (r ServerResult) forged(m uint64) bool {
+	return r.HeaderManaged && r.HeaderSerial > m+authkeys.ForgedMargin
+}
+
+// serialAhead: a newer manifest wrote this server (D4a) — drift, not critical.
+func (r ServerResult) serialAhead(m uint64) bool {
+	return r.HeaderManaged && r.HeaderSerial > m && !r.forged(m)
+}
+
+// inConflict reports whether a policy conflict names server.
+func inConflict(cfg *config.Config, server string) bool {
+	for _, c := range cfg.Conflicts() {
+		if slices.Contains(c.Servers, server) {
 			return true
 		}
 	}
@@ -351,18 +442,20 @@ const (
 )
 
 // statusOf is the single classifier behind the JSON status field, the
-// summary counts, and (via ExitCode's criticalDrift use) the exit code.
-// Precedence: unreachable (nothing knowable) > compliant > critical > drift.
+// summary counts, and the exit code. Precedence: unreachable (nothing
+// knowable) > critical > drift > compliant — critical and drift are checked
+// first, so a key-compliant server with a forged or newer header, or one a
+// policy conflict names, is never reported compliant.
 func statusOf(cfg *config.Config, r ServerResult) serverStatus {
 	switch {
 	case r.Err != nil:
 		return statusUnreachable
-	case r.Compliant():
-		return statusCompliant
 	case criticalDrift(cfg, r):
 		return statusCritical
-	default:
+	case !r.Compliant() || r.serialAhead(cfg.Serial()):
 		return statusDrift
+	default:
+		return statusCompliant
 	}
 }
 
@@ -371,11 +464,17 @@ func statusOf(cfg *config.Config, r ServerResult) serverStatus {
 type tallyCounts struct {
 	compliant, drift, critical, unreachable int
 	hostKeyAlerts                           int // unreachable servers whose host key changed or is revoked
+	revokedKeys                             int // tombstoned keys installed, across reachable servers
 }
 
 func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 	var c tallyCounts
 	for _, r := range results {
+		for _, k := range r.Diff.Unauthorized {
+			if _, revoked := cfg.Revoked(k.Fingerprint); revoked && r.Err == nil {
+				c.revokedKeys++
+			}
+		}
 		switch statusOf(cfg, r) {
 		case statusUnreachable:
 			c.unreachable++

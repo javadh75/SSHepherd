@@ -24,6 +24,25 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
+// TestAuditEmptyFleetConflictExits2: a policy conflict is critical on its
+// own — a manifest with no servers still exits 2 (D29).
+func TestAuditEmptyFleetConflictExits2(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	k, err := authkeys.ParseLine(testkeys.Line(t, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeConfig(t, "users:\n  - {name: alice, keys: [\""+testkeys.Line(t, 1)+"\"]}\n"+
+		"revoked:\n  - {fingerprint: "+k.Fingerprint+", date: 2026-11-08}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", path}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)\n%s", code, errBuf.String(), out.String())
+	}
+	if !strings.Contains(out.String(), "(CRITICAL: policy conflict)") {
+		t.Errorf("stdout = %q", out.String())
+	}
+}
+
 func TestAuditMissingConfig(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	code := run([]string{"audit", "--config", "no-such-file.yaml"}, &out, &errBuf)

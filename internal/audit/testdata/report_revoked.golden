@@ -1,0 +1,19 @@
+‼ manifest: user "alice" is granted "web-1" by access[0], but revoked[2] removed that access (2026-11-08): remove the grant, or delete the revoked: entry to restore it deliberately (CRITICAL: policy conflict)
+
+web-1 (deploy@10.0.0.1:22)
+  ✓  op                          SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice                       SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ✓  bob                         SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  present & authorized
+  ‼  carol (REVOKED 2026-11-08)  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  installed but REVOKED (CRITICAL: revoked key)
+  ‼ named by a manifest policy conflict above (CRITICAL: policy conflict)
+  → 3 authorized · 3 present · 0 missing · 1 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  op                               SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice                            SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ⚠  bob (access revoked 2026-11-08)  SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  installed but UNAUTHORIZED
+  ‼  (REVOKED 2026-11-08)             SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ  ssh-ed25519  installed but REVOKED (CRITICAL: revoked key)
+  ‼ named by a manifest policy conflict above (CRITICAL: policy conflict)
+  → 2 authorized · 2 present · 0 missing · 2 unauthorized
+
+Summary: 0/2 servers compliant · 2 with drift (2 critical) · 0 unreachable  → exit 2

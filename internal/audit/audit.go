@@ -39,6 +39,16 @@ type ServerResult struct {
 	// unrestricted second copy defeats a restricted first one.
 	Duplicates      []Duplicate
 	AuthorizedKeys2 bool // unmanaged non-empty ~/.ssh/authorized_keys2 (see fleet.ReadResult)
+	// HeaderSerial and HeaderManaged are authkeys.ParseHeaderOf's verdict on
+	// Content's first line: the serial of the manifest that last wrote the
+	// file (0 for the legacy header), and whether it is a managed header at
+	// all. Zero for an absent file.
+	HeaderSerial  uint64
+	HeaderManaged bool
+	// Keys2 and Keys2Err carry fleet.ReadResult's authorized_keys2 read;
+	// only the post-revoke sweep's reader asks for it.
+	Keys2    []byte
+	Keys2Err error
 }
 
 // Duplicate is one fingerprint installed on Count (>= 2) lines; Key is its
@@ -140,6 +150,10 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res.Content = read.Content
 	res.SessionKeyFP = read.SessionKeyFP
 	res.AuthorizedKeys2 = read.AuthorizedKeys2
+	res.Keys2, res.Keys2Err = read.Keys2, read.Keys2Err
+	if !read.FileAbsent {
+		res.HeaderSerial, res.HeaderManaged = authkeys.ParseHeaderOf(read.Content)
+	}
 
 	actual, parseErrs := authkeys.ParseFile(read.Content)
 	res.ParseErrs = parseErrs

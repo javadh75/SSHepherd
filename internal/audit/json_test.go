@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -36,6 +37,68 @@ func TestRenderJSONDriftGolden(t *testing.T) {
 	cfg := reportConfig(t)
 	got := renderJSON(t, cfg, driftResults(t, cfg))
 	checkGolden(t, "report_drift.golden.json", got)
+}
+
+func TestRenderJSONRevokedGolden(t *testing.T) {
+	// revoked[2]: an access conflict; [3] an unknown server (D1e); [4] an
+	// unknown server with a control rune (plan decision 3: a warning, and
+	// sanitized here); [5] key 8, unlabelled, installed on web-2.
+	cfg := memoryConfig(t, "  - {user: alice, servers: [web-1], date: 2026-11-08}\n  - {user: alice, servers: [db-9], date: 2026-11-08}\n"+
+		"  - {user: alice, servers: [\"db\\e9\"], date: 2026-11-08}\n  - {fingerprint: "+fpOf(t, 8)+", date: 2026-11-08}\n")
+	res := memoryRun(t, cfg, memFiles(t, authkeys.Header(7), []byte{1, 2, 3, 9}, []byte{1, 2, 3, 8}))
+	got := renderJSON(t, cfg, res)
+	checkGolden(t, "report_revoked.golden.json", got)
+	for _, want := range []string{
+		`"manifest_serial": 7`, `"policy_conflicts": [`, `"kind": "revoked_access"`, `"manifest_warnings": [`,
+		`"kind": "tombstone_unknown_server"`, `"revoked_keys": 2`, `"policy_conflicts": 1`,
+		`"revoked": {`, `"user": "carol"`, `"reason": "offboarded"`, `"access_revoked": {`, `"status": "critical"`,
+	} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("document lacks %s", want)
+		}
+	}
+	if bytes.ContainsRune(got, 0x1b) || bytes.Contains(got, []byte(`\u001b`)) {
+		t.Errorf("a control rune from the manifest reached the document:\n%s", got)
+	}
+	// spec §9: an unlabelled tombstone's revoked object has no "user".
+	var doc struct {
+		Servers []struct {
+			Keys struct {
+				Unauthorized []struct {
+					Fingerprint string         `json:"fingerprint"`
+					Revoked     map[string]any `json:"revoked"`
+				} `json:"unauthorized"`
+			} `json:"keys"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(got, &doc); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range doc.Servers {
+		for _, k := range s.Keys.Unauthorized {
+			if k.Fingerprint == fpOf(t, 8) {
+				_, hasUser := k.Revoked["user"]
+				found = k.Revoked["date"] == "2026-11-08" && !hasUser
+			}
+		}
+	}
+	if !found {
+		t.Errorf("key 8's revoked object must be {date} with no user:\n%s", got)
+	}
+}
+
+func TestRenderJSONSerialAheadGolden(t *testing.T) {
+	cfg := memoryConfig(t, "")
+	res := memoryRun(t, cfg, memFiles(t, authkeys.Header(8), []byte{1, 2, 3}, []byte{1, 2}))
+	res[1].HeaderSerial = 9999
+	got := renderJSON(t, cfg, res)
+	checkGolden(t, "report_serial_ahead.golden.json", got)
+	for _, want := range []string{`"header_serial": 8`, `"manifest_serial_ahead": 8`, `"forged_header_serial": 9999`} {
+		if !bytes.Contains(got, []byte(want)) {
+			t.Errorf("document lacks %s", want)
+		}
+	}
 }
 
 func TestRenderJSONCriticalGolden(t *testing.T) {

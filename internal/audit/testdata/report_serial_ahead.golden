@@ -1,0 +1,14 @@
+web-1 (deploy@10.0.0.1:22)
+  ✓  op     SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ✓  bob    SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  present & authorized
+  ⚠ written by newer manifest serial 8 (yours is 7): pull the latest manifest
+  → 3 authorized · 3 present · 0 missing · 0 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  op     SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ‼ header claims serial 9999, far above this manifest's 7 — someone edited this file (CRITICAL: forged header)
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/2 servers compliant · 2 with drift (1 critical) · 0 unreachable  → exit 2

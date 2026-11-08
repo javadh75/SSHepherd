@@ -61,7 +61,10 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				return nil
 			}
 			if len(cfg.Servers) == 0 {
-				return render(nil)
+				if err := render(nil); err != nil {
+					return err
+				}
+				return auditVerdict(cfg, nil) // a policy conflict is critical with no server read
 			}
 			results, err := readFleet(cmd.Context(), log, cfg, &cf, ids, "auditing")
 			if err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -19,9 +20,14 @@ const schemaVersion = 1
 // 2026-07-16 spec and the report_*.golden.json fixtures. Field names are
 // part of the public contract — change them only with a schema bump.
 type jsonReport struct {
-	Schema  int          `json:"schema"`
-	Summary jsonSummary  `json:"summary"`
-	Servers []jsonServer `json:"servers"`
+	Schema int `json:"schema"`
+	// ManifestSerial, PolicyConflicts and ManifestWarnings are
+	// additive-optional (schema stays 1), each omitted when zero/empty.
+	ManifestSerial   uint64                    `json:"manifest_serial,omitempty"`
+	PolicyConflicts  []config.Conflict         `json:"policy_conflicts,omitempty"`
+	ManifestWarnings []config.TombstoneWarning `json:"manifest_warnings,omitempty"`
+	Summary          jsonSummary               `json:"summary"`
+	Servers          []jsonServer              `json:"servers"`
 }
 
 type jsonSummary struct {
@@ -34,7 +40,12 @@ type jsonSummary struct {
 	// servers whose host key changed or is @revoked — the reason exit_code
 	// can be 2 with critical 0. Omitted when zero.
 	HostKeyAlerts int `json:"host_key_alerts,omitempty"`
-	ExitCode      int `json:"exit_code"`
+	// RevokedKeys and PolicyConflicts are additive-optional (schema stays
+	// 1), omitted when zero: installed tombstoned keys across servers, and
+	// the manifest's policy conflicts.
+	RevokedKeys     int `json:"revoked_keys,omitempty"`
+	PolicyConflicts int `json:"policy_conflicts,omitempty"`
+	ExitCode        int `json:"exit_code"`
 }
 
 type jsonServer struct {
@@ -63,6 +74,11 @@ type jsonServer struct {
 	// and a non-empty unmanaged ~/.ssh/authorized_keys2. Both are drift.
 	Duplicates      []jsonDuplicate `json:"duplicates,omitempty"`
 	AuthorizedKeys2 bool            `json:"authorized_keys2_present,omitempty"`
+	// HeaderSerial, ManifestSerialAhead (D4a, drift) and ForgedHeaderSerial
+	// (critical) are additive-optional (schema stays 1), omitted when 0.
+	HeaderSerial        uint64 `json:"header_serial,omitempty"`
+	ManifestSerialAhead uint64 `json:"manifest_serial_ahead,omitempty"`
+	ForgedHeaderSerial  uint64 `json:"forged_header_serial,omitempty"`
 }
 
 type jsonDuplicate struct {
@@ -98,6 +114,22 @@ type jsonKey struct {
 	// Options is additive-optional (schema stays 1): unauthorized keys the
 	// manifest does not own, their on-server options, sanitized.
 	Options []string `json:"options,omitempty"`
+	// Revoked (a tombstoned unauthorized key, critical) and AccessRevoked
+	// (an owner's key where an access tombstone removed it, D1d drift) are
+	// additive-optional (schema stays 1).
+	Revoked       *jsonRevoked       `json:"revoked,omitempty"`
+	AccessRevoked *jsonAccessRevoked `json:"access_revoked,omitempty"`
+}
+
+type jsonRevoked struct {
+	User   string `json:"user,omitempty"`
+	Date   string `json:"date"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type jsonAccessRevoked struct {
+	Date   string `json:"date"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type jsonOptionsDrift struct {
@@ -126,19 +158,22 @@ type JSONOptions struct {
 // document with a trailing newline. It is the --json twin of Render and
 // takes the same inputs.
 func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult, opts JSONOptions) error {
-	rep := jsonReport{Schema: schemaVersion, Servers: make([]jsonServer, 0, len(results))}
+	rep := jsonReport{Schema: schemaVersion, ManifestSerial: cfg.Serial(), Servers: make([]jsonServer, 0, len(results))}
+	rep.PolicyConflicts, rep.ManifestWarnings = memoryJSON(cfg)
 	for _, r := range results {
 		rep.Servers = append(rep.Servers, jsonServerFor(cfg, r, opts))
 	}
 	c := tallyResults(cfg, results)
 	rep.Summary = jsonSummary{
-		Servers:       len(results),
-		Compliant:     c.compliant,
-		Drift:         c.drift,
-		Critical:      c.critical,
-		Unreachable:   c.unreachable,
-		HostKeyAlerts: c.hostKeyAlerts,
-		ExitCode:      ExitCode(cfg, results),
+		Servers:         len(results),
+		Compliant:       c.compliant,
+		Drift:           c.drift,
+		Critical:        c.critical,
+		Unreachable:     c.unreachable,
+		HostKeyAlerts:   c.hostKeyAlerts,
+		RevokedKeys:     c.revokedKeys,
+		PolicyConflicts: len(rep.PolicyConflicts),
+		ExitCode:        ExitCode(cfg, results),
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -177,6 +212,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		return s
 	}
 	s.AuthorizedKeys2 = r.AuthorizedKeys2
+	serialFields(&s, cfg, r)
 	for _, d := range r.Duplicates {
 		jd := jsonDuplicate{Fingerprint: d.Key.Fingerprint, Count: d.Count}
 		if u, ok := cfg.OwnerOf(d.Key.Fingerprint); ok {
@@ -203,6 +239,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		if len(k.Options) > 0 && jk.Owner == nil {
 			jk.Options = sanitizeAll(k.Options)
 		}
+		memoryKey(&jk, cfg, r.Server.Name, k)
 		s.Keys.Unauthorized = append(s.Keys.Unauthorized, jk)
 	}
 	for _, pe := range r.ParseErrs {
@@ -211,6 +248,53 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		s.ParseErrors = append(s.ParseErrors, jsonParseError{Line: pe.Line, Error: sanitize.Remote(pe.Error())})
 	}
 	return s
+}
+
+// serialFields sets the server's header-serial fields (spec §9): the
+// header's serial, and the D4a (drift) or forged (critical) verdict.
+func serialFields(s *jsonServer, cfg *config.Config, r ServerResult) {
+	m := cfg.Serial()
+	if r.HeaderManaged {
+		s.HeaderSerial = r.HeaderSerial
+	}
+	switch {
+	case r.forged(m):
+		s.ForgedHeaderSerial = r.HeaderSerial
+	case r.serialAhead(m):
+		s.ManifestSerialAhead = r.HeaderSerial
+	}
+}
+
+// memoryKey marks an unauthorized key the manifest remembers: a key
+// tombstone (revoked, critical) or, for a known owner, an access tombstone
+// on this server (access_revoked, D1d drift). Tombstone text is printed,
+// so it passes sanitize.Remote like every text field (spec §9).
+func memoryKey(jk *jsonKey, cfg *config.Config, server string, k authkeys.Key) {
+	if t, revoked := cfg.Revoked(k.Fingerprint); revoked {
+		jk.Revoked = &jsonRevoked{User: sanitize.Remote(t.User), Date: t.Date, Reason: sanitize.Remote(t.Reason)}
+		return
+	}
+	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
+		if t, gone := cfg.AccessRevoked(u.Name, server); gone {
+			jk.AccessRevoked = &jsonAccessRevoked{Date: t.Date, Reason: sanitize.Remote(t.Reason)}
+		}
+	}
+}
+
+// memoryJSON is the manifest's policy conflicts and D1e warnings with
+// every manifest-derived text through sanitize.Remote (spec §9). A D1e
+// warning's server may hold control runes (plan decision 3). Each list
+// stays nil when empty (omitted).
+func memoryJSON(cfg *config.Config) ([]config.Conflict, []config.TombstoneWarning) {
+	cs := cfg.Conflicts() // a copy
+	for i := range cs {
+		cs[i].Message, cs[i].User = sanitize.Remote(cs[i].Message), sanitize.Remote(cs[i].User)
+	}
+	ws := slices.Clone(cfg.TombstoneWarnings)
+	for i := range ws {
+		ws[i].User, ws[i].Server, ws[i].Message = sanitize.Remote(ws[i].User), sanitize.Remote(ws[i].Server), sanitize.Remote(ws[i].Message)
+	}
+	return cs, ws
 }
 
 // jsonKeyFor renders one key. markOperator is true only for missing keys:

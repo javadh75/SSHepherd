@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -136,6 +137,10 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 func TestRenderColorStrippedEqualsPlain(t *testing.T) {
 	driftCfg := reportConfig(t)
 	criticalCfg := operatorConfig(t)
+	memCfg := memoryConfig(t, "  - {user: alice, servers: [web-1], date: 2026-11-08}\n  - {fingerprint: "+fpOf(t, 8)+", date: 2026-11-08}\n")
+	forgedCfg := memoryConfig(t, "")
+	serialResults := memoryRun(t, forgedCfg, memFiles(t, authkeys.Header(8), []byte{1, 2, 3}, []byte{1, 2}))
+	serialResults[1].HeaderSerial = 9999
 	for _, fix := range []struct {
 		name     string
 		cfg      *config.Config
@@ -145,6 +150,8 @@ func TestRenderColorStrippedEqualsPlain(t *testing.T) {
 		{"drift", driftCfg, driftResults(t, driftCfg), false},
 		{"critical", criticalCfg, criticalResults(t, criticalCfg), false},
 		{"comment drift", driftCfg, commentDriftResults(t, driftCfg), true},
+		{"revocation memory", memCfg, memoryRun(t, memCfg, memFiles(t, authkeys.Header(7), []byte{1, 2, 3, 9}, []byte{1, 2, 3, 8})), false},
+		{"serial notes", forgedCfg, serialResults, false},
 	} {
 		t.Run(fix.name, func(t *testing.T) {
 			var plain, colored bytes.Buffer

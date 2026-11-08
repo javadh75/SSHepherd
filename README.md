@@ -498,6 +498,64 @@ A key the manifest does not own shows as `(unknown)` with its on-server comment
 (quoted, sanitized, cut at 40 characters) and, in the status cell, its options
 (`installed but UNAUTHORIZED · options: "from=\"10.0.0.0/8\",no-pty"`).
 
+**Revocation memory.** Audit reads the manifest's `revoked:` and `serial:` and the
+serial in each server's managed header:
+
+- a **revoked key still installed** is `installed but REVOKED (CRITICAL: revoked key)`,
+  labelled with the former owner and date (`(REVOKED DATE)` alone for an unlabelled
+  tombstone) — exit `2`;
+- a known user's key on a server where their **access was revoked** keeps
+  `installed but UNAUTHORIZED`, labelled `bob (access revoked DATE)` — drift, exit `1`;
+- a **policy conflict** (a revoked key still listed under `users:`, or a grant over an
+  access tombstone) prints as a leading `‼ manifest: … (CRITICAL: policy conflict)` block,
+  and each server it names carries a conflict line — exit `2`, even with no server
+  read;
+- a header **written by a newer manifest** is `⚠ written by newer manifest serial S
+  (yours is M): pull the latest manifest` — drift, exit `1`;
+- a header serial more than 1000 above the manifest's is `‼ header claims serial S, far
+  above this manifest's M — someone edited this file (CRITICAL: forged header)` — exit `2`.
+
+A header serial below the manifest's is not drift (a plain apply leaves it).
+
+```console
+‼ manifest: user "alice" is granted "web-1" by access[0], but revoked[2] removed that access (2026-11-08): remove the grant, or delete the revoked: entry to restore it deliberately (CRITICAL: policy conflict)
+
+web-1 (deploy@10.0.0.1:22)
+  ✓  op                          SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice                       SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ✓  bob                         SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  present & authorized
+  ‼  carol (REVOKED 2026-11-08)  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  installed but REVOKED (CRITICAL: revoked key)
+  ‼ named by a manifest policy conflict above (CRITICAL: policy conflict)
+  → 3 authorized · 3 present · 0 missing · 1 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  op                               SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice                            SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ⚠  bob (access revoked 2026-11-08)  SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  installed but UNAUTHORIZED
+  ‼  (REVOKED 2026-11-08)             SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ  ssh-ed25519  installed but REVOKED (CRITICAL: revoked key)
+  ‼ named by a manifest policy conflict above (CRITICAL: policy conflict)
+  → 2 authorized · 2 present · 0 missing · 2 unauthorized
+
+Summary: 0/2 servers compliant · 2 with drift (2 critical) · 0 unreachable  → exit 2
+```
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ✓  op     SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ✓  bob    SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  present & authorized
+  ⚠ written by newer manifest serial 8 (yours is 7): pull the latest manifest
+  → 3 authorized · 3 present · 0 missing · 0 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  op     SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ✓  alice  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ‼ header claims serial 9999, far above this manifest's 7 — someone edited this file (CRITICAL: forged header)
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/2 servers compliant · 2 with drift (1 critical) · 0 unreachable  → exit 2
+```
+
 **Classified errors.** An unreachable server's line names the failure kind:
 `host_key_unknown`, `host_key_changed`, `host_key_type_unrecorded`,
 `host_key_revoked`, `host_key`, `agent`, `auth`, `dial`, `timeout`, `canceled`,
@@ -575,6 +633,148 @@ The report for the classified-error example above:
       "parse_errors": [],
       "file_absent": false,
       "no_users_granted": false
+    }
+  ]
+}
+```
+
+Revocation memory adds optional fields, each omitted when zero or empty (the schema
+stays 1): top-level `manifest_serial`, `policy_conflicts` and `manifest_warnings`;
+`summary.revoked_keys` and `summary.policy_conflicts`; per-key `revoked` and
+`access_revoked`; per-server `header_serial`, `manifest_serial_ahead` and
+`forged_header_serial`. Text taken from the manifest passes the same sanitizer as
+remote text:
+
+```json
+{
+  "schema": 1,
+  "manifest_serial": 7,
+  "policy_conflicts": [
+    {
+      "kind": "revoked_access",
+      "message": "user \"alice\" is granted \"web-1\" by access[0], but revoked[2] removed that access (2026-11-08): remove the grant, or delete the revoked: entry to restore it deliberately",
+      "user": "alice",
+      "servers": [
+        "web-1",
+        "web-2"
+      ]
+    }
+  ],
+  "manifest_warnings": [
+    {
+      "kind": "tombstone_unknown_server",
+      "revoked_index": 3,
+      "user": "alice",
+      "server": "db-9",
+      "message": "revoked[3]: unknown server \"db-9\" — this entry is ignored for it; remove db-9 from the entry once the server is gone for good"
+    },
+    {
+      "kind": "tombstone_unknown_server",
+      "revoked_index": 4,
+      "user": "alice",
+      "server": "db9",
+      "message": "revoked[4]: unknown server \"db\\x1b9\" — this entry is ignored for it; remove \"db\\x1b9\" from the entry once the server is gone for good"
+    }
+  ],
+  "summary": {
+    "servers": 2,
+    "compliant": 0,
+    "drift": 2,
+    "critical": 2,
+    "unreachable": 0,
+    "revoked_keys": 2,
+    "policy_conflicts": 1,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "revoked": {
+              "user": "carol",
+              "date": "2026-11-08",
+              "reason": "offboarded"
+            }
+          }
+        ]
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false,
+      "header_serial": 7
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "access_revoked": {
+              "date": "2026-11-08"
+            }
+          },
+          {
+            "owner": null,
+            "fingerprint": "SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ",
+            "type": "ssh-ed25519",
+            "revoked": {
+              "date": "2026-11-08"
+            }
+          }
+        ]
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false,
+      "header_serial": 7
     }
   ]
 }
@@ -1648,9 +1848,13 @@ say):
 
 ```console
 Exit codes:
-  0  compliant
-  1  drift or unreachable servers (compliance not proven)
-  2  critical: a missing operator key, or a changed or @revoked host key
+  0  compliant (a header serial below the manifest's is not drift)
+  1  drift or unreachable servers (compliance not proven), including a server
+     written by a newer manifest serial and a key installed where its access
+     was revoked
+  2  critical: a missing operator key, a changed or @revoked host key, a
+     revoked key still installed, a forged header serial, or a policy
+     conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted
 ```
 
