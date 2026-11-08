@@ -22,6 +22,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -185,7 +186,7 @@ func reseed(t *testing.T, d *sshconn.Dialer, srv config.Server, f fixture) {
 	}
 	var b strings.Builder
 	b.WriteString(`set -e; umask 077; cd "$HOME/.ssh"`)
-	b.WriteString(`; rm -f authorized_keys` + bakSuffix + ` authorized_keys` + origSuffix + ` authorized_keys` + tmpSuffix + ` authorized_keys2` + Keys2DisabledSuffix)
+	b.WriteString(`; rm -f authorized_keys` + bakSuffix + ` authorized_keys` + origSuffix + ` authorized_keys` + tmpSuffix + ` authorized_keys2` + fleet.Keys2DisabledSuffix)
 	b.WriteString(`; rmdir authorized_keys` + lockSuffix + ` 2>/dev/null || :`)
 	b.WriteString(`; ` + put("authorized_keys", f.keys) + `; ` + put("authorized_keys2", f.keys2))
 	for _, c := range f.clear {
@@ -512,7 +513,7 @@ func TestIntegrationApplyDisablesAuthorizedKeys2(t *testing.T) {
 	if out := remoteOut(t, w.Dialer, srv, `if [ -e "$HOME/.ssh/authorized_keys2" ]; then echo present; fi`); strings.TrimSpace(out) != "" {
 		t.Error("authorized_keys2 still in place after a disabling write")
 	}
-	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys2`+Keys2DisabledSuffix+`"`); got != planted {
+	if got := remoteOut(t, w.Dialer, srv, `cat "$HOME/.ssh/authorized_keys2`+fleet.Keys2DisabledSuffix+`"`); got != planted {
 		t.Errorf("disabled copy = %q, want the planted file", got)
 	}
 }

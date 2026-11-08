@@ -9,7 +9,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
-	"github.com/javadh75/SSHepherd/internal/sshwrite"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 )
 
 // RenderOptions tunes report presentation.
@@ -223,7 +223,7 @@ func renderKeys2Warning(w io.Writer, p ServerPlan, pal palette) {
 }
 
 // Keys2DisabledSuffix names where a write moves authorized_keys2 aside.
-const Keys2DisabledSuffix = sshwrite.Keys2DisabledSuffix
+const Keys2DisabledSuffix = fleet.Keys2DisabledSuffix // gitleaks:allow (a Go constant name, not a secret)
 
 // rewriteDetail renders a rewrite row's change. %q escapes any control
 // bytes a hostile on-server comment or option carries.

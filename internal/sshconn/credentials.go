@@ -16,23 +16,8 @@ import (
 	"github.com/javadh75/SSHepherd/internal/keyfile"
 )
 
-// SourceAgent is HeldKey.Source for a key the ssh-agent holds.
-const SourceAgent = "agent"
-
 // agentTimeout bounds agent I/O when the caller's ctx has no deadline.
 const agentTimeout = 3 * time.Second
-
-// HeldKey is one plain key the run can authenticate with: its SHA256
-// fingerprint and where it comes from — the --identity path, or
-// SourceAgent.
-type HeldKey struct {
-	Fingerprint string
-	Source      string
-}
-
-// Label renders the key with its source, as refusals list it:
-// "SHA256:… (/home/op/.ssh/ci)" or "SHA256:… (agent)".
-func (k HeldKey) Label() string { return k.Fingerprint + " (" + k.Source + ")" }
 
 // Credentials is the run's one credential source, shared by the read
 // client, the writer and the login probe: --identity key files (in flag
@@ -167,14 +152,14 @@ func isCert(pub ssh.PublicKey) bool {
 // Agent failure with key files present returns the file keys with a nil
 // error (agent keys simply stop counting — fail-safe) and the one-time
 // warning; with no key files it is returned.
-func (c *Credentials) Held(ctx context.Context) ([]HeldKey, error) {
-	var held []HeldKey
+func (c *Credentials) Held(ctx context.Context) ([]fleet.HeldKey, error) {
+	var held []fleet.HeldKey
 	seen := make(map[string]bool, len(c.Files))
 	for _, id := range c.Files {
 		fp := ssh.FingerprintSHA256(id.Signer.PublicKey())
 		if !seen[fp] {
 			seen[fp] = true
-			held = append(held, HeldKey{Fingerprint: fp, Source: id.Path})
+			held = append(held, fleet.HeldKey{Fingerprint: fp, Source: id.Path})
 		}
 	}
 	if c.AgentSock == "" && len(held) > 0 {
@@ -195,7 +180,7 @@ func (c *Credentials) Held(ctx context.Context) ([]HeldKey, error) {
 		fp := ssh.FingerprintSHA256(k)
 		if !seen[fp] {
 			seen[fp] = true
-			held = append(held, HeldKey{Fingerprint: fp, Source: SourceAgent})
+			held = append(held, fleet.HeldKey{Fingerprint: fp, Source: fleet.SourceAgent})
 		}
 	}
 	return held, nil

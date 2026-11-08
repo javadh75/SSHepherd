@@ -63,7 +63,7 @@ func TestSignersUnionOrderAndDedup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Held: %v", err)
 	}
-	wantHeld := []HeldKey{{sshtest.Fingerprint(t, a), "/k/a"}, {sshtest.Fingerprint(t, b), SourceAgent}}
+	wantHeld := []fleet.HeldKey{{Fingerprint: sshtest.Fingerprint(t, a), Source: "/k/a"}, {Fingerprint: sshtest.Fingerprint(t, b), Source: fleet.SourceAgent}}
 	if !slices.Equal(held, wantHeld) {
 		t.Errorf("Held = %v, want %v (no certificate, file source wins)", held, wantHeld)
 	}
@@ -152,12 +152,6 @@ func TestNoKeysAtAllIsAnAgentError(t *testing.T) {
 				t.Fatal("Held with no keys at all returned no error")
 			}
 		})
-	}
-}
-
-func TestHeldKeyLabel(t *testing.T) {
-	if got := (HeldKey{Fingerprint: "SHA256:x", Source: SourceAgent}).Label(); got != "SHA256:x (agent)" {
-		t.Errorf("Label = %q", got)
 	}
 }
 

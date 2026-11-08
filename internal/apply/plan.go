@@ -1,7 +1,8 @@
 // Package apply computes the write plan for `sshepherd apply`: pure
 // classification of each server against the manifest's rendered desired
 // state, the self-lockout guard, phase-2 orchestration behind a writer
-// seam, and the plan/outcome report. Nothing here touches the network.
+// seam, and the plan/outcome report. Nothing here imports the SSH
+// transport.
 package apply
 
 import (
@@ -13,8 +14,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
-	"github.com/javadh75/SSHepherd/internal/sshwrite"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 )
 
 // Class classifies one server's plan.
@@ -113,7 +113,7 @@ type ServerPlan struct {
 	AuthorizedKeys2 bool
 	// Expect is the phase-1 snapshot the write is conditional on: phase 2
 	// refuses a file that changed after this plan was shown.
-	Expect sshwrite.Snapshot
+	Expect fleet.Snapshot
 
 	Outcome    Outcome
 	OutcomeErr error
@@ -131,11 +131,11 @@ func (p ServerPlan) DisableKeys2() bool {
 }
 
 // Build computes the plan for every phase-1 result. held is what the run
-// could authenticate with at preflight (sshconn.Credentials.Held: key files
+// could authenticate with at preflight (the run's held-key listing: key files
 // and plain agent keys, with their sources) — the self-lockout guard's
 // ground truth. Pure; the only possible error is a render failure,
 // impossible for a validated manifest (a tool bug, exit 3).
-func Build(cfg *config.Config, results []audit.ServerResult, held []sshconn.HeldKey) ([]ServerPlan, error) {
+func Build(cfg *config.Config, results []audit.ServerResult, held []fleet.HeldKey) ([]ServerPlan, error) {
 	plans := make([]ServerPlan, 0, len(results))
 	for _, r := range results {
 		p, err := planOne(cfg, r, held)
@@ -150,7 +150,7 @@ func Build(cfg *config.Config, results []audit.ServerResult, held []sshconn.Held
 // maxRender caps the rendered file at what the read path accepts back: a
 // larger file could be written but never verified or audited. A variable
 // only so tests can lower it.
-var maxRender = sshconn.MaxRemoteOutput
+var maxRender = fleet.MaxRemoteOutput
 
 // theLines words the unparseable-line refusal's fix ("the line" / "the
 // lines"); a helper so planOne stays under the gocyclo cap.
@@ -189,11 +189,11 @@ func planNoGrants(p ServerPlan, r audit.ServerResult) ServerPlan {
 	return p
 }
 
-func planOne(cfg *config.Config, r audit.ServerResult, held []sshconn.HeldKey) (ServerPlan, error) {
+func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey) (ServerPlan, error) {
 	p := ServerPlan{
 		Server: r.Server, Outcome: OutcomePending, FileAbsent: r.FileAbsent,
 		AuthorizedKeys2: r.AuthorizedKeys2,
-		Expect:          sshwrite.SnapshotOf(r.FileAbsent, r.Content),
+		Expect:          fleet.SnapshotOf(r.FileAbsent, r.Content),
 	}
 	if r.Err != nil {
 		p.Class = ClassUnreachable
@@ -398,7 +398,7 @@ type guardVerdict struct {
 // 2026-07-19 spec's guard section; owner-approved refinement). Removing the
 // very key that authenticated is allowed when another held key survives —
 // that is what rotate is — with a loud per-server note.
-func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.RenderEntry, held []sshconn.HeldKey) guardVerdict {
+func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.RenderEntry, held []fleet.HeldKey) guardVerdict {
 	set := heldSet(held)
 	// Nothing held means nothing could ever prove this session keeps
 	// access (and the post-write login probe would have nothing to offer):
@@ -440,7 +440,7 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 // lockoutRefusal explains a predicted lockout, listing every held key with
 // its source so a mismatch (the wrong --identity, a stray agent) is
 // visible at a glance.
-func lockoutRefusal(server string, keys []authkeys.Key, held []sshconn.HeldKey, set map[string]bool) string {
+func lockoutRefusal(server string, keys []authkeys.Key, held []fleet.HeldKey, set map[string]bool) string {
 	// len(set), not len(held): one key can be held twice (an --identity
 	// file the agent also holds), and the message counts distinct keys.
 	held1 := fmt.Sprintf("none of the %d keys you hold (identity files + agent) would remain", len(set))
@@ -465,17 +465,17 @@ func lockoutRefusal(server string, keys []authkeys.Key, held []sshconn.HeldKey, 
 // agentOnlyWarning is set when --identity keys were given (some held key
 // is a file) but every survivor here is an agent key: the guard passes on
 // a credential the next run without this agent will not have.
-func agentOnlyWarning(surviving []authkeys.Key, held []sshconn.HeldKey) string {
+func agentOnlyWarning(surviving []authkeys.Key, held []fleet.HeldKey) string {
 	if !slices.ContainsFunc(held, isFileKey) {
 		return ""
 	}
 	src := sourceMap(held)
 	labels := make([]string, 0, len(surviving))
 	for _, k := range surviving {
-		if src[k.Fingerprint] != sshconn.SourceAgent {
+		if src[k.Fingerprint] != fleet.SourceAgent {
 			return ""
 		}
-		labels = append(labels, k.Fingerprint+" ("+sshconn.SourceAgent+")")
+		labels = append(labels, k.Fingerprint+" ("+fleet.SourceAgent+")")
 	}
 	verb := "keeps"
 	if len(labels) > 1 {
@@ -486,10 +486,10 @@ func agentOnlyWarning(surviving []authkeys.Key, held []sshconn.HeldKey) string {
 }
 
 // isFileKey reports whether k came from an --identity file.
-func isFileKey(k sshconn.HeldKey) bool { return k.Source != sshconn.SourceAgent }
+func isFileKey(k fleet.HeldKey) bool { return k.Source != fleet.SourceAgent }
 
 // heldSet indexes the held keys' fingerprints.
-func heldSet(held []sshconn.HeldKey) map[string]bool {
+func heldSet(held []fleet.HeldKey) map[string]bool {
 	set := make(map[string]bool, len(held))
 	for _, k := range held {
 		set[k.Fingerprint] = true
@@ -498,7 +498,7 @@ func heldSet(held []sshconn.HeldKey) map[string]bool {
 }
 
 // sourceMap maps each held fingerprint to its first source.
-func sourceMap(held []sshconn.HeldKey) map[string]string {
+func sourceMap(held []fleet.HeldKey) map[string]string {
 	src := make(map[string]string, len(held))
 	for _, k := range held {
 		if _, ok := src[k.Fingerprint]; !ok {
@@ -510,7 +510,7 @@ func sourceMap(held []sshconn.HeldKey) map[string]string {
 
 // heldList renders the held keys, distinct, in listing order:
 // "SHA256:… (/path), SHA256:… (agent)".
-func heldList(held []sshconn.HeldKey) string {
+func heldList(held []fleet.HeldKey) string {
 	seen := make(map[string]bool, len(held))
 	parts := make([]string, 0, len(held))
 	for _, k := range held {

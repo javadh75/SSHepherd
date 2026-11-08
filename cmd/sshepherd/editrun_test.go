@@ -8,7 +8,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -82,11 +82,11 @@ func TestAnySurvivor(t *testing.T) {
 	if anySurvivor(desired, nil) {
 		t.Error("no held keys cannot survive")
 	}
-	if !anySurvivor(desired, []sshconn.HeldKey{{Fingerprint: fpOf(t, 1), Source: sshconn.SourceAgent}}) {
+	if !anySurvivor(desired, []fleet.HeldKey{{Fingerprint: fpOf(t, 1), Source: fleet.SourceAgent}}) {
 		t.Error("a held desired key survives")
 	}
 	if anySurvivor([]apply.ServerPlan{{Class: apply.ClassRefused, Desired: desired[0].Desired}},
-		[]sshconn.HeldKey{{Fingerprint: fpOf(t, 1)}}) {
+		[]fleet.HeldKey{{Fingerprint: fpOf(t, 1)}}) {
 		t.Error("only change plans count")
 	}
 }

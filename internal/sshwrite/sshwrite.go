@@ -23,6 +23,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sanitize"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
@@ -57,10 +58,6 @@ const (
 	// casSuffix names the staging copy the compare-and-swap checks and
 	// that then becomes the backup (writeCmdFor's casBackupBlock).
 	casSuffix = ".sshepherd.cas"
-
-	// Keys2DisabledSuffix is appended to ~/.ssh/authorized_keys2 when a
-	// write disables it (Request.DisableKeys2).
-	Keys2DisabledSuffix = ".sshepherd.disabled"
 )
 
 // defaultSessionBudget bounds a write connection's whole life once it is
@@ -71,72 +68,16 @@ const (
 // back.
 const defaultSessionBudget = 2 * time.Minute
 
-// Snapshot is the phase-1 state a write is conditional on: the file was
-// absent, or it held Size bytes with POSIX cksum Cksum. The write script
-// refuses (ChangedError) when the file no longer matches, so content that
-// appeared after the plan was shown is never silently overwritten.
-type Snapshot struct {
-	Absent bool
-	Size   int
-	Cksum  uint32
-}
+// Snapshot is the phase-1 state a write is conditional on (fleet.Snapshot):
+// the write script refuses (ChangedError) when the file no longer matches.
+type Snapshot = fleet.Snapshot
+
+// Request is one server's write (fleet.WriteRequest).
+type Request = fleet.WriteRequest
 
 // SnapshotOf builds the snapshot of phase-1 bytes read (or of an absent
-// file).
-func SnapshotOf(absent bool, content []byte) Snapshot {
-	if absent {
-		return Snapshot{Absent: true}
-	}
-	return Snapshot{Size: len(content), Cksum: Cksum(content)}
-}
-
-// Request is one server's write: the rendered bytes, the phase-1 snapshot
-// they replace, and the SHA256 fingerprints of the held keys (key files or
-// agent) that must still log in afterwards (the post-write probe offers
-// exactly these, in this order).
-type Request struct {
-	Content   []byte
-	Expect    Snapshot
-	Survivors []string
-	// DisableKeys2 moves a non-empty ~/.ssh/authorized_keys2 aside (to
-	// Keys2DisabledSuffix) after the write verifies and before the login
-	// probe, so the probe proves the survivors log in without it.
-	DisableKeys2 bool
-}
-
-// cksumTable is the CRC-32 table for POSIX cksum's polynomial 0x04C11DB7,
-// MSB-first (not hash/crc32's reflected IEEE variant).
-var cksumTable = func() [256]uint32 {
-	var t [256]uint32
-	for i := range t {
-		c := uint32(i) << 24 // #nosec G115 -- i < 256
-		for range 8 {
-			if c&0x80000000 != 0 {
-				c = c<<1 ^ 0x04C11DB7
-			} else {
-				c <<= 1
-			}
-		}
-		t[i] = c
-	}
-	return t
-}()
-
-// Cksum computes the POSIX cksum CRC of b — the value `cksum < file` prints
-// first — so the write script can compare-and-swap with a POSIX-only tool
-// (busybox, dash and macOS all ship cksum; sha256sum is not POSIX). The
-// threat model is concurrent honest edits, not an adversary who already
-// controls the file, so a CRC is sufficient.
-func Cksum(b []byte) uint32 {
-	var crc uint32
-	for _, c := range b {
-		crc = crc<<8 ^ cksumTable[byte(crc>>24)^c]
-	}
-	for n := len(b); n > 0; n >>= 8 {
-		crc = crc<<8 ^ cksumTable[byte(crc>>24)^byte(n)] // #nosec G115 -- low byte of the length, by definition
-	}
-	return ^crc
-}
+// file); see fleet.SnapshotOf.
+func SnapshotOf(absent bool, content []byte) Snapshot { return fleet.SnapshotOf(absent, content) }
 
 // lockPrologue takes the per-target lock (mkdir is atomic on every POSIX
 // filesystem) and arranges its removal on every exit path, together with
@@ -331,13 +272,13 @@ func restoreCmdFor(path string, wasAbsent bool, wrote Snapshot) string {
 }
 
 // disableKeys2Cmd moves ~/.ssh/authorized_keys2 aside to
-// Keys2DisabledSuffix (replacing an older disabled copy). mv renames a
+// fleet.Keys2DisabledSuffix (replacing an older disabled copy). mv renames a
 // symlink itself, never writing through it; the directory passes the same
 // ancestor walk as the write, so only the login user (or root) can race the
 // rename. An absent file is a no-op.
 func disableKeys2Cmd() string {
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
-		`; set -f; u=$(id -u); d=$(dirname "$p"); s="$p"` + Keys2DisabledSuffix + `; ` + ancestorCheck +
+		`; set -f; u=$(id -u); d=$(dirname "$p"); s="$p"` + fleet.Keys2DisabledSuffix + `; ` + ancestorCheck +
 		`; if [ -e "$p" ] || [ -L "$p" ]; then rm -f "$s" || exit 1; mv -f "$p" "$s" || exit 1; fi`
 }
 
@@ -345,7 +286,7 @@ func disableKeys2Cmd() string {
 // refusing (46) to clobber an authorized_keys2 recreated meanwhile.
 func restoreKeys2Cmd() string {
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
-		`; set -f; s="$p"` + Keys2DisabledSuffix +
+		`; set -f; s="$p"` + fleet.Keys2DisabledSuffix +
 		`; if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi; if [ -e "$s" ] || [ -L "$s" ]; then mv -f "$s" "$p" || exit 1; fi`
 }
 
@@ -404,23 +345,6 @@ func (e *LockoutError) Error() string {
 
 func (e *LockoutError) Unwrap() []error { return []error{e.Probe, e.Restore} }
 
-// IsRefusal reports whether err is a server-side refusal: the write was
-// declined before anything changed (symlink, unsafe path, changed since
-// plan, locked).
-func IsRefusal(err error) bool {
-	var (
-		sym  *SymlinkError
-		uns  *UnsafePathError
-		chg  *ChangedError
-		lock *LockedError
-	)
-	return errors.As(err, &sym) || errors.As(err, &uns) || errors.As(err, &chg) || errors.As(err, &lock)
-}
-
-// ErrNotStarted marks an Apply that was interrupted (ctx canceled) before
-// the write began: nothing on the server changed.
-var ErrNotStarted = errors.New("interrupted before the write started")
-
 // FleetWriter applies rendered authorized_keys content to servers over SSH.
 // It is apply's Writer seam implementation.
 type FleetWriter struct {
@@ -453,10 +377,11 @@ func (w *FleetWriter) log() *slog.Logger {
 // (*LockoutError).
 //
 // ctx bounds and may interrupt only the connect: canceled there, Apply
-// returns an error wrapping ErrNotStarted and nothing changed. Once the
-// write script starts, every stage runs to completion under the session
-// budget — a started write always finishes, verifies and, if need be, rolls
-// back. Refusals (IsRefusal) mean nothing changed. All errors pass the
+// returns an error wrapping fleet.ErrWriteNotStarted and nothing changed.
+// Once the write script starts, every stage runs to completion under the
+// session budget — a started write always finishes, verifies and, if need
+// be, rolls back. Refusals (fleet.IsRefusal: the typed refusal errors,
+// wrapped by fleet.Refused) mean nothing changed. All errors pass the
 // sanitized-error path: remote text never reaches a terminal raw.
 func (w *FleetWriter) Apply(ctx context.Context, srv config.Server, req Request) error {
 	if len(req.Survivors) == 0 {
@@ -550,9 +475,9 @@ func (w *FleetWriter) execFn() func(context.Context, *ssh.Client, string, io.Rea
 // the socket deadline) is the session budget, detached from ctx; ctx still
 // aborts the dial and handshake through the AfterFunc until the connect
 // returns. Canceled before or during the connect, it returns an error
-// wrapping ErrNotStarted.
+// wrapping fleet.ErrWriteNotStarted.
 func (w *FleetWriter) connectForWrite(ctx context.Context, srv config.Server) (*sshconn.Conn, error) {
-	notStarted := fmt.Errorf("%s: %w", srv.Name, ErrNotStarted)
+	notStarted := fmt.Errorf("%s: %w", srv.Name, fleet.ErrWriteNotStarted)
 	if ctx.Err() != nil {
 		return nil, notStarted
 	}
@@ -588,13 +513,13 @@ func writeExitError(code int, path, server string, stderr *sshconn.CappedBuffer)
 	case 0:
 		return nil
 	case symlinkExit:
-		return &SymlinkError{Path: path}
+		return fleet.Refused(&SymlinkError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case changedExit:
-		return &ChangedError{Path: path}
+		return fleet.Refused(&ChangedError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case lockedExit:
-		return &LockedError{Path: path}
+		return fleet.Refused(&LockedError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case unsafePathExit:
-		return &UnsafePathError{Path: path}
+		return fleet.Refused(&UnsafePathError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case shortWriteExit:
 		return fmt.Errorf("write on %s: upload incomplete (the server received fewer bytes than rendered) — original left untouched", server)
 	default:
@@ -657,7 +582,7 @@ func (w *FleetWriter) probeOrRestore(ctx context.Context, conn *sshconn.Conn, sr
 		case err != nil:
 			k2err = sshconn.SanitizedError{Err: fmt.Errorf("restore authorized_keys2 on %s: %w", srv.Name, err)}
 		case code == changedExit:
-			k2err = fmt.Errorf("restore authorized_keys2 on %s refused: it was recreated meanwhile (the disabled copy is at authorized_keys2%s)", srv.Name, Keys2DisabledSuffix)
+			k2err = fmt.Errorf("restore authorized_keys2 on %s refused: it was recreated meanwhile (the disabled copy is at authorized_keys2%s)", srv.Name, fleet.Keys2DisabledSuffix)
 		case code != 0:
 			k2err = stageFailure("restore authorized_keys2", srv.Name, code, stderr)
 		}
@@ -668,7 +593,8 @@ func (w *FleetWriter) probeOrRestore(ctx context.Context, conn *sshconn.Conn, sr
 
 // restoreExitError explains a nonzero restore exit. It deliberately returns
 // untyped errors: a LockoutError unwraps to its Restore error, and a typed
-// refusal there would make IsRefusal call a written file "nothing changed".
+// refusal there would make fleet.IsRefusal call a written file "nothing
+// changed".
 func restoreExitError(code int, server string, stderr *sshconn.CappedBuffer) error {
 	switch code {
 	case symlinkExit:

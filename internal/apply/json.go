@@ -11,7 +11,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
+	"github.com/javadh75/SSHepherd/internal/sanitize"
 )
 
 // jsonSchemaVersion marks the write-path document shape. Bump only on
@@ -203,7 +203,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 
 // clean strips terminal-hostile runes (C0/DEL/C1, Cf) that encoding/json
 // would emit raw; idempotent on already-sanitized text.
-func clean(s string) string { return sshconn.SanitizeRemote(s) }
+func clean(s string) string { return sanitize.Remote(s) }
 
 // cleanLine is clean plus oneLine's whitespace collapse, for error text.
 func cleanLine(s string) string { return clean(strings.Join(strings.Fields(s), " ")) }

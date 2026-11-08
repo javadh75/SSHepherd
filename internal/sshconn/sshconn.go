@@ -37,7 +37,8 @@ const FileAbsentExit = 44
 
 // MaxRemoteOutput caps how much remote stdout/stderr is buffered (1 MiB).
 // authorized_keys files are tiny; anything larger is hostile or broken.
-const MaxRemoteOutput = 1 << 20
+// It is fleet.MaxRemoteOutput, kept under the transport's own name.
+const MaxRemoteOutput = fleet.MaxRemoteOutput
 
 // ShQuote returns s as one fully single-quoted POSIX shell token: the result
 // is wrapped in single quotes and each embedded single quote is rendered by

@@ -16,6 +16,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/manifest"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 )
@@ -238,7 +239,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 			}
 			return apply.EditPrompt(ep.summary.Operators, toWrite, len(plans), false), nil
 		},
-		beforeWrite: func(ctx context.Context, plans []apply.ServerPlan, fresh []sshconn.HeldKey) error {
+		beforeWrite: func(ctx context.Context, plans []apply.ServerPlan, fresh []fleet.HeldKey) error {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("interrupted: %w — manifest not saved, nothing written", err)
 			}
@@ -442,7 +443,7 @@ func nothingCanLand(plans []apply.ServerPlan) bool {
 
 // anySurvivor: some change-planned server keeps a key held under the
 // post-prompt listing.
-func anySurvivor(plans []apply.ServerPlan, fresh []sshconn.HeldKey) bool {
+func anySurvivor(plans []apply.ServerPlan, fresh []fleet.HeldKey) bool {
 	held := make(map[string]bool, len(fresh))
 	for _, k := range fresh {
 		held[k.Fingerprint] = true

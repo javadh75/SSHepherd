@@ -18,3 +18,22 @@ type ReadResult struct {
 	// nor manages them. Probed only when the audited path is the default.
 	AuthorizedKeys2 bool
 }
+
+// SourceAgent is HeldKey.Source for a key the ssh-agent holds.
+const SourceAgent = "agent"
+
+// HeldKey is one plain key the run can authenticate with: its SHA256
+// fingerprint and where it comes from — the --identity path, or
+// SourceAgent.
+type HeldKey struct {
+	Fingerprint string
+	Source      string
+}
+
+// Label renders the key with its source, as refusals list it:
+// "SHA256:… (/home/op/.ssh/ci)" or "SHA256:… (agent)".
+func (k HeldKey) Label() string { return k.Fingerprint + " (" + k.Source + ")" }
+
+// MaxRemoteOutput caps remote stdout/stderr buffering (1 MiB) and, so a
+// written file can always be read back, the rendered file size.
+const MaxRemoteOutput = 1 << 20

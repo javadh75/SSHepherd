@@ -10,8 +10,6 @@ import (
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
-	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -37,7 +35,7 @@ func buildPlans(t *testing.T, cfg *config.Config, r audit.KeyReader, agentFPs []
 }
 
 // buildPlansHeld is buildPlans with an explicit held set (any sources).
-func buildPlansHeld(t *testing.T, cfg *config.Config, r audit.KeyReader, held []sshconn.HeldKey) []ServerPlan {
+func buildPlansHeld(t *testing.T, cfg *config.Config, r audit.KeyReader, held []fleet.HeldKey) []ServerPlan {
 	t.Helper()
 	results := audit.Run(context.Background(), cfg, r, audit.Options{Parallel: 4})
 	plans, err := Build(cfg, results, held)
@@ -48,17 +46,17 @@ func buildPlansHeld(t *testing.T, cfg *config.Config, r audit.KeyReader, held []
 }
 
 // agentHeld labels fingerprints as agent-held keys.
-func agentHeld(fps ...string) []sshconn.HeldKey {
-	held := make([]sshconn.HeldKey, 0, len(fps))
+func agentHeld(fps ...string) []fleet.HeldKey {
+	held := make([]fleet.HeldKey, 0, len(fps))
 	for _, fp := range fps {
-		held = append(held, sshconn.HeldKey{Fingerprint: fp, Source: sshconn.SourceAgent})
+		held = append(held, fleet.HeldKey{Fingerprint: fp, Source: fleet.SourceAgent})
 	}
 	return held
 }
 
 // fileHeld labels a fingerprint as held through an --identity file.
-func fileHeld(fp, path string) sshconn.HeldKey {
-	return sshconn.HeldKey{Fingerprint: fp, Source: path}
+func fileHeld(fp, path string) fleet.HeldKey {
+	return fleet.HeldKey{Fingerprint: fp, Source: path}
 }
 
 // planFor pulls one server's plan out by name.
@@ -411,7 +409,7 @@ access:
 func TestPlanRefusesUnverifiableRenderSize(t *testing.T) {
 	cfg := planCfg(t)
 	saved := maxRender
-	maxRender = 100 // the real cap is sshconn.MaxRemoteOutput (1 MiB)
+	maxRender = 100 // the real cap is fleet.MaxRemoteOutput (1 MiB)
 	t.Cleanup(func() { maxRender = saved })
 	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
@@ -425,7 +423,7 @@ func TestPlanCarriesSnapshotAndKeys2(t *testing.T) {
 	content := []byte(testkeys.Line(t, 1) + "\n")
 	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: content, AuthorizedKeys2: true}}}
 	p := planFor(t, buildPlans(t, cfg, r, []string{fp(t, 1)}), "web-1")
-	if p.Expect != sshwrite.SnapshotOf(false, content) {
+	if p.Expect != fleet.SnapshotOf(false, content) {
 		t.Errorf("Expect = %+v, want the snapshot of the phase-1 bytes", p.Expect)
 	}
 	if !p.AuthorizedKeys2 {

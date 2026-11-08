@@ -8,7 +8,6 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -36,7 +35,7 @@ access:
 		"web-1": {Content: []byte(testkeys.Line(t, 4) + " ci_old\n")},
 		"web-2": {FileAbsent: true},
 	}}
-	held := []sshconn.HeldKey{fileHeld(fp(t, 4), "/home/ci/.ssh/ci_old"), agentHeld(fp(t, 2))[0]}
+	held := []fleet.HeldKey{fileHeld(fp(t, 4), "/home/ci/.ssh/ci_old"), agentHeld(fp(t, 2))[0]}
 	return cfg, buildPlansHeld(t, cfg, r, held)
 }
 

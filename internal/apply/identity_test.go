@@ -10,7 +10,6 @@ import (
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -41,7 +40,7 @@ func TestHeadlessRotationPlan(t *testing.T) {
 	oldKey, newKey := fileHeld(fp(t, 4), "/k/ci_old"), fileHeld(fp(t, 5), "/k/ci_new")
 
 	t.Run("old and new held: change, probe proves the new key", func(t *testing.T) {
-		p := planFor(t, buildPlansHeld(t, cfg, r, []sshconn.HeldKey{oldKey, newKey}), "web-1")
+		p := planFor(t, buildPlansHeld(t, cfg, r, []fleet.HeldKey{oldKey, newKey}), "web-1")
 		if p.Class != ClassChange {
 			t.Fatalf("Class = %s (%s), want change", p.Class, p.Refusal)
 		}
@@ -53,13 +52,13 @@ func TestHeadlessRotationPlan(t *testing.T) {
 		}
 		plans := []ServerPlan{p}
 		w := &fakeWriter{}
-		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: []sshconn.HeldKey{oldKey, newKey}})
+		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: []fleet.HeldKey{oldKey, newKey}})
 		if got := w.calls["web-1"].Survivors; !slices.Equal(got, []string{fp(t, 5)}) {
 			t.Errorf("probe Survivors = %v, want ci_new only", got)
 		}
 	})
 	t.Run("only the old key held: refused, naming the fix", func(t *testing.T) {
-		p := planFor(t, buildPlansHeld(t, cfg, r, []sshconn.HeldKey{oldKey}), "web-1")
+		p := planFor(t, buildPlansHeld(t, cfg, r, []fleet.HeldKey{oldKey}), "web-1")
 		if p.Class != ClassRefused {
 			t.Fatalf("Class = %s, want refused", p.Class)
 		}
@@ -78,7 +77,7 @@ func TestHeadlessRotationPlan(t *testing.T) {
 func TestRefusalListsSources(t *testing.T) {
 	cfg := planCfg(t)
 	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
-	held := []sshconn.HeldKey{fileHeld(fp(t, 9), "/k/x"), fileHeld(fp(t, 9), "/k/x-again"), agentHeld(fp(t, 8))[0], agentHeld(fp(t, 9))[0]}
+	held := []fleet.HeldKey{fileHeld(fp(t, 9), "/k/x"), fileHeld(fp(t, 9), "/k/x-again"), agentHeld(fp(t, 8))[0], agentHeld(fp(t, 9))[0]}
 	p := planFor(t, buildPlansHeld(t, cfg, r, held), "web-1")
 	want := "none of the 2 keys you hold (identity files + agent) would remain in web-1's authorized_keys — applying would lock this session out (held: " +
 		fp(t, 9) + " (/k/x), " + fp(t, 8) + " (agent))"
@@ -92,15 +91,15 @@ func TestAgentOnlySurvivorWarning(t *testing.T) {
 	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {FileAbsent: true}}}
 	tests := []struct {
 		name string
-		held []sshconn.HeldKey
+		held []fleet.HeldKey
 		want string
 	}{
-		{"identity given, only an agent key survives", []sshconn.HeldKey{fileHeld(fp(t, 9), "/k/ci"), agentHeld(fp(t, 1))[0]},
+		{"identity given, only an agent key survives", []fleet.HeldKey{fileHeld(fp(t, 9), "/k/ci"), agentHeld(fp(t, 1))[0]},
 			"only " + fp(t, 1) + " (agent) keeps access; none of your --identity keys survives — a run without this agent will be locked out"},
-		{"two agent survivors", []sshconn.HeldKey{fileHeld(fp(t, 9), "/k/ci"), agentHeld(fp(t, 1))[0], agentHeld(fp(t, 2))[0]},
+		{"two agent survivors", []fleet.HeldKey{fileHeld(fp(t, 9), "/k/ci"), agentHeld(fp(t, 1))[0], agentHeld(fp(t, 2))[0]},
 			"only " + fp(t, 1) + " (agent), " + fp(t, 2) + " (agent) keep access"},
 		{"no --identity: no warning", agentHeld(fp(t, 1)), ""},
-		{"an --identity key survives: no warning", []sshconn.HeldKey{fileHeld(fp(t, 2), "/k/alice"), agentHeld(fp(t, 1))[0]}, ""},
+		{"an --identity key survives: no warning", []fleet.HeldKey{fileHeld(fp(t, 2), "/k/alice"), agentHeld(fp(t, 1))[0]}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,7 +131,7 @@ func TestExecuteRecheckAcrossSources(t *testing.T) {
 	t.Run("agent broke during the prompt, a file key survives: written", func(t *testing.T) {
 		plans := []ServerPlan{changePlan("s", file, ag)}
 		w := &fakeWriter{}
-		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: []sshconn.HeldKey{fileKey}})
+		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: []fleet.HeldKey{fileKey}})
 		if plans[0].Outcome != OutcomeApplied || !slices.Equal(w.calls["s"].Survivors, []string{file.Fingerprint}) {
 			t.Fatalf("outcome = %s, survivors = %v; want applied, proven by the file key", plans[0].Outcome, w.calls["s"].Survivors)
 		}
@@ -140,7 +139,7 @@ func TestExecuteRecheckAcrossSources(t *testing.T) {
 	t.Run("the only survivor was an agent key: refused", func(t *testing.T) {
 		plans := []ServerPlan{changePlan("s", ag)}
 		w := &fakeWriter{}
-		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: []sshconn.HeldKey{fileKey}})
+		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: []fleet.HeldKey{fileKey}})
 		if plans[0].Outcome != OutcomeFailed || len(w.calls) != 0 {
 			t.Fatalf("outcome = %s, calls = %d; want the guard re-check to block the write", plans[0].Outcome, len(w.calls))
 		}

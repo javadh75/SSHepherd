@@ -337,7 +337,9 @@ held key (agent or `--identity`) on a server. Writes are atomic (remote temp + r
 followed by an in-session verify re-read; symlinked targets and
 unparseable files are refused. Built on the extracted `internal/sshconn`
 (shared connection glue + session-key recorder), `internal/sshwrite`
-(remote write protocol), and `internal/apply` (pure plan/guard/report),
+(remote write protocol), and `internal/apply` (plan/guard and the phase-2 fan-out behind a
+writer seam; it imports no transport; it still holds the revoke/rotate presentation, which
+follow-up F-ARC-4b would move out),
 with a dockerized integration matrix and the first full E2E loop
 (adopt → apply → audit) — specced in
 `docs/superpowers/specs/2026-07-19-apply-slice-design.md`, planned in
@@ -536,3 +538,10 @@ Layering refactor W3 (P14 S2, ARC-3): the error kinds (`ErrorKind` + constants,
 `KindedError`, `ErrorKindOf`, `Hinted`/`HintOf`) and `ReadResult` live in the new
 stdlib-only leaf `internal/fleet`; `sshconn` and `sshread` no longer import `audit`, and
 cmd checks the seam implementations (`audit.KeyReader`, `apply.Writer`) at compile time.
+P14 S3 (ARC-4): `internal/apply` imports no transport. The write vocabulary (`HeldKey`/
+`SourceAgent`, `MaxRemoteOutput`, `Snapshot`/`SnapshotOf`/`Cksum`, `WriteRequest`,
+`ErrWriteNotStarted`, `RefusalError`/`Refused`/`IsRefusal`, `Keys2DisabledSuffix`) lives in
+the stdlib-only `internal/fleet`. sshwrite keeps the `Request`/`Snapshot` aliases and the
+`SnapshotOf` wrapper, and wraps its four typed refusals in `fleet.Refused`.
+`go list -deps ./internal/apply` names no sshconn/sshread/sshwrite/keyfile/x/term/agent/
+knownhosts/x/sys/unix.

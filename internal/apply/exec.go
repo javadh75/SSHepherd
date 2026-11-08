@@ -11,25 +11,25 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
-	"github.com/javadh75/SSHepherd/internal/sshconn"
-	"github.com/javadh75/SSHepherd/internal/sshwrite"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 )
 
-// Writer is the phase-2 seam; sshwrite.FleetWriter is the real one.
+// Writer is the phase-2 seam; the transport implements it (cmd wires
+// sshwrite.FleetWriter).
 type Writer interface {
-	Apply(ctx context.Context, srv config.Server, req sshwrite.Request) error
+	Apply(ctx context.Context, srv config.Server, req fleet.WriteRequest) error
 }
 
 // ExecOptions tunes the phase-2 fan-out; mirrors audit.Options.
 type ExecOptions struct {
 	Parallel         int           // max concurrent server writes (>= 1)
 	PerServerTimeout time.Duration // bounds each server's connect; a started write always finishes
-	// Held is the held-key listing (sshconn.Credentials.Held) taken AFTER
+	// Held is the run's held-key listing taken AFTER
 	// the confirmation prompt — not the one Build saw: agent keys can
 	// expire (ssh-add -t), be deleted, or the agent be locked or vanish
 	// while the prompt waits. The guard is re-run per plan against it, and
 	// its surviving keys are what the post-write login probe offers.
-	Held   []sshconn.HeldKey
+	Held   []fleet.HeldKey
 	Logger *slog.Logger // optional per-server telemetry; nil discards
 }
 
@@ -88,7 +88,7 @@ func Execute(ctx context.Context, plans []ServerPlan, w Writer, opts ExecOptions
 // refused guard failures against the pre-prompt listing, and this re-runs
 // the same check against the fresh one, so no code path reaches a write
 // without the invariant holding right now.
-func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []sshconn.HeldKey, timeout time.Duration, log *slog.Logger) {
+func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []fleet.HeldKey, timeout time.Duration, log *slog.Logger) {
 	surviving := Survivors(p.Desired, heldSet(held))
 	if len(surviving) == 0 {
 		p.Outcome = OutcomeFailed
@@ -103,16 +103,16 @@ func applyOne(ctx context.Context, p *ServerPlan, w Writer, held []sshconn.HeldK
 		defer cancel()
 	}
 	start := time.Now()
-	err := w.Apply(ctx, p.Server, sshwrite.Request{Content: p.Rendered, Expect: p.Expect, Survivors: fps, DisableKeys2: p.DisableKeys2()})
+	err := w.Apply(ctx, p.Server, fleet.WriteRequest{Content: p.Rendered, Expect: p.Expect, Survivors: fps, DisableKeys2: p.DisableKeys2()})
 	switch {
 	case err == nil:
 		p.Outcome = OutcomeApplied
 		log.Debug("applied", "server", p.Server.Name, "dur", time.Since(start).Round(time.Millisecond))
 		return
-	case errors.Is(err, sshwrite.ErrNotStarted):
+	case errors.Is(err, fleet.ErrWriteNotStarted):
 		p.OutcomeErr = errInterrupted // nothing changed: stays pending
 		return
-	case sshwrite.IsRefusal(err):
+	case fleet.IsRefusal(err):
 		p.Outcome = OutcomeRefused
 	default:
 		p.Outcome = OutcomeFailed

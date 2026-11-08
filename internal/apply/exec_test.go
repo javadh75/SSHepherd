@@ -13,23 +13,22 @@ import (
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
-	"github.com/javadh75/SSHepherd/internal/sshwrite"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
 // fakeWriter records Apply calls and returns scripted errors per server.
 type fakeWriter struct {
 	mu     sync.Mutex
-	calls  map[string]sshwrite.Request
+	calls  map[string]fleet.WriteRequest
 	errs   map[string]error
 	onCall func(name string)
 }
 
-func (f *fakeWriter) Apply(_ context.Context, srv config.Server, req sshwrite.Request) error {
+func (f *fakeWriter) Apply(_ context.Context, srv config.Server, req fleet.WriteRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.calls == nil {
-		f.calls = make(map[string]sshwrite.Request)
+		f.calls = make(map[string]fleet.WriteRequest)
 	}
 	f.calls[srv.Name] = req
 	if f.onCall != nil {
@@ -54,7 +53,7 @@ func changePlan(name string, desired ...authkeys.Key) ServerPlan {
 		Outcome:  OutcomePending,
 		Desired:  desired,
 		Rendered: []byte("rendered for " + name + "\n"),
-		Expect:   sshwrite.SnapshotOf(false, []byte("phase-1 bytes of "+name+"\n")),
+		Expect:   fleet.SnapshotOf(false, []byte("phase-1 bytes of "+name+"\n")),
 	}
 }
 
@@ -72,10 +71,10 @@ func TestExecuteOutcomes(t *testing.T) {
 	}
 	w := &fakeWriter{errs: map[string]error{
 		"boom":    errors.New("write on boom failed"),
-		"sym":     &sshwrite.SymlinkError{Path: "/etc/keys"},
-		"changed": &sshwrite.ChangedError{Path: "~/.ssh/authorized_keys"},
-		"locked":  &sshwrite.LockedError{Path: "~/.ssh/authorized_keys"},
-		"lockout": &sshwrite.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errors.New("auth failed")},
+		"sym":     fleet.Refused(errors.New("/etc/keys is a symlink")),
+		"changed": fleet.Refused(errors.New("~/.ssh/authorized_keys changed since the plan was read")),
+		"locked":  fleet.Refused(errors.New("another apply is in progress on ~/.ssh/authorized_keys")),
+		"lockout": errors.New("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: auth failed)"),
 	}}
 	Execute(context.Background(), plans, w, ExecOptions{Parallel: 2, Held: agentHeld(held.Fingerprint)})
 
@@ -194,7 +193,7 @@ func TestExecuteInterrupted(t *testing.T) {
 	})
 	t.Run("writer reporting not-started stays pending", func(t *testing.T) {
 		plans := []ServerPlan{changePlan("a", held)}
-		w := &fakeWriter{errs: map[string]error{"a": fmt.Errorf("a: %w", sshwrite.ErrNotStarted)}}
+		w := &fakeWriter{errs: map[string]error{"a": fmt.Errorf("a: %w", fleet.ErrWriteNotStarted)}}
 		Execute(context.Background(), plans, w, ExecOptions{Parallel: 1, Held: agentHeld(held.Fingerprint)})
 		if plans[0].Outcome != OutcomePending || Interrupted(plans) != 1 {
 			t.Errorf("outcome = %s, want pending + interrupted", plans[0].Outcome)

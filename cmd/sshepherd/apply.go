@@ -16,6 +16,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/apply"
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
 	"github.com/javadh75/SSHepherd/internal/sshread"
 	"github.com/javadh75/SSHepherd/internal/sshwrite"
@@ -106,7 +107,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 				// A concurrent revoke may have replaced the manifest while
 				// this run planned against the old one: writing that plan
 				// would reinstall the revoked key.
-				beforeWrite: func(context.Context, []apply.ServerPlan, []sshconn.HeldKey) error {
+				beforeWrite: func(context.Context, []apply.ServerPlan, []fleet.HeldKey) error {
 					return m.Unchanged()
 				},
 				finish: func(plans []apply.ServerPlan, stage applyStage) error {
@@ -165,7 +166,7 @@ type applyRun struct {
 	// writePhase after the post-prompt held-key re-list when a server will
 	// be written (fresh is that listing), else straight after the prompt
 	// (fresh nil). An error ends the run with nothing written.
-	beforeWrite func(ctx context.Context, plans []apply.ServerPlan, fresh []sshconn.HeldKey) error
+	beforeWrite func(ctx context.Context, plans []apply.ServerPlan, fresh []fleet.HeldKey) error
 	// finish renders the tail of the report (or, under --json, the whole
 	// document) and maps the run to its exit; stageWithheld always maps to
 	// exit 1.
@@ -258,7 +259,7 @@ func planFleet(ctx context.Context, pre preflight, run applyRun) ([]apply.Server
 // re-list and before any worker starts; its error writes nothing.
 func writePhase(ctx context.Context, pre preflight, preferKeys func(config.Server) []string,
 	plans []apply.ServerPlan,
-	beforeWrite func(context.Context, []apply.ServerPlan, []sshconn.HeldKey) error,
+	beforeWrite func(context.Context, []apply.ServerPlan, []fleet.HeldKey) error,
 ) error {
 	log := pre.log
 	fresh, err := pre.creds.Held(ctx)
@@ -289,7 +290,7 @@ func writePhase(ctx context.Context, pre preflight, preferKeys func(config.Serve
 // source, shared by the reader, the writer and the probe) and the held keys.
 type preflight struct {
 	*fleetSession
-	held []sshconn.HeldKey // the plan-time guard's ground truth
+	held []fleet.HeldKey // the plan-time guard's ground truth
 }
 
 // applyPreflight runs apply's pre-dial checks in the order of operations:
