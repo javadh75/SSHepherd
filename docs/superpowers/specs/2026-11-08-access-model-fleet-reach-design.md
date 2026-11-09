@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -221,11 +221,11 @@ D1c "already revoked" note and audit's D1d drift label. A manifest warning, kind
 The warning is skipped when the implicit operator grant still installs the key
 (`u.Operator` until S4, `FleetWide(U)` after), because "is not granted" would be false.
 A warning never changes an exit code except under `validate --strict`. Save refusals
-do not apply: a blocked grant is not a conflict.
+do not apply: a blocked grant is not a conflict. `tombstone_blocks_grant` carries `revoked_index`, `user` and `server`.
 
 **Order of work in `Config.validate`.** Today `validateAccess` runs before
-`validateRevoked`, and blocking needs both. `validateAccess` records each grant's
-sources; `validateRevoked` stays where it is; a new `blockTombstoned` step then drops
+`validateRevoked`, and blocking needs both. `validateRevoked` stays where it is; a new
+`blockTombstoned` step then derives each grant's sources from `c.Access` and drops
 every pair where `AccessRevoked` is true and no source is direct. S7's
 `restriction_conflict` check runs in `computeConflicts`, after blocking, so a blocked
 grant cannot cause a clash.
@@ -510,6 +510,7 @@ access:
 - Each `except:` name must be a known server. `@tag` is not allowed in `except:`.
 - A name in both `servers:` and `except:` is an error (typo guard).
 - An entry that grants nothing after `except:` is an error, the existing wildcard rule.
+- A tag's error reads `server "X": tag "Y" is not valid: want lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, at most 63 characters`, a repeat reads `server "X": tag "Y" is repeated`, `@tag` in `except:` reads `access for "X": except takes server names, not the selector "@y"`, a name in both lists reads `access for "X": "s" is in both servers and except`, and an `@tag` entry granting nothing after `except:` reads `access for "X": selectors grant no servers after except`.
 
 **Semantics.** Expansion stays inside `expandServers`, so `c.grants` and `DesiredFor`
 do not change shape. `@tag` expands to every server carrying the tag, in manifest
@@ -517,17 +518,19 @@ order. Mixed lists union. `except:` removes from the selector-derived part.
 
 **Raw-entry scanners move to one helper.** `Covers`, `ExceptCarveOut` and
 `accessConflicts` read raw `Access` entries by `a.User`. They move to shared
-`entryApplies(a, user)` and `entryCovers(a, server)`:
+`entryApplies(a, user)` and `entryCovers(a, server)` (it takes the server entry; `Covers` passes `Server{Name: n}` for a server not in the manifest, which carries no tags):
 
 - A `@tag` never covers a server that is not in the manifest yet (it has no tags), so
   reconcile stays conservative. Only `*` covers future servers.
 - `ExceptCarveOut` becomes true for any selector entry, not just `*`.
 
+In S3a `Covers`' `c.blocked` check cannot fail, because a blocked pair is reached only through `@tag` and the scan passes a tagless server; it becomes load-bearing with S3b's group entries.
+
 **Manifest editor.** `RemoveAccess` on a selector entry: remove a literal item when it
 names the server, and append to `except:` when a selector still covers it. The entry
 is deleted when no literal is left and every selector-covered server is excepted (the
 existing wildcard rule). `revoke --from-server '@prod'` is refused:
-`--from-server takes server names`. The `accessTombstones` logic is unchanged: a server
+`--from-server takes server names` (the existing `*` refusal's full text, reused). A deleted `@tag` entry is not a wildcard removal: `wildcards_removed` stays 0 and no warning prints. The `accessTombstones` logic is unchanged: a server
 that gained an `except:` gets no tombstone, and when a later trim deletes the entry,
 `forgottenCarveOut` tombstones its earlier `except:` names, because `ExceptCarveOut` now
 answers for selector entries.
@@ -535,6 +538,7 @@ answers for selector entries.
 **Root warning (D20a).** A non-operator `servers: ["*"]` entry reaching a server with
 `user: root` warns once per entry, kind `wildcard_root`:
 `access for "alice": servers ["*"] includes the root account on web-1 and 3 more; list the servers or use an @tag that excludes root accounts`.
+One root account reads `on web-1;`, with no count.
 An `@tag` reaching root does not warn: D20a is about `*`.
 
 **Tombstones.** A D1a tombstone blocks `@tag`-derived access, as an implicit `except:`
@@ -1296,7 +1300,7 @@ same commit, then an independent verifier, then repair.
 | S1 | A: `validate.go`, `validate_test.go`, `run.go` · B: `audit.go`, `fleet.go`, `apply.go`, `internal/audit/json.go`, `internal/apply/json.go`, their JSON tests |
 | S2 | A: `import.go`, `adopt.go`, `internal/reconcile` message · B: `revoke.go`, `editrun.go`, `internal/apply/edit.go` · C: `identity.go`, `internal/keyfile` |
 | S8 | A: `internal/adopt`, `adopt.go`, `manifest_out.go` · B: `import_json.go`, `import.go`, `internal/reconcile` |
-| S3a | A: `internal/config` (types in the plan first) · B: `internal/manifest` · C: `revoke.go`, `import.go` |
+| S3a | A: `internal/config` and the consumer tests · B: `internal/manifest`, `revoke.go` · C: `import.go` (B and C after A: the runner compiles each lane on earlier rounds) |
 | S3b | A: `internal/config` · B: `internal/manifest` · C: `revoke.go`, `adopt.go` |
 | S4 | A: `internal/config` · B: `internal/audit` · C: `internal/apply`, `editrun.go`, `revoke.go`, `rotate.go`, `internal/reconcile` |
 | S5 | A: `internal/config`, `internal/fleet`, `internal/manifest/edit.go` · B: `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit/{audit,report,json}.go` · C: `internal/sshcfg`, `internal/reconcile`, `import.go` · D: `internal/apply/{exec,plan,report,json}.go`, `adopt.go`, `sweep.go` · integrator: `scripts/integration.sh` |

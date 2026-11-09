@@ -46,17 +46,23 @@ func serverWorthy(h sshcfg.Host) bool { return h.User != "" }
 
 // dropUnsafeHosts removes hosts whose alias, HostName or User could never
 // form a valid server entry (config.ServerFieldIssue: whitespace, control or
-// format runes — e.g. a quoted `Host "web 1"`), warning for each. Filtering
+// format runes — e.g. a quoted `Host "web 1"`; config.ServerNameIssue also
+// reserves an alias like `@web` for tag selectors), warning for each. Filtering
 // before identity resolution and target collapse keeps such a host from
 // deriving grants or winning a same-target collapse.
 func dropUnsafeHosts(w *importWarnings, hosts []sshcfg.Host) []sshcfg.Host {
 	kept := hosts[:0:0]
 	for _, h := range hosts {
 		bad := ""
-		for _, f := range []struct{ field, value string }{
-			{"alias", h.Alias}, {"HostName", h.HostName}, {"User", h.User},
+		for _, f := range []struct {
+			field, value string
+			issue        func(string) string
+		}{
+			{"alias", h.Alias, config.ServerNameIssue},
+			{"HostName", h.HostName, config.ServerFieldIssue},
+			{"User", h.User, config.ServerFieldIssue},
 		} {
-			if issue := config.ServerFieldIssue(f.value); issue != "" {
+			if issue := f.issue(f.value); issue != "" {
 				bad = fmt.Sprintf("%s %q %s", f.field, f.value, issue)
 				break
 			}

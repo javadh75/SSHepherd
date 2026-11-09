@@ -1239,8 +1239,7 @@ How the ssh config is read — matching OpenSSH (`ssh -G`):
 
 What gets skipped or merged, always with a warning on stderr:
 
-- A host whose alias, HostName or User contains whitespace or control characters
-  (e.g. a quoted `Host "web 1"`) — it could never be a valid server entry.
+- A host whose alias, HostName or User contains whitespace or control characters (e.g. a quoted `Host "web 1"`), or whose alias starts with `@` (reserved for tag selectors) — it could never be a valid server entry.
 - A `.pub` whose comment has tabs or control/format characters (an error for
   `--operator-key`).
 - **One entry per remote file.** When several aliases resolve to the same host

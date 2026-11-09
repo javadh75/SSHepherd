@@ -689,3 +689,5 @@ deleted. `revoke --from-server` refuses `*` and `@tag`; `accessTombstones`' logi
 because `ExceptCarveOut` now answers for any selector entry, and `no_grants_left` is now
 `KeepsServers == 0`, so an entry a tombstone wholly blocks reports no access left.
 `FuzzRemoveAccess` is the 23rd `Fuzz*` target.
+`import` skips an alias that starts with `@` with an `unsafe_host` warning (`dropUnsafeHosts` uses
+`config.ServerNameIssue`), so a generated manifest always loads.
