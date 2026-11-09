@@ -236,3 +236,24 @@ func TestRevokeUserGroupsJSON(t *testing.T) {
 		t.Errorf("edit entry = %v", e)
 	}
 }
+
+// TestRevokeServerGroupExceptIsNotMemory: deleting bob's own wildcard forgets
+// his except: of web-2. A group's except: of web-2 that survives the edit is
+// not memory for it, so web-2 still gets a tombstone (D1a, both sides of
+// forgottenCarveOut read the user's own except:).
+func TestRevokeServerGroupExceptIsNotMemory(t *testing.T) {
+	cfg := writeConfig(t, "users:\n  - {name: alice, keys: ["+qk(t, 1)+"]}\n  - {name: bob, keys: ["+qk(t, 2)+"]}\n"+
+		"groups:\n  - {name: team, members: [bob]}\n"+
+		"servers:\n  - {name: web-1, host: 10.0.1.1, user: deploy}\n  - {name: web-2, host: 10.0.1.2, user: deploy}\n  - {name: db-1, host: 10.0.2.1, user: deploy}\n"+
+		"access:\n  - {user: alice, servers: [web-1]}\n  - {user: bob, servers: [\"*\"], except: [web-2, db-1]}\n  - {group: team, servers: [\"*\"], except: [web-1, web-2]}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	saved := readCfg(t, cfg)
+	for _, server := range []string{"web-1", "web-2"} {
+		if _, ok := saved.AccessRevoked("bob", server); !ok {
+			t.Errorf("%s was not tombstoned:\n%s", server, fileBytes(t, cfg))
+		}
+	}
+}

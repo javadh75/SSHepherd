@@ -60,6 +60,15 @@ func TestGroupValidation(t *testing.T) {
 	}
 }
 
+// TestBadGroupNameReportedOnce: an entry using a group whose name is invalid
+// is not also told the group is unknown.
+func TestBadGroupNameReportedOnce(t *testing.T) {
+	_, err := Parse([]byte(groupFleet(t, "  - {name: Web, members: [alice]}\n", "  - {group: Web, servers: [\"*\"]}\n", "")))
+	if err == nil || !strings.Contains(err.Error(), `group "Web": name is not valid`) || strings.Contains(err.Error(), "unknown group") {
+		t.Errorf("err = %v, want only the name error", err)
+	}
+}
+
 // TestEmptyGroupWarns: an empty group loads, so revoking the last member
 // never breaks the manifest; a missing members: key is the same as [].
 func TestEmptyGroupWarns(t *testing.T) {
