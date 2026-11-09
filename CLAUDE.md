@@ -642,3 +642,9 @@ server already holds the edited render).
 conflict about another server (OP4). `Config.ManifestWarnings` replaces `TombstoneWarnings`
 and carries every load warning in JSON, each with a kind (`Config.warn` records both
 forms). `selectServers` moved to `cmd/sshepherd/fleet.go` and `readFleet` takes its targets.
+**`validate`** (P10 S1, D25, D25a, PRD-11; same spec and plan as `audit --server` above):
+an offline manifest check (`--known-hosts`, `--strict`, `--json`) that never dials. It
+warns about a missing default known_hosts, each server with no recorded host key, and a
+manifest the editor refuses, and exits 3 on a policy conflict, including a granted weak
+key. `--json` writes a schema-1 document on every exit 3 except an unreadable manifest, a
+bad flag or a bad explicit `--known-hosts`.

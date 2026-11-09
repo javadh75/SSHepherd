@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "valid": false,
+  "summary": {
+    "users": 0,
+    "servers": 0,
+    "grants": 0,
+    "warnings": 0,
+    "exit_code": 3
+  },
+  "host_keys_checked": false,
+  "errors": [
+    "access for \"alice\": unknown server \"web-9\""
+  ]
+}

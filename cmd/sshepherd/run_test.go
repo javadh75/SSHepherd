@@ -119,7 +119,7 @@ func TestHelpExamplesAndExitCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{exitCodesAudit, exitCodesWrite, exitCodesAdopt, exitCodesImport} {
+	for _, f := range []string{exitCodesAudit, exitCodesWrite, exitCodesAdopt, exitCodesImport, exitCodesValidate} {
 		if !strings.Contains(string(raw), f) {
 			t.Errorf("README lacks the --help footer:\n%s", f)
 		}
@@ -131,7 +131,7 @@ func TestHelpExamplesAndExitCodes(t *testing.T) {
 	}
 	for name, footer := range map[string]string{
 		"audit": exitCodesAudit, "apply": exitCodesWrite, "revoke": exitCodesWrite, "rotate": exitCodesWrite,
-		"adopt": exitCodesAdopt, "import": exitCodesImport,
+		"adopt": exitCodesAdopt, "import": exitCodesImport, "validate": exitCodesValidate,
 	} {
 		var out, errBuf bytes.Buffer
 		if code := run([]string{name, "--help"}, &out, &errBuf); code != 0 {

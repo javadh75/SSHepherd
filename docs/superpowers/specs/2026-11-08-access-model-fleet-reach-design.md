@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). Not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -461,7 +461,8 @@ import's is `cmd/sshepherd/import_json.go`, because import's run lives in cmd.
 `internal/sshcfg`, `cmd/sshepherd/{adopt,import,import_json}.go`.
 
 **README.** **`sshepherd import`** and **`sshepherd adopt`** flag tables and a JSON
-sample each; **Exit codes** note on when a document is written.
+sample each; **Exit codes** note on when a document is written. `sshepherd validate`
+gains the sentence that `import` and `adopt` write a document on almost no exit 3.
 
 **Tests.** Goldens for each document, including the exit-1 strict abort and the
 zero-read exit 3. The manifest bytes under `--json` match the non-JSON run, with and

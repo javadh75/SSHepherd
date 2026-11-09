@@ -58,6 +58,7 @@ rotate → audit**.
 | Command  | State | What it does |
 | -------- | ----- | ------------ |
 | `audit`  | ✅ | Read-only drift report (text + `--json`, monitoring exit codes) |
+| `validate` | ✅ | Offline manifest check: schema, policy conflicts, host-key coverage (text + `--json`, `--strict`) |
 | `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
 | `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported) |
 | `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe (text + `--json`) |
@@ -491,6 +492,64 @@ not `sshepherd audit --version`).
 | ---- | ------- | ----------- |
 | `--version` | off | Print the version and exit |
 
+### `sshepherd validate`
+
+Check the manifest offline. It never opens a socket and never reads a key. It parses and validates the manifest, reports policy conflicts, says whether `revoke`, `rotate` and `--merge` can edit it, and, when a known_hosts file loads, warns about each server with no recorded host key.
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--config` | `sshepherd.yaml` | Path to the manifest (`/dev/stdin` and a pipe work) |
+| `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path. With the default path a missing file is a warning (it fails `--strict`). A file given explicitly that is missing or bad, or a default file that exists but cannot be loaded, exits `3` |
+| `--strict` | off | Exit `1` when the manifest is valid but has warnings |
+| `--json` | off | Machine-readable result on stdout (schema 1) |
+
+A valid manifest prints one line on stdout, e.g. `manifest OK: 1 user, 1 server, 1 grant (0 warnings)`. A policy conflict prints `manifest has 1 policy conflict: MESSAGE` on stderr and exits `3`. A weak key granted on a server is a policy conflict; an ungranted one is a warning.
+
+`--json` writes one document. It is written on exit `3` too, when the manifest is invalid or has a policy conflict, with `valid: false`, and when the default known_hosts exists but cannot be loaded (`valid: true`, the reason in `errors`). An unreadable manifest, a bad flag or a bad `--known-hosts` file given explicitly writes no document. A run that fails only under `--strict` has `valid: true` and exit `1`. `manifest_warnings` adds the kinds `manifest_not_editable`, `known_hosts_missing` and `host_key_not_recorded`; ignore kinds you do not know. `host_keys_checked` is `false` when no known_hosts file loaded.
+
+```json
+{
+  "schema": 1,
+  "valid": true,
+  "summary": {
+    "users": 1,
+    "servers": 1,
+    "grants": 1,
+    "warnings": 1,
+    "exit_code": 0
+  },
+  "host_keys_checked": true,
+  "errors": [],
+  "manifest_warnings": [
+    {
+      "kind": "host_key_not_recorded",
+      "server": "web-1",
+      "message": "server \"web-1\": no host key recorded for 10.0.1.5:22 in ~/.ssh/known_hosts"
+    }
+  ]
+}
+```
+
+An invalid manifest:
+
+```json
+{
+  "schema": 1,
+  "valid": false,
+  "summary": {
+    "users": 0,
+    "servers": 0,
+    "grants": 0,
+    "warnings": 0,
+    "exit_code": 3
+  },
+  "host_keys_checked": false,
+  "errors": [
+    "access for \"alice\": unknown server \"web-9\""
+  ]
+}
+```
+
 ### `sshepherd audit`
 
 Report drift between the manifest and each server's `authorized_keys`. Read-only.
@@ -886,8 +945,7 @@ remote text:
 ```
 
 `manifest_warnings` carries every load warning, in the `audit` document and in the `apply`
-document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear
-only on `tombstone_unknown_server`. The kinds are `tombstone_unknown_server`,
+document. Each object has `kind` and `message`. `revoked_index` and `user` appear only on `tombstone_unknown_server`; `server` appears there and on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
 `comment_on_multi_key`, `weak_key_ungranted` and `key_expired`; ignore kinds you do not know.
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
@@ -2109,6 +2167,13 @@ $ sshepherd apply --yes --identity ~/.ssh/ci_old --identity ~/.ssh/ci_new
 The shell recipes unset `SSH_AUTH_SOCK` and the container recipes mount no agent, so
 a stray or forwarded agent can never satisfy the guard for a credential CI lacks.
 
+**GitOps PR check** — no fleet access needed. `--strict` fails on host-key gaps too, so commit a known_hosts file for the job:
+
+```yaml
+- name: validate the manifest
+  run: sshepherd validate --strict --known-hosts ci/known_hosts --config sshepherd.yaml
+```
+
 **GitHub Actions** (bash — `<(...)` needs bash or zsh, not POSIX `sh`; `env -u PW`
 keeps the secret out of SSHepherd's own environment):
 
@@ -2201,7 +2266,7 @@ If you hold none of the keys granted on a server (normal right after `import --s
 ## Exit codes
 
 Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
-(`adopt` and `import` use `0`, `1` and `3` as their own footers below say):
+(`adopt`, `import` and `validate` use `0`, `1` and `3` as their own footers below say):
 
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
@@ -2270,6 +2335,16 @@ Exit codes:
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
      existing --output without --force, an in-place save refused, a --merge
      manifest that would keep a policy conflict or add a weak key
+```
+
+`validate --help`:
+
+```console
+Exit codes:
+  0  valid (warnings may be present)
+  1  valid, with warnings, under --strict
+  3  invalid, a policy conflict, or a tool error: bad flags, unreadable
+     manifest, a bad --known-hosts file
 ```
 
 ## Safety model

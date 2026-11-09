@@ -65,7 +65,7 @@ func TestUsageTemplateRoutesBothFlagSections(t *testing.T) {
 
 // helpCommands is the root ("") plus every user-facing command; the
 // golden and no-suffix tests iterate it.
-var helpCommands = []string{"", "audit", "import", "adopt", "apply", "revoke", "rotate"}
+var helpCommands = []string{"", "audit", "import", "adopt", "apply", "revoke", "rotate", "validate"}
 
 // helpOutput runs `sshepherd [name] --help` and returns stdout.
 func helpOutput(t *testing.T, name string) string {

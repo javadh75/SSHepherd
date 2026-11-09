@@ -1,0 +1,32 @@
+Checks the manifest offline: parses and validates it, reports policy
+conflicts, says whether revoke, rotate and --merge can edit it and, when a
+known_hosts file loads, which servers have no recorded host key. Never
+opens a socket or reads a key.
+
+Exit codes:
+  0  valid (warnings may be present)
+  1  valid, with warnings, under --strict
+  3  invalid, a policy conflict, or a tool error: bad flags, unreadable
+     manifest, a bad --known-hosts file
+
+Usage:
+  sshepherd validate [flags]
+
+Examples:
+  # Check the default manifest
+  sshepherd validate
+
+  # GitOps PR check: any warning fails the job
+  sshepherd validate --strict --json --known-hosts ci/known_hosts --config fleet.yaml
+
+Flags:
+      --config string        path to the manifest (default "sshepherd.yaml")
+  -h, --help                 help for validate
+      --json                 emit the result as machine-readable JSON on stdout
+      --known-hosts string   path to known_hosts (checks that every server has a recorded host key) (default "~/.ssh/known_hosts")
+      --strict               exit 1 when the manifest is valid but has warnings
+
+Global Flags:
+      --color string   colorize output: auto, always, or never (default "auto")
+  -q, --quiet          log errors only
+  -v, --verbose        enable debug logging

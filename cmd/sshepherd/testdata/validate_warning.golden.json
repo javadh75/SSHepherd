@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "valid": true,
+  "summary": {
+    "users": 1,
+    "servers": 1,
+    "grants": 1,
+    "warnings": 1,
+    "exit_code": 0
+  },
+  "host_keys_checked": true,
+  "errors": [],
+  "manifest_warnings": [
+    {
+      "kind": "host_key_not_recorded",
+      "server": "web-1",
+      "message": "server \"web-1\": no host key recorded for 10.0.1.5:22 in ~/.ssh/known_hosts"
+    }
+  ]
+}

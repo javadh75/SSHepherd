@@ -240,6 +240,12 @@ const exitCodesImport = `Exit codes:
      existing --output without --force, an in-place save refused, a --merge
      manifest that would keep a policy conflict or add a weak key`
 
+const exitCodesValidate = `Exit codes:
+  0  valid (warnings may be present)
+  1  valid, with warnings, under --strict
+  3  invalid, a policy conflict, or a tool error: bad flags, unreadable
+     manifest, a bad --known-hosts file`
+
 // exitCodeFor maps Execute's error to the monitoring-style process exit code
 // (see docs/superpowers/specs/2026-07-16-audit-json-exit-codes-design.md).
 // Sentinel-mapped outcomes have already rendered their report; only the
@@ -325,5 +331,6 @@ func newRootCmd(a *app, stdout, stderr io.Writer) *cobra.Command {
 	root.AddCommand(newApplyCmd(a, stdout))
 	root.AddCommand(newRevokeCmd(a, stdout))
 	root.AddCommand(newRotateCmd(a, stdout))
+	root.AddCommand(newValidateCmd(a, stdout))
 	return root
 }

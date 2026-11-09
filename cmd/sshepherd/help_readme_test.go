@@ -116,6 +116,7 @@ func TestHelpMatchesREADMETables(t *testing.T) {
 		{"apply", "### `sshepherd apply`", localFlags},
 		{"revoke", "### `sshepherd revoke`", localFlags},
 		{"rotate", "### `sshepherd rotate`", localFlags},
+		{"validate", "### `sshepherd validate`", localFlags},
 	}
 	for _, tc := range tables {
 		t.Run(tc.heading, func(t *testing.T) {

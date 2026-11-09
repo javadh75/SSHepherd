@@ -13,6 +13,7 @@ Available Commands:
   import      Convert an OpenSSH client config into a starter manifest
   revoke      Remove users or keys from the manifest and push the change to the servers it affects
   rotate      Replace one of a user's keys in the manifest and push the swap to the servers it affects
+  validate    Check the manifest offline: schema, policy conflicts and host-key coverage (never connects)
 
 Flags:
       --color string   colorize output: auto, always, or never (default "auto")
