@@ -758,3 +758,74 @@ access:
 		t.Errorf("text report does not name the tombstoned key:\n%s", out)
 	}
 }
+
+// e2eRemote runs a shell script on the container as user.
+func e2eRemote(t *testing.T, host, port, kh, user, script string) string {
+	t.Helper()
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatalf("port: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	d := &sshconn.Dialer{KnownHostsPath: kh, Creds: &sshconn.Credentials{AgentSock: os.Getenv("SSH_AUTH_SOCK")}, DialTimeout: 10 * time.Second}
+	conn, err := d.Connect(ctx, config.Server{Name: user, Host: host, Port: p, User: user})
+	if err != nil {
+		t.Fatalf("connect %s: %v", user, err)
+	}
+	defer func() { _ = conn.Close() }()
+	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, script, nil)
+	if err != nil || code != 0 {
+		t.Fatalf("remote: code %d, err %v, stderr %q", code, err, stderr.String())
+	}
+	return stdout.String()
+}
+
+// TestE2EPostureGroupWritable: a 0775 directory on the managed path is
+// drift (exit 1, group_writable), apply refuses to write through it, and
+// tightening the mode by hand makes the audit clean. The override sits
+// below ~/loose because the container runs StrictModes yes: a 0775 ~/.ssh
+// would lock the login out before audit could see anything.
+func TestE2EPostureGroupWritable(t *testing.T) {
+	bin, host, port, kh, pub := itE2E(t)
+	m := writeE2EManifest(t, t.TempDir(), "m.yaml", `
+users:
+  - {name: op, operator: true, keys: ["`+pub+`"]}
+servers:
+  - {name: e2eloose, host: `+host+`, port: `+port+`, user: e2eloose, authorized_keys_file: ~/loose/keys}
+`)
+	code, out, stderr := runBin(t, bin, "audit", "--config", m, "--known-hosts", kh)
+	if code != 1 {
+		t.Fatalf("audit exit = %d, want 1 (stderr: %s)\n%s", code, stderr, out)
+	}
+	if !strings.Contains(out, "group-writable") || !strings.Contains(out, "/home/e2eloose/loose") {
+		t.Errorf("audit lacks the finding:\n%s", out)
+	}
+	if code, out, stderr = runBin(t, bin, "audit", "--json", "--config", m, "--known-hosts", kh); code != 1 {
+		t.Fatalf("audit --json exit = %d, want 1 (stderr: %s)\n%s", code, stderr, out)
+	}
+	var rep struct {
+		Servers []struct {
+			Posture []struct {
+				Issue string `json:"issue"`
+			} `json:"posture"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatalf("audit --json: %v\n%s", err, out)
+	}
+	if len(rep.Servers) != 1 || len(rep.Servers[0].Posture) != 1 || rep.Servers[0].Posture[0].Issue != "group_writable" {
+		t.Errorf("posture = %+v, want one group_writable finding", rep.Servers)
+	}
+	if code, out, stderr = runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh); code != 1 {
+		t.Fatalf("apply exit = %d, want 1 (stderr: %s)\n%s", code, stderr, out)
+	}
+	// UnsafePathError's text: the write script exited 48.
+	if !strings.Contains(out+stderr, "ancestor directory is writable by or owned by another user") {
+		t.Errorf("apply did not refuse the writable path with 48:\n%s\n%s", out, stderr)
+	}
+	e2eRemote(t, host, port, kh, "e2eloose", `chmod 755 "$HOME/loose"`)
+	if code, out, stderr = runBin(t, bin, "audit", "--config", m, "--known-hosts", kh); code != 0 {
+		t.Fatalf("audit after the fix exit = %d, want 0 (stderr: %s)\n%s", code, stderr, out)
+	}
+}

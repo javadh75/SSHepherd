@@ -82,7 +82,7 @@ FIXTURE_A='
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose e2eloose; do
       mkuser "$u"
       mkdir -p "/home/$u/.ssh"
     done
@@ -91,7 +91,7 @@ FIXTURE_A='
     # (revoke --server and rotate --keep-old E2E); stala/stalb/handed: the
     # agent key alone (revocation-memory E2E); unparse: plus a line apply
     # cannot parse.
-    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed maxauth loose; do
+    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed maxauth loose e2eloose; do
       cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
     done
     { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
@@ -118,15 +118,18 @@ FIXTURE_A='
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose e2eloose; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
     # loose: logs in through its 0700 ~/.ssh; the managed override sits below
     # a 0775 ~/loose (posture finding), which sshd never reads.
-    mkdir -p /home/loose/loose && cp /seed/key.pub /home/loose/loose/keys
-    chown -R loose:loose /home/loose/loose && chmod 775 /home/loose/loose && chmod 600 /home/loose/loose/keys
+    # e2eloose: the same, for the E2E that tightens the mode and re-audits.
+    for u in loose e2eloose; do
+      mkdir -p "/home/$u/loose" && cp /seed/key.pub "/home/$u/loose/keys"
+      chown -R "$u:$u" "/home/$u/loose" && chmod 775 "/home/$u/loose" && chmod 600 "/home/$u/loose/keys"
+    done
     # Ownership-refusal fixtures (TST-1). StrictModes in sshd accepts each
     # one (root may own ~/.ssh or authorized_keys of a user), so the user
     # can still log in. The write script must refuse each one with exit 48.
