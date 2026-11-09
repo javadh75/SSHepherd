@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/javadh75/SSHepherd/internal/apply"
@@ -46,19 +47,38 @@ func keyTombstones(ts []config.Tombstone) []config.Tombstone {
 }
 
 // runSweep reads targets with the run's session (known_hosts, credentials,
-// --parallel), asking for authorized_keys2 too, and classifies the reads.
+// --parallel), offering offer's keys on each dial, asking for
+// authorized_keys2 too, and classifies the reads. The servers it reads were
+// not written, so they still hold the old keys: offer must include them, or
+// a server only the old key opens reads as unreachable instead of exit 2.
 // A Ctrl-C reaching the sweep is no tool error: the manifest is saved and
 // servers are written, so the run keeps its report and the unread servers
 // count as unprovable (exit 1 at most), never exit 3.
-func runSweep(ctx context.Context, sess *fleetSession, cfg *config.Config, targets []config.Server, tombs []config.Tombstone) apply.SweepReport {
+func runSweep(ctx context.Context, sess *fleetSession, cfg *config.Config, offer func(config.Server) []string, targets []config.Server, tombs []config.Tombstone) apply.SweepReport {
 	if len(targets) == 0 {
 		return classifySweep(nil, tombs) // audit.Run would read the whole fleet
 	}
-	reader := sess.reader(grantedOn(cfg))
+	reader := sess.reader(offer)
 	reader.ReadKeys2 = true
 	sess.log.Info(fmt.Sprintf("sweeping %s for revoked keys (parallelism %d)…", apply.Plural(len(targets), "server", "servers"), sess.parallel))
 	results := audit.Run(ctx, cfg, reader, audit.Options{Parallel: sess.parallel, PerServerTimeout: perServerTimeout, Servers: targets, Logger: sess.log})
+	logSweepHints(sess.log, results)
 	return classifySweep(results, tombs)
+}
+
+// logSweepHints logs each distinct remediation hint once: the sweep's report
+// only names an unreachable server, so the fix (--offer-all-keys, a
+// known_hosts entry) would otherwise reach nobody.
+func logSweepHints(log *slog.Logger, results []audit.ServerResult) {
+	seen := make(map[string]bool)
+	for _, r := range results {
+		hint := audit.CleanHint(r.Err)
+		if hint == "" || seen[hint] {
+			continue
+		}
+		seen[hint] = true
+		log.Warn("hint: " + hint)
+	}
 }
 
 // sweepUnparsed and sweepInterrupted are SweepUnprovable reasons.

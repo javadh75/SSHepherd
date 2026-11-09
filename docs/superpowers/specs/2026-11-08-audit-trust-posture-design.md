@@ -103,11 +103,11 @@ schema 1.
   for hostname", which `hostKeyHint` classifies `host_key` (exit 1).
 - **Key offering.** `Credentials.Signers` returns every key-file and agent key
   (certificates included). `Dialer.ConnectWith` takes `prefer` from
-  `Dialer.PreferKeys`, which audit and adopt (`readFleet`), apply (`newApplyCmd`) and
-  the sweep (`runSweep`) set to `audit.GrantedFingerprints` (in `authkeys.OfferOrder`:
+  `Dialer.PreferKeys`, which audit and adopt (`readFleet`) and apply (`newApplyCmd`)
+  set to `audit.GrantedFingerprints` (in `authkeys.OfferOrder`:
   plain, then `from=`/`expiry-time=`/`restrict`, then `command=`, then cert-only;
   stable in `DesiredFor` order, so operators lead within a rank), and revoke/rotate
-  (`runEdit`) to the former∪edited union. The post-write probe passes
+  (`runEdit`) and their sweep (`runSweep`) to the former∪edited union. The post-write probe passes
   `ConnectOptions.Only`, which never falls back. The write connection
   (`FleetWriter.connectForWrite`) passes `ConnectOptions{}` and inherits
   `Dialer.PreferKeys`.
@@ -386,8 +386,8 @@ README says so in the drift-class text.
   `cert.SignatureKey` has a granted fingerprint (the second case is a manifest
   `cert-authority` line). The rule lives in `orderSigners`, with table tests, and is
   exported as one matcher for the preflight below.
-- **Callers.** audit, adopt, apply and the sweep keep `GrantedFingerprints`;
-  revoke/rotate keep the former∪edited union (a pre-edit key still logs in). The
+- **Callers.** audit, adopt and apply keep `GrantedFingerprints`;
+  revoke/rotate and their sweep keep the former∪edited union (a pre-edit key still logs in, and the sweep reads servers the run did not write). The
   post-write probe already passes `Only` and is unchanged (D31). The write connection
   (`connectForWrite`) inherits the rule through `Dialer.PreferKeys`.
 - **What the fallback covers, and what it does not.** The fallback is about what the

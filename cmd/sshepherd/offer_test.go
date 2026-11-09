@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -133,6 +134,81 @@ func TestPreflightWarnsOnceOnRevoke(t *testing.T) {
 	}
 	if strings.Contains(errBuf.String(), "none of the keys granted here") {
 		t.Errorf("per-server fallback warning printed after the preflight:\n%s", errBuf.String())
+	}
+}
+
+// TestPreflightWarnsOnceOnSweep: a save-only --sweep has no apply phase, so
+// sweepAll is its only preflight: one line for the whole run, and the
+// per-server fallback lines stay silent.
+func TestPreflightWarnsOnceOnSweep(t *testing.T) {
+	cfg, kh, _ := offerFleet(t, 9) // key 9 is held by nobody
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "--key", fpOf(t, 7), "--sweep", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0, stdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if n := strings.Count(errBuf.String(), "none of the loaded keys is granted on any target server"); n != 1 {
+		t.Errorf("preflight warning appeared %d times, want once:\n%s", n, errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "none of the keys granted here") {
+		t.Errorf("per-server fallback warning printed after the preflight:\n%s", errBuf.String())
+	}
+}
+
+// TestRotateSweepOffersThePreEditKey: the sweep reads the servers the run did
+// not write, and those still hold the old key, so it offers the former grants
+// as the run's other dials do. web-2 accepts only the rotated-out key and
+// refuses the write (a newer header serial); the sweep must log in and report
+// the key still installed (exit 2, D28), not lower it to unreachable.
+func TestRotateSweepOffersThePreEditKey(t *testing.T) {
+	host := sshtest.Signer(t, sshtest.Key(40))
+	oldKey, newKey := sshtest.Signer(t, sshtest.Key(1)).PublicKey(), sshtest.Signer(t, sshtest.Key(9)).PublicKey()
+	t.Setenv("SSH_AUTH_SOCK", sshtest.Agent(t, sshtest.Key(1), sshtest.Key(9)))
+	var lines []string
+	var body strings.Builder
+	body.WriteString("users:\n  - {name: alice, keys: [\"" + testkeys.Line(t, 1) + "\"]}\nservers:\n")
+	addServer := func(name string, accept []ssh.PublicKey, content string) {
+		home := shortHome(t)
+		if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		srv := sshtest.NewServer(t, sshtest.ServerConfig{HostKeys: []ssh.Signer{host}, Authorized: accept, Handle: sshtest.ShellHandler(home)})
+		lines = append(lines, srv.KnownHostsLine(host.PublicKey()))
+		fmt.Fprintf(&body, "  - {name: %s, host: 127.0.0.1, port: %d, user: deploy}\n", name, srv.Port)
+	}
+	addServer("web-1", []ssh.PublicKey{oldKey, newKey}, testkeys.Line(t, 1)+"\n")
+	addServer("web-2", []ssh.PublicKey{oldKey}, authkeys.Header(5)+"\n"+testkeys.Line(t, 1)+"\n")
+	body.WriteString("access:\n  - {user: alice, servers: [web-1, web-2]}\n")
+	cfg := writeConfig(t, body.String())
+
+	var out, errBuf bytes.Buffer
+	code := run([]string{"rotate", "alice", "--old", fpOf(t, 1), "--new", testkeys.Line(t, 9), "--sweep", "--yes",
+		"--config", cfg, "--known-hosts", sshtest.KnownHostsFile(t, lines...)}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (a revoked key still installed)\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	for _, want := range []string{
+		"REVOKED KEY STILL INSTALLED: alice " + fpOf(t, 1) + " on web-2",
+		"swept 1 of 2 servers: 1 still has a revoked key, 0 unreachable\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// TestSweepAuthFailureHintsFlag: a sweep's report only names an unreachable
+// server, so the hint reaches the operator as a log line, once for the fleet.
+func TestSweepAuthFailureHintsFlag(t *testing.T) {
+	cfg, kh, _ := offerFleet(t, 2) // key 2 is held and granted, but the servers accept only key 1
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "--key", fpOf(t, 7), "--sweep", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1, stdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if n := strings.Count(errBuf.String(), "re-run with --offer-all-keys"); n != 1 {
+		t.Errorf("hint appeared %d times, want once:\n%s", n, errBuf.String())
 	}
 }
 

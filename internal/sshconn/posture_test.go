@@ -303,6 +303,19 @@ func TestPostureFailedLsFailsClosed(t *testing.T) {
 	}
 }
 
+// TestPostureFailedIdFailsClosed: with no login uid the owner checks mean
+// nothing (a root-owned path would print no record and look clean), so a
+// failed id fails the probe before the walk.
+func TestPostureFailedIdFailsClosed(t *testing.T) {
+	issues, err := runStubbed(t, postureHome(t), DefaultAuthorizedKeysPath, "id", "#!/bin/sh\nexit 1\n")
+	if fleet.ErrorKindOf(err) != fleet.ErrorKindRemote || err == nil || !strings.Contains(err.Error(), "posture probe failed (exit 1)") {
+		t.Errorf("err = %v, want a remote probe failure", err)
+	}
+	if issues != nil {
+		t.Errorf("a failed probe must return nothing, got %+v", issues)
+	}
+}
+
 // TestPostureKeys2 keeps the removed SecondaryKeysCmdFor rule: any spelling
 // that resolves on the server to ~/.ssh/authorized_keys sees keys2; nothing
 // else does.

@@ -274,15 +274,11 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 		return saveOnly(cmd, log, stdout, f, ids, ep, aff, doc, h)
 	}
 	return runWorkflow(cmd, a, stdout, &f.run, ids, applySpec{
-		cfg:        ep.edited,
-		former:     ep.former,
-		formerNote: ep.formerNote,
-		servers:    serversNamed(ep.edited, aff.Servers),
-		// Sessions authenticate with what is installed now: the old
-		// config's grants first, then the new one's.
-		preferKeys: func(s config.Server) []string {
-			return unionFPs(audit.GrantedFingerprints(ep.former, s.Name), audit.GrantedFingerprints(ep.edited, s.Name))
-		},
+		cfg:           ep.edited,
+		former:        ep.former,
+		formerNote:    ep.formerNote,
+		servers:       serversNamed(ep.edited, aff.Servers),
+		preferKeys:    ep.offerKeys,
 		header:        header,
 		alwaysConfirm: true,
 		bumped:        true,
@@ -332,8 +328,18 @@ func sweepAfter(ctx context.Context, f *editFlags, ep editPlan, out workflow.Out
 	if !f.sweep || out.Stage != workflow.StageConfirmed || len(tombs) == 0 {
 		return nil
 	}
-	rep := runSweep(ctx, sess, ep.edited, sweepTargets(ep.edited, out.Plans), tombs)
+	rep := runSweep(ctx, sess, ep.edited, ep.offerKeys, sweepTargets(ep.edited, out.Plans), tombs)
 	return &rep
+}
+
+// offerKeys is what every dial of an edit run offers on s. Sessions
+// authenticate with what is installed now: the old config's grants first,
+// then the new one's. A no-op run has no edited config.
+func (ep *editPlan) offerKeys(s config.Server) []string {
+	if ep.edited == nil {
+		return audit.GrantedFingerprints(ep.former, s.Name)
+	}
+	return unionFPs(audit.GrantedFingerprints(ep.former, s.Name), audit.GrantedFingerprints(ep.edited, s.Name))
 }
 
 // sweepTombs are the key tombstones a --sweep looks for: this run's new
@@ -355,14 +361,14 @@ func sweepSession(ctx context.Context, log *slog.Logger, f *editFlags, ids ident
 	return openFleet(ctx, log, &f.run.connFlags, ids, false)
 }
 
-// sweepAll reads every server of cfg with sess; nil when no sweep runs
-// (sess is nil).
-func sweepAll(ctx context.Context, sess *fleetSession, cfg *config.Config, tombs []config.Tombstone) *apply.SweepReport {
+// sweepAll reads every server of cfg with sess, offering offer's keys; nil
+// when no sweep runs (sess is nil).
+func sweepAll(ctx context.Context, sess *fleetSession, cfg *config.Config, offer func(config.Server) []string, tombs []config.Tombstone) *apply.SweepReport {
 	if sess == nil {
 		return nil
 	}
-	sess.warnNoGrantedKeys(ctx, cfg.Servers, grantedOn(cfg))
-	rep := runSweep(ctx, sess, cfg, cfg.Servers, tombs)
+	sess.warnNoGrantedKeys(ctx, cfg.Servers, offer)
+	rep := runSweep(ctx, sess, cfg, offer, cfg.Servers, tombs)
 	return &rep
 }
 
@@ -408,7 +414,7 @@ func finishNoop(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editF
 	if !f.run.json {
 		printAlready(stdout, ep.summary.AlreadyRevoked, h)
 	}
-	rep := sweepAll(cmd.Context(), sess, ep.former, tombs)
+	rep := sweepAll(cmd.Context(), sess, ep.former, ep.offerKeys, tombs)
 	if f.run.json {
 		if err := apply.RenderJSON(stdout, ep.former, nil, apply.JSONOptions{
 			Command: cmd.Name(), DryRun: f.run.dryRun, Former: ep.former, Edit: &ep.summary, Sweep: rep,
@@ -476,7 +482,7 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 	if err := saveEdit(stdout, ep, doc != nil, f.noApply); err != nil {
 		return err
 	}
-	rep := sweepAll(cmd.Context(), sess, ep.edited, tombs)
+	rep := sweepAll(cmd.Context(), sess, ep.edited, ep.offerKeys, tombs)
 	if doc != nil {
 		if err := doc(nil, true, rep); err != nil {
 			return err

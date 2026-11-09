@@ -1966,15 +1966,16 @@ $ sshepherd audit --identity ~/.ssh/ci_new
 
 ## Authentication
 
-`audit`, `adopt`, `apply`, `revoke` and `rotate` authenticate with the union of two
-sources, like `ssh -i` (`revoke` and `rotate` write through `apply`'s pipeline, so
-everything said about `apply` below holds for them too):
+`audit`, `adopt`, `apply`, `revoke` and `rotate` load keys from two sources, like
+`ssh -i` (`revoke` and `rotate` write through `apply`'s pipeline, so everything said
+about `apply` below holds for them too):
 
-1. **`--identity` key files**, offered first, in flag order;
+1. **`--identity` key files**, in flag order;
 2. **the SSH agent** at `SSH_AUTH_SOCK`, in the agent's own order (certificates
    included).
 
-A key in both is offered once. With at least one `--identity`, a missing, empty or
+A key in both is loaded once. Loading a key does not mean every server is offered it:
+see [Key offering](#key-offering). With at least one `--identity`, a missing, empty or
 broken agent is not an error (a set-but-broken `SSH_AUTH_SOCK` logs one warning and
 the run continues with the key files). With no `--identity`, the agent is required
 and behaves as before — except that `apply` with only agent certificates is now
@@ -2182,6 +2183,8 @@ SIGKILL cannot be handled, so give a write time to finish: `docker stop -t 150`,
 ### Key offering
 
 Each server is offered only the keys the manifest grants there (plus operator keys), so a managed server never learns the rest of your keys. A held key that matches through a certificate's key or its CA counts as granted.
+
+`revoke` and `rotate`, including their `--sweep`, offer the keys granted before the edit first, then the keys granted after it: a server that has not been written yet still holds the old keys. A sweep that cannot log in to a server reports it unreachable (exit `1`) and logs each distinct hint once, on stderr.
 
 If you hold none of the keys granted on a server (normal right after `import --servers-only`), every loaded key is offered with one warning. Before any connection, a run warns once when no loaded key is granted on any target server and silences the per-server line. The fallback is about what you **hold**, not what the server has installed: a key granted and held but not yet installed (a new VM with only its cloud-init key, or a key changed by hand in the manifest) fails with `auth`, and the report's hint names `--offer-all-keys`. There is no automatic retry, because that would hand every held key to any server that refuses the granted ones. Bootstrap: `sshepherd apply --server NAME --offer-all-keys`.
 
