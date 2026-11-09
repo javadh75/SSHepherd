@@ -137,6 +137,8 @@ All decisions answered (D0–D31 incl. sub-decisions, D4c, D1d, D1e).
 - P09: **OP1** a symlinked managed file is drift (exit 1). **OP2** the posture probe gets its own session. **OP3** an expired operator line is always critical. **OP4** refuse a save only when it adds a weak key. **OP5** plain import and `--merge` skip a weak `.pub` with a warning. **OP6** one no-granted-keys warning (per-server lines drop to debug). Spec approved.
 - P10 (spec still a draft, awaiting approval): **OP1** warning, fails `--strict`. **OP2** fixed at 8. **OP3** YAML inside the JSON. **OP4** still report, still exit 2. **OP5** add, restrictions only. **OP6** refuse only what's affected. **OP7** refuse for now. **OP8** add optional `jump_only`.
 - W5 (P08-impl) and W6 (P09-impl) authorized by the owner 2026-11-08.
+- P10 spec approved 2026-11-08. Confirmed at review: one address, one route stays refused (known limit: overlapping private addresses need distinct hostnames; a later `host_key_alias:` lifts it); `--sweep` prints `not swept: NAME (jump only)` with the same exit; a `jump_only` hop is offered all held keys; a restriction clash holds that server even for a revoke.
+- P08 follow-up: a failed `authorized_keys2` move-back after a REJECTED login check is `lockout_unrestored`, exit 2. D9b's line stays `warn: <server>: …`.
 
 **W1 verifier follow-ups (unconfirmed single-lens, triaged by the main session, 2026-11-08):**
 - Fixed in main session: parseExpiry rejected OpenSSH's `UTC` suffix (and lowercase forms) after D27 → valid manifests failed to load (COR-1 regression). README ignored-lines list now names a malformed `expiry-time`.

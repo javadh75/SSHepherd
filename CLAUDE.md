@@ -457,8 +457,8 @@ failure), and DSA/RSA<2048 keys are policy conflicts through D29 (the save rule
 refuses only a save that adds one; a removal-only write proceeds). `critical_reasons`
 lists all six classes. JSON stays schema 1.
 The access-model roadmap spec
-(P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is a draft
-awaiting approval. Audit's claim is narrowed to
+(P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved
+and not built; each slice gets its own plan. Audit's claim is narrowed to
 the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written

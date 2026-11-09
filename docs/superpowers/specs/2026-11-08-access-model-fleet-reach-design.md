@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Draft, all recorded answers and open points answered, awaiting owner approval.
+- **Status:** Approved (owner, 2026-11-08). Not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -817,8 +817,15 @@ A `jump_only` server that no server's `via` names warns, kind `jump_only_unused`
   `servers "a" and "b" both target deploy@10.0.0.5:22 ~/.ssh/authorized_keys through different hops; a manifest holds one entry per address, so remove one`.
 - **One address, one route (OP7).** Two entries at the same `host:port` must have the same
   `via`, even when their user or file path differs, because `known_hosts` is keyed by
-  address: `servers "a" and "b" reach 10.0.0.5:22 through different hops; every entry at one address must use the same route`.
+  address: `servers "a" and "b" reach 10.0.0.5:22 through different hops; every entry at one address must use the same route; if these are different machines, give each a hostname its own hop can resolve`.
   Different users or files at one address over the same route stay valid, as today.
+
+**Known limitation (owner, 2026-11-08; keep it visible in the README's `via:` section).** Two different machines that
+share a private address behind different hops, such as `10.0.0.5` in two networks, cannot both be
+in one manifest by address. The workaround is a distinct hostname for each that its own hop
+resolves. The refusal is safe and can be loosened later: the planned lift is an optional per-server
+`host_key_alias:` (OpenSSH's `HostKeyAlias`), not built here because the owner's fleet has no
+overlap today.
 - An `access:` entry naming a `jump_only` server, in `servers:` or `except:`:
   `access for "alice": server "bastion-eu" is jump_only; access cannot name it`.
 - A tag only `jump_only` servers carry grants nothing, so it fails like an unknown tag:
