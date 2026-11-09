@@ -63,6 +63,7 @@ func TestTagValidation(t *testing.T) {
 	const web1 = "  - {name: web-1, host: 10.0.1.1, user: deploy, "
 	for _, tc := range []struct{ name, servers, want string }{
 		{"uppercase tag", web1 + "tags: [Prod]}\n", `server "web-1": tag "Prod" is not valid`},
+		{"uppercase after the first character", web1 + "tags: [pRod]}\n", `server "web-1": tag "pRod" is not valid`},
 		{"leading dash", web1 + "tags: [-prod]}\n", `server "web-1": tag "-prod" is not valid`},
 		{"empty tag", web1 + `tags: [""]}` + "\n", `server "web-1": tag "" is not valid`},
 		{"tag of 64 characters", web1 + "tags: [" + long + "a]}\n", `tag "` + long + `a" is not valid`},

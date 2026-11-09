@@ -462,9 +462,9 @@ managed file absent, a posture session that dies, the sanitized JSON posture pat
 dead-line reason, `--offer-all-keys` on the write dial and a held weak key through `adopt` and
 `import --merge`.
 The access-model roadmap spec
-(P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved
-and not built; each slice gets its own plan. Audit's claim is narrowed to
-the managed `authorized_keys` files (D18).
+(P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
+S1, S2, S8 and S3a are built; the other slices are not, and each gets its own plan and the
+owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0, 1 or 2 (specced in
