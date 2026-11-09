@@ -662,7 +662,8 @@ JSON field changed.
 `docs/superpowers/plans/2026-11-09-p10-s8-import-adopt-json.md`): every command now offers
 `--json`. Both write one schema-1 discovery and warnings report on stdout; the manifest goes to
 `-o` (`output.written`) or into the `manifest` field, byte-identical to a plain run, and logs
-stay on stderr. `adopt` writes a document on exit 0 and 1 (`emitted` says whether a manifest was
+stay on stderr. A manifest that is not UTF-8 (a no-op `--merge` of a UTF-16 file) is refused
+without `-o` (exit 3, no document), because a JSON string cannot hold its bytes. `adopt` writes a document on exit 0 and 1 (`emitted` says whether a manifest was
 produced) and on exit 3 only for `--partial` with no server read; `import` only on exit 0.
 `unreadable` (with `error_kind`) holds transport failures and `line_issues` the lines adopt
 could not use. `adopt.Plan.Warnings` and `reconcile.Plan.Warnings` are structured

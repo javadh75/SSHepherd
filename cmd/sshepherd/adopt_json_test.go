@@ -158,6 +158,33 @@ func TestAdoptJSONOutputFile(t *testing.T) {
 	}
 }
 
+// TestAdoptJSONNonUTF8Manifest: nothing to adopt, so --merge returns a UTF-16
+// manifest's raw bytes, which no JSON string can hold. Without -o the run
+// refuses (exit 3, stdout empty); with -o the file gets them unchanged.
+func TestAdoptJSONNonUTF8Manifest(t *testing.T) {
+	hosts, kh, _ := editFleet(t, []byte{1}, "web-1")
+	hosts["web-1"].install(t, []byte{1})
+	raw := utf16LE("users:\n  - {name: alice, keys: [" + qk(t, 1) + "]}\nservers:\n" + hosts["web-1"].line("web-1") +
+		"access:\n  - {user: alice, servers: [web-1]}\n")
+	cfg := filepath.Join(t.TempDir(), "m16.yaml")
+	if err := os.WriteFile(cfg, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errBuf bytes.Buffer
+	code := run([]string{"adopt", "--json", "--merge", "--config", cfg, "--known-hosts", kh}, &out, &errBuf)
+	if code != 3 || out.Len() != 0 || !strings.Contains(errBuf.String(), "-o FILE") {
+		t.Errorf("exit = %d, stdout = %q, stderr = %q, want 3, empty, a message naming -o FILE", code, out.Bytes(), errBuf.String())
+	}
+	dst := filepath.Join(t.TempDir(), "out.yaml")
+	code, doc, stderr := adoptJSONCLI(t, "--merge", "--config", cfg, "--known-hosts", kh, "-o", dst)
+	if code != 0 || doc.Manifest != nil || doc.Output == nil || !doc.Output.Written {
+		t.Fatalf("exit = %d, doc = %+v (stderr: %s)", code, doc, stderr)
+	}
+	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, raw) {
+		t.Errorf("-o wrote %x (err %v), want %x", got, err, raw)
+	}
+}
+
 // TestAdoptJSONInPlaceNoChange: nothing to adopt, so the in-place update
 // writes nothing, and the document says so.
 func TestAdoptJSONInPlaceNoChange(t *testing.T) {

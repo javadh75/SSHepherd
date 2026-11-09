@@ -458,7 +458,7 @@ directly or return strings today: `sshcfg.Load`, `resolveUsers`, `CollapseTarget
 `warnProxies` and the host filter. Those functions return their warnings to one
 collector in `import_json.go` (the helpers receive the collector, so each message logs at today's point), which assigns the kinds; the non-JSON path prints them
 exactly as today. `--json` adds no behavior: the manifest bytes match a non-JSON run
-exactly. Adopt's renderer is `internal/adopt/json.go`, which imports no CLI framework;
+exactly. (Repair, W9: a manifest that is not UTF-8 reaches this path only as a no-op `--merge` of a UTF-16 file. A JSON string cannot hold those bytes, so without `-o` the run exits 3 with no document; `-o` writes them unchanged.) Adopt's renderer is `internal/adopt/json.go`, which imports no CLI framework;
 import's is `cmd/sshepherd/import_json.go`, because import's run lives in cmd.
 
 **Tombstones.** Skips are reported through the P04 warning kinds. No rule changes.

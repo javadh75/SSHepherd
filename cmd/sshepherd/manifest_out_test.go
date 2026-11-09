@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,5 +145,35 @@ func TestPlaceManifest(t *testing.T) {
 	}
 	if _, err = placeManifest(m, dst, data, false); err == nil {
 		t.Error("an existing -o without --force was accepted")
+	}
+	changed := []byte("users: []\nservers: []\naccess: []\n")
+	got, err = placeManifest(m, src, changed, true)
+	if err != nil || got.Output == nil || !got.Output.Written {
+		t.Errorf("changing in-place update: placement = %+v, err = %v, want written true", got, err)
+	}
+	if onDisk, err := os.ReadFile(src); err != nil || !bytes.Equal(onDisk, changed) {
+		t.Errorf("in-place update left %q (err %v), want %q", onDisk, err, changed)
+	}
+}
+
+// TestPlaceManifestNonUTF8: json.Encoder would replace bytes that are not
+// UTF-8, so the document refuses them rather than carry a different manifest;
+// -o still gets them unchanged.
+func TestPlaceManifestNonUTF8(t *testing.T) {
+	data := utf16LE("users: []\n")
+	got, err := placeManifest(manifestTarget{}, "", data, false)
+	if err == nil || !strings.Contains(err.Error(), "-o FILE") {
+		t.Errorf("err = %v, want a refusal naming -o FILE", err)
+	}
+	if got.Manifest != nil || got.Output != nil {
+		t.Errorf("placement = %+v, want none", got)
+	}
+	dst := filepath.Join(t.TempDir(), "new.yaml")
+	got, err = placeManifest(manifestTarget{}, dst, data, false)
+	if err != nil || got.Output == nil || !got.Output.Written {
+		t.Fatalf("-o: placement = %+v, err = %v", got, err)
+	}
+	if onDisk, err := os.ReadFile(dst); err != nil || !bytes.Equal(onDisk, data) {
+		t.Errorf("-o wrote %x (err %v), want %x", onDisk, err, data)
 	}
 }

@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"unicode/utf8"
 
 	"github.com/javadh75/SSHepherd/internal/adopt"
 	"github.com/javadh75/SSHepherd/internal/manifest"
@@ -23,9 +25,15 @@ func emitManifest(stdout io.Writer, src manifestTarget, out string, data []byte,
 }
 
 // placeManifest is emitManifest under --json: stdout belongs to the
-// document, so with no -o the bytes go into it (OP3).
+// document, so with no -o the bytes go into it (OP3). A JSON string holds
+// only UTF-8 and the encoder would silently replace anything else, so a
+// manifest in another encoding (a no-op merge returns a UTF-16 file's raw
+// bytes) is refused here rather than emitted changed; -o still takes it.
 func placeManifest(src manifestTarget, out string, data []byte, force bool) (adopt.Placement, error) {
 	if out == "" {
+		if !utf8.Valid(data) {
+			return adopt.Placement{}, errors.New("the manifest is not UTF-8, so a JSON report cannot hold its bytes; pass -o FILE to write it to a file")
+		}
 		s := string(data)
 		return adopt.Placement{Manifest: &s}, nil
 	}

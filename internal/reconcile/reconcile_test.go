@@ -787,6 +787,21 @@ revoked:
 			}
 		})
 	}
+	t.Run("known key on a conflicted server", func(t *testing.T) {
+		k2 := testkeys.Line(t, 2)
+		p := mustBuild(t, baseCfg(t), web1Differs, []identity.User{{Name: "alice", Source: "~/.ssh/alice", Key: k2, Servers: []string{"web-1"}}})
+		if len(p.Warnings) != 2 {
+			t.Fatalf("Warnings = %q, want the server conflict and the dropped access", messages(p.Warnings))
+		}
+		got := p.Warnings[1]
+		if got.Message == "" {
+			t.Error("Message is empty")
+		}
+		got.Message = ""
+		if want := (Warning{Kind: KindMergeConflict, Server: "web-1", User: "alice"}); got != want {
+			t.Errorf("Warning = %+v, want %+v", got, want)
+		}
+	})
 	t.Run("user with no surviving server", func(t *testing.T) {
 		p := mustBuild(t, baseCfg(t), web1Differs, []identity.User{{Name: "dave", Source: "~/.ssh/dave", Key: k9, Servers: []string{"web-1"}}})
 		if len(p.Warnings) != 2 || p.Warnings[1].Kind != KindMergeConflict || p.Warnings[1].User != "dave" {

@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/javadh75/SSHepherd/internal/adopt"
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -17,6 +19,16 @@ import (
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// utf16LE is s with a UTF-16LE byte order mark: bytes yaml.v3 loads and a
+// JSON string cannot carry.
+func utf16LE(s string) []byte {
+	out := []byte{0xFF, 0xFE}
+	for _, u := range utf16.Encode([]rune(s)) {
+		out = binary.LittleEndian.AppendUint16(out, u)
+	}
+	return out
+}
 
 func importDocBytes(t *testing.T, doc importDoc) []byte {
 	t.Helper()
@@ -258,8 +270,8 @@ func TestImportJSONMerge(t *testing.T) {
 	if doc.Mode != "merge" || doc.Manifest == nil || !strings.Contains(*doc.Manifest, "# hand-maintained fleet manifest") {
 		t.Errorf("doc = %+v", doc)
 	}
-	if len(doc.NewServers) != 1 || doc.NewServers[0].Name != "app-1" {
-		t.Errorf("new_servers = %+v", doc.NewServers)
+	if len(doc.NewServers) != 1 || doc.NewServers[0].Name != "app-1" || doc.NewServers[0].Port != 22 {
+		t.Errorf("new_servers = %+v, want app-1 on the effective port 22", doc.NewServers)
 	}
 	if len(doc.NewUsers) != 1 || doc.NewUsers[0].Fingerprint != fingerprintOf(t, testkeys.Line(t, 7)) ||
 		len(doc.NewUsers[0].Servers) != 1 || doc.NewUsers[0].Servers[0] != "app-1" {
@@ -267,6 +279,48 @@ func TestImportJSONMerge(t *testing.T) {
 	}
 	if s := doc.Summary; s.Hosts != 1 || s.Users != 1 || s.Grants != 1 {
 		t.Errorf("summary = %+v", s)
+	}
+}
+
+// TestImportJSONSummaryHostsCountsParsed: summary.hosts is what sshcfg.Load
+// returned, before an unsafe host is dropped or two aliases collapse.
+func TestImportJSONSummaryHostsCountsParsed(t *testing.T) {
+	hermeticHome(t)
+	path := writeSSHConfig(t, "Host a\n  HostName 10.0.0.1\n  User deploy\n"+
+		"Host b\n  HostName 10.0.0.1\n  User deploy\n"+
+		"Host \"web 1\"\n  HostName 10.0.0.2\n  User deploy\n")
+	code, doc, stderr := importJSONCLI(t, path, "--servers-only")
+	if code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+	}
+	if doc.Summary.Hosts != 3 || len(doc.NewServers) != 1 {
+		t.Errorf("summary.hosts = %d, new_servers = %+v, want 3 parsed and 1 kept", doc.Summary.Hosts, doc.NewServers)
+	}
+}
+
+// TestImportJSONNonUTF8Manifest: a no-op merge returns a UTF-16 manifest's
+// raw bytes, which no JSON string can hold. Without -o the run refuses (exit
+// 3, stdout empty); with -o the file gets them unchanged.
+func TestImportJSONNonUTF8Manifest(t *testing.T) {
+	hermeticHome(t)
+	raw := utf16LE("users: []\nservers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\naccess: []\n")
+	m := filepath.Join(t.TempDir(), "m16.yaml")
+	if err := os.WriteFile(m, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	code := run([]string{"import", "--json", path, "--servers-only", "--merge", m}, &out, &errBuf)
+	if code != 3 || out.Len() != 0 || !strings.Contains(errBuf.String(), "-o FILE") {
+		t.Errorf("exit = %d, stdout = %q, stderr = %q, want 3, empty, a message naming -o FILE", code, out.Bytes(), errBuf.String())
+	}
+	dst := filepath.Join(t.TempDir(), "out.yaml")
+	code, doc, stderr := importJSONCLI(t, path, "--servers-only", "--merge", m, "-o", dst)
+	if code != 0 || doc.Manifest != nil || doc.Output == nil || !doc.Output.Written {
+		t.Fatalf("exit = %d, doc = %+v (stderr: %s)", code, doc, stderr)
+	}
+	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, raw) {
+		t.Errorf("-o wrote %x (err %v), want %x", got, err, raw)
 	}
 }
 

@@ -1068,7 +1068,7 @@ are never read. Run it where you actually `ssh` from.
 | `--merge FILE` | — | Merge into `FILE`: preserve its text and append what is new |
 | `--json` | off | Machine-readable report on stdout (schema 1); the manifest goes to `-o`, or into the report's `manifest` field |
 
-`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds, and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped`; ignore kinds you do not know.
+`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. A manifest that is not UTF-8 (a `--merge` with nothing to add returns a UTF-16 file's bytes unchanged) cannot go into a JSON string, so without `-o` the run exits `3` and writes no report; with `-o` the file gets the bytes unchanged. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds, and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped`; ignore kinds you do not know.
 
 ```json
 {
@@ -1260,7 +1260,7 @@ A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in bot
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
-`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output` (`written` is `false` when an in-place update changed nothing). Without `-o` the report has `manifest`, so `sshepherd adopt --json | jq -j .manifest` prints what a plain run prints. A report with `"emitted": false` has neither.
+`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output` (`written` is `false` when an in-place update changed nothing). Without `-o` the report has `manifest`, so `sshepherd adopt --json | jq -j .manifest` prints what a plain run prints. A manifest that is not UTF-8 (a `--merge` with nothing to adopt returns a UTF-16 file's bytes unchanged) cannot go into a JSON string, so without `-o` the run exits `3` and writes no report; with `-o` the file gets the bytes unchanged. A report with `"emitted": false` has neither.
 
 Exit `0` and `1` always write a report. `emitted` is `true` under `--partial` and `false` when unreadable servers stopped the run. Exit `3` writes none, only a message on stderr, with one exception: `--partial` with no server read writes a report with `"emitted": false`. `unreadable` lists servers that could not be read, each with `error_kind`; `line_issues` lists lines adopt could not use on a server it did read, and `summary.partly_read` counts those servers. `warnings` has the kinds `revoked_key_skipped`, `revoked_access_skipped`, `except_skipped`, `key_differs`, `comment_dropped` and `weak_key_skipped`; ignore kinds you do not know.
 
@@ -1348,7 +1348,8 @@ and the manifest marks the server with
 `# WARNING: server NAME partly read — keys on lines adopt could not use are NOT represented`.
 When
 `--partial` could read no server at all, adopt refuses before rendering, writes
-nothing to stdout or `-o`, and exits 3 with
+no manifest to stdout or `-o` (under `--json`, stdout gets a report with
+`"emitted": false`), and exits 3 with
 `read 0 of N servers — nothing could be adopted; fix the errors above`.
 
 An on-server key whose comment has tabs or control/format characters is adopted
