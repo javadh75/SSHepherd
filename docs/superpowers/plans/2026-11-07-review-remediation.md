@@ -138,6 +138,7 @@ All decisions answered (D0–D31 incl. sub-decisions, D4c, D1d, D1e).
 - P10 (spec still a draft, awaiting approval): **OP1** warning, fails `--strict`. **OP2** fixed at 8. **OP3** YAML inside the JSON. **OP4** still report, still exit 2. **OP5** add, restrictions only. **OP6** refuse only what's affected. **OP7** refuse for now. **OP8** add optional `jump_only`.
 - W5 (P08-impl) and W6 (P09-impl) authorized by the owner 2026-11-08.
 - P10 spec approved 2026-11-08. Confirmed at review: one address, one route stays refused (known limit: overlapping private addresses need distinct hostnames; a later `host_key_alias:` lifts it); `--sweep` prints `not swept: NAME (jump only)` with the same exit; a `jump_only` hop is offered all held keys; a restriction clash holds that server even for a revoke.
+- P10 implementation authorized by the owner 2026-11-09. S1: **O1 = (a)** a default `known_hosts` that exists but cannot load exits 3 and still writes the `validate` document. **O2 = (a)** `manifest_warnings` carries every warning, including P09's two under the new kinds `weak_key_ungranted` and `key_expired`. **O3 = (a)** S1's README states only `validate`'s half; the `import`/`adopt` half moves to S8.
 - P08 follow-up: a failed `authorized_keys2` move-back after a REJECTED login check is `lockout_unrestored`, exit 2. D9b's line stays `warn: <server>: …`.
 
 **W1 verifier follow-ups (unconfirmed single-lens, triaged by the main session, 2026-11-08):**
