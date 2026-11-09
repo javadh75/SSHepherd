@@ -6,7 +6,7 @@ users:
     keys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c
   - name: javad-spare
-    description: imported from ~/.ssh/spare (--operator)
+    description: imported from ~/.ssh/spare (--operator-key)
     operator: true
     keys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOU

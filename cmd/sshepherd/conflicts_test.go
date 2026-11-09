@@ -86,7 +86,7 @@ func TestImportSkipsWeakIdentity(t *testing.T) {
 	}
 }
 
-// TestImportOperatorWeakKeyExits3: --operator naming a weak key stops.
+// TestImportOperatorWeakKeyExits3: --operator-key naming a weak key stops.
 func TestImportOperatorWeakKeyExits3(t *testing.T) {
 	home := hermeticHome(t)
 	key := filepath.Join(home, "old")
@@ -94,7 +94,7 @@ func TestImportOperatorWeakKeyExits3(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out, errBuf bytes.Buffer
-	code := run([]string{"import", writeSSHConfig(t, "Host web-1\n  User deploy\n"), "--operator", key}, &out, &errBuf)
+	code := run([]string{"import", writeSSHConfig(t, "Host web-1\n  User deploy\n"), "--operator-key", key}, &out, &errBuf)
 	if code != 3 || !strings.Contains(errBuf.String(), "weak key (dsa)") {
 		t.Fatalf("exit = %d, stderr %s", code, errBuf.String())
 	}

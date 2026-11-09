@@ -548,7 +548,7 @@ func TestBuildOperatorOwnerNoExtension(t *testing.T) {
 	}
 }
 
-// --operator on a key owned by an existing non-operator user is the locked
+// --operator-key on a key owned by an existing non-operator user is the locked
 // hard error: operator status protects keys from future revocation, so
 // promotion must be an explicit manifest edit.
 func TestBuildOperatorPromotionError(t *testing.T) {
@@ -559,14 +559,14 @@ func TestBuildOperatorPromotionError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Build = nil error, want the promotion conflict")
 	}
-	for _, want := range []string{`"alice"`, "explicit manifest edit"} {
+	for _, want := range []string{"--operator-key SHA256:", `"alice"`, "explicit manifest edit"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err, want)
 		}
 	}
 }
 
-// --operator on a key an existing operator already owns is a silent no-op:
+// --operator-key on a key an existing operator already owns is a silent no-op:
 // the idempotent re-run of the same flag.
 func TestBuildOperatorExistingNoop(t *testing.T) {
 	users := []identity.User{
@@ -578,7 +578,7 @@ func TestBuildOperatorExistingNoop(t *testing.T) {
 	}
 }
 
-// An unknown --operator key is appended as a new grantless operator user
+// An unknown --operator-key is appended as a new grantless operator user
 // (the fleet-wide grant is implied; no access entry).
 func TestBuildOperatorUnknownAppended(t *testing.T) {
 	users := []identity.User{
@@ -587,7 +587,7 @@ func TestBuildOperatorUnknownAppended(t *testing.T) {
 	p := mustBuild(t, baseCfg(t), nil, users)
 	want := []UserAdd{{
 		Name:        "javad-spare",
-		Description: "imported from ~/.ssh/spare (--operator)",
+		Description: "imported from ~/.ssh/spare (--operator-key)",
 		Operator:    true,
 		Keys:        []string{testkeys.Line(t, 23)},
 	}}

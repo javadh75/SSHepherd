@@ -36,7 +36,7 @@ Flags:
       --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
       --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
-      --merge                           preserve the manifest text (comments intact) and append the additions instead of regenerating
+      --merge                           merge into --config: preserve its text and append what is new
       --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
   -o, --output string                   write the manifest to this file instead of stdout
       --parallel int                    max concurrent server reads (default 32)

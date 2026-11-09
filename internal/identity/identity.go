@@ -34,7 +34,7 @@ type Resolver struct {
 // leading tilde plus the %d (home), %u (local user) and %% tokens, and —
 // when h is non-nil (Resolve, per host) — %n (alias), %h (resolved
 // HostName), %r (remote user) and %p (port, default 22). h is nil for
-// --operator paths, which name keys independent of any host. Any other token
+// --operator-key paths, which name keys independent of any host. Any other token
 // depends on the live connection and cannot be resolved statically.
 func (r Resolver) expand(raw string, h *sshcfg.Host) (string, error) {
 	if raw == "~" {
@@ -124,7 +124,7 @@ type User struct {
 	Name     string   // <LocalUser>-<key file basename>, -2/-3/… on collision
 	Source   string   // IdentityFile value as written (defaults: ~/.ssh/<name>)
 	Default  bool     // found by the default-identity scan, not an explicit IdentityFile
-	Operator bool     // marked via --operator: fleet-wide grant, no access entry
+	Operator bool     // marked via --operator-key: fleet-wide grant, no access entry
 	Comment  string   // trailing comment of the .pub, "" when none
 	Key      string   // the full public key line from the .pub
 	Servers  []string // granted aliases, appearance order
@@ -309,7 +309,7 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 			return nil, fmt.Errorf("operator key %q: %w", raw, err)
 		}
 		pubPath, p := pubPaths(p)
-		data, err := os.ReadFile(pubPath) // #nosec G304 -- path is the user's own --operator flag
+		data, err := os.ReadFile(pubPath) // #nosec G304 -- path is the user's own --operator-key flag
 		if err != nil {
 			return nil, fmt.Errorf("operator key %q: %w (only .pub files are read)", raw, err)
 		}

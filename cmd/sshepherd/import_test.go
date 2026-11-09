@@ -92,7 +92,7 @@ func TestGenerateManifestOperatorGolden(t *testing.T) {
 		// suffix, gains operator: true, loses its access entry.
 		{Name: "javad-id_ed25519", Source: "~/.ssh/id_ed25519", Default: true, Operator: true,
 			Key: testkeys.Line(t, 1), Servers: []string{"web-1", "ci"}},
-		// Created by --operator: grantless, gets the (--operator) description.
+		// Created by --operator-key: grantless, gets the (--operator-key) description.
 		{Name: "javad-spare", Source: "~/.ssh/spare", Operator: true,
 			Key: testkeys.Line(t, 2)},
 		// Plain user, partial coverage: explicit list, no compaction.
@@ -116,8 +116,8 @@ func TestGenerateManifestOperatorGolden(t *testing.T) {
 	if strings.Contains(string(got), "user: javad-id_ed25519") {
 		t.Errorf("operator must not get an access entry:\n%s", got)
 	}
-	if !strings.Contains(string(got), "(--operator)") {
-		t.Errorf("created operator lacks the (--operator) description:\n%s", got)
+	if !strings.Contains(string(got), "(--operator-key)") {
+		t.Errorf("created operator lacks the (--operator-key) description:\n%s", got)
 	}
 	checkGolden(t, "import_manifest_operators.golden", got)
 }
@@ -386,7 +386,7 @@ func TestImportOperator(t *testing.T) {
 	}
 	cfg := writeSSHConfig(t, "Host web-1\n  User deploy\n  IdentityFile "+referenced+"\n")
 	var out, errBuf bytes.Buffer
-	code := run([]string{"import", cfg, "--operator", referenced, "--operator", spare}, &out, &errBuf)
+	code := run([]string{"import", cfg, "--operator-key", referenced, "--operator-key", spare}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
 	}
@@ -403,8 +403,8 @@ func TestImportOperator(t *testing.T) {
 	if strings.Contains(out.String(), "user: "+localUsername()+"-work") {
 		t.Errorf("stdout = %q, an operator must not get an access entry", out.String())
 	}
-	if !strings.Contains(out.String(), "(--operator)") {
-		t.Errorf("stdout = %q, want the (--operator) description on the created user", out.String())
+	if !strings.Contains(out.String(), "(--operator-key)") {
+		t.Errorf("stdout = %q, want the (--operator-key) description on the created user", out.String())
 	}
 }
 
@@ -412,11 +412,29 @@ func TestImportOperatorConflictsServersOnly(t *testing.T) {
 	hermeticHome(t)
 	cfg := writeSSHConfig(t, "Host a\n  User u\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"import", cfg, "--servers-only", "--operator", "x"}, &out, &errBuf); code != 3 {
+	if code := run([]string{"import", cfg, "--servers-only", "--operator-key", "x"}, &out, &errBuf); code != 3 {
 		t.Fatalf("exit = %d, want 3", code)
 	}
-	if !strings.Contains(errBuf.String(), "--servers-only") {
-		t.Errorf("stderr = %q, want a conflict message naming --servers-only", errBuf.String())
+	if want := "--operator-key conflicts with --servers-only (operators are users)"; !strings.Contains(errBuf.String(), want) {
+		t.Errorf("stderr = %q, want %q", errBuf.String(), want)
+	}
+}
+
+// TestImportOldOperatorFlagRemoved: D26 renamed --operator to --operator-key
+// with no alias, so the old spelling is an unknown flag (exit 3), and a
+// failed flag parse prints nothing on stdout.
+func TestImportOldOperatorFlagRemoved(t *testing.T) {
+	hermeticHome(t)
+	cfg := writeSSHConfig(t, "Host a\n  User u\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", cfg, "--operator", "x"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "unknown flag: --operator") {
+		t.Errorf("stderr = %q, want cobra's unknown-flag error", errBuf.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing", out.String())
 	}
 }
 
@@ -424,7 +442,7 @@ func TestImportOperatorMissingKey(t *testing.T) {
 	home := hermeticHome(t)
 	cfg := writeSSHConfig(t, "Host a\n  User u\n")
 	var out, errBuf bytes.Buffer
-	code := run([]string{"import", cfg, "--operator", filepath.Join(home, "nope")}, &out, &errBuf)
+	code := run([]string{"import", cfg, "--operator-key", filepath.Join(home, "nope")}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3 (an explicitly named operator key must exist)", code)
 	}

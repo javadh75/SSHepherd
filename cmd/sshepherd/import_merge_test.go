@@ -359,7 +359,7 @@ func TestImportMergeInPlaceKeepsMode(t *testing.T) {
 	}
 }
 
-// TestImportMergeOperatorPromotion: --operator naming a key an existing
+// TestImportMergeOperatorPromotion: --operator-key naming a key an existing
 // non-operator user owns is the locked hard error — nothing written.
 func TestImportMergeOperatorPromotion(t *testing.T) {
 	home := hermeticHome(t)
@@ -371,7 +371,7 @@ func TestImportMergeOperatorPromotion(t *testing.T) {
 	cfg := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
 	dst := filepath.Join(t.TempDir(), "out.yaml")
 	var out, errBuf bytes.Buffer
-	code := run([]string{"import", cfg, "--merge", m, "--operator", keyPath, "-o", dst}, &out, &errBuf)
+	code := run([]string{"import", cfg, "--merge", m, "--operator-key", keyPath, "-o", dst}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
 	}
@@ -383,7 +383,7 @@ func TestImportMergeOperatorPromotion(t *testing.T) {
 	}
 }
 
-// TestImportMergeOperatorExistingNoop: --operator naming a key an existing
+// TestImportMergeOperatorExistingNoop: --operator-key naming a key an existing
 // operator already owns is the idempotent re-run — byte-identical output.
 func TestImportMergeOperatorExistingNoop(t *testing.T) {
 	home := hermeticHome(t)
@@ -402,7 +402,7 @@ servers:
 	}
 	cfg := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"import", cfg, "--merge", m, "--operator", keyPath}, &out, &errBuf); code != 0 {
+	if code := run([]string{"import", cfg, "--merge", m, "--operator-key", keyPath}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
 	}
 	if out.String() != content {

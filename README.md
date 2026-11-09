@@ -303,7 +303,7 @@ needed — and marks their keys as protected management keys:
 - `audit` renders a missing operator key as **CRITICAL** (exit code 2), because that
   is the drift class that threatens your ability to reach the fleet at all.
 - `apply` writes operator keys **first** in every rendered file.
-- `import --operator <key-file>` marks a key's owner as an operator at import time.
+- `import --operator-key <key-file>` marks a key's owner as an operator at import time.
 
 A weak operator key freezes every grant on every server: apply refuses each one until `rotate` replaces it. Removals still land.
 
@@ -1064,8 +1064,8 @@ are never read. Run it where you actually `ssh` from.
 | `-o, --output` | stdout | Write the manifest to this file |
 | `--force` | off | Allow `--output` to overwrite an existing file |
 | `--servers-only` | off | Emit servers only; skip identity resolution |
-| `--operator` | — | Key file whose owner becomes an operator (repeatable) |
-| `--merge FILE` | — | Merge into an existing manifest, preserving its comments |
+| `--operator-key PATH` | — | Key file whose owner becomes an operator (repeatable) |
+| `--merge FILE` | — | Merge into `FILE`: preserve its text and append what is new |
 
 `--merge` is strictly additive: only genuinely new entries are appended, the
 existing manifest wins every conflict (with a loud warning), and re-running with no
@@ -1075,7 +1075,7 @@ revoked (user, server) pair is never re-extended:
 A `--merge` manifest that would keep a policy conflict is refused (exit 3; see
 [Validation rules](#validation-rules)).
 
-A weak `.pub` identity (DSA, RSA under 2048 bits) is skipped with a warning, in plain `import` and under `--merge`. `--operator` naming a weak key is an error (exit 3).
+A weak `.pub` identity (DSA, RSA under 2048 bits) is skipped with a warning, in plain `import` and under `--merge`. `--operator-key` naming a weak key is an error (exit 3).
 
 How the ssh config is read — matching OpenSSH (`ssh -G`):
 
@@ -1092,7 +1092,7 @@ How the ssh config is read — matching OpenSSH (`ssh -G`):
 - `HostName` expands `%h` (the alias) and `%%`; any other token skips the host with
   a warning.
 - `IdentityFile` expands `%d`, `%u`, `%%`, `%n` (alias), `%h` (resolved HostName),
-  `%r` (remote user) and `%p` (port, default 22); `--operator` paths support only
+  `%r` (remote user) and `%p` (port, default 22); `--operator-key` paths support only
   `%d`, `%u` and `%%`. An `IdentityFile` may name the `.pub` itself (agent-held keys
   such as 1Password, Secretive or a YubiKey); the user name drops the `.pub`.
 
@@ -1101,7 +1101,7 @@ What gets skipped or merged, always with a warning on stderr:
 - A host whose alias, HostName or User contains whitespace or control characters
   (e.g. a quoted `Host "web 1"`) — it could never be a valid server entry.
 - A `.pub` whose comment has tabs or control/format characters (an error for
-  `--operator`).
+  `--operator-key`).
 - **One entry per remote file.** When several aliases resolve to the same host
   (case-insensitive), port, user and `authorized_keys` file — e.g.
   `Host web1 web1.example.com` — the first in config order is kept and the rest are
@@ -1164,7 +1164,7 @@ A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in bot
 | `-o, --output` | stdout | Write the manifest to this file |
 | `--force` | off | Allow `--output` to overwrite an existing file |
 | `--partial` | off | Proceed even if some servers cannot be read |
-| `--merge` | off | Append discoveries to the existing manifest, comments intact |
+| `--merge` | off | Merge into `--config`: preserve its text and append what is new |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |

@@ -335,6 +335,6 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
 	cmd.Flags().BoolVar(&partial, "partial", false, "proceed even if some servers cannot be read (their access will be missing from the output)")
-	cmd.Flags().BoolVar(&merge, "merge", false, "preserve the manifest text (comments intact) and append the additions instead of regenerating")
+	cmd.Flags().BoolVar(&merge, "merge", false, "merge into --config: preserve its text and append what is new")
 	return cmd
 }

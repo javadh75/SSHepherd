@@ -96,7 +96,7 @@ type builder struct {
 // identity-derived users; nil under --servers-only) against cfg, the loaded
 // manifest. Deterministic: hosts and users are processed in input order,
 // warnings in discovery order, extensions in cfg.Users order. The only error
-// is the locked --operator promotion conflict — a marked key owned by an
+// is the locked --operator-key promotion conflict — a marked key owned by an
 // existing non-operator user; every other finding is a warning or note in
 // the plan.
 func Build(cfg *config.Config, hosts []sshcfg.Host, users []identity.User) (Plan, error) {
@@ -234,11 +234,11 @@ func pubPath(source string) string {
 func (b *builder) knownKey(u identity.User, owner config.User, fp string) error {
 	if u.Operator && !owner.Operator {
 		return fmt.Errorf(
-			"--operator key %s belongs to manifest user %q, who is not an operator — promotion must be an explicit manifest edit",
+			"--operator-key %s belongs to manifest user %q, who is not an operator — promotion must be an explicit manifest edit",
 			fp, owner.Name)
 	}
 	if u.Operator {
-		return nil // owner already an operator: idempotent --operator re-run, silent no-op
+		return nil // owner already an operator: idempotent --operator-key re-run, silent no-op
 	}
 	extended := false
 	for _, srv := range b.redirect(u.Servers) {
@@ -406,13 +406,13 @@ func (b *builder) finishExtensions() {
 }
 
 // describe renders the appended user's description exactly as non-merge
-// import does: the identity source, qualified for --operator-created and
+// import does: the identity source, qualified for --operator-key-created and
 // default-identity keys.
 func describe(u identity.User) string {
 	desc := "imported from " + u.Source
 	switch {
 	case u.Operator && len(u.Servers) == 0:
-		desc += " (--operator)"
+		desc += " (--operator-key)"
 	case u.Default:
 		desc += " (default identity)"
 	}

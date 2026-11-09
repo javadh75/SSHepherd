@@ -38,7 +38,7 @@ func TestResolveSkipsWeakIdentity(t *testing.T) {
 	}
 }
 
-// TestMarkOperatorsRefusesWeakKey: --operator names a key explicitly, so a
+// TestMarkOperatorsRefusesWeakKey: --operator-key names a key explicitly, so a
 // weak one is an error rather than a skip.
 func TestMarkOperatorsRefusesWeakKey(t *testing.T) {
 	key := writeWeakPub(t, t.TempDir())

@@ -298,7 +298,7 @@ derives `users:`/`access:` from `IdentityFile` `.pub` files via `internal/identi
 The manifest supports **operator users** (`operator: true` — fleet-wide,
 protected management keys) and **wildcard access** (`servers: ["*"]` with
 `except:`); audit renders missing operator keys as CRITICAL, and
-`import --operator <key>` marks them at import time (specced in
+`import --operator-key <key>` marks them at import time (specced in
 `docs/superpowers/specs/2026-07-10-operator-users-wildcard-access-design.md`).
 The third, **`adopt`**, reads every server's actual `authorized_keys`
 through the audit pipeline and generates a complete manifest — unknown keys

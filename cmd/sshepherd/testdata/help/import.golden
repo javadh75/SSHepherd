@@ -4,7 +4,7 @@ valid SSHepherd manifest. users: and access: are derived from each host's
 IdentityFile (or ssh's default identities when none is set) by reading the
 matching .pub files on this machine — run import where you actually ssh
 from, and review the result before use. Private keys are never read.
-Keys named via --operator become operator users: granted every server
+Keys named via --operator-key become operator users: granted every server
 implicitly (no access entry) and protected from removal by future apply.
 With --merge FILE the existing manifest FILE is preserved — comments
 intact — and only what is genuinely new is appended; on any conflict the
@@ -25,18 +25,18 @@ Examples:
   sshepherd import --servers-only -o sshepherd.yaml
 
   # Servers and users from one config, with an operator key
-  sshepherd import ~/.ssh/config --operator ~/.ssh/ops.pub -o sshepherd.yaml
+  sshepherd import ~/.ssh/config --operator-key ~/.ssh/ops.pub -o sshepherd.yaml
 
   # Add hosts that are new in the ssh config to an existing manifest
   sshepherd import --merge sshepherd.yaml -o merged.yaml
 
 Flags:
-      --force                  allow --output to overwrite an existing file
-  -h, --help                   help for import
-      --merge FILE             merge into the existing manifest FILE: preserve its text (comments intact) and append only what is new
-      --operator stringArray   key file whose owner is an operator: granted every server and protected from removal (repeatable)
-  -o, --output string          write the manifest to this file instead of stdout
-      --servers-only           leave the users and access sections empty (skip identity resolution)
+      --force               allow --output to overwrite an existing file
+  -h, --help                help for import
+      --merge FILE          merge into FILE: preserve its text and append what is new
+      --operator-key PATH   key file PATH whose owner is an operator: granted every server and protected from removal (repeatable)
+  -o, --output string       write the manifest to this file instead of stdout
+      --servers-only        leave the users and access sections empty (skip identity resolution)
 
 Global Flags:
       --color string   colorize output: auto, always, or never (default "auto")

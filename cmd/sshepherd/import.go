@@ -100,12 +100,12 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 		servers = append(servers, config.Server{Name: h.Alias, Host: h.HostName, Port: h.Port, User: h.User})
 	}
 	// Resolve guarantees every derived user has ≥1 server; only users added
-	// via --operator are grantless (their fleet-wide grant is implied).
+	// via --operator-key are grantless (their fleet-wide grant is implied).
 	for _, u := range users {
 		desc := "imported from " + u.Source
 		switch {
 		case u.Operator && len(u.Servers) == 0:
-			desc += " (--operator)"
+			desc += " (--operator-key)"
 		case u.Default:
 			desc += " (default identity)"
 		}
@@ -143,7 +143,7 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 }
 
 // resolveUsers derives identity users for hosts that resolved a server entry,
-// then marks any --operator keys. Resolve failures are warnings (returned
+// then marks any key named by --operator-key. Resolve failures are warnings (returned
 // alongside the users); MarkOperators failures are errors, since operator
 // keys are named explicitly on the command line.
 func resolveUsers(hosts []sshcfg.Host, operators []string) ([]identity.User, []string, error) {
@@ -371,7 +371,7 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			"IdentityFile (or ssh's default identities when none is set) by reading the\n" +
 			"matching .pub files on this machine — run import where you actually ssh\n" +
 			"from, and review the result before use. Private keys are never read.\n" +
-			"Keys named via --operator become operator users: granted every server\n" +
+			"Keys named via --operator-key become operator users: granted every server\n" +
 			"implicitly (no access entry) and protected from removal by future apply.\n" +
 			"With --merge FILE the existing manifest FILE is preserved — comments\n" +
 			"intact — and only what is genuinely new is appended; on any conflict the\n" +
@@ -380,13 +380,13 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 		Example: "  # Servers only, as the starting point for adopt\n" +
 			"  sshepherd import --servers-only -o sshepherd.yaml\n\n" +
 			"  # Servers and users from one config, with an operator key\n" +
-			"  sshepherd import ~/.ssh/config --operator ~/.ssh/ops.pub -o sshepherd.yaml\n\n" +
+			"  sshepherd import ~/.ssh/config --operator-key ~/.ssh/ops.pub -o sshepherd.yaml\n\n" +
 			"  # Add hosts that are new in the ssh config to an existing manifest\n" +
 			"  sshepherd import --merge sshepherd.yaml -o merged.yaml",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if serversOnly && len(operators) > 0 {
-				return fmt.Errorf("--operator conflicts with --servers-only (operators are users)")
+				return fmt.Errorf("--operator-key conflicts with --servers-only (operators are users)")
 			}
 			src := defaultSSHConfig
 			if len(args) == 1 {
@@ -450,9 +450,9 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
 	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
 	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "leave the users and access sections empty (skip identity resolution)")
-	cmd.Flags().StringArrayVar(&operators, "operator", nil,
-		"key file whose owner is an operator: granted every server and protected from removal (repeatable)")
+	cmd.Flags().StringArrayVar(&operators, "operator-key", nil,
+		"key file `PATH` whose owner is an operator: granted every server and protected from removal (repeatable)")
 	cmd.Flags().StringVar(&mergePath, "merge", "",
-		"merge into the existing manifest `FILE`: preserve its text (comments intact) and append only what is new")
+		"merge into `FILE`: preserve its text and append what is new")
 	return cmd
 }
