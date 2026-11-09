@@ -73,6 +73,25 @@ access:
 revoked:
   - {user: bob, servers: [s2], date: 2026-11-08}
 `,
+		// groups: a member blocked by a tombstone, an empty group, bad shapes
+		`
+users:
+  - {name: alice, keys: ["` + k1 + `"]}
+  - {name: bob, keys: ["` + k2 + `"]}
+groups:
+  - {name: team, description: d, members: [alice, bob]}
+  - {name: empty, members: []}
+servers:
+  - {name: s1, host: h1, user: root, tags: [prod]}
+  - {name: s2, host: h2, user: u, tags: [prod]}
+access:
+  - {group: team, servers: ["*"], except: [s2]}
+  - {group: empty, servers: [s1]}
+  - {user: bob, servers: ["@prod"]}
+revoked:
+  - {user: alice, servers: [s1], date: 2026-11-08}
+`,
+		"groups:\n  - {name: Bad, members: [x, x]}\n  - {name: Bad}\naccess:\n  - {user: a, group: b, servers: []}\n  - {servers: [s]}\n  - {group: nope, servers: [s]}\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -109,6 +128,21 @@ revoked:
 		for pair := range cfg.blocked {
 			if cfg.Covers(pair.user, pair.server) || slices.Contains(cfg.grants[pair.server], pair.user) {
 				t.Fatalf("blocked pair %+v is still granted", pair)
+			}
+		}
+		for _, g := range cfg.Groups {
+			if !tagShape.MatchString(g.Name) {
+				t.Fatalf("accepted group name %q", g.Name)
+			}
+			for _, m := range g.Members {
+				if !slices.ContainsFunc(cfg.Users, func(u User) bool { return u.Name == m }) {
+					t.Fatalf("accepted unknown member %q in group %q", m, g.Name)
+				}
+			}
+		}
+		for _, a := range cfg.Access {
+			if (a.User == "") == (a.Group == "") {
+				t.Fatalf("accepted access entry %+v with neither or both of user and group", a)
 			}
 		}
 		if cfg.Serial() > MaxSerial {

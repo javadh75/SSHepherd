@@ -47,12 +47,23 @@ type Server struct {
 	Tags []string `yaml:"tags"`
 }
 
-// Access grants one user access to a list of servers. An item is a server
-// name or a selector: "*" (every server, including ones added later; it must
-// be the only item) or "@tag" (every server carrying the tag now). Names and
-// tags mix as a union; except: removes names from what the selectors reach.
+// Group names a set of users for access: entries (spec 2026-11-08 S3b). An
+// access entry with group: grants every member. Membership is checked at
+// load: each member is a known user, listed once.
+type Group struct {
+	Name        string   `yaml:"name"`
+	Description string   `yaml:"description"` // docs only, never sent to a server
+	Members     []string `yaml:"members"`
+}
+
+// Access grants one user, or every member of one group, access to a list of
+// servers. Exactly one of User and Group is set. An item is a server name or
+// a selector: "*" (every server, including ones added later; it must be the
+// only item) or "@tag" (every server carrying the tag now). Names and tags
+// mix as a union; except: removes names from what the selectors reach.
 type Access struct {
 	User    string   `yaml:"user"`
+	Group   string   `yaml:"group"`
 	Servers []string `yaml:"servers"`
 	Except  []string `yaml:"except"` // only valid with a selector in Servers
 }
@@ -64,6 +75,7 @@ type Config struct {
 	// copy (spec 2026-11-08 §3). The accessor is Serial().
 	ManifestSerial Serial   `yaml:"serial"`
 	Users          []User   `yaml:"users"`
+	Groups         []Group  `yaml:"groups"`
 	Servers        []Server `yaml:"servers"`
 	Access         []Access `yaml:"access"`
 	// Tombstones is revoked: — the revocation memory every tool honours.
@@ -85,6 +97,7 @@ type Config struct {
 	operators  []string                  // operator user names, users order
 	ignored    map[int]map[string]bool   // revoked index -> unknown servers it names (D1e)
 	blocked    map[grantPair]bool        // @tag grants an access tombstone dropped (spec "How selectors meet tombstones")
+	members    map[string][]string       // group name -> members, as listed
 	conflicts  []Conflict                // policy conflicts (D29), computed after validation
 	weak       []WeakKey                 // every key failing the strength policy, granted or not
 }
@@ -129,6 +142,7 @@ func (c *Config) validate() error {
 	var errs []error
 	errs = append(errs, c.validateUsers()...)
 	errs = append(errs, c.validateServers()...)
+	errs = append(errs, c.validateGroups()...)
 	errs = append(errs, c.validateAccess()...)
 	errs = append(errs, c.validateRevoked()...)
 	c.blockTombstoned() // needs both validateAccess's grants and validateRevoked's ignored set
@@ -383,9 +397,9 @@ func (c *Config) validateAccess() []error {
 	}
 	c.grants = make(map[string][]string)
 	granted := make(map[string]map[string]bool) // server -> user -> already granted
-	for _, a := range c.Access {
-		if !users[a.User] {
-			errs = append(errs, fmt.Errorf("access: unknown user %q", a.User))
+	for i, a := range c.Access {
+		if err := c.entrySubjectError(i, a, users); err != nil {
+			errs = append(errs, err)
 			continue
 		}
 		targets, tErrs := c.expandServers(a, servers)
@@ -394,19 +408,22 @@ func (c *Config) validateAccess() []error {
 			continue
 		}
 		c.warnWildcardRoot(a, targets)
+		who := c.entryUsers(a)
 		for _, srv := range targets {
 			if !servers[srv] {
-				errs = append(errs, fmt.Errorf("access for %q: unknown server %q", a.User, srv))
+				errs = append(errs, fmt.Errorf("access for %s: unknown server %q", entryLabel(a), srv))
 				continue
 			}
 			if granted[srv] == nil {
 				granted[srv] = make(map[string]bool)
 			}
-			if granted[srv][a.User] { // multiple entries union silently
-				continue
+			for _, user := range who {
+				if granted[srv][user] { // multiple entries union silently
+					continue
+				}
+				granted[srv][user] = true
+				c.grants[srv] = append(c.grants[srv], user)
 			}
-			granted[srv][a.User] = true
-			c.grants[srv] = append(c.grants[srv], a.User)
 		}
 	}
 	return errs
@@ -437,9 +454,9 @@ func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []e
 	case len(targets) > 0:
 		return targets, nil
 	case slices.Contains(a.Servers, "*"):
-		return nil, []error{fmt.Errorf("access for %q: wildcard grants no servers", a.User)}
+		return nil, []error{fmt.Errorf("access for %s: wildcard grants no servers", entryLabel(a))}
 	}
-	return nil, []error{fmt.Errorf("access for %q: selectors grant no servers after except", a.User)}
+	return nil, []error{fmt.Errorf("access for %s: selectors grant no servers after except", entryLabel(a))}
 }
 
 // entryShape is the access-entry rules that hold before any expansion: "*"
@@ -447,28 +464,28 @@ func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []e
 // which the entry also names, and every @tag is carried by some server.
 func (c *Config) entryShape(a Access, servers map[string]bool) []error {
 	if slices.Contains(a.Servers, "*") && len(a.Servers) != 1 {
-		return []error{fmt.Errorf("access for %q: %q must be the only servers entry", a.User, "*")}
+		return []error{fmt.Errorf("access for %s: %q must be the only servers entry", entryLabel(a), "*")}
 	}
 	if len(a.Except) > 0 && !slices.ContainsFunc(a.Servers, IsSelector) {
-		return []error{fmt.Errorf(`access for %q: except requires servers ["*"] or an @tag`, a.User)}
+		return []error{fmt.Errorf(`access for %s: except requires servers ["*"] or an @tag`, entryLabel(a))}
 	}
 	if len(a.Servers) == 0 {
-		return []error{fmt.Errorf("access for %q: servers is empty (grants no servers)", a.User)}
+		return []error{fmt.Errorf("access for %s: servers is empty (grants no servers)", entryLabel(a))}
 	}
 	var errs []error
 	for _, item := range a.Servers {
 		if isTagSelector(item) && !c.tagInUse(item) {
-			errs = append(errs, fmt.Errorf("access for %q: unknown tag %q", a.User, item))
+			errs = append(errs, fmt.Errorf("access for %s: unknown tag %q", entryLabel(a), item))
 		}
 	}
 	for _, e := range a.Except { // duplicates are tolerated, like grants unioning
 		switch {
 		case isTagSelector(e):
-			errs = append(errs, fmt.Errorf("access for %q: except takes server names, not the selector %q", a.User, e))
+			errs = append(errs, fmt.Errorf("access for %s: except takes server names, not the selector %q", entryLabel(a), e))
 		case !servers[e]:
-			errs = append(errs, fmt.Errorf("access for %q: unknown except server %q", a.User, e))
+			errs = append(errs, fmt.Errorf("access for %s: unknown except server %q", entryLabel(a), e))
 		case slices.Contains(a.Servers, e):
-			errs = append(errs, fmt.Errorf("access for %q: %q is in both servers and except", a.User, e))
+			errs = append(errs, fmt.Errorf("access for %s: %q is in both servers and except", entryLabel(a), e))
 		}
 	}
 	return errs
@@ -482,6 +499,8 @@ func (c *Config) tagInUse(selector string) bool {
 // warnWildcardRoot records D20a: a non-operator servers: ["*"] entry that
 // reaches a root account, once per entry. An operator is fleet-wide by
 // definition and an @tag is a deliberate list, so neither warns.
+// A group entry always warns: its members are not operators by default and
+// its grant stands for whoever joins later.
 func (c *Config) warnWildcardRoot(a Access, targets []string) {
 	if !slices.Contains(a.Servers, "*") || slices.Contains(c.operators, a.User) {
 		return
@@ -500,8 +519,8 @@ func (c *Config) warnWildcardRoot(a Access, targets []string) {
 		where = fmt.Sprintf("%s and %d more", where, more)
 	}
 	c.warn(ManifestWarning{Kind: WarnWildcardRoot, Message: fmt.Sprintf(
-		`access for %q: servers ["*"] includes the root account on %s; list the servers or use an @tag that excludes root accounts`,
-		a.User, where)})
+		`access for %s: servers ["*"] includes the root account on %s; list the servers or use an @tag that excludes root accounts`,
+		entryLabel(a), where)})
 }
 
 // DesiredFor returns the desired key set for a server: operator users' keys
@@ -555,6 +574,9 @@ func (c *Config) OwnerOf(fingerprint string) (User, bool) {
 // current fleet) the user's raw access entries are scanned, with server as a
 // tagless entry: a future server carries no tag, so an @tag never covers it.
 //
+// The c.blocked check comes first because a group entry's "*" or literal
+// name matches the raw scan below for a member a tombstone blocked.
+//
 // Operators' implicit fleet-wide grant is deliberately excluded — check
 // Operator first. Reading Covers(op, srv) == false as "no access" would
 // contradict DesiredFor, which grants operators every server
@@ -567,7 +589,7 @@ func (c *Config) Covers(user, server string) bool {
 		return true
 	}
 	for _, a := range c.Access {
-		if entryApplies(a, user) && entryCovers(a, Server{Name: server}) {
+		if c.entryApplies(a, user) && entryCovers(a, Server{Name: server}) {
 			return true
 		}
 	}
@@ -579,12 +601,14 @@ func (c *Config) Covers(user, server string) bool {
 // never re-granted by merge tooling — the carve-out is a statement of intent;
 // an installed key there is drift.
 //
+// A group entry's except: carves out for every member.
+//
 // Callers must only ask about (user, server) pairs the grant union does
 // not cover (i.e. after Covers returned false) — outside that context a
 // user with an explicit grant of an excepted server would be misclassified.
 func (c *Config) ExceptCarveOut(user, server string) bool {
 	for _, a := range c.Access {
-		if entryApplies(a, user) && slices.Contains(a.Except, server) { // except: requires a selector
+		if c.entryApplies(a, user) && slices.Contains(a.Except, server) { // except: requires a selector
 			return true
 		}
 	}

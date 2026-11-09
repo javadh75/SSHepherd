@@ -286,7 +286,7 @@ func (c *Config) computeConflicts() []Conflict {
 func (c *Config) accessConflicts(m int, t Tombstone) []Conflict {
 	var out []Conflict
 	for n, a := range c.Access {
-		if !entryApplies(a, t.User) {
+		if a.User != t.User { // a group entry is blocked, never a conflict
 			continue
 		}
 		covered := c.entryServers(a)
@@ -318,31 +318,38 @@ func (c *Config) entryServers(a Access) []string {
 }
 
 // blockTombstoned drops every (user, server) grant an access tombstone
-// covers and no entry reaches directly, so the tombstone acts as an implicit
-// except: for that user (spec "How selectors meet tombstones"). The grant
-// leaves c.grants, so DesiredFor, apply.Affected and every report see no
-// access; c.blocked keeps it out of Covers and entryServers. AccessRevoked
-// still answers, which keeps adopt, reconcile, revoke's D1c note and audit's
-// D1d label working. Each (entry, user, server) warns, unless the implicit
-// operator grant still installs the key.
+// covers and no user: entry reaches directly, so the tombstone acts as an
+// implicit except: for that user alone: other members of a group keep the
+// grant (spec "How selectors meet tombstones"). The grant leaves c.grants, so
+// DesiredFor, apply.Affected and every report see no access; c.blocked keeps
+// it out of Covers and entryServers. AccessRevoked still answers, which keeps
+// adopt, reconcile, revoke's D1c note and audit's D1d label working. Each
+// (entry, user, server) warns, unless the implicit operator grant still
+// installs the key.
 func (c *Config) blockTombstoned() {
 	c.blocked = make(map[grantPair]bool)
 	revoked := c.latestAccessTombstones()
 	for n, a := range c.Access {
-		if len(revoked[a.User]) == 0 {
+		for _, user := range c.entryUsers(a) {
+			if len(revoked[user]) > 0 {
+				c.blockEntry(n, a, user, revoked[user])
+			}
+		}
+	}
+}
+
+// blockEntry applies blockTombstoned to entry n for one of its users. gone
+// maps each server the user lost to its latest tombstone's index.
+func (c *Config) blockEntry(n int, a Access, user string, gone map[string]int) {
+	for _, s := range c.Servers {
+		m, lost := gone[s.Name]
+		if !lost || !entryCovers(a, s) || c.directlyGranted(user, s.Name) {
 			continue
 		}
-		for _, s := range c.Servers {
-			m, gone := revoked[a.User][s.Name]
-			if !gone || !entryCovers(a, s) || c.directlyGranted(a.User, s.Name) {
-				continue
-			}
-			pair := grantPair{a.User, s.Name}
-			c.blocked[pair] = true
-			c.grants[s.Name] = slices.DeleteFunc(c.grants[s.Name], func(u string) bool { return u == a.User })
-			if !slices.Contains(c.operators, a.User) {
-				c.warnBlocked(n, m, a, s)
-			}
+		c.blocked[grantPair{user, s.Name}] = true
+		c.grants[s.Name] = slices.DeleteFunc(c.grants[s.Name], func(u string) bool { return u == user })
+		if !slices.Contains(c.operators, user) {
+			c.warnBlocked(n, m, a, user, s)
 		}
 	}
 }
@@ -370,22 +377,31 @@ func (c *Config) latestAccessTombstones() map[string]map[string]int {
 	return out
 }
 
-// directlyGranted reports an entry of user reaching server by name or "*".
+// directlyGranted reports a user: entry of user reaching server by name or
+// "*". A group entry never counts: it is always blocked (the table in the
+// spec's "How selectors meet tombstones").
 func (c *Config) directlyGranted(user, server string) bool {
-	return slices.ContainsFunc(c.Access, func(a Access) bool { return entryApplies(a, user) && entryDirect(a, server) })
+	return slices.ContainsFunc(c.Access, func(a Access) bool { return a.User == user && entryDirect(a, server) })
 }
 
-func (c *Config) warnBlocked(n, m int, a Access, s Server) {
-	through := ""
+func (c *Config) warnBlocked(n, m int, a Access, user string, s Server) {
+	msg := fmt.Sprintf(`access[%d]: %q is not granted %q through %s: revoked[%d] removed that access (%s); delete the revoked: entry to restore it deliberately`,
+		n, user, s.Name, grantVia(a, s), m, c.Tombstones[m].Date)
+	c.warn(ManifestWarning{Kind: WarnTombstoneBlocksGrant, RevokedIndex: &m, User: user, Server: s.Name, Message: msg})
+}
+
+// grantVia names how entry a reaches s in a blocked-grant warning: its group,
+// or the first selector that reaches s.
+func grantVia(a Access, s Server) string {
+	if a.Group != "" {
+		return "group " + a.Group
+	}
 	for _, item := range a.Servers {
 		if SelectorMatches(item, s) {
-			through = item
-			break
+			return item
 		}
 	}
-	msg := fmt.Sprintf(`access[%d]: %q is not granted %q through %s: revoked[%d] removed that access (%s); delete the revoked: entry to restore it deliberately`,
-		n, a.User, s.Name, through, m, c.Tombstones[m].Date)
-	c.warn(ManifestWarning{Kind: WarnTombstoneBlocksGrant, RevokedIndex: &m, User: a.User, Server: s.Name, Message: msg})
+	return ""
 }
 
 // serversRendering lists, in servers: order, every server whose rendered

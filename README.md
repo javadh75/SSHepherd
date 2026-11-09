@@ -246,7 +246,7 @@ changes. See [`sshepherd revoke`](#sshepherd-revoke) and
 ## The manifest
 
 One YAML file — by default `sshepherd.yaml` — with three sections, plus the optional
-`serial:` and `revoked:` (see [Revoked keys](#revoked-keys)). Unknown fields
+`serial:`, `groups:` and `revoked:` (see [Groups](#groups) and [Revoked keys](#revoked-keys)). Unknown fields
 are **rejected**, so a typo like `commment:` fails loudly instead of being silently
 ignored. The file must be a **single YAML document**: a `---` separator (even a
 trailing empty one) or concatenated files fail with
@@ -265,6 +265,11 @@ users:
     operator: true                      # fleet-wide, protected key (see below)
     keys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+
+groups:                                 # optional, see Groups
+  - name: web-team
+    description: docs only
+    members: [alice]
 
 servers:
   - name: web-1
@@ -287,6 +292,9 @@ access:
   - user: bob
     servers: ["*"]                      # every server, including ones added later
     except: [ci]                        # … minus these
+
+  - group: web-team                     # exactly one of user: / group:
+    servers: ["@web"]
 
 revoked:                                # optional; revoke/rotate append; deleting an entry = deliberate un-revoke
   - fingerprint: SHA256:abc…            # key entry: this key may never be listed again
@@ -322,6 +330,9 @@ once per entry, kind `wildcard_root`:
 (with one root account, `on web-1;`). An `@tag` reaching root does not warn. A warning never
 changes an exit code, except that `validate --strict` exits `1`.
 
+A group entry with `servers: ["*"]` warns the same way, naming the group, whoever its members are:
+`access for group "web-team": servers ["*"] includes the root account on web-1 and 3 more; list the servers or use an @tag that excludes root accounts`.
+
 ### Tags and selectors
 
 ```yaml
@@ -344,6 +355,20 @@ both `servers:` and `except:`. An `@tag` matching no server is an error, like an
 server name: `access for "carol": unknown tag "@prd"`. Fix the typo, or tag a server. A tag
 covers only servers in the manifest now: only `*` covers servers added later, and a new
 server joins a tag's grants when you tag it.
+
+### Groups
+
+```yaml
+groups:
+  - name: web-team
+    description: docs only
+    members: [alice, bob]
+access:
+  - group: web-team      # exactly one of user: / group:
+    servers: ["@web"]
+```
+
+A group names a set of users. An `access:` entry with `group:` grants every member, exactly as one entry per member would; `servers:` and `except:` work as they do for a user entry. A group name follows the tag rules, `^[a-z0-9][a-z0-9._-]{0,62}$`. Every member must be a user in the manifest, listed once. A group with no members is valid and warns, kind `empty_group`: `group "web-team" has no members; its grants add nothing`, so revoking the last member never breaks the manifest. A warning never changes an exit code, except that `validate --strict` exits `1`. `adopt` and `import` never create a group. `adopt` keeps them; `adopt --merge` and `import --merge` leave them as they are; a fresh `import -o FILE --force` replaces the file without them.
 
 ### Per-server `authorized_keys_file`
 
@@ -405,6 +430,11 @@ The loader fails the whole manifest (exit 3) on any of these:
   `access for "x": except takes server names, not the selector "@web"`;
   `access for "x": "web-3" is in both servers and except`;
   `access for "x": selectors grant no servers after except`.
+- **Groups**: `group "Web": name is not valid: want lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, at most 63 characters`;
+  `duplicate group "web-team"`; `group "web-team": unknown member "zed"`; `group "web-team": member "alice" is repeated`.
+- **An `access:` entry** has exactly one of `user:` and `group:`: `access[2]: set exactly one of user or group`.
+  An unknown group is an error, like an unknown user: `access: unknown group "x"`. Messages about a group entry
+  name the group: `access for group "web-team": unknown server "web-9"`.
 - **One entry per remote file.** Two servers that resolve to the same host
   (case-insensitive), port, user and effective `authorized_keys` path are an error:
   `servers "A" and "B" both target user@host:port path; merge them into one entry`.
@@ -518,6 +548,10 @@ the key is not installed, and each blocked pair prints a warning, kind `tombston
 A warning never changes an exit code, except that `validate --strict` exits `1`. A server named
 directly (`user: U` with `S` listed, or `*` not excepting it) still conflicts, even in the same
 entry as an `@tag`. An operator's implicit grant is not affected, and no warning prints for it.
+
+A grant through a group is blocked for that member only; the other members keep it. Every kind of group entry is blocked, even one naming the server, because a group is not a personal grant:
+`access[0]: "alice" is not granted "web-1" through group web-team: revoked[0] removed that access (2026-11-08); delete the revoked: entry to restore it deliberately`.
+A `user:` entry for the same user and server still conflicts, even beside a group entry. A key entry in `revoked:` covers every server a group grant renders that key on.
 
 ## Commands
 
@@ -998,7 +1032,7 @@ remote text:
 
 `manifest_warnings` carries every load warning, in the `audit` document and in the `apply`
 document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear on `tombstone_unknown_server` and `tombstone_blocks_grant`; `server` also on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
-`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root` and `tombstone_blocks_grant`; ignore kinds you do not know.
+`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root`, `tombstone_blocks_grant` and `empty_group`; ignore kinds you do not know.
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`

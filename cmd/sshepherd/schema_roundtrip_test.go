@@ -20,7 +20,10 @@ func samples(t *testing.T) map[string]map[string]any {
 	return map[string]map[string]any{
 		"User":   {"Name": "op", "Description": "d", "Comment": "c", "Operator": true, "Keys": []string{k}},
 		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}},
-		"Access": {"User": "bob", "Servers": []string{"*"}, "Except": []string{"web-1"}},
+		// Group is "": fill sets every field, and a user plus a group would
+		// fail exactly-one-of. TestAdoptRegenerateKeepsGroups proves a group
+		// entry round-trips; Append has no groups parameter.
+		"Access": {"User": "bob", "Group": "", "Servers": []string{"*"}, "Except": []string{"web-1"}},
 	}
 }
 

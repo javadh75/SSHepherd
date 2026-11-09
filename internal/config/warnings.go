@@ -9,6 +9,7 @@ const (
 	WarnKeyExpired             = "key_expired"
 	WarnWildcardRoot           = "wildcard_root"
 	WarnTombstoneBlocksGrant   = "tombstone_blocks_grant"
+	WarnEmptyGroup             = "empty_group"
 )
 
 // ManifestWarning is one load warning in structured form: an object of

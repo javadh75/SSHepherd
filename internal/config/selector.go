@@ -68,8 +68,14 @@ func validateTags(s *Server) []error {
 // grantPair is one (user, server) grant.
 type grantPair struct{ user, server string }
 
-// entryApplies reports whether access entry a grants to user.
-func entryApplies(a Access, user string) bool { return a.User == user }
+// entryApplies reports whether access entry a grants to user: it names the
+// user, or its group has the user as a member.
+func (c *Config) entryApplies(a Access, user string) bool {
+	if a.Group != "" {
+		return slices.Contains(c.members[a.Group], user)
+	}
+	return a.User == user
+}
 
 // entryCovers reports whether entry a reaches server s: named, or selected
 // and not excepted. A server not in the manifest is passed as Server{Name: n}:
@@ -82,7 +88,8 @@ func entryCovers(a Access, s Server) bool {
 }
 
 // entryDirect reports whether entry a reaches server by name or through "*",
-// the two forms a tombstone contradicts outright (a D29 policy conflict).
+// the two forms a tombstone contradicts outright (a D29 policy conflict). It
+// is only ever asked about a user: entry.
 func entryDirect(a Access, server string) bool {
 	if slices.Contains(a.Except, server) {
 		return false

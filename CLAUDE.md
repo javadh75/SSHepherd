@@ -691,3 +691,14 @@ because `ExceptCarveOut` now answers for any selector entry, and `no_grants_left
 `FuzzRemoveAccess` is the 23rd `Fuzz*` target.
 `import` skips an alias that starts with `@` with an `unsafe_host` warning (`dropUnsafeHosts` uses
 `config.ServerNameIssue`), so a generated manifest always loads.
+**User groups** (P10 S3b, D20b, PRD-4; section S3b of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-09-p10-s3b-user-groups.md`): `groups:` (name in tag shape, members
+known users, listed once; an empty group warns, kind `empty_group`) and `access: - group: X`
+(exactly one of `user:`/`group:`) expand to one grant per member inside `validateAccess`, so
+`c.grants`, `DesiredFor` and `apply.Affected` keep their shape (`TestGroupManifestMatchesFlatTwin`
+is the equivalence test). `entryApplies` answers for membership; `Covers` and `ExceptCarveOut` read
+it, so a group's `except:` carves out for every member. A group entry is never direct:
+`directlyGranted` and `accessConflicts` read `a.User`, so a tombstone over any group grant is
+blocked for that member only (`blockEntry`, `tombstone_blocks_grant`), and `Covers`' `c.blocked`
+check is load-bearing (a group `*` or literal matches its raw scan).
