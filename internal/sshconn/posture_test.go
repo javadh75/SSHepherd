@@ -87,6 +87,21 @@ func TestFinishPosture(t *testing.T) {
 			t.Errorf("err = %v, want remote", err)
 		}
 	})
+	// Output of exactly the limit may be cut off without the buffer knowing
+	// it, so a record that would otherwise parse clean still fails closed.
+	t.Run("output of exactly the limit parses no further", func(t *testing.T) {
+		const mode, uid, issue = "drwxrwxrwx", "1", "world_writable"
+		base := rec(mode, uid, issue, "/")
+		full := rec(mode, uid, issue, "/"+strings.Repeat("a", MaxRemoteOutput-len(base)))
+		b := capped(full)
+		if b.Len() != MaxRemoteOutput || b.truncated {
+			t.Fatalf("setup: len = %d (limit %d), truncated = %v", b.Len(), MaxRemoteOutput, b.truncated)
+		}
+		got, keys2, err := FinishPosture(0, b, capped(""))
+		if fleet.ErrorKindOf(err) != fleet.ErrorKindRemote || got != nil || keys2 {
+			t.Errorf("got %+v keys2=%v err=%v, want a remote error and nothing else", got, keys2, err)
+		}
+	})
 }
 
 // postureHome builds a HOME the walk accepts: home 0700, ~/.ssh 0700, a
@@ -221,6 +236,25 @@ func TestPostureRootIsAnAcceptedOwner(t *testing.T) {
 	}
 }
 
+// TestPostureRootOwnedFileIsClean (D14a): sshd accepts a managed file owned
+// by root, so it is no foreign_owner finding. The ls stub fakes the owner of
+// that one file and runs the real ls for the walk.
+func TestPostureRootOwnedFileIsClean(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: root is also the login user, so the case proves nothing")
+	}
+	home := postureHome(t)
+	target := filepath.Join(home, ".ssh", "authorized_keys")
+	stub := "#!/bin/sh\nif [ \"$2\" = '" + target + "' ]; then echo '-rw------- 1 0 0 1 Jan 1 00:00 " + target + "'; exit 0; fi\nexec /bin/ls \"$@\"\n"
+	issues, err := runStubbed(t, home, DefaultAuthorizedKeysPath, "ls", stub)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got := issueSet(issues); len(got) != 0 {
+		t.Errorf("findings = %v, want none for a root-owned file", got)
+	}
+}
+
 func TestPostureForeignOwnerUsesProbeUID(t *testing.T) {
 	home := postureHome(t)
 	bin := t.TempDir()
@@ -341,6 +375,9 @@ func TestPostureKeys2(t *testing.T) {
 		{name: "default spelling, empty", path: func(string) string { return DefaultAuthorizedKeysPath }, ak2: true, empty: true},
 		{name: "absolute default", path: func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") }, ak2: true, want: true},
 		{name: "absolute default, no keys2", path: func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") }},
+		// test -ef is false on an absent file: the directory comparison still matches.
+		{name: "absolute default, managed file absent", path: func(h string) string { return filepath.Join(h, ".ssh", "authorized_keys") },
+			setup: func(t *testing.T, h string) { must(t, os.Remove(filepath.Join(h, ".ssh", "authorized_keys"))) }, ak2: true, want: true},
 		{name: "through a symlinked dir", path: func(h string) string { return filepath.Join(h, "link", "authorized_keys") },
 			setup: func(t *testing.T, h string) { must(t, os.Symlink(filepath.Join(h, ".ssh"), filepath.Join(h, "link"))) }, ak2: true, want: true},
 		{name: "other file in ~/.ssh", path: func(h string) string { return filepath.Join(h, ".ssh", "other") }, ak2: true},

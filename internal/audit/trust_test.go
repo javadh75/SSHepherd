@@ -86,6 +86,8 @@ func TestCriticalOperatorCannotLogIn(t *testing.T) {
 		{name: "malformed expiry is a line sshd ignores", lines: []string{`expiry-time="2027" ` + op, alice}, reason: "ignored", status: statusCritical},
 		{name: "TestOperatorLaterLineLogsIn: dead first, working second", lines: []string{"cert-authority " + op, op, alice}, status: statusDrift},
 		{name: "TestOperatorIgnoredThenDeadLine: ignored first, dead second", lines: []string{"bogus-option " + op, "cert-authority " + op, alice}, reason: "cert_only", status: statusCritical},
+		{name: "the first dead-line reason wins: expired before cert_only", lines: []string{expired, "cert-authority " + op, alice}, reason: "expired", status: statusCritical},
+		{name: "the first dead-line reason wins: cert_only before expired", lines: []string{"cert-authority " + op, expired, alice}, reason: "cert_only", status: statusCritical},
 		{name: "added from= still logs in (drift, not critical)", lines: []string{`from="10.0.0.1" ` + op, alice}, status: statusDrift},
 	}
 	for _, tt := range tests {

@@ -16,6 +16,29 @@ import (
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
+// TestRenderJSONPosturePathIsSanitized: a posture path is remote text, so the
+// JSON report sanitizes it whatever the reader handed over (a bare seam).
+func TestRenderJSONPosturePathIsSanitized(t *testing.T) {
+	cfg := trustConfig(t, testkeys.Line(t, 1), "")
+	r := runOne(t, cfg, fleet.ReadResult{
+		Content: content(testkeys.Line(t, 1), testkeys.Line(t, 2)),
+		Posture: []fleet.PostureIssue{{Path: "/x\x1b[31m", Issue: fleet.PostureWorldWritable, Mode: "drwxrwxrwx", UID: "1"}},
+	})
+	var doc struct {
+		Servers []struct {
+			Posture []struct {
+				Path string `json:"path"`
+			} `json:"posture"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(renderJSON(t, cfg, []ServerResult{r}), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if got := doc.Servers[0].Posture[0].Path; got != "/x[31m" {
+		t.Errorf("path = %q, want the control byte stripped", got)
+	}
+}
+
 func renderJSON(t *testing.T, cfg *config.Config, results []ServerResult) []byte {
 	t.Helper()
 	return renderJSONOpts(t, cfg, results, JSONOptions{})

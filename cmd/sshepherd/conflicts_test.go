@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -319,6 +320,51 @@ func TestSaveRefusedWhenAddingWeakKey(t *testing.T) {
 	}
 	if err := conflictRefusal(nil, granted); err == nil {
 		t.Error("a new manifest holding a weak key must be refused too")
+	}
+}
+
+// TestAdoptKeepsAWeakKeyTheManifestHolds (OP4): adopt re-emits a key the
+// manifest already holds, so that key was not added and the save is allowed.
+func TestAdoptKeepsAWeakKeyTheManifestHolds(t *testing.T) {
+	home := shortHome(t)
+	srv, hostKey, _ := hermeticFleet(t, home)
+	kh := sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+	weak := testkeys.DSALine(t, 7)
+	cfg := writeConfig(t, fmt.Sprintf("users:\n  - {name: alice, keys: [\"%s\", \"%s\"]}\nservers:\n  - {name: web-1, host: 127.0.0.1, port: %d, user: deploy}\naccess:\n  - {user: alice, servers: [web-1]}\n",
+		testkeys.Line(t, 1), weak, srv.Port))
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"adopt", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "would add a weak key") {
+		t.Errorf("a held weak key must not count as added:\n%s", errBuf.String())
+	}
+	if !strings.Contains(out.String(), strings.TrimSpace(weak)) {
+		t.Errorf("the adopted manifest lacks the held weak key:\n%s", out.String())
+	}
+}
+
+// TestImportMergeKeepsAWeakKeyTheManifestHolds (OP4): import --merge keeps
+// what the manifest holds, so its weak key was not added and the save is
+// allowed.
+func TestImportMergeKeepsAWeakKeyTheManifestHolds(t *testing.T) {
+	hermeticHome(t)
+	weak := testkeys.DSALine(t, 7)
+	path := filepath.Join(t.TempDir(), "sshepherd.yaml")
+	manifest := "users:\n  - {name: alice, keys: [\"" + weak + "\"]}\nservers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\naccess:\n  - {user: alice, servers: [web-1]}\n"
+	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sshCfg := writeSSHConfig(t, "Host app-1\n  HostName 10.0.0.5\n  User deploy\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", sshCfg, "--merge", path}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), "would add a weak key") {
+		t.Errorf("a held weak key must not count as added:\n%s", errBuf.String())
+	}
+	if !strings.Contains(out.String(), strings.TrimSpace(weak)) {
+		t.Errorf("the merged manifest lacks the held weak key:\n%s", out.String())
 	}
 }
 

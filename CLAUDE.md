@@ -456,6 +456,11 @@ graded over every line sshd honours (`cert_only`, `expired`, `ignored` are criti
 failure), and DSA/RSA<2048 keys are policy conflicts through D29 (the save rule
 refuses only a save that adds one; a removal-only write proceeds). `critical_reasons`
 lists all six classes. JSON stays schema 1.
+W6 follow-up: all 150 audit-trust mutants were run (148 killed, two equivalent), and new tests pin
+posture output of exactly the capture limit, a root-owned managed file, the keys2 check with the
+managed file absent, a posture session that dies, the sanitized JSON posture path, the first
+dead-line reason, `--offer-all-keys` on the write dial and a held weak key through `adopt` and
+`import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved
 and not built; each slice gets its own plan. Audit's claim is narrowed to

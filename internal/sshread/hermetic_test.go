@@ -303,6 +303,37 @@ func TestReadFailsClosedOnBadPosture(t *testing.T) {
 	}
 }
 
+// TestPostureSessionFailureFailsClosed: when the posture probe's session dies
+// at the transport level, the read fails with the probe named. It must never
+// grade the server from a probe that did not run.
+func TestPostureSessionFailureFailsClosed(t *testing.T) {
+	user, host := sshtest.Key(1), sshtest.Signer(t, sshtest.Key(40))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := sshtest.NewServer(t, sshtest.ServerConfig{
+		HostKeys:   []ssh.Signer{host},
+		Authorized: []ssh.PublicKey{sshtest.Signer(t, user).PublicKey()},
+		Handle: func(hctx context.Context, cmd string, _ io.Reader, stdout, _ io.Writer) int {
+			if strings.Contains(cmd, "SSHEPHERD-POSTURE") {
+				cancel() // the probe's session dies while it runs
+				<-hctx.Done()
+				return 1
+			}
+			_, _ = io.WriteString(stdout, "key-line\n")
+			return 0
+		},
+	})
+	c := &Client{
+		KnownHostsPath: sshtest.KnownHostsFile(t, srv.KnownHostsLine(host.PublicKey())),
+		Creds:          &sshconn.Credentials{AgentSock: sshtest.Agent(t, user)},
+		DialTimeout:    5 * time.Second,
+	}
+	_, err := c.ReadAuthorizedKeys(ctx, config.Server{Name: "web-1", Host: srv.Host, Port: srv.Port, User: "deploy"})
+	if err == nil || !strings.Contains(err.Error(), "posture probe on ") || fleet.ErrorKindOf(err) != fleet.ErrorKindCanceled {
+		t.Errorf("err = %v, want a canceled posture probe error", err)
+	}
+}
+
 func mustChmod(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
 	if err := os.Chmod(path, mode); err != nil {

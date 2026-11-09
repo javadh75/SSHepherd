@@ -199,6 +199,40 @@ func TestRotateSweepOffersThePreEditKey(t *testing.T) {
 	}
 }
 
+// TestApplyOfferAllKeysReachesTheWriteDial: --offer-all-keys is a run-wide
+// flag, so the write dial offers every held key too. The server accepts only
+// a key the manifest does not grant; a write dial offering only the grants
+// would fail before it could fix that.
+func TestApplyOfferAllKeysReachesTheWriteDial(t *testing.T) {
+	host := sshtest.Signer(t, sshtest.Key(40))
+	home := shortHome(t)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(sshDir, "authorized_keys")
+	if err := os.WriteFile(target, []byte(testkeys.Line(t, 1)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSH_AUTH_SOCK", sshtest.Agent(t, sshtest.Key(1), sshtest.Key(9)))
+	srv := sshtest.NewServer(t, sshtest.ServerConfig{HostKeys: []ssh.Signer{host}, AuthorizedKeysFile: target, Handle: sshtest.ShellHandler(home)})
+	cfg := writeConfig(t, fmt.Sprintf("users:\n  - {name: alice, keys: [\"%s\"]}\nservers:\n  - {name: web-1, host: 127.0.0.1, port: %d, user: deploy}\naccess:\n  - {user: alice, servers: [web-1]}\n",
+		testkeys.Line(t, 9), srv.Port))
+
+	var out, errBuf bytes.Buffer
+	code := run([]string{"apply", "--yes", "--offer-all-keys", "--config", cfg, "--known-hosts", sshtest.KnownHostsFile(t, srv.KnownHostsLine(host.PublicKey()))}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "web-1: applied · verified") {
+		t.Errorf("stdout lacks the applied line:\n%s", out.String())
+	}
+	got := string(fileBytes(t, target))
+	if !strings.Contains(got, testkeys.Line(t, 9)) || strings.Contains(got, testkeys.Line(t, 1)) {
+		t.Errorf("authorized_keys = %q, want key 9 only", got)
+	}
+}
+
 // TestSweepAuthFailureHintsFlag: a sweep's report only names an unreachable
 // server, so the hint reaches the operator as a log line, once for the fleet.
 func TestSweepAuthFailureHintsFlag(t *testing.T) {
