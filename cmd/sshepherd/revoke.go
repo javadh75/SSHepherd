@@ -30,8 +30,8 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			"access entry naming them (offboarding); 'revoke --key KEY...' removes\n" +
 			"single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key\n" +
 			"line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only\n" +
-			"the users' access to those servers (a wildcard grant gains an except:\n" +
-			"entry); the users and their keys stay. Operator users (and their keys)\n" +
+			"the users' access to those servers (a selector grant ('*' or @tag) gains an\n" +
+			"except: entry); the users and their keys stay. Operator users (and their keys)\n" +
 			"need --operator. The plan is shown and confirmed once; the manifest is\n" +
 			"saved after confirmation and before the first write, so commit and push\n" +
 			"it afterwards. --dry-run changes nothing; --no-apply saves the edit\n" +
@@ -125,7 +125,7 @@ func checkUserArgs(cfg *config.Config, users []string) error {
 // revokeUsage is revoke's flag/argument combination rules, before the
 // manifest is read; the first that matches wins. Users and keys are
 // exclusive and one is required; --from-server goes with users only — never
-// with --key or --operator, and never '*'.
+// with --key or --operator, and never a selector ('*', @tag).
 func revokeUsage(args, keys, servers []string, operator bool) error {
 	switch {
 	case len(args) > 0 && len(keys) > 0:
@@ -136,7 +136,7 @@ func revokeUsage(args, keys, servers []string, operator bool) error {
 		return errors.New("access is granted per user, not per key — use 'sshepherd revoke USER --from-server NAME'")
 	case len(servers) > 0 && operator:
 		return errors.New("--operator cannot be combined with --from-server: operators have access to every server by definition")
-	case slices.Contains(servers, "*"):
+	case slices.ContainsFunc(servers, config.IsSelector):
 		return errors.New("--from-server takes server names; to remove all of a user's access use 'sshepherd revoke USER'")
 	}
 	return nil
@@ -350,9 +350,9 @@ func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, ops []string, 
 // There is no operator gate: an operator target is refused outright
 // (access to every server by definition). Every problem is listed in one
 // refusal before any edit (accessProblems). A pair an access tombstone
-// already records is a note (D1c). Servers removed from an explicit list
-// are tombstoned (D1a); a server that only gained an except: entry needs
-// none — the except: already remembers it.
+// already records is a note (D1c). A server no except: remembers after the
+// edit is tombstoned (D1a); one that gained an except: entry needs none —
+// the except: already remembers it.
 func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, memo editMemo) (editPlan, error) {
 	cfg := mf.Config()
 	problems, trims, already := accessProblems(cfg, users, servers, h)
@@ -393,7 +393,6 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 		return editPlan{}, err
 	}
 	for i, e := range ep.summary.Edits {
-		ep.summary.Edits[i].NoGrantsLeft = !slices.ContainsFunc(ep.edited.Access, func(a config.Access) bool { return a.User == e.User })
 		// What is left, said in the header: a "web-1 first" trim must not
 		// read as an offboarding.
 		for _, srv := range ep.edited.Servers {
@@ -401,17 +400,20 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 				ep.summary.Edits[i].KeepsServers++
 			}
 		}
+		// Counted, not read off access: an entry a tombstone wholly blocks
+		// still names the user and reaches nothing.
+		ep.summary.Edits[i].NoGrantsLeft = ep.summary.Edits[i].KeepsServers == 0
 	}
 	return ep, nil
 }
 
 // accessTombstones: one entry per user, naming the trimmed servers no
-// wildcard except: remembers in mid (the manifest after the access edit).
-// A wildcard this trim deleted took its except: list with it, so a server
-// only that list remembered is tombstoned too, or a later adopt --merge
-// would re-grant it (D1a); the original date is unknown, so this run's is
-// recorded. Only the former manifest's servers are named (a tombstone for
-// a server it does not have would only warn).
+// selector except: remembers in mid (the manifest after the access edit).
+// A selector entry this trim deleted took its except: list with it, so a
+// server only that list remembered is tombstoned too, or a later adopt
+// --merge would re-grant it (D1a); the original date is unknown, so this
+// run's is recorded. Only the former manifest's servers are named (a
+// tombstone for a server it does not have would only warn).
 func accessTombstones(former, mid *config.Config, users []string, trims map[string][]string, memo editMemo) []config.Tombstone {
 	var tombs []config.Tombstone
 	for _, name := range users {
@@ -433,7 +435,7 @@ func accessTombstones(former, mid *config.Config, users []string, trims map[stri
 	return tombs
 }
 
-// forgottenCarveOut reports a server only a deleted wildcard's except:
+// forgottenCarveOut reports a server only a deleted selector entry's except:
 // remembered: excluded in former, neither excluded nor covered in mid, and
 // not already recorded by an access tombstone.
 func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
@@ -451,7 +453,7 @@ func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
 // in this order: unknown users (one entry, the existing wording), unknown
 // servers, operator targets, then every non-operator user × known server
 // pair the user has no access to and no access tombstone records
-// (config.Covers: wildcards and except: included). It also returns, per
+// (config.Covers: selectors and except: included). It also returns, per
 // user, the servers to trim, and the pairs already revoked (D1c). h
 // carries the run's flags into the operator hint.
 func accessProblems(cfg *config.Config, users, servers []string, h followUp) (problems []string, trims map[string][]string, already []apply.AlreadyRevoked) {

@@ -49,8 +49,8 @@ type Edit struct {
 	// EntriesChanged, EntriesRemoved, ServersExcepted and WildcardsRemoved
 	// (EditRemoveAccess) are manifest.AccessRemoval's counts.
 	EntriesChanged, EntriesRemoved, ServersExcepted, WildcardsRemoved int
-	// NoGrantsLeft (EditRemoveAccess) reports that the user has no access:
-	// entry left after the whole edit.
+	// NoGrantsLeft (EditRemoveAccess) reports that the user covers no server
+	// after the whole edit (KeepsServers is 0).
 	NoGrantsLeft bool
 	// KeepsServers (EditRemoveAccess) counts the servers the user still
 	// covers after the edit.

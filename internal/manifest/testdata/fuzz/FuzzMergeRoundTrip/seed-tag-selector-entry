@@ -1,0 +1,2 @@
+go test fuzz v1
+string("users:\n  - name: bob\n    keys: [\"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMqTrBcFGHBx1nuDx/8O/oEI6OxFMFdddyaHkzPb2r58\"]\nservers:\n  - {name: web-1, host: 10.0.0.1, user: deploy, tags: [web]}\n  - {name: web-2, host: 10.0.0.2, user: deploy, tags: [web]}\naccess:\n  # bob: the web tier\n  - user: bob\n    servers: [\"@web\"]\n    except: [web-2]\n")

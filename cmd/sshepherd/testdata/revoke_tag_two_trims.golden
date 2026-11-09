@@ -1,0 +1,15 @@
+serial: 2
+users:
+  - {name: alice, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c"]}
+  - {name: bob, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOU"]}
+servers:
+  - {name: web-1, host: 127.0.0.1, port: PORT, user: deploy, tags: [web]}
+  - {name: web-2, host: 127.0.0.1, port: PORT, user: deploy, tags: [web]}
+access:
+  - {user: alice, servers: [web-1, web-2]}
+revoked:
+  - user: bob
+    servers:
+      - web-2
+      - web-1
+    date: DATE

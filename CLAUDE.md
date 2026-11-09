@@ -577,7 +577,7 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
-Fuzz oracles and corpus (P13, round 2): every one of the 22 `Fuzz*` targets has a
+Fuzz oracles and corpus (P13, round 2): every one of the 23 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on
@@ -683,3 +683,9 @@ the manifest yet. `internal/config/selector.go` holds `entryApplies`, `entryCove
 kind `tombstone_blocks_grant`) instead of conflicting, while a name or `*` in any of the user's
 entries stays a D29 conflict. A non-operator `*` reaching a root account warns once per entry
 (kind `wildcard_root`). `Covers`' `c.blocked` check is load-bearing only from S3b.
+`manifest.RemoveAccess` handles selector entries: named items are removed, servers a selector
+still reaches go to `except:`, and an entry left with no name and only excepted members is
+deleted. `revoke --from-server` refuses `*` and `@tag`; `accessTombstones`' logic is unchanged,
+because `ExceptCarveOut` now answers for any selector entry, and `no_grants_left` is now
+`KeepsServers == 0`, so an entry a tombstone wholly blocks reports no access left.
+`FuzzRemoveAccess` is the 23rd `Fuzz*` target.

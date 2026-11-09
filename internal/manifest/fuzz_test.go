@@ -23,6 +23,7 @@ func FuzzMergeRoundTrip(f *testing.F) {
 		"{}\n",
 		"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n",
 		"users:\nservers:\n&0000: ", // found by fuzzing: anchored empty key survived config.Parse but broke the reparse
+		tagEditFixture(f),
 	}
 	for _, s := range seeds {
 		f.Add(s)

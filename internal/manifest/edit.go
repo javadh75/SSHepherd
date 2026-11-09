@@ -242,21 +242,21 @@ func (f *File) SetOperator(user string, on bool) error {
 // AccessRemoval reports what RemoveAccess changed.
 type AccessRemoval struct {
 	EntriesChanged   int // entries edited in place (list shortened or except: extended)
-	EntriesRemoved   int // entries deleted: list emptied, or wildcard left covering nothing
+	EntriesRemoved   int // entries deleted: list emptied, or selectors left covering nothing with no name left
 	ServersExcepted  int // servers appended to except: lists
 	WildcardsRemoved int // of EntriesRemoved: wildcard entries deleted (decision 1b)
 }
 
 // RemoveAccess takes servers away from user's access: entries, leaving the
-// user, its keys and every other grant alone. An explicit servers: list
-// loses every item naming one of servers; an entry left with no servers is
-// deleted (its head comment rescued as RemoveUser does). A wildcard
-// (servers: ["*"]) gets each covered server appended to except: — created
-// right after servers:, in that list's flow/block style, when absent — and
-// is deleted instead when it would then cover no server of the loaded
-// config. A server already excepted is not covered, so it is never
-// appended twice. Every name in servers must be a server of the loaded
-// config; the wildcard is resolved against f.Config().Servers.
+// user, its keys and every other grant alone. An item naming one of servers
+// is removed. Each of servers a selector ("*", "@tag") of the entry still
+// reaches is appended to except: — created right after servers:, in that
+// list's flow/block style, when absent. An entry left with no servers, or
+// with no name left and nothing its selectors reach but excepted servers, is
+// deleted (its head comment rescued as RemoveUser does). A server already
+// excepted is not covered, so it is never appended twice. Every name in
+// servers must be a server of the loaded config; selectors are resolved
+// against f.Config().Servers.
 func (f *File) RemoveAccess(user string, servers []string) (AccessRemoval, error) {
 	m, err := f.rootMapping()
 	if err != nil {
@@ -296,56 +296,75 @@ func (f *File) RemoveAccess(user string, servers []string) (AccessRemoval, error
 
 // accessTargets checks RemoveAccess's arguments against the loaded
 // manifest (user has a users: entry, every server is a servers: entry) and
-// returns the fleet's server names, manifest order.
-func (f *File) accessTargets(m *yaml.Node, user string, servers []string) ([]string, error) {
+// returns the fleet, manifest order.
+func (f *File) accessTargets(m *yaml.Node, user string, servers []string) ([]config.Server, error) {
 	_, users := sectionOf(m, "users")
 	if userItem(users, user) == nil {
 		return nil, fmt.Errorf("user %q is not in the manifest", user)
 	}
-	fleet := make([]string, 0, len(f.cfg.Servers))
-	for _, s := range f.cfg.Servers {
-		fleet = append(fleet, s.Name)
-	}
 	for _, s := range servers {
-		if !slices.Contains(fleet, s) {
+		if !slices.ContainsFunc(f.cfg.Servers, func(c config.Server) bool { return c.Name == s }) {
 			return nil, fmt.Errorf("server %q is not in the manifest", s)
 		}
 	}
-	return fleet, nil
+	return f.cfg.Servers, nil
 }
 
 // entryTrim is what trimEntry did to one access: entry.
 type entryTrim struct {
 	changed  bool // servers: shortened or except: extended
-	gone     bool // the entry must be deleted (list emptied, or wildcard left covering nothing)
+	gone     bool // the entry must be deleted (list emptied, or selectors left covering nothing and no name left)
 	wildcard bool // the entry is a servers: ["*"] grant
 	excepted int  // servers appended to except:
 }
 
-// trimEntry removes servers from one access: entry of the user: items of
-// an explicit list (every occurrence; the removed item's comments go with
-// it), or except: appends on a wildcard.
-func trimEntry(entry *yaml.Node, servers, fleet []string) entryTrim {
+// trimEntry removes servers from one access: entry: every item naming one
+// (the removed item's comments go with it), and except: appends for each one
+// a selector of the entry still reaches.
+func trimEntry(entry *yaml.Node, servers []string, fleet []config.Server) entryTrim {
 	list := valueOf(entry, "servers")
 	if list == nil || list.Kind != yaml.SequenceNode {
 		return entryTrim{}
 	}
-	if seqHas(list, "*") {
-		n, gone := exceptServers(entry, list, servers, fleet)
-		return entryTrim{changed: n > 0, gone: gone, wildcard: true, excepted: n}
-	}
-	n := removeItems(nil, list, func(it *yaml.Node) bool {
+	wildcard := seqHas(list, "*")
+	reach := selectorReach(list, fleet)
+	removed := removeItems(nil, list, func(it *yaml.Node) bool {
 		return it.Kind == yaml.ScalarNode && slices.Contains(servers, it.Value)
 	}, false)
-	return entryTrim{changed: n > 0, gone: n > 0 && len(list.Content) == 0}
+	if !slices.ContainsFunc(list.Content, isSelectorItem) {
+		return entryTrim{changed: removed > 0, gone: removed > 0 && len(list.Content) == 0}
+	}
+	covered := slices.DeleteFunc(slices.Clone(servers), func(s string) bool { return !slices.Contains(reach, s) })
+	n, none := exceptServers(entry, list, covered, reach)
+	gone := none && !slices.ContainsFunc(list.Content, func(it *yaml.Node) bool { return !isSelectorItem(it) })
+	return entryTrim{changed: n > 0 || removed > 0, gone: gone, wildcard: wildcard, excepted: n}
 }
 
-// exceptServers appends to a wildcard entry's except: every server of
+func isSelectorItem(it *yaml.Node) bool {
+	return it.Kind == yaml.ScalarNode && config.IsSelector(it.Value)
+}
+
+// selectorReach lists, in manifest order, every server of fleet a selector
+// item of list reaches (nil when list has no selector).
+func selectorReach(list *yaml.Node, fleet []config.Server) []string {
+	var out []string
+	for _, s := range fleet {
+		if slices.ContainsFunc(list.Content, func(it *yaml.Node) bool {
+			return it.Kind == yaml.ScalarNode && config.SelectorMatches(it.Value, s)
+		}) {
+			out = append(out, s.Name)
+		}
+	}
+	return out
+}
+
+// exceptServers appends to a selector entry's except: every server of
 // servers the entry still covers, creating except: right after servers:
 // (same sequence style) when absent or null. gone reports that the
-// wildcard would then cover no server of fleet: the caller deletes the
-// entry (decision 1b) and the appends do not matter.
-func exceptServers(entry, list *yaml.Node, servers, fleet []string) (appended int, gone bool) {
+// selectors would then reach no server of reach, every server they select
+// being excepted: the caller deletes the entry unless a name is left
+// (decision 1b) and the appends do not matter.
+func exceptServers(entry, list *yaml.Node, servers, reach []string) (appended int, gone bool) {
 	except := valueOf(entry, "except")
 	if except != nil && except.Kind == yaml.ScalarNode && except.Tag == "!!null" {
 		*except = yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: list.Style & yaml.FlowStyle,
@@ -369,7 +388,7 @@ func exceptServers(entry, list *yaml.Node, servers, fleet []string) (appended in
 		except.Content = append(except.Content, strScalar(s))
 		appended++
 	}
-	for _, s := range fleet {
+	for _, s := range reach {
 		if except == nil || !seqHas(except, s) {
 			return appended, false
 		}

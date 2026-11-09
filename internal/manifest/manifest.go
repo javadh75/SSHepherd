@@ -14,7 +14,7 @@
 //   - ReplaceKey replaces one keys: line in place (same index);
 //   - SetOperator sets or removes a user's operator: flag;
 //   - RemoveAccess takes servers away from a user's access: entries
-//     (explicit items removed, wildcards gain except:, emptied entries
+//     (named items removed, selectors gain except:, emptied entries
 //     deleted);
 //   - AddKeyAfter inserts one keys: line right after another.
 //

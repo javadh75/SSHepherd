@@ -1818,8 +1818,7 @@ instead of failing; repeating it prints
 
 **Revocation memory.** Every revoke that saves records what it removed in `revoked:` —
 `revoke USER` one key entry per key, `revoke --key` one per key (labelled with its
-owner), `revoke USER --from-server NAME` one access entry naming the servers removed from
-an explicit list (a wildcard's new `except:` already remembers its server) — and bumps
+owner), `revoke USER --from-server NAME` one access entry naming the servers no `except:` remembers (a selector's new `except:` already remembers its server) — and bumps
 `serial:` once. `revoke` refuses to save a manifest that would keep a policy conflict,
 exit `3`, nothing saved —
 `refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`;
@@ -1832,15 +1831,9 @@ takes the named servers away from each user and changes nothing else — the use
 entry, its keys and its other grants stay. (Unlike `apply --server`, which only
 restricts which servers a run touches, `revoke --from-server` edits the grants.) An
 explicit `servers:` list loses every occurrence of the server, and an entry left
-empty is deleted (its comment moves on, as for a removed user). A wildcard grant
-(`servers: ["*"]`) gets the server appended to `except:` — created right after
-`servers:` when absent — so it keeps covering servers added later; a wildcard that
-would then cover no current server is deleted, with a warning that later servers are
-no longer granted automatically. When a trim deletes a wildcard entry, every server its
-`except:` remembered also gets an access tombstone, because the deleted `except:` was the
-only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--from-server`
+empty is deleted (its comment moves on, as for a removed user). A selector entry (`servers: ["*"]`, or one with an `@tag`) gets each server it still reaches appended to `except:` — created right after `servers:` when absent. A server the entry also names loses that item too. A wildcard keeps covering servers added later, so a wildcard that would then cover no current server is deleted, with a warning that later servers are no longer granted automatically. An `@tag` entry left with no name and nothing but excepted members is deleted the same way, without that warning, because a tag promises no future server. When a trim deletes an entry with an `except:`, every server that `except:` remembered also gets an access tombstone, because the deleted `except:` was the only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--from-server`
 with `--key` (access is per user), with `--operator`, or on an operator user
-(operators have every server by definition), `--from-server '*'` (use `revoke USER`), an
+(operators have every server by definition), `--from-server` with `*` or an `@tag` (use `revoke USER`), an
 unknown server, and any user × server pair the user has no access to — every problem
 is listed in one message. Only the trimmed servers are contacted, and there is no
 `check every server:` line (no key is removed). The edit

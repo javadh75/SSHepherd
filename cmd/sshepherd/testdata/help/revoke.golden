@@ -4,8 +4,8 @@ authorized_keys changes. 'revoke USER...' removes each user and every
 access entry naming them (offboarding); 'revoke --key KEY...' removes
 single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key
 line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only
-the users' access to those servers (a wildcard grant gains an except:
-entry); the users and their keys stay. Operator users (and their keys)
+the users' access to those servers (a selector grant ('*' or @tag) gains an
+except: entry); the users and their keys stay. Operator users (and their keys)
 need --operator. The plan is shown and confirmed once; the manifest is
 saved after confirmation and before the first write, so commit and push
 it afterwards. --dry-run changes nothing; --no-apply saves the edit
