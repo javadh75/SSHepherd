@@ -321,8 +321,12 @@ label bold red. Otherwise it stays exit 1. Implementation, in the pure layer:
   `sshwrite.LockoutError`, the `sshwrite.Snapshot = fleet.Snapshot` pattern), so
   `internal/apply` can inspect it without importing the transport. `Restore` covers only the
   `authorized_keys` restore; a new `RestoreKeys2 error` takes the `restoreKeys2Cmd` failure,
-  which today is `errors.Join`ed into `Restore`. A failed keys2 move-back cannot lock anyone
-  out (keys2 only adds keys), so it never raises the exit code. `Unwrap` returns `Probe`,
+  which today is `errors.Join`ed into `Restore`. A failed keys2 move-back **can** lock someone
+  out (owner correction, 2026-11-09; this section first said "keys2 only adds keys", which is
+  false): a key whose `authorized_keys` line refuses this client (for example `from=`) may
+  have been able to log in only through `authorized_keys2`, so the move-back failure is
+  `lockout_unrestored` and exit 2 (D28), with `authorized_keys` restored or on a keys2-only
+  (`SkipWrite`) run. `Unwrap` returns `Probe`,
   `Restore` and `RestoreKeys2`. The message's `.bak` path uses `fleet.BackupSuffix`
   (`sshwrite`'s `bakSuffix` becomes that constant).
 - **Restore retry on a busy lock.** On exit 47 only, the restore is retried after **1 s,
@@ -333,10 +337,13 @@ label bold red. Otherwise it stays exit 1. Implementation, in the pure layer:
 - **Outcomes** (`internal/apply/plan.go`), two new values:
   - `OutcomeUnproven = "unproven"` — written and verified, login not proven (section 1).
   - `OutcomeLockoutUnrestored = "lockout_unrestored"` — a `*fleet.LockoutError` whose
-    `Restore` is non-nil (the login check was REJECTED and the previous `authorized_keys`
-    could not be put back), or the refused reconnect of section 4.
-  A `*fleet.LockoutError` with `Restore == nil` stays `failed` (lockout prevented), even when
-  `RestoreKeys2` is non-nil. `applyOne` maps these with `errors.As`.
+    `Restore` or `RestoreKeys2` is non-nil (the login check was REJECTED and the previous
+    `authorized_keys` could not be put back, or the disabled `authorized_keys2` could not be
+    moved back, with or without `FileKept`), or the refused reconnect of section 4.
+  A `*fleet.LockoutError` with both nil stays `failed` (lockout prevented).
+  `RolledBack` stays true on a keys2-only failure when `authorized_keys` was restored, so the
+  report and JSON still name the removed keys it put back. `applyOne` maps these with
+  `errors.As`.
 - **Exit code** (`apply.ExitCode`, still plans-only). Returns **2** if any plan is:
   1. `lockout_unrestored` (D10); or
   2. `failed` with `RolledBack` and a non-empty `RevokedRemovals` (D10a); or
@@ -591,7 +598,7 @@ This spec adds to the one exit-code table D28 fixes (P04 spec,
 | Code | apply | revoke / rotate |
 |---|---|---|
 | 1 | **unproven** (written and verified, login check never got past authentication), other than the host-key kinds in row 2; a `failed` server whose rollback put back no key on the `revoked:` list | the same |
-| 2 | **lockout not restored** (`lockout_unrestored`: the restore after a REJECTED login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); **a rollback put back a key on the manifest's `revoked:` list** (D10a, `failed`); **the post-write login check stopped at a changed or `@revoked` host key** (D10b, `unproven`; `host_key_type_changed` too if P09 adds it) | the same, plus the existing `--sweep` row |
+| 2 | **lockout not restored** (`lockout_unrestored`: after a REJECTED login check the restore of `authorized_keys` failed or the disabled `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); **a rollback put back a key on the manifest's `revoked:` list** (D10a, `failed`); **the post-write login check stopped at a changed or `@revoked` host key** (D10b, `unproven`; `host_key_type_changed` too if P09 adds it) | the same, plus the existing `--sweep` row |
 
 JSON: `outcome` enum + `unproven`, `lockout_unrestored`; `summary` + `unproven`,
 `lockout_unrestored`; per server, additive `restored_revoked_keys` (D10a) and `warnings`
@@ -757,8 +764,9 @@ Every behavior lands with a test that fails before the change. Unit tests are he
    `failed` with `RolledBack` and no revoked removal → 1; `failed` with `RolledBack` and only
    an access-tombstoned key → 1; `applied` + `lockout_unrestored` → 2.
 2. `TestExecuteOutcomes`: `*fleet.UnprovenError` → `OutcomeUnproven`;
-   `&fleet.LockoutError{Restore: errors.New("x")}` → `OutcomeLockoutUnrestored`; the existing
-   `Restore == nil` case stays `OutcomeFailed` and sets `RolledBack`; a FAILED rollback with a
+   `&fleet.LockoutError{Restore: errors.New("x")}` and a non-nil `RestoreKeys2` (with and
+   without `FileKept`) → `OutcomeLockoutUnrestored`; the existing `Restore == nil` and
+   `RestoreKeys2 == nil` case stays `OutcomeFailed` and sets `RolledBack`; a FAILED rollback with a
    non-empty `Remove` names the reinstated keys and marks the revoked ones.
 3. `TestPlanRevokedRemovals`: `Remove` ∩ `Config.Revoked` in `Remove` order; an access
    tombstone does not count.

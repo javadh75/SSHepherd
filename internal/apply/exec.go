@@ -182,7 +182,10 @@ func headlessWarning(paths []string, cause string) string {
 }
 
 // failureOutcome maps a started write's failure to its outcome, and whether
-// the previous file was restored.
+// the previous file was restored. A failed authorized_keys2 move-back is an
+// unrestored lockout even when authorized_keys went back: a key whose
+// authorized_keys line refuses this client (from=) may have logged in only
+// through authorized_keys2.
 func failureOutcome(err error) (Outcome, bool) {
 	var unproven *fleet.UnprovenError
 	if errors.As(err, &unproven) {
@@ -190,10 +193,11 @@ func failureOutcome(err error) (Outcome, bool) {
 	}
 	var lockout *fleet.LockoutError
 	if errors.As(err, &lockout) {
-		if lockout.Restore != nil {
-			return OutcomeLockoutUnrestored, false
+		restored := lockout.Restore == nil && !lockout.FileKept
+		if lockout.Restore != nil || lockout.RestoreKeys2 != nil {
+			return OutcomeLockoutUnrestored, restored
 		}
-		return OutcomeFailed, !lockout.FileKept
+		return OutcomeFailed, restored
 	}
 	return OutcomeFailed, false
 }

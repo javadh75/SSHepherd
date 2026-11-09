@@ -101,7 +101,7 @@ func TestApplyRestoreRetriesBusyLock(t *testing.T) {
 			t.Errorf("Restore = %v, restores = %d, waits = %d", lo.Restore, count(s), waits)
 		}
 	})
-	t.Run("a failed keys2 move-back does not make the lockout unrestored", func(t *testing.T) {
+	t.Run("a failed keys2 move-back is reported apart from the restored file", func(t *testing.T) {
 		r := req("x\n")
 		r.DisableKeys2 = true
 		const moved = "sshepherd-keys2 authorized_keys2" + fleet.Keys2DisabledSuffix + "\n"

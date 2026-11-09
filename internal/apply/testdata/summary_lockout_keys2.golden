@@ -1,0 +1,3 @@
+web-1: LOCKOUT — NOT RESTORED: restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate), but restoring authorized_keys2 failed (restore authorized_keys2 on web-1 failed (exit 1): mv: denied)
+web-2: LOCKOUT — NOT RESTORED: post-write login offering only the surviving keys you hold failed (ssh: unable to authenticate) and moving authorized_keys2 back failed (restore authorized_keys2 on web-2 failed (exit 1): mv: denied); authorized_keys was not changed
+Summary: 0/2 servers converged · 2 lockout not restored  → exit 2

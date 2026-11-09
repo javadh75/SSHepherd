@@ -33,8 +33,11 @@ func useWriter(t *testing.T, err error) {
 
 var (
 	errRefusedLogin  = errors.New("ssh: unable to authenticate")
+	errAuthProbe     = &sshconn.Error{Kind: fleet.ErrorKindAuth, Err: errRefusedLogin}
 	lockoutError     = &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errRefusedLogin, Restore: errors.New("restore failed")}
 	rolledBackError  = &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errRefusedLogin}
+	keys2Stuck       = &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errAuthProbe, RestoreKeys2: errors.New("restore authorized_keys2: mv: denied")}
+	keys2OnlyStuck   = &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: errAuthProbe, FileKept: true, RestoreKeys2: errors.New("restore authorized_keys2: mv: denied")}
 	hostKeyChanged   = &fleet.UnprovenError{Path: "~/.ssh/authorized_keys", Attempts: 1, HostKey: true, Last: &sshconn.Error{Kind: fleet.ErrorKindHostKeyChanged, Err: errors.New("host key changed")}}
 	unprovenDialFail = &fleet.UnprovenError{Path: "~/.ssh/authorized_keys", Attempts: 4, Last: &sshconn.Error{Kind: fleet.ErrorKindDial, Err: errors.New("dial timeout")}}
 )
@@ -105,6 +108,25 @@ func TestApplyLockoutUnrestoredExits2(t *testing.T) {
 	}
 }
 
+// TestApplyKeys2MoveBackFailureExits2: a failed authorized_keys2 move-back
+// after a rejected login check can be a real lockout (a key whose
+// authorized_keys line refuses this client may have logged in only through
+// authorized_keys2), with authorized_keys restored or never written.
+func TestApplyKeys2MoveBackFailureExits2(t *testing.T) {
+	for name, err := range map[string]error{"main file restored": keys2Stuck, "keys2-only": keys2OnlyStuck} {
+		t.Run(name, func(t *testing.T) {
+			useWriter(t, err)
+			text, doc := runApplyFailure(t, applyDrift(t, ""), 2)
+			if !strings.Contains(text, "LOCKOUT — NOT RESTORED:") || !strings.Contains(text, "1 lockout not restored") {
+				t.Errorf("text:\n%s", text)
+			}
+			if doc.Servers[0].Outcome != "lockout_unrestored" || doc.Servers[0].ErrorKind != "auth" {
+				t.Errorf("doc: %+v", doc)
+			}
+		})
+	}
+}
+
 func TestApplyRollbackRestoresRevokedKeyExits2(t *testing.T) {
 	useWriter(t, rolledBackError)
 	text, doc := runApplyFailure(t, applyDrift(t, revokedNine(t)), 2)
@@ -157,6 +179,8 @@ func TestRevokeRotateFailureExits(t *testing.T) {
 			want int
 		}{
 			{"lockout not restored", lockoutError, 2},
+			{"authorized_keys2 not moved back", keys2Stuck, 2},
+			{"keys2-only, authorized_keys2 not moved back", keys2OnlyStuck, 2},
 			{"rollback put back a revoked key", rolledBackError, 2},
 			{"host key changed at the login check", hostKeyChanged, 2},
 			{"unproven", unprovenDialFail, 1},

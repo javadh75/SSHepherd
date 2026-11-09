@@ -41,13 +41,13 @@ const (
 	OutcomePending Outcome = "pending" // not written: dry-run, declined, phase 2 not run, or interrupted before the write (OutcomeErr set)
 	OutcomeApplied Outcome = "applied" // written, byte-verified, and the surviving keys proved they can log in
 	OutcomeRefused Outcome = "refused" // refused at the server before any change (symlink, unsafe path, changed since plan, locked)
-	OutcomeFailed  Outcome = "failed"  // write or verify failed, or a rejected login check restored the previous file
+	OutcomeFailed  Outcome = "failed"  // write or verify failed, or a rejected login check restored everything it had changed
 	// OutcomeUnproven: written and verified, but the login check never got
 	// past authentication; the file is kept.
 	OutcomeUnproven Outcome = "unproven"
-	// OutcomeLockoutUnrestored: a rejected login check whose restore failed,
-	// or a refused reconnect after the upload started — the operator may be
-	// locked out.
+	// OutcomeLockoutUnrestored: a rejected login check whose restore of
+	// authorized_keys or move-back of authorized_keys2 failed, or a refused
+	// reconnect after the upload started — the operator may be locked out.
 	OutcomeLockoutUnrestored Outcome = "lockout_unrestored"
 )
 
@@ -665,7 +665,8 @@ func ExitCode(plans []ServerPlan) int {
 }
 
 // needsHuman is the D28 exit-2 rule for a written server: an unrestored
-// lockout (D10), a rollback that put back a key on the revoked: list
+// lockout, authorized_keys or authorized_keys2 (D10), a rollback that put
+// back a key on the revoked: list
 // (D10a), or a login check stopped at a host-key alarm audit would page on
 // (D10b).
 func needsHuman(p ServerPlan) bool {

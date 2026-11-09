@@ -621,6 +621,23 @@ func TestRenderSummaryLockoutGolden(t *testing.T) {
 	checkGolden(t, "summary_lockout.golden", buf.Bytes())
 }
 
+// TestRenderSummaryKeys2LockoutGolden is the report for a failed
+// authorized_keys2 move-back, with the main file restored and on a keys2-only
+// run. README quotes its text.
+func TestRenderSummaryKeys2LockoutGolden(t *testing.T) {
+	const path = "~/.ssh/authorized_keys"
+	refused := errors.New("ssh: unable to authenticate")
+	plans := []ServerPlan{
+		{Server: config.Server{Name: "web-1"}, Class: ClassChange, Outcome: OutcomeLockoutUnrestored, RolledBack: true,
+			OutcomeErr: &fleet.LockoutError{Path: path, Probe: refused, RestoreKeys2: errors.New("restore authorized_keys2 on web-1 failed (exit 1): mv: denied")}},
+		{Server: config.Server{Name: "web-2"}, Class: ClassChange, Outcome: OutcomeLockoutUnrestored,
+			OutcomeErr: &fleet.LockoutError{Path: path, Probe: refused, FileKept: true, RestoreKeys2: errors.New("restore authorized_keys2 on web-2 failed (exit 1): mv: denied")}},
+	}
+	var buf bytes.Buffer
+	RenderSummary(&buf, &config.Config{}, plans, RenderOptions{})
+	checkGolden(t, "summary_lockout_keys2.golden", buf.Bytes())
+}
+
 // rolledBackPlans: a rollback that put back alice (on the revoked: list)
 // and bob, beside two applied servers.
 func rolledBackPlans(t *testing.T) []ServerPlan {

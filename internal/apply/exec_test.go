@@ -3,6 +3,7 @@ package apply
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -277,30 +278,108 @@ func TestExecuteRequestsKeys2Disable(t *testing.T) {
 
 func TestExecuteFailureOutcomes(t *testing.T) {
 	held := testKey(t, 1)
-	plans := []ServerPlan{changePlan("unproven", held), changePlan("unrestored", held), changePlan("reconnect", held), changePlan("rolledback", held), changePlan("keys2", held), changePlan("keys2only", held)}
+	plans := []ServerPlan{changePlan("unproven", held), changePlan("unrestored", held), changePlan("reconnect", held), changePlan("rolledback", held), changePlan("keys2", held), changePlan("keys2only", held), changePlan("keys2onlyfailed", held)}
 	w := &fakeWriter{errs: map[string]error{
-		"unproven":   &fleet.UnprovenError{Attempts: 4, Last: errors.New("dial")},
-		"unrestored": &fleet.LockoutError{Probe: errors.New("auth"), Restore: errors.New("denied")},
-		"reconnect":  &fleet.LockoutError{Probe: errors.New("auth"), Restore: fleet.ErrNoSession},
-		"rolledback": &fleet.LockoutError{Probe: errors.New("auth")},
-		"keys2":      &fleet.LockoutError{Probe: errors.New("auth"), RestoreKeys2: errors.New("kept")},
-		"keys2only":  &fleet.LockoutError{Probe: errors.New("auth"), FileKept: true},
+		"unproven":        &fleet.UnprovenError{Attempts: 4, Last: errors.New("dial")},
+		"unrestored":      &fleet.LockoutError{Probe: errors.New("auth"), Restore: errors.New("denied")},
+		"reconnect":       &fleet.LockoutError{Probe: errors.New("auth"), Restore: fleet.ErrNoSession},
+		"rolledback":      &fleet.LockoutError{Probe: errors.New("auth")},
+		"keys2":           &fleet.LockoutError{Probe: errors.New("auth"), RestoreKeys2: errors.New("kept")},
+		"keys2only":       &fleet.LockoutError{Probe: errors.New("auth"), FileKept: true},
+		"keys2onlyfailed": &fleet.LockoutError{Probe: errors.New("auth"), FileKept: true, RestoreKeys2: errors.New("kept")},
 	}}
 	Execute(context.Background(), plans, w, ExecOptions{Parallel: 2, Held: agentHeld(held.Fingerprint)})
 	for name, want := range map[string]struct {
 		outcome Outcome
 		rolled  bool
 	}{
-		"unproven":   {OutcomeUnproven, false},
-		"unrestored": {OutcomeLockoutUnrestored, false},
-		"reconnect":  {OutcomeLockoutUnrestored, false},
-		"rolledback": {OutcomeFailed, true},
-		"keys2":      {OutcomeFailed, true},
-		"keys2only":  {OutcomeFailed, false},
+		"unproven":        {OutcomeUnproven, false},
+		"unrestored":      {OutcomeLockoutUnrestored, false},
+		"reconnect":       {OutcomeLockoutUnrestored, false},
+		"rolledback":      {OutcomeFailed, true},
+		"keys2":           {OutcomeLockoutUnrestored, true},
+		"keys2only":       {OutcomeFailed, false},
+		"keys2onlyfailed": {OutcomeLockoutUnrestored, false},
 	} {
 		if got := planFor(t, plans, name); got.Outcome != want.outcome || got.RolledBack != want.rolled || got.OutcomeErr == nil {
 			t.Errorf("%s = %s rolled %v err %v", name, got.Outcome, got.RolledBack, got.OutcomeErr)
 		}
+	}
+}
+
+// TestKeys2MoveBackFailureIsUnrestoredLockout: a key whose authorized_keys
+// line refuses this client (from=) may have logged in only through
+// authorized_keys2, so a failed move-back after a rejected login check can be
+// a real lockout. That holds when authorized_keys was restored and on a
+// keys2-only (SkipWrite) run alike.
+func TestKeys2MoveBackFailureIsUnrestoredLockout(t *testing.T) {
+	held, alice := testKey(t, 1), testKey(t, 2)
+	refused := &hintedErr{kind: fleet.ErrorKindAuth, err: errors.New("ssh: unable to authenticate")}
+	moveBack := errors.New("restore authorized_keys2 on web-1 failed (exit 1): mv: denied")
+	for _, tt := range []struct {
+		name   string
+		err    *fleet.LockoutError
+		rolled bool
+		row    string
+	}{
+		{
+			name:   "previous file restored",
+			err:    &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: refused, RestoreKeys2: moveBack},
+			rolled: true,
+			row:    "web-1: LOCKOUT — NOT RESTORED: restored previous file (post-write login offering only the surviving keys you hold failed: ssh: unable to authenticate), but restoring authorized_keys2 failed (" + moveBack.Error() + "); it still grants " + audit.UnknownLabel(alice) + " (" + alice.Fingerprint + ", on the revoked: list), which the manifest removed — fix the surviving key and re-run\n",
+		},
+		{
+			name: "keys2-only, authorized_keys never written",
+			err:  &fleet.LockoutError{Path: "~/.ssh/authorized_keys", Probe: refused, FileKept: true, RestoreKeys2: moveBack},
+			row:  "web-1: LOCKOUT — NOT RESTORED: post-write login offering only the surviving keys you hold failed (ssh: unable to authenticate) and moving authorized_keys2 back failed (" + moveBack.Error() + "); authorized_keys was not changed\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plan := changePlan("web-1", held)
+			plan.Remove, plan.RevokedRemovals = []authkeys.Key{alice}, []string{alice.Fingerprint}
+			plans := []ServerPlan{plan}
+			Execute(context.Background(), plans, &fakeWriter{errs: map[string]error{"web-1": tt.err}}, ExecOptions{Parallel: 1, Held: agentHeld(held.Fingerprint)})
+
+			if got := plans[0]; got.Outcome != OutcomeLockoutUnrestored || got.RolledBack != tt.rolled {
+				t.Fatalf("outcome = %s, rolled back = %v, want %s, %v", got.Outcome, got.RolledBack, OutcomeLockoutUnrestored, tt.rolled)
+			}
+			if got := ExitCode(plans); got != 2 {
+				t.Errorf("ExitCode = %d, want 2", got)
+			}
+
+			var buf bytes.Buffer
+			RenderSummary(&buf, &config.Config{}, plans, RenderOptions{})
+			for _, want := range []string{tt.row, "Summary: 0/1 servers converged · 1 lockout not restored  → exit 2\n"} {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("report lacks %q:\n%s", want, buf.String())
+				}
+			}
+
+			var doc struct {
+				Summary struct {
+					LockoutUnrestored int `json:"lockout_unrestored"`
+					ExitCode          int `json:"exit_code"`
+				} `json:"summary"`
+				Servers []struct {
+					Outcome             string   `json:"outcome"`
+					ErrorKind           string   `json:"error_kind"`
+					RestoredRevokedKeys []string `json:"restored_revoked_keys"`
+				} `json:"servers"`
+			}
+			if err := json.Unmarshal(renderJSONCfg(t, &config.Config{}, plans, JSONOptions{}), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if doc.Summary.LockoutUnrestored != 1 || doc.Summary.ExitCode != 2 {
+				t.Errorf("summary = %+v", doc.Summary)
+			}
+			if s := doc.Servers[0]; s.Outcome != "lockout_unrestored" || s.ErrorKind != "auth" {
+				t.Errorf("server = %+v, want the probe's kind on a lockout_unrestored", s)
+			}
+			// Only a restored authorized_keys put the revoked key back.
+			if got := len(doc.Servers[0].RestoredRevokedKeys); (got == 1) != tt.rolled {
+				t.Errorf("restored_revoked_keys = %v with rolled back %v", doc.Servers[0].RestoredRevokedKeys, tt.rolled)
+			}
+		})
 	}
 }
 

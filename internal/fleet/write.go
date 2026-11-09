@@ -128,10 +128,10 @@ var ErrNoSession = errors.New("no session left to restore over")
 // (key files or agent) could not log in on a fresh connection, or whose
 // reconnect after a dropped connection was refused. Restore is nil when the
 // previous authorized_keys was put back; RestoreKeys2 is the separate
-// authorized_keys2 move-back. A failed move-back does not raise the outcome
-// (spec section 2), but its text never claims the lockout was prevented: a
-// key whose authorized_keys line refuses this client (from=) may have logged
-// in only through authorized_keys2.
+// authorized_keys2 move-back. Either failure is an unrestored lockout (spec
+// section 2), and the text never claims the lockout was prevented: a key
+// whose authorized_keys line refuses this client (from=) may have logged in
+// only through authorized_keys2.
 type LockoutError struct {
 	Path         string
 	Probe        error // why the login failed
