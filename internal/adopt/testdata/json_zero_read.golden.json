@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "command": "adopt",
+  "mode": "generate",
+  "emitted": false,
+  "summary": {
+    "servers": 1,
+    "read": 0,
+    "partly_read": 0,
+    "new_users": 0,
+    "extensions": 0,
+    "warnings": 0,
+    "exit_code": 3
+  },
+  "new_users": [],
+  "extensions": [],
+  "unreadable": [
+    {
+      "server": "web-1",
+      "error_kind": "dial",
+      "detail": "dial 10.0.0.1:22: connection refused",
+      "hint": "check the host, port, and firewall"
+    }
+  ],
+  "line_issues": [],
+  "warnings": []
+}

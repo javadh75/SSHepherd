@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -232,7 +233,7 @@ func reportReadCount(log *slog.Logger, total, read, partly int, partial bool) er
 // the fleet went unread.
 func reportPlan(log *slog.Logger, plan adopt.Plan, unreadable []string) {
 	for _, w := range plan.Warnings {
-		log.Warn(w)
+		log.Warn(w.Message)
 	}
 	if len(plan.NewUsers) == 0 && len(plan.Extensions) == 0 {
 		note := "nothing to adopt: the manifest already accounts for every key found"
@@ -248,13 +249,120 @@ func reportPlan(log *slog.Logger, plan adopt.Plan, unreadable []string) {
 		apply.Plural(len(plan.Extensions), "access extension", "access extensions"))
 }
 
+// adoptOpts are adopt's own flags; connFlags holds the shared ones.
+type adoptOpts struct {
+	outPath string
+	force   bool
+	partial bool
+	merge   bool
+	json    bool
+}
+
+// adoptRun is one adopt run.
+type adoptRun struct {
+	log    *slog.Logger
+	stdout io.Writer
+	cf     *connFlags
+	opts   adoptOpts
+}
+
+func (r *adoptRun) run(ctx context.Context) error {
+	ids, err := r.cf.validate()
+	if err != nil {
+		return err
+	}
+	m, cfg, mf, err := loadAdoptManifest(r.cf.cfgPath, r.opts.merge)
+	if err != nil {
+		return err
+	}
+	logManifest(r.log, cfg)
+	results, err := readFleet(ctx, r.log, cfg, cfg.Servers, r.cf, ids, "reading")
+	if err != nil {
+		return err
+	}
+	plan := adopt.Build(cfg, results)
+	unreadable := plan.UnreadableServers()
+	partly := partlyRead(unreadable, results)
+	rep := adopt.Report{Mode: adopt.ModeGenerate, Servers: len(cfg.Servers), Read: fleetReadCount(results), PartlyRead: len(partly)}
+	if r.opts.merge {
+		rep.Mode = adopt.ModeMerge
+	}
+	if err := reportUnreadable(r.log, plan, unreadable, r.opts.partial); err != nil {
+		return r.stop(plan, rep, err)
+	}
+	if err := reportReadCount(r.log, rep.Servers, rep.Read, rep.PartlyRead, r.opts.partial); err != nil {
+		return r.stop(plan, rep, err)
+	}
+	rendered, err := r.render(m, cfg, mf, plan, gapNotes(unreadable, partly))
+	if err != nil {
+		return err
+	}
+	reportPlan(r.log, plan, unreadable)
+	// Self-check: never emit a manifest our own loader would reject,
+	// nor one that keeps a policy conflict (D29).
+	saved, err := config.Parse(rendered)
+	if err != nil {
+		return fmt.Errorf("bug: generated manifest fails validation: %w", err)
+	}
+	if err := conflictRefusal(cfg, saved); err != nil {
+		return err
+	}
+	return r.finish(plan, rep, m, rendered)
+}
+
+func (r *adoptRun) render(m manifestTarget, cfg *config.Config, mf *manifest.File, plan adopt.Plan, gaps []string) ([]byte, error) {
+	if r.opts.merge {
+		return renderMergedManifest(mf, m.Loaded, plan, gaps, time.Now().Format("2006-01-02"))
+	}
+	return generateAdoptManifest(cfg, plan, r.cf.cfgPath, gaps)
+}
+
+// stop ends a run that emits no manifest. Under --json the document says
+// why, with the exit code the process is about to return: the strict gate
+// (1) or a --partial run that read nothing (3, the one exit 3 with a
+// document).
+func (r *adoptRun) stop(plan adopt.Plan, rep adopt.Report, stopErr error) error {
+	if r.opts.json {
+		rep.ExitCode = exitCodeFor(stopErr)
+		if err := adopt.WriteJSON(r.stdout, plan, rep); err != nil {
+			return err //nolint:wrapcheck // "encode adopt report: …"
+		}
+	}
+	return stopErr
+}
+
+// finish emits the manifest. The document is written only after -o
+// succeeded, so a refused save (exit 3) leaves stdout empty.
+func (r *adoptRun) finish(plan adopt.Plan, rep adopt.Report, m manifestTarget, rendered []byte) error {
+	var end error
+	if r.opts.partial && rep.Read < rep.Servers {
+		// The partial manifest is out; the exit code tells a script
+		// it is incomplete (exit 1, like audit). A partly read server
+		// (only lines adopt could not use) counts as read and keeps
+		// exit 0; its gap is marked in the output and on stderr.
+		end = fmt.Errorf("%w: read %d of %d servers", errFleetUnreadable, rep.Read, rep.Servers)
+	}
+	if !r.opts.json {
+		if err := emitManifest(r.stdout, m, r.opts.outPath, rendered, r.opts.force); err != nil {
+			return err
+		}
+		return end
+	}
+	place, err := placeManifest(m, r.opts.outPath, rendered, r.opts.force)
+	if err != nil {
+		return err
+	}
+	rep.Emitted, rep.Placement, rep.ExitCode = true, place, exitCodeFor(end)
+	if err := adopt.WriteJSON(r.stdout, plan, rep); err != nil {
+		return err //nolint:wrapcheck // "encode adopt report: …"
+	}
+	return end
+}
+
 func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
-		cf      connFlags
-		outPath string
-		force   bool
-		partial bool
-		merge   bool
+		cf   connFlags
+		opts adoptOpts
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt",
@@ -272,69 +380,20 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 		Example: "  # Bootstrap: append every installed key to a servers-only manifest\n" +
 			"  sshepherd adopt --merge -o adopted.yaml\n\n" +
 			"  # Regenerate from scratch, even if some servers are down\n" +
-			"  sshepherd adopt --partial -o adopted.yaml",
+			"  sshepherd adopt --partial -o adopted.yaml\n\n" +
+			"  # A discovery report for a script; the manifest goes to the file\n" +
+			"  sshepherd adopt --merge --json -o adopted.yaml",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ids, err := cf.validate()
-			if err != nil {
-				return err
-			}
-			log := a.logger
-			m, cfg, mf, err := loadAdoptManifest(cf.cfgPath, merge)
-			if err != nil {
-				return err
-			}
-			logManifest(log, cfg)
-			results, err := readFleet(cmd.Context(), log, cfg, cfg.Servers, &cf, ids, "reading")
-			if err != nil {
-				return err
-			}
-			plan := adopt.Build(cfg, results)
-			unreadable := plan.UnreadableServers()
-			if err := reportUnreadable(log, plan, unreadable, partial); err != nil {
-				return err
-			}
-			total, read := len(cfg.Servers), fleetReadCount(results)
-			partly := partlyRead(unreadable, results)
-			if err := reportReadCount(log, total, read, len(partly), partial); err != nil {
-				return err
-			}
-			var rendered []byte
-			if merge {
-				rendered, err = renderMergedManifest(mf, m.Loaded, plan, gapNotes(unreadable, partly), time.Now().Format("2006-01-02"))
-			} else {
-				rendered, err = generateAdoptManifest(cfg, plan, cf.cfgPath, gapNotes(unreadable, partly))
-			}
-			if err != nil {
-				return err
-			}
-			reportPlan(log, plan, unreadable)
-			// Self-check: never emit a manifest our own loader would reject,
-			// nor one that keeps a policy conflict (D29).
-			saved, err := config.Parse(rendered)
-			if err != nil {
-				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
-			}
-			if err := conflictRefusal(cfg, saved); err != nil {
-				return err
-			}
-			if err := emitManifest(stdout, m, outPath, rendered, force); err != nil {
-				return err
-			}
-			if partial && read < total {
-				// The partial manifest is out; the exit code tells a script
-				// it is incomplete (exit 1, like audit). A partly read server
-				// (only lines adopt could not use) counts as read and keeps
-				// exit 0; its gap is marked in the output and on stderr.
-				return fmt.Errorf("%w: read %d of %d servers", errFleetUnreadable, read, total)
-			}
-			return nil
+			r := &adoptRun{log: a.logger, stdout: stdout, cf: &cf, opts: opts}
+			return r.run(cmd.Context())
 		},
 	}
 	cf.register(cmd, "max concurrent server reads")
-	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
-	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
-	cmd.Flags().BoolVar(&partial, "partial", false, "proceed even if some servers cannot be read (their access will be missing from the output)")
-	cmd.Flags().BoolVar(&merge, "merge", false, "merge into --config: preserve its text and append what is new")
+	cmd.Flags().StringVarP(&opts.outPath, "output", "o", "", "write the manifest to this file instead of stdout")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "allow --output to overwrite an existing file")
+	cmd.Flags().BoolVar(&opts.partial, "partial", false, "proceed even if some servers cannot be read (their access will be missing from the output)")
+	cmd.Flags().BoolVar(&opts.merge, "merge", false, "merge into --config: preserve its text and append what is new")
+	cmd.Flags().BoolVar(&opts.json, "json", false, "emit a machine-readable report on stdout (the manifest goes to -o, or into the report's manifest field)")
 	return cmd
 }

@@ -657,3 +657,10 @@ old names are unknown flags, exit 3). `apply`'s `--server` keeps its name becaus
 restricts a run, so `revoke`'s apply-phase hint still prints it; `revoke`/`rotate`'s bool
 `--operator` keeps its name; `--merge` keeps both names with clearer help. No exit code or
 JSON field changed.
+**`adopt --json`** (P10 S8, owner rule, OP3; section S8 of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`): one schema-1 discovery
+and warnings report on stdout; the manifest goes to `-o` (`output.written`) or the `manifest`
+field, byte-identical to a plain run, and logs stay on stderr. A document on exit 0 and 1 and on
+exit 3 only for `--partial` with no server read; `unreadable` (with `error_kind`) holds transport
+failures and `line_issues` the lines adopt could not use. `adopt.Plan.Warnings` is structured,
+`internal/adopt/json.go` renders it, and the body moved to `adoptRun`. `import --json` follows.

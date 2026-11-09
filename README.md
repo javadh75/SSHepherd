@@ -60,7 +60,7 @@ rotate → audit**.
 | `audit`  | ✅ | Read-only drift report (text + `--json`, monitoring exit codes) |
 | `validate` | ✅ | Offline manifest check: schema, policy conflicts, host-key coverage (text + `--json`, `--strict`) |
 | `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
-| `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported) |
+| `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported, text + `--json`) |
 | `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe (text + `--json`) |
 | `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, take away one server (`--from-server`), drop a lost key, swap a key in place or overlap old and new (`--keep-old`) (text + `--json`) |
 
@@ -1165,9 +1165,78 @@ A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in bot
 | `--force` | off | Allow `--output` to overwrite an existing file |
 | `--partial` | off | Proceed even if some servers cannot be read |
 | `--merge` | off | Merge into `--config`: preserve its text and append what is new |
+| `--json` | off | Machine-readable report on stdout (schema 1); the manifest goes to `-o`, or into the report's `manifest` field |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+
+`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output` (`written` is `false` when an in-place update changed nothing). Without `-o` the report has `manifest`, so `sshepherd adopt --json | jq -j .manifest` prints what a plain run prints. A report with `"emitted": false` has neither.
+
+Exit `0` and `1` always write a report. `emitted` is `true` under `--partial` and `false` when unreadable servers stopped the run. Exit `3` writes none, only a message on stderr, with one exception: `--partial` with no server read writes a report with `"emitted": false`. `unreadable` lists servers that could not be read, each with `error_kind`; `line_issues` lists lines adopt could not use on a server it did read, and `summary.partly_read` counts those servers. `warnings` has the kinds `revoked_key_skipped`, `revoked_access_skipped`, `except_skipped`, `key_differs`, `comment_dropped` and `weak_key_skipped`; ignore kinds you do not know.
+
+```json
+{
+  "schema": 1,
+  "command": "adopt",
+  "mode": "merge",
+  "emitted": true,
+  "output": {
+    "path": "fleet.yaml",
+    "written": true
+  },
+  "summary": {
+    "servers": 12,
+    "read": 11,
+    "partly_read": 1,
+    "new_users": 1,
+    "extensions": 1,
+    "warnings": 1,
+    "exit_code": 1
+  },
+  "new_users": [
+    {
+      "name": "u-laptop",
+      "fingerprint": "SHA256:fpLaptop",
+      "type": "ssh-ed25519",
+      "found_on": [
+        "web-1"
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "user": "bob",
+      "servers": [
+        "db-1"
+      ]
+    }
+  ],
+  "unreadable": [
+    {
+      "server": "db-3",
+      "error_kind": "dial",
+      "detail": "dial 10.0.0.3:22: connection refused",
+      "hint": "check the host, port, and firewall"
+    }
+  ],
+  "line_issues": [
+    {
+      "server": "web-9",
+      "detail": "line 3: invalid key"
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "revoked_key_skipped",
+      "server": "web-2",
+      "fingerprint": "SHA256:fpOld",
+      "user": "alice",
+      "date": "2026-11-08",
+      "message": "key SHA256:fpOld on web-2 is REVOKED (2026-11-08, alice) — not adopted; run 'sshepherd apply --server web-2' to remove it"
+    }
+  ]
+}
+```
 
 Any unreadable server aborts the run unless `--partial` is set — adopting a
 half-read fleet would silently drop real access. Each unreadable server gets its

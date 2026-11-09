@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "command": "adopt",
+  "mode": "generate",
+  "emitted": true,
+  "manifest": "# generated\nusers: []\n",
+  "summary": {
+    "servers": 1,
+    "read": 1,
+    "partly_read": 0,
+    "new_users": 0,
+    "extensions": 0,
+    "warnings": 0,
+    "exit_code": 0
+  },
+  "new_users": [],
+  "extensions": [],
+  "unreadable": [],
+  "line_issues": [],
+  "warnings": []
+}

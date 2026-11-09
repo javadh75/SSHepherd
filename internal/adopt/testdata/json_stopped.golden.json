@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "command": "adopt",
+  "mode": "generate",
+  "emitted": false,
+  "summary": {
+    "servers": 2,
+    "read": 1,
+    "partly_read": 0,
+    "new_users": 1,
+    "extensions": 1,
+    "warnings": 1,
+    "exit_code": 1
+  },
+  "new_users": [
+    {
+      "name": "u-laptop",
+      "fingerprint": "SHA256:fpLaptop",
+      "type": "ssh-ed25519",
+      "found_on": [
+        "web-1"
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "user": "bob",
+      "servers": [
+        "db-1"
+      ]
+    }
+  ],
+  "unreadable": [
+    {
+      "server": "db-3",
+      "error_kind": "dial",
+      "detail": "dial 10.0.0.3:22: connection refused",
+      "hint": "check the host, port, and firewall"
+    }
+  ],
+  "line_issues": [
+    {
+      "server": "web-9",
+      "detail": "line 3: invalid key"
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "revoked_key_skipped",
+      "server": "web-2",
+      "fingerprint": "SHA256:fpOld",
+      "user": "alice",
+      "date": "2026-11-08",
+      "message": "key SHA256:fpOld on web-2 is REVOKED (2026-11-08, alice) — not adopted; run 'sshepherd apply --server web-2' to remove it"
+    }
+  ]
+}

@@ -28,6 +28,9 @@ Examples:
   # Regenerate from scratch, even if some servers are down
   sshepherd adopt --partial -o adopted.yaml
 
+  # A discovery report for a script; the manifest goes to the file
+  sshepherd adopt --merge --json -o adopted.yaml
+
 Flags:
       --config string                   path to the manifest (default "sshepherd.yaml")
       --force                           allow --output to overwrite an existing file
@@ -35,6 +38,7 @@ Flags:
       --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
       --identity-passphrase PATH=FILE   PATH=FILE: passphrase file for one --identity key (repeatable; split at the first =)
       --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
+      --json                            emit a machine-readable report on stdout (the manifest goes to -o, or into the report's manifest field)
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
       --merge                           merge into --config: preserve its text and append what is new
       --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)

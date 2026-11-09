@@ -30,7 +30,7 @@ func TestBuildSkipsWeakKey(t *testing.T) {
 		t.Fatalf("plan = %+v, want no new user and no issue", p)
 	}
 	want := "key " + k.Fingerprint + " on web-1: rsa_under_2048 key not adopted"
-	if !slices.Contains(p.Warnings, want) {
+	if !slices.ContainsFunc(p.Warnings, func(w Warning) bool { return w.Message == want }) {
 		t.Errorf("warnings = %q, want %q", p.Warnings, want)
 	}
 }
@@ -54,7 +54,7 @@ access:
 	if len(p.Extensions) != 0 {
 		t.Errorf("extensions = %+v, want none", p.Extensions)
 	}
-	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "dsa key not adopted") {
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0].Message, "dsa key not adopted") {
 		t.Errorf("warnings = %q", p.Warnings)
 	}
 }
@@ -74,7 +74,7 @@ revoked:
 `)
 	r := &fakeReader{byName: map[string]fleet.ReadResult{"web-1": {Content: []byte(line + "\n")}}}
 	p := Build(cfg, runAudit(t, cfg, r))
-	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "REVOKED") {
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0].Message, "REVOKED") {
 		t.Errorf("warnings = %q, want only the REVOKED one", p.Warnings)
 	}
 }
@@ -188,7 +188,7 @@ revoked:
 		t.Fatalf("plan = %+v, want nothing adopted and no issue", p)
 	}
 	want := "key " + fpOf(t, 7) + " on web-2 is REVOKED (2026-11-08, alice) — not adopted; run 'sshepherd apply --server web-2' to remove it"
-	if len(p.Warnings) != 1 || p.Warnings[0] != want {
+	if len(p.Warnings) != 1 || p.Warnings[0].Message != want {
 		t.Errorf("Warnings = %q\nwant [%q]", p.Warnings, want)
 	}
 }
@@ -215,7 +215,7 @@ revoked:
 		t.Fatalf("plan = %+v, want db-1 not re-granted", p)
 	}
 	want := "key " + fpOf(t, 2) + ` of "bob" found on "db-1", whose access was revoked (2026-11-08) — not re-granted; audit flags this drift`
-	if len(p.Warnings) != 1 || p.Warnings[0] != want {
+	if len(p.Warnings) != 1 || p.Warnings[0].Message != want {
 		t.Errorf("Warnings = %q\nwant [%q]", p.Warnings, want)
 	}
 }
@@ -368,7 +368,7 @@ func TestBuildNeverWildcards(t *testing.T) {
 		t.Fatalf("NewUsers = %+v, want one user found on all three servers", p.NewUsers)
 	}
 	for _, w := range p.Warnings {
-		if strings.Contains(w, "wildcard") {
+		if strings.Contains(w.Message, "wildcard") {
 			t.Errorf("unexpected wildcard warning %q", w)
 		}
 	}
@@ -393,7 +393,7 @@ func TestBuildDivergentCopiesFirstWins(t *testing.T) {
 	if p.NewUsers[0].Name != "carol-a" {
 		t.Errorf("Name = %q, want carol-a (first-seen comment names the user)", p.NewUsers[0].Name)
 	}
-	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "web-1") {
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0].Message, "web-1") {
 		t.Errorf("Warnings = %v, want one divergence note naming web-1", p.Warnings)
 	}
 }
@@ -464,8 +464,8 @@ func TestBuildRespectsExceptCarveOut(t *testing.T) {
 	if len(p.Extensions) != 0 {
 		t.Errorf("Extensions = %+v, want none (db-1 is bob's except carve-out)", p.Extensions)
 	}
-	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "bob") ||
-		!strings.Contains(p.Warnings[0], "db-1") {
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0].Message, "bob") ||
+		!strings.Contains(p.Warnings[0].Message, "db-1") {
 		t.Errorf("Warnings = %v, want one naming bob and db-1", p.Warnings)
 	}
 }
@@ -635,7 +635,7 @@ func TestBuildDivergenceKeepsFirstCopy(t *testing.T) {
 	if len(p.NewUsers) != 1 || p.NewUsers[0].Line != first {
 		t.Fatalf("NewUsers = %+v, want one user keeping the first copy", p.NewUsers)
 	}
-	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "differs") {
+	if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0].Message, "differs") {
 		t.Errorf("Warnings = %v, want one divergence note", p.Warnings)
 	}
 }
@@ -708,8 +708,8 @@ func TestBuildUnsafeCommentAdoptedWithoutComment(t *testing.T) {
 			if got := p.NewUsers[0].Line; got != bare {
 				t.Errorf("Line = %q, want options + key without the comment %q", got, bare)
 			}
-			if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0], "adopted without its comment") ||
-				!strings.Contains(p.Warnings[0], "db-1") {
+			if len(p.Warnings) != 1 || !strings.Contains(p.Warnings[0].Message, "adopted without its comment") ||
+				!strings.Contains(p.Warnings[0].Message, "db-1") {
 				t.Errorf("Warnings = %v, want one adopted-without-comment warning naming db-1", p.Warnings)
 			}
 			if _, err := config.Parse([]byte(`
@@ -923,4 +923,124 @@ func TestBuildControlRuneOptionLine(t *testing.T) {
 			t.Errorf("NewUsers = %+v, want none", p.NewUsers)
 		}
 	})
+}
+
+// keyFP is line's SHA256 fingerprint.
+func keyFP(t *testing.T, line string) string {
+	t.Helper()
+	k, err := authkeys.ParseLine(line)
+	if err != nil || k == nil {
+		t.Fatalf("keyFP: %v", err)
+	}
+	return k.Fingerprint
+}
+
+// TestBuildWarningKinds pins each warning's kind and structured fields. The
+// messages are the stderr text and stay pinned by the tests above.
+func TestBuildWarningKinds(t *testing.T) {
+	k4, k7, dsa := testkeys.Line(t, 4), testkeys.Line(t, 7), testkeys.DSALine(t, 7)
+	fp4, fp7, fpDSA := keyFP(t, k4), keyFP(t, k7), keyFP(t, dsa)
+	oneServer := "servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n"
+	twoServers := "servers:\n  - {name: db-1, host: 10.0.0.3, user: deploy}\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n"
+	bob := "users:\n  - {name: bob, keys: [\"" + k4 + "\"]}\n"
+	for _, tt := range []struct {
+		name    string
+		cfg     string
+		found   map[string]string
+		message string
+		want    Warning
+	}{
+		{
+			name:    "revoked key",
+			cfg:     oneServer + "revoked:\n  - {fingerprint: " + fp7 + ", user: old, date: 2026-11-08}\n",
+			found:   map[string]string{"web-1": k7},
+			message: "REVOKED",
+			want:    Warning{Kind: WarnRevokedKeySkipped, Server: "web-1", Fingerprint: fp7, User: "old", Date: "2026-11-08"},
+		},
+		{
+			name:    "weak key",
+			cfg:     oneServer,
+			found:   map[string]string{"web-1": dsa},
+			message: "key not adopted",
+			want:    Warning{Kind: WarnWeakKeySkipped, Server: "web-1", Fingerprint: fpDSA},
+		},
+		{
+			name:    "except carve-out",
+			cfg:     bob + twoServers + "access:\n  - {user: bob, servers: [\"*\"], except: [db-1]}\n",
+			found:   map[string]string{"db-1": k4},
+			message: "except: list",
+			want:    Warning{Kind: WarnExceptSkipped, Server: "db-1", Fingerprint: fp4, User: "bob"},
+		},
+		{
+			name: "revoked access",
+			cfg: bob + twoServers + "access:\n  - {user: bob, servers: [web-1]}\n" +
+				"revoked:\n  - {user: bob, servers: [db-1], date: 2026-11-08}\n",
+			found:   map[string]string{"db-1": k4},
+			message: "access was revoked",
+			want:    Warning{Kind: WarnRevokedAccessSkipped, Server: "db-1", Fingerprint: fp4, User: "bob", Date: "2026-11-08"},
+		},
+		{
+			name:    "copies differ",
+			cfg:     "servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: web-2, host: 10.0.0.2, user: deploy}\n",
+			found:   map[string]string{"web-1": k7, "web-2": "no-pty " + k7},
+			message: "differs",
+			want:    Warning{Kind: WarnKeyDiffers, Server: "web-2", Fingerprint: fp7},
+		},
+		{
+			name:    "comment dropped",
+			cfg:     oneServer,
+			found:   map[string]string{"web-1": k7 + " alice\tlaptop"},
+			message: "adopted without its comment",
+			want:    Warning{Kind: WarnCommentDropped, Server: "web-1", Fingerprint: fp7},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := parseConfig(t, tt.cfg)
+			read := make(map[string]fleet.ReadResult, len(tt.found))
+			for server, line := range tt.found {
+				read[server] = fleet.ReadResult{Content: []byte(line + "\n")}
+			}
+			p := Build(cfg, runAudit(t, cfg, &fakeReader{byName: read}))
+			if len(p.Warnings) != 1 {
+				t.Fatalf("Warnings = %q, want one", p.Warnings)
+			}
+			got := p.Warnings[0]
+			if !strings.Contains(got.Message, tt.message) {
+				t.Errorf("Message = %q, want it to contain %q", got.Message, tt.message)
+			}
+			got.Message = ""
+			if got != tt.want {
+				t.Errorf("Warning = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildCarriesReportFacts: --json names a new user's key without parsing
+// its line again, and tells a transport failure from a line adopt could not
+// use.
+func TestBuildCarriesReportFacts(t *testing.T) {
+	cfg := testCfg(t)
+	k7 := testkeys.Line(t, 7)
+	r := &fakeReader{
+		byName: map[string]fleet.ReadResult{
+			"web-1": {Content: []byte(k7 + "\n")},
+			"web-2": {Content: []byte("ssh-ed25519 !!!notbase64 broken\n")},
+		},
+		errs: map[string]error{"db-1": &hintedErr{kind: fleet.ErrorKindDial, hint: testDialHint, err: errors.New("connection refused")}},
+	}
+	p := Build(cfg, runAudit(t, cfg, r))
+	if len(p.NewUsers) != 1 || p.NewUsers[0].Fingerprint != keyFP(t, k7) || p.NewUsers[0].Type != "ssh-ed25519" {
+		t.Errorf("NewUsers = %+v, want the key's fingerprint and type", p.NewUsers)
+	}
+	kinds := map[string]fleet.ErrorKind{}
+	for _, is := range p.Issues {
+		kinds[is.Server] = is.Kind
+	}
+	if kinds["db-1"] != fleet.ErrorKindDial {
+		t.Errorf("db-1 kind = %q, want dial", kinds["db-1"])
+	}
+	if got, ok := kinds["web-2"]; !ok || got != "" {
+		t.Errorf("web-2 kind = %q (present %v), want an issue with no kind", got, ok)
+	}
 }

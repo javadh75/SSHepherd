@@ -13,14 +13,17 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/naming"
 )
 
 // NewUser is one unknown key adopted into a generated user.
 type NewUser struct {
-	Name    string
-	Line    string   // authorized_keys line as found (minus an unsafe comment); first line sshd honors wins
-	FoundOn []string // sorted names of servers where the key was found
+	Name        string
+	Line        string   // authorized_keys line as found (minus an unsafe comment); first line sshd honors wins
+	Fingerprint string   // the key's SHA256 fingerprint
+	Type        string   // the key's algorithm, e.g. "ssh-ed25519"
+	FoundOn     []string // sorted names of servers where the key was found
 }
 
 // Extension grants an existing user the servers their key was found on
@@ -43,6 +46,32 @@ type Issue struct {
 	Server string
 	Detail string
 	Hint   string
+	// Kind classifies a transport failure; "" for a line-level issue on a
+	// server that was read.
+	Kind fleet.ErrorKind
+}
+
+// The Warning kinds adopt assigns. Consumers ignore kinds they do not know.
+const (
+	WarnRevokedKeySkipped    = "revoked_key_skipped"
+	WarnRevokedAccessSkipped = "revoked_access_skipped"
+	WarnExceptSkipped        = "except_skipped"
+	WarnKeyDiffers           = "key_differs"
+	WarnCommentDropped       = "comment_dropped"
+	WarnWeakKeySkipped       = "weak_key_skipped"
+)
+
+// Warning is one finding for the operator. Message is the stderr text; the
+// other fields are the structured form --json carries, omitted when they do
+// not apply. User is the tombstone's label on a revoked key and the owner
+// otherwise.
+type Warning struct {
+	Kind        string `json:"kind"`
+	Server      string `json:"server,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	User        string `json:"user,omitempty"`
+	Date        string `json:"date,omitempty"`
+	Message     string `json:"message"`
 }
 
 // Plan is everything adopt would add to the manifest, plus warnings for the
@@ -50,7 +79,7 @@ type Issue struct {
 type Plan struct {
 	NewUsers   []NewUser
 	Extensions []Extension
-	Warnings   []string
+	Warnings   []Warning
 	Issues     []Issue
 }
 
@@ -58,6 +87,7 @@ type Plan struct {
 type pending struct {
 	line    string
 	comment string
+	keyType string
 	foundOn []string
 }
 
@@ -72,7 +102,7 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 	extByUser := make(map[string]map[string]bool)
 	for _, r := range results {
 		if r.Err != nil {
-			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: r.Err.Error(), Hint: audit.CleanHint(r.Err)})
+			p.Issues = append(p.Issues, Issue{Server: r.Server.Name, Detail: r.Err.Error(), Hint: audit.CleanHint(r.Err), Kind: fleet.ErrorKindOf(r.Err)})
 			continue
 		}
 		for _, pe := range r.ParseErrs {
@@ -113,9 +143,9 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 			}
 			if pd, seen := byFP[k.Fingerprint]; seen {
 				if pd.line != k.Raw && pd.line != stripComment(k) {
-					p.Warnings = append(p.Warnings, fmt.Sprintf(
-						"key %s on %s differs from the copy first seen on %s (options/comment); keeping the first",
-						k.Fingerprint, r.Server.Name, pd.foundOn[0]))
+					p.Warnings = append(p.Warnings, Warning{Kind: WarnKeyDiffers, Server: r.Server.Name, Fingerprint: k.Fingerprint,
+						Message: fmt.Sprintf("key %s on %s differs from the copy first seen on %s (options/comment); keeping the first",
+							k.Fingerprint, r.Server.Name, pd.foundOn[0])})
 				}
 				pd.foundOn = append(pd.foundOn, r.Server.Name)
 				continue
@@ -129,7 +159,7 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 					Detail: fmt.Sprintf("key %s: this line logs in, but the manifest cannot hold it: %v — not adopted", k.Fingerprint, err)})
 				continue
 			}
-			byFP[k.Fingerprint] = &pending{line: k.Raw, comment: k.Comment, foundOn: []string{r.Server.Name}}
+			byFP[k.Fingerprint] = &pending{line: k.Raw, comment: k.Comment, keyType: k.Type, foundOn: []string{r.Server.Name}}
 			order = append(order, k.Fingerprint)
 			if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
 				// The manifest rejects such an inline comment, so one odd
@@ -137,9 +167,9 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 				// The key is what grants access; adopt it without the
 				// comment.
 				byFP[k.Fingerprint].line = stripComment(k)
-				p.Warnings = append(p.Warnings, fmt.Sprintf(
-					"key %s on %s: comment %s — adopted without its comment",
-					k.Fingerprint, r.Server.Name, issue))
+				p.Warnings = append(p.Warnings, Warning{Kind: WarnCommentDropped, Server: r.Server.Name, Fingerprint: k.Fingerprint,
+					Message: fmt.Sprintf("key %s on %s: comment %s — adopted without its comment",
+						k.Fingerprint, r.Server.Name, issue)})
 			}
 		}
 	}
@@ -151,39 +181,43 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 // skipKey reports a key adopt never takes: one the manifest's revoked: list
 // remembers (first, so a key that is both warns only as REVOKED), or a weak
 // one (emitting it would produce a manifest with a policy conflict).
-func skipKey(cfg *config.Config, server string, k authkeys.Key) (string, bool) {
+func skipKey(cfg *config.Config, server string, k authkeys.Key) (Warning, bool) {
 	if w, revoked := revokedWarning(cfg, server, k.Fingerprint); revoked {
 		return w, true
 	}
 	if k.Weak != "" {
-		return fmt.Sprintf("key %s on %s: %s key not adopted", k.Fingerprint, server, k.Weak), true
+		return Warning{Kind: WarnWeakKeySkipped, Server: server, Fingerprint: k.Fingerprint,
+			Message: fmt.Sprintf("key %s on %s: %s key not adopted", k.Fingerprint, server, k.Weak)}, true
 	}
-	return "", false
+	return Warning{}, false
 }
 
 // revokedWarning reports a key the manifest's revoked: list remembers.
-func revokedWarning(cfg *config.Config, server, fp string) (string, bool) {
+func revokedWarning(cfg *config.Config, server, fp string) (Warning, bool) {
 	t, ok := cfg.Revoked(fp)
 	if !ok {
-		return "", false
+		return Warning{}, false
 	}
-	return fmt.Sprintf("key %s on %s is REVOKED (%s) — not adopted; run 'sshepherd apply --server %s' to remove it",
-		fp, server, t.Label(), server), true
+	return Warning{Kind: WarnRevokedKeySkipped, Server: server, Fingerprint: fp, User: t.User, Date: t.Date,
+		Message: fmt.Sprintf("key %s on %s is REVOKED (%s) — not adopted; run 'sshepherd apply --server %s' to remove it",
+			fp, server, t.Label(), server)}, true
 }
 
 // ownerSkip reports why a known owner's key found on server is not an
 // access extension: their except: list excludes the server, or an access
 // tombstone removed it (D1a). Either way audit flags the key as drift.
-func ownerSkip(cfg *config.Config, owner, server, fp string) (string, bool) {
+func ownerSkip(cfg *config.Config, owner, server, fp string) (Warning, bool) {
 	if cfg.ExceptCarveOut(owner, server) {
-		return fmt.Sprintf("key %s of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
-			fp, owner, server), true
+		return Warning{Kind: WarnExceptSkipped, Server: server, Fingerprint: fp, User: owner,
+			Message: fmt.Sprintf("key %s of %q found on %q, which their except: list deliberately excludes — not re-granted; audit flags this drift",
+				fp, owner, server)}, true
 	}
 	if t, ok := cfg.AccessRevoked(owner, server); ok {
-		return fmt.Sprintf("key %s of %q found on %q, whose access was revoked (%s) — not re-granted; audit flags this drift",
-			fp, owner, server, t.Date), true
+		return Warning{Kind: WarnRevokedAccessSkipped, Server: server, Fingerprint: fp, User: owner, Date: t.Date,
+			Message: fmt.Sprintf("key %s of %q found on %q, whose access was revoked (%s) — not re-granted; audit flags this drift",
+				fp, owner, server, t.Date)}, true
 	}
-	return "", false
+	return Warning{}, false
 }
 
 // linesByFingerprint indexes every parsed line of a server's file by
@@ -289,7 +323,7 @@ func nameUsers(cfg *config.Config, byFP map[string]*pending, order []string) []N
 			name = naming.ClaimNumbered(taken, "adopted-key-")
 		}
 		sort.Strings(pd.foundOn)
-		users = append(users, NewUser{Name: name, Line: pd.line, FoundOn: pd.foundOn})
+		users = append(users, NewUser{Name: name, Line: pd.line, Fingerprint: fp, Type: pd.keyType, FoundOn: pd.foundOn})
 	}
 	return users
 }

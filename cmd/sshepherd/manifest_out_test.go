@@ -103,7 +103,7 @@ func TestPublishManifestRoutes(t *testing.T) {
 				t.Fatal(err)
 			}
 			out := tt.out(t, src)
-			err = publishManifest(m, out, []byte(tt.data), tt.force)
+			_, err = publishManifest(m, out, []byte(tt.data), tt.force)
 			switch {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("publishManifest = %v, want nil", err)
@@ -114,5 +114,35 @@ func TestPublishManifestRoutes(t *testing.T) {
 				tt.check(t, out, before)
 			}
 		})
+	}
+}
+
+// TestPlaceManifest: no -o puts the bytes in the document; -o reports
+// whether the file changed, which an identical in-place update did not.
+func TestPlaceManifest(t *testing.T) {
+	data := []byte("users: []\n")
+	src := filepath.Join(t.TempDir(), "m.yaml")
+	if err := os.WriteFile(src, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := readManifest(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := placeManifest(m, "", data, false)
+	if err != nil || got.Output != nil || got.Manifest == nil || *got.Manifest != string(data) {
+		t.Errorf("no -o: placement = %+v, err = %v", got, err)
+	}
+	dst := filepath.Join(t.TempDir(), "new.yaml")
+	got, err = placeManifest(m, dst, data, false)
+	if err != nil || got.Manifest != nil || got.Output == nil || got.Output.Path != dst || !got.Output.Written {
+		t.Errorf("new file: placement = %+v, err = %v", got, err)
+	}
+	got, err = placeManifest(m, src, data, true)
+	if err != nil || got.Output == nil || got.Output.Written {
+		t.Errorf("identical in-place update: placement = %+v, err = %v, want written false", got, err)
+	}
+	if _, err = placeManifest(m, dst, data, false); err == nil {
+		t.Error("an existing -o without --force was accepted")
 	}
 }
