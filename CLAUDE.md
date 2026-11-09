@@ -250,7 +250,7 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   --security-opt no-new-privileges`.
 - **Pins**: every container image is pinned by digest in a Dockerfile (the release image in
   `Dockerfile`, the scanners and sshd test images in `ci/images/`); Dependabot's docker
-  ecosystem covers `directories: ["/", "/ci/images"]` (the sshd test images: alpine 3.24.2,
+  ecosystem covers `directories: ["/", "/ci/images"]` (the sshd test images: alpine 3.24.3,
   debian 13.6-slim, rocky 10.2). Go tools are pinned in the Makefile and bumped by hand.
 - **Multi-arch**: build `linux/amd64` + `linux/arm64` once with `docker buildx`; gate each variant
   with `scripts/docker-gates.sh --platform OS/ARCH`.
