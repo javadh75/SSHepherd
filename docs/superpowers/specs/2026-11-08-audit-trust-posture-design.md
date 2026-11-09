@@ -4,6 +4,7 @@
 - **Status:** Approved (owner, 2026-11-08). Owner decisions D14–D19 were answered on
   2026-11-07 and OP1–OP6 on 2026-11-08; the spec-author defaults D14a–c and D17a–b
   stand. Implementation is W5+ (**P09-impl**), after P14 (W3, landed).
+  Implementation landed in W6.
 - **Findings:** SEC-1, COR-5, COR-6, SEC-5 (LOW) and PRD-9, PRD-10 (MEDIUM) from the
   2026-11-07 whole-repo review.
 - **Plan:** package P09 of `docs/superpowers/plans/2026-11-07-review-remediation.md`
@@ -362,7 +363,9 @@ README says so in the drift-class text.
   `ErrorKindHostKeyTypeChanged = "host_key_type_changed"` lives in
   `internal/fleet/errors.go`. apply/adopt/revoke/rotate report the new `error_kind` in
   their own output; their exit codes follow the shared D28 table (P04 section 8), which
-  this spec does not change for those commands.
+  this spec does not change for those commands; P08's D10b later added
+  `host_key_type_changed` to exit 2 at the post-write login check, through
+  `fleet.HostKeyAlert`.
 
 ### 4. Key offering (D17, D17a, D17b, OP6)
 
@@ -460,7 +463,8 @@ README says so in the drift-class text.
     `refusing to write the manifest — it would add a weak key: <conflict message>`.
     The revoked kinds keep P04's rule (see "Interactions with P04").
   - **`validate`** (D25, when it lands) exits 3 on a `weak_key` conflict, as on any
-    conflict, and 0 for an ungranted weak key (a warning).
+    conflict, and 0 for an ungranted weak key (a warning) (built with D25; plan
+    decision 14).
 - **Expired keys.** A desired key whose `expiry-time` has passed is a load
   **warning** only (`config.Warnings`, printed by `logManifest`):
   `user "alice" key 1: expiry-time="20200101" has passed; sshd no longer accepts this key`.
@@ -771,7 +775,9 @@ with these additions and corrections from this spec:
   `host_key_alerts` 1, EXPIRED/WEAK annotations without exit change, no WEAK on a
   `REVOKED` row, `critical_reasons` ordering with all six values and absent on
   non-critical servers; goldens `report_posture`, `report_operator_certonly`,
-  `report_key_issues`, `report_error_kinds` (text and JSON), read back by eye.
+  `report_key_issues`, `report_host_key_type_changed` (text and JSON),
+  `report_operator_expired`, read back by eye; `report_error_kinds` stays
+  byte-identical.
 - **B2 (config, apply, adopt, import):** granted DSA user → loads, `Conflicts()` holds
   the message and exit 2; ungranted DSA user → warning, no conflict, exit unchanged;
   apply refuses that server; `TestWeakKeyRemovalOnlyWriteProceeds` and
@@ -783,7 +789,9 @@ with these additions and corrections from this spec:
   `import --operator` with a weak key exits 3; `Survivors` unchanged.
 - **B3 (cmd):** `--offer-all-keys` on all five help goldens; `rotate` replaces a DSA
   key and saves while `apply` on the original refuses that server (exit 1).
-- **E2E:** chmod 0775 on `~/.ssh` in a container → `audit` exits 1 with
+- **E2E:** a 0775 directory above an `authorized_keys_file` override (`~/loose`) in a
+  container, because sshd's StrictModes would lock out a login through a 0775
+  `~/.ssh` → `audit` exits 1 with
   `group_writable`, `apply` refuses with 48, fix the mode → `audit` exits 0.
 
 Acceptance: `GOTOOLCHAIN=go1.27.3 make check` and `make integration` pass; the README
@@ -804,5 +812,5 @@ real run and the hostile-output parsing of `FinishPosture`.
   spec.
 - Restricting `HostKeyAlgorithms` to recorded types (D16 option 2, rejected).
 - Changing apply/revoke/rotate exit codes for host-key kinds (the D28 table owns
-  them).
+  them) (apart from D10b above).
 - Bastions/ProxyJump (D23, P10) and the operator scope split `protected:` (D21, P10).

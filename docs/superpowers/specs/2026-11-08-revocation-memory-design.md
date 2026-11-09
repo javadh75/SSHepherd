@@ -268,6 +268,8 @@ How each command treats conflicts:
 - D4b's serial-only save (section 6) is exempt: it changes nothing but `serial:`,
   and the conflicting servers are refused anyway.
 
+See `2026-11-08-audit-trust-posture-design.md` for the `weak_key` conflict kind and its save rule: a save is refused only when it adds a weak key.
+
 ### 3. The managed header carries the serial (D4, D4c)
 
 - **Render.** `authkeys.Render(entries, serial uint64)`.

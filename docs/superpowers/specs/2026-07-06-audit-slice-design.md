@@ -362,6 +362,9 @@ path (`internal/audit/bench_test.go`):
 
 The default lives in one place (`defaultParallel`, `cmd/sshepherd/audit.go`)
 and is shared by `audit` and `adopt`; the future `apply` should reuse it.
+
+P09 replaced the authorized_keys2 probe with the posture session, so a read stays at two sessions on every path; `make bench` confirms `--parallel 32` is unchanged.
+
 - Per-server `authorized_keys` path override (for custom `AuthorizedKeysFile`
   setups) — the natural fix when the file-absent diagnostic fires; and whether
   `AuthorizedKeysCommand`/CA-cert fleets are ever in scope at all.

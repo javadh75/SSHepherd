@@ -161,3 +161,5 @@ are always present.
 - 2026-07-06 audit spec: mark the two open questions settled (pointer here).
 - 2026-07-10 operator spec: annotate the "Critical severity: render-only"
   decision row as superseded by this spec.
+
+Additive to schema 1 (P09): server `posture`, `critical_reasons`; key `cannot_log_in`, `key_issues`; `operator: true` on a present key that is critical; `error_kind: host_key_type_changed`; `policy_conflicts`/`summary.policy_conflicts` carry `kind: "weak_key"`.

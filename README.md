@@ -6,9 +6,10 @@
 **Manage SSH `authorized_keys` across a fleet of servers from a single source of truth.**
 
 Declare who should have access to which machines in one YAML manifest. SSHepherd
-reads every server, tells you exactly how reality differs from the manifest, and
-converges the fleet — adding keys, revoking keys, and rotating credentials without
-hand-editing `authorized_keys` or losing track of who can log in where.
+reads every managed `authorized_keys` file, tells you exactly how each differs from
+the manifest, and converges the fleet — adding keys, revoking keys, and rotating
+credentials without hand-editing `authorized_keys` or losing track of who can log in
+where.
 
 ```console
 $ sshepherd audit
@@ -70,6 +71,8 @@ Revocation memory: `revoked:` tombstones and a manifest `serial:`; revoke/rotate
 and bump them, apply refuses a server written by a newer manifest unless the write only
 removes keys, audit pages on a revoked key still installed, adopt and `import --merge`
 never bring one back, `revoke --sweep` checks the rest of the fleet.
+
+Audit trust and posture: audit checks the managed file and its directories the way StrictModes does, and pages on a world-writable path, an operator key that cannot log in, a host key whose type changed, and a weak key granted on a server. Each server is offered only its granted keys (`--offer-all-keys` restores the old offer).
 
 ## Install
 
@@ -148,6 +151,10 @@ SSHepherd deliberately has a narrow, strict connection posture:
   Accounts that cannot run that command are not supported: a restricted shell
   (`rbash` forbids `/` in command names), or a `ForceCommand`/`command=` wrapper that
   only allows specific commands.
+- **For every read (`audit`, `adopt`, and the plan of `apply`, `revoke` and `rotate`):**
+  `id`, `ls` and `dirname` under `/bin/sh` on each server, for the posture probe. A
+  server where the probe fails is reported unreachable (`error_kind: remote`, exit `1`),
+  never graded clean.
 
 ## Quick start
 
@@ -546,6 +553,30 @@ web-1 (deploy@10.0.0.1:22)
 Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2
 ```
 
+An operator key whose only line is `cert-authority`, which the manifest does not declare:
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ‼  op (op@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present but CANNOT LOG IN (CRITICAL: operator key; server line is cert-only)
+  ✓  alice              SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  → 2 authorized · 2 present · 0 missing · 0 unauthorized
+
+Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2
+```
+
+A passed `expiry-time` on an operator's line, and weak keys annotated on their rows:
+
+```console
+web-1 (deploy@10.0.0.1:22)
+  ‼  op (op@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present but CANNOT LOG IN (CRITICAL: operator key; server line expired 2026-01-01)
+  ✓  alice              SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  present & authorized
+  ⚠  (unknown)          SHA256:S7W0wWKoAYK3zmBPSPe/2zvxl1kZKp9tk2LXlXIliMU  ssh-dss      installed but UNAUTHORIZED · WEAK (dsa)
+  ⚠  (unknown)          SHA256:cqcZ3vi/yOOaDFNtRYf6/1lahzlffXDFaze4HmSibwQ  ssh-rsa      installed but UNAUTHORIZED · WEAK (rsa 1024)
+  → 2 authorized · 2 present · 0 missing · 2 unauthorized
+
+Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2
+```
+
 Comment drift (`--comments`) stays cosmetic and never affects the exit code.
 
 A key the manifest does not own shows as `(unknown)` with its on-server comment
@@ -628,6 +659,19 @@ web-1 (deploy@10.0.0.1:22)  ERROR [host_key_changed]: ssh deploy@10.0.0.1:22: pr
 web-2 (deploy@10.0.0.2:22)  ERROR [auth]: ssh deploy@10.0.0.2:22: ssh: unable to authenticate
 
 Summary: 0/2 servers compliant · 0 with drift (0 critical) · 2 unreachable (1 HOST KEY ALERT)  → exit 2
+```
+
+A host key type that changed:
+
+```console
+web-1 (deploy@10.0.0.1:22)  ERROR [host_key_type_changed]: ssh deploy@10.0.0.1:22: presented ecdsa-sha2-nistp256 key SHA256:abc: knownhosts: key mismatch
+  hint: HOST KEY TYPE CHANGED for 10.0.0.1:22 — the server no longer presents any recorded key type (recorded: ssh-ed25519); possible impersonation
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  alice (alice@sshepherd)  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 1/2 servers compliant · 0 with drift (0 critical) · 1 unreachable (1 HOST KEY ALERT)  → exit 2
 ```
 
 For an unknown host or a changed or unrecorded key type, the hint asks you to verify the
@@ -894,6 +938,40 @@ The trust posture adds these, also present only when they apply:
               "expired"
             ]
           }
+```
+
+```json
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "operator": true,
+            "options_drift": {
+              "actual": [
+                "cert-authority"
+              ],
+              "desired": []
+            },
+            "cannot_log_in": "cert_only"
+          }
+```
+
+```json
+          {
+            "owner": null,
+            "fingerprint": "SHA256:S7W0wWKoAYK3zmBPSPe/2zvxl1kZKp9tk2LXlXIliMU",
+            "type": "ssh-dss",
+            "key_issues": [
+              "dsa"
+            ]
+          }
+```
+
+```json
+      "status": "unreachable",
+      "error": "ssh deploy@10.0.0.1:22: presented ecdsa-sha2-nistp256 key SHA256:abc: knownhosts: key mismatch",
+      "error_kind": "host_key_type_changed",
+      "hint": "HOST KEY TYPE CHANGED for 10.0.0.1:22 — the server no longer presents any recorded key type (recorded: ssh-ed25519); possible impersonation",
 ```
 
 See `internal/audit/testdata/*.golden.json` for every shape.
@@ -2115,7 +2193,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`) | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator key or an operator key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: the restore after a rejected login check failed, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
@@ -2355,16 +2433,15 @@ the probe just like a refused login. The check is sorted by how far it got. A lo
 tuned from the fan-out benchmarks). `known_hosts` is parsed once per run. Host-key
 algorithms are negotiated in the order `known_hosts` implies, so a host with an sshd
 `HostCertificate` still works when its plain key is pinned; certificate algorithms
-are offered only when a matching `@cert-authority` line exists. A host that no longer
-presents any recorded key type fails as `host_key_type_changed` (exit `2`). Only the
-keys granted on the server are offered (see [Key offering](#key-offering)), which
+are offered only when a matching `@cert-authority` line exists.
+A server presenting a different host key type than `known_hosts` records, or a certificate no `@cert-authority` line for this host vouches for, is an impersonation alarm (`host_key_type_changed`, exit `2`). Each server is offered only the keys the manifest grants there (`--offer-all-keys` turns the filter off; see [Key offering](#key-offering)), which
 also avoids sshd `MaxAuthTries` lockouts with many held keys,
 in one order shared by audit, adopt, apply and the post-write probe: plain lines
 first, then lines that may reject the login (`from=`, `expiry-time=`, `restrict`),
 then forced `command=` lines, then certificate-only lines (`cert-authority`,
 `principals=`); manifest order (operators first, then grant order) within each group.
 A session therefore authenticates with an unrestricted key whenever one is held, so
-a key that gains a forced `command=` cannot capture later runs. Remote commands always run under `/bin/sh`.
+a key that gains a forced `command=` cannot capture later runs. Remote commands always run under `/bin/sh`. Audit's posture check mirrors StrictModes.
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.

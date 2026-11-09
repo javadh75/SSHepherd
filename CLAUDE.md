@@ -444,35 +444,19 @@ W5 follow-up: all 178 write-failure mutants were run (177 killed, one equivalent
 the dangling-symlink keys2 name, the keys2 fallback refusal, anchored keys2 and lock parsing, the
 MaxAuthTries signal on a canceled dial, the lockout messages and the serial-bump oversize check's
 scope.
-The audit trust posture spec (P09: posture probe, operator cannot-log-in critical
-tier, `host_key_type_changed`, granted-only key offering with `--offer-all-keys`,
-built-in weak/expired key rules via D29; specced in
+**Audit trust and connection posture** (P09, specced in
 `docs/superpowers/specs/2026-11-08-audit-trust-posture-design.md`, planned in
-`docs/superpowers/plans/2026-11-08-audit-trust-posture.md`) is approved with D14–D19 and
-its open points answered; implementation is W6, after P08. Landed so far: every read
-runs a fail-closed posture probe in its own session in place of the keys2 probe, still
-two sessions per read (`sshconn.PostureCmdFor`/`FinishPosture`, sharing `AncestorWalk`
-with the write scripts, now pinned by `scripts_golden_test.go`); `ReadResult.Posture`
-carries the findings. Audit grades them: a symlink, group-writable or foreign-owned path
-is drift (exit 1) and a world-writable path critical (exit 2), a present operator key on no
-line sshd honours is critical (`cert_only`, `expired`, `ignored`, checked over every line),
-rows carry ` · WEAK`/` · EXPIRED` annotations that never change the exit code, and JSON (still
-schema 1) gains `posture`, `critical_reasons`, `cannot_log_in` and `key_issues`. DSA and RSA<2048 keys that render
-on a server are D29 policy conflicts (`config.WeakKeys`, kind `weak_key`): audit exits 2,
-apply refuses those servers (`ServerPlan.WeakRefused`, which never withholds a save)
-except a write that grants nothing and removes a key, a save is refused only when it adds
-one, adopt and import skip them and `import --operator` refuses one; a weak key granted
-nowhere and a passed desired `expiry-time` are load warnings. `host_key_type_changed`
-(exit 2 through `fleet.HostKeyAlert`, on audit and at the post-write login check) covers a host
-that lost every verifiable recorded type or presents a certificate from a signer no matching
-`@cert-authority` line vouches for; `host_key_type_unrecorded` remains only when every recorded
-type is unsupported. Each server is offered only the keys granted there (`sshconn.GrantIndex`,
-`orderSigners` returning `offering`, a certificate matching through its key or CA); holding none
-falls back to every held key with a warning, `--offer-all-keys` (audit, adopt, apply, revoke,
-rotate; carried in follow-up hints, refused with `--no-apply`) restores granted-first-then-the-rest,
-an `auth` failure with withheld keys hints the flag and never retries, and
-`fleetSession.warnNoGrantedKeys` warns once per run before the first read and drops the per-server
-line to debug. The access-model roadmap spec
+`docs/superpowers/plans/2026-11-08-audit-trust-posture.md`): every read runs a
+fail-closed posture probe in its own session (`sshconn.PostureCmdFor`, sharing
+`AncestorWalk` with the write scripts); audit grades group-writable, foreign-owned
+and symlinked paths as drift and world-writable as critical. Operator keys are
+graded over every line sshd honours (`cert_only`, `expired`, `ignored` are critical),
+`host_key_type_changed` exits 2, each server is offered only its granted keys
+(`--offer-all-keys`, one preflight warning, no automatic retry after an `auth`
+failure), and DSA/RSA<2048 keys are policy conflicts through D29 (the save rule
+refuses only a save that adds one; a removal-only write proceeds). `critical_reasons`
+lists all six classes. JSON stays schema 1.
+The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is a draft
 awaiting approval. Audit's claim is narrowed to
 the managed `authorized_keys` files (D18).
@@ -588,7 +572,7 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
-Fuzz oracles and corpus (P13, round 2): every one of the 21 `Fuzz*` targets has a
+Fuzz oracles and corpus (P13, round 2): every one of the 22 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on
