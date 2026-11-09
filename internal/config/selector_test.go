@@ -242,6 +242,24 @@ func TestTombstoneBlocksTagGrant(t *testing.T) {
 	}
 }
 
+// TestBlockedWarningNamesTheGrantingSelector: in a mixed list the warning names
+// the first selector that reaches the server, not a literal beside it.
+func TestBlockedWarningNamesTheGrantingSelector(t *testing.T) {
+	cfg := mustParse(t, tagFleet(t, "  - {user: bob, servers: [ci, \"@db\", \"@prod\"]}\n", memoryOnDB))
+	if !reflect.DeepEqual(cfg.Warnings, []string{blockedDB1}) {
+		t.Errorf("Warnings = %q\nwant %q", cfg.Warnings, blockedDB1)
+	}
+}
+
+// TestInvalidTagIsNotAlsoRepeated: a tag that fails the shape check is reported
+// once per occurrence and never as repeated.
+func TestInvalidTagIsNotAlsoRepeated(t *testing.T) {
+	_, err := Parse([]byte("users: []\nservers:\n  - {name: web-1, host: 10.0.1.1, user: deploy, tags: [Prod, Prod]}\n"))
+	if err == nil || strings.Count(err.Error(), `tag "Prod" is not valid`) != 2 || strings.Contains(err.Error(), "is repeated") {
+		t.Errorf("err = %v, want two shape errors and no repeat error", err)
+	}
+}
+
 func TestBlockedPairsPerEntryAndLatestTombstone(t *testing.T) {
 	cfg := mustParse(t, tagFleet(t, "  - {user: bob, servers: [\"@db\"]}\n  - {user: bob, servers: [\"@prod\"]}\n",
 		"revoked:\n  - {user: bob, servers: [db-1], date: 2026-01-01}\n  - {user: bob, servers: [db-1], date: 2026-11-08}\n"))
