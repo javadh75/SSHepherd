@@ -274,3 +274,35 @@ func TestFollowUpCarriesOfferAll(t *testing.T) {
 		t.Errorf("command = %q", got)
 	}
 }
+
+// TestPreflightScopedToAuditServer: the preflight asks about the servers this
+// run reads. The held key is granted only on web-2, so a run of the whole
+// fleet stays quiet and `audit --server web-1` warns.
+func TestPreflightScopedToAuditServer(t *testing.T) {
+	cfg, kh, _ := offerFleet(t, 9)
+	raw, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Replace(string(raw), "servers:\n", "  - {name: bob, keys: [\""+testkeys.Line(t, 1)+"\"]}\nservers:\n", 1) +
+		"  - {user: bob, servers: [web-2]}\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const warning = "none of the loaded keys is granted on any target server"
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("whole fleet: exit = %d, want 1, stderr: %s", code, errBuf.String())
+	}
+	if strings.Contains(errBuf.String(), warning) {
+		t.Errorf("whole fleet: unexpected preflight warning:\n%s", errBuf.String())
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"audit", "--config", cfg, "--known-hosts", kh, "--server", "web-1"}, &out, &errBuf); code != 1 {
+		t.Fatalf("--server: exit = %d, want 1, stderr: %s", code, errBuf.String())
+	}
+	if n := strings.Count(errBuf.String(), warning); n != 1 {
+		t.Errorf("--server web-1: preflight warning appeared %d times, want once:\n%s", n, errBuf.String())
+	}
+}

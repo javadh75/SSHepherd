@@ -548,3 +548,43 @@ func TestValidateOpensNoSocket(t *testing.T) {
 		t.Errorf("validate opened %d connections", n)
 	}
 }
+
+// TestValidateTextCounts: every count on the summary line is its own number.
+func TestValidateTextCounts(t *testing.T) {
+	path := writeConfig(t, "users:\n"+
+		"  - {name: alice, keys: [\""+testkeys.Line(t, 1)+"\"]}\n"+
+		"  - {name: bob, keys: [\""+testkeys.Line(t, 2)+"\"]}\n"+
+		"  - {name: carol, keys: [\""+testkeys.Line(t, 3)+"\"]}\n"+
+		"servers:\n  - {name: web-1, host: 10.0.1.5, user: deploy}\n  - {name: web-2, host: 10.0.1.6, user: deploy}\n"+
+		"access:\n  - {user: alice, servers: [web-1, web-2]}\n  - {user: bob, servers: [web-1]}\n  - {user: carol, servers: [web-1]}\n")
+	code, out, stderr := validateCLI(t, "--config", path, "--known-hosts", recordedKnownHosts(t, "10.0.1.5", "10.0.1.6"))
+	if code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+	}
+	if want := "manifest OK: 3 users, 2 servers, 4 grants (0 warnings)\n"; out != want {
+		t.Errorf("stdout = %q, want %q", out, want)
+	}
+}
+
+// TestValidateJSONSanitizesOwnWarnings: validate's own warnings quote the
+// --known-hosts path, and a control rune in it must not reach the document.
+func TestValidateJSONSanitizesOwnWarnings(t *testing.T) {
+	raw, err := os.ReadFile(recordedKnownHosts(t, "10.9.9.9"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kh := filepath.Join(t.TempDir(), "known\x1bhosts")
+	if err := os.WriteFile(kh, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, stderr := validateCLI(t, "--json", "--config", writeConfig(t, validateManifest(t)), "--known-hosts", kh)
+	if code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+	}
+	if !strings.Contains(out, "host_key_not_recorded") {
+		t.Fatalf("the warning under test is missing:\n%s", out)
+	}
+	if strings.ContainsRune(out, 0x1b) || strings.Contains(out, `\u001b`) {
+		t.Errorf("a control rune reached the document:\n%s", out)
+	}
+}
