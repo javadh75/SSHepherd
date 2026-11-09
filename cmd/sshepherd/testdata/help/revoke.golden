@@ -3,7 +3,7 @@ apply's pipeline, restricted to the servers whose rendered
 authorized_keys changes. 'revoke USER...' removes each user and every
 access entry naming them (offboarding); 'revoke --key KEY...' removes
 single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key
-line, or a .pub file path. 'revoke USER... --server NAME...' removes only
+line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only
 the users' access to those servers (a wildcard grant gains an except:
 entry); the users and their keys stay. Operator users (and their keys)
 need --operator. The plan is shown and confirmed once; the manifest is
@@ -32,7 +32,7 @@ Exit codes:
      save, or refused before anything was saved or written
 
 Usage:
-  sshepherd revoke {USER... [--server NAME...] | --key KEY...} [flags]
+  sshepherd revoke {USER... [--from-server NAME...] | --key KEY...} [flags]
 
 Examples:
   # Offboard a user everywhere
@@ -42,7 +42,7 @@ Examples:
   sshepherd revoke --key ~/alice-laptop.pub
 
   # Remove a user's access to one server only
-  sshepherd revoke alice --server db-1
+  sshepherd revoke alice --from-server db-1
 
   # Record the edit now, push it later
   sshepherd revoke alice --no-apply
@@ -50,6 +50,7 @@ Examples:
 Flags:
       --config string                   path to the manifest (default "sshepherd.yaml")
       --dry-run                         plan and report only; never write
+      --from-server NAME                remove the users' access to server NAME only (repeatable); the users and their keys stay
   -h, --help                            help for revoke
       --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
       --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
@@ -62,7 +63,6 @@ Flags:
       --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
       --parallel int                    max concurrent server connections (default 32)
       --reason string                   free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)
-      --server stringArray              remove the users' access to this server only (repeatable); the users and their keys stay
       --sweep                           after the writes, read every other server and report any that still has a key this run revoked (read-only; exit 2 when one is found; skipped with --dry-run and --no-apply)
       --yes                             skip the confirmation prompt (automation)
 

@@ -820,7 +820,7 @@ func TestRevokeUsage(t *testing.T) {
 		{"users and --key", []string{"revoke", "bob", "--key", fpOf(t, 2)}, cfgBody, "users or --key, not both"},
 		{"user that looks like a key", []string{"revoke", fpOf(t, 2)}, cfgBody, "looks like a key — did you mean --key?"},
 		{"unknown option word", []string{"revoke", "tunnel"}, cfgBody, "tunnel looks like a key — did you mean --key?"},
-		{"unknown option word with --server", []string{"revoke", "tunnel", "--server", "web-1"}, cfgBody, "tunnel looks like a key — did you mean --key?"},
+		{"unknown option word with --from-server", []string{"revoke", "tunnel", "--from-server", "web-1"}, cfgBody, "tunnel looks like a key — did you mean --key?"},
 		{"--dry-run with --yes", []string{"revoke", "bob", "--dry-run", "--yes"}, cfgBody, "dry-run"},
 		{"--no-apply with --identity", []string{"revoke", "bob", "--no-apply", "--identity", "/k/id"}, cfgBody, "--no-apply contacts no server, so --identity would be unused"},
 		{"--no-apply with --known-hosts", []string{"revoke", "bob", "--no-apply", "--known-hosts", "/x"}, cfgBody, "--known-hosts would be unused"},

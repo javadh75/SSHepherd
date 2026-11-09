@@ -62,7 +62,7 @@ rotate → audit**.
 | `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
 | `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported) |
 | `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe (text + `--json`) |
-| `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, take away one server (`--server`), drop a lost key, swap a key in place or overlap old and new (`--keep-old`) (text + `--json`) |
+| `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, take away one server (`--from-server`), drop a lost key, swap a key in place or overlap old and new (`--keep-old`) (text + `--json`) |
 
 `audit`, `adopt`, `apply`, `revoke` and `rotate` authenticate with the SSH agent,
 `--identity` key files, or both — so they also run headless in CI, cron and containers (see
@@ -1559,7 +1559,7 @@ write → verify → login probe), restricted to the servers whose rendered
 
 ```console
 $ sshepherd revoke alice                       # offboard: alice and every access entry naming her
-$ sshepherd revoke bob --server db-1           # bob loses db-1 only; his keys and other grants stay
+$ sshepherd revoke bob --from-server db-1      # bob loses db-1 only; his keys and other grants stay
 $ sshepherd revoke --key ~/lost-laptop.pub     # one key: a fingerprint, a key line, or a .pub path
 $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 ```
@@ -1567,7 +1567,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | Flag | Default | Description |
 | ---- | ------- | ----------- |
 | `--key KEY` | none | Key to revoke: a `SHA256:` fingerprint, a public-key line, or a `.pub` file path (repeatable) |
-| `--server` | none | Remove the users' access to this server only (repeatable); the users and their keys stay |
+| `--from-server NAME` | none | Remove the users' access to this server only (repeatable); the users and their keys stay |
 | `--operator` | off | Confirm that a target is, or belongs to, an operator user (fleet-wide, protected) |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--reason` | none | Free text recorded with each `revoked:` entry this run adds (printed by every tool; at most 256 bytes) |
@@ -1607,7 +1607,7 @@ instead of failing; repeating it prints
 
 **Revocation memory.** Every revoke that saves records what it removed in `revoked:` —
 `revoke USER` one key entry per key, `revoke --key` one per key (labelled with its
-owner), `revoke USER --server NAME` one access entry naming the servers removed from
+owner), `revoke USER --from-server NAME` one access entry naming the servers removed from
 an explicit list (a wildcard's new `except:` already remembers its server) — and bumps
 `serial:` once. `revoke` refuses to save a manifest that would keep a policy conflict,
 exit `3`, nothing saved —
@@ -1616,10 +1616,10 @@ exit `3`, nothing saved —
 
 A save that would **add** a weak key (DSA, or RSA under 2048 bits) is refused, exit `3`, with nothing saved or written. Any other save goes through while the manifest still holds a weak key: an unrelated edit is never blocked, and a weak key's own `rotate` or `revoke --key` always saves. A server that still grants a weak key after the edit is refused in the push (exit `1`), and the edit is saved anyway.
 
-**One server, not the whole user (`--server`).** `revoke USER... --server NAME...`
+**One server, not the whole user (`--from-server`).** `revoke USER... --from-server NAME...`
 takes the named servers away from each user and changes nothing else — the user
 entry, its keys and its other grants stay. (Unlike `apply --server`, which only
-restricts which servers a run touches, `revoke --server` edits the grants.) An
+restricts which servers a run touches, `revoke --from-server` edits the grants.) An
 explicit `servers:` list loses every occurrence of the server, and an entry left
 empty is deleted (its comment moves on, as for a removed user). A wildcard grant
 (`servers: ["*"]`) gets the server appended to `except:` — created right after
@@ -1627,13 +1627,13 @@ empty is deleted (its comment moves on, as for a removed user). A wildcard grant
 would then cover no current server is deleted, with a warning that later servers are
 no longer granted automatically. When a trim deletes a wildcard entry, every server its
 `except:` remembered also gets an access tombstone, because the deleted `except:` was the
-only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--server`
+only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--from-server`
 with `--key` (access is per user), with `--operator`, or on an operator user
-(operators have every server by definition), `--server '*'` (use `revoke USER`), an
+(operators have every server by definition), `--from-server '*'` (use `revoke USER`), an
 unknown server, and any user × server pair the user has no access to — every problem
 is listed in one message. Only the trimmed servers are contacted, and there is no
 `check every server:` line (no key is removed). The edit
-header says how many other servers each user keeps; `revoke USER` without `--server`
+header says how many other servers each user keeps; `revoke USER` without `--from-server`
 removes every grant.
 
 ```console
@@ -1904,8 +1904,8 @@ $ sshepherd audit
 **Recipe: take one server away.**
 
 ```console
-$ sshepherd revoke bob --server db-1 --dry-run
-$ sshepherd revoke bob --server db-1
+$ sshepherd revoke bob --from-server db-1 --dry-run
+$ sshepherd revoke bob --from-server db-1
 $ git commit -am "bob: no more db-1" && git push
 ```
 
@@ -2275,7 +2275,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`) | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator key or an operator key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 `--help` shows this summary. `audit --help`:
 
@@ -2713,7 +2713,7 @@ specced in
 [`docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md`](docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md);
 `revoke` and `rotate` in
 [`docs/superpowers/specs/2026-10-23-revoke-rotate-design.md`](docs/superpowers/specs/2026-10-23-revoke-rotate-design.md),
-and `revoke --server` / `rotate --keep-old` in
+and `revoke --from-server` / `rotate --keep-old` in
 [`docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`](docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md);
 revocation memory (tombstones, the manifest serial, the post-revoke sweep) in
 [`docs/superpowers/specs/2026-11-08-revocation-memory-design.md`](docs/superpowers/specs/2026-11-08-revocation-memory-design.md).

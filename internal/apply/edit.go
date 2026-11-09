@@ -16,7 +16,7 @@ const (
 	EditRemoveUser   EditKind = "remove-user"   // revoke USER
 	EditRemoveKey    EditKind = "remove-key"    // revoke --key
 	EditRotate       EditKind = "rotate"        // rotate USER --old --new
-	EditRemoveAccess EditKind = "remove-access" // revoke USER --server
+	EditRemoveAccess EditKind = "remove-access" // revoke USER --from-server
 	EditRecordKey    EditKind = "record-key"    // revoke --key of a key no user has (D1b): a tombstone, no server written
 )
 

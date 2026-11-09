@@ -16,21 +16,21 @@ func TestRevokeServerUsage(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	const (
 		both     = "revoke takes users or --key, not both"
-		perUser  = "access is granted per user, not per key — use 'sshepherd revoke USER --server NAME'"
-		operator = "--operator cannot be combined with --server: operators have access to every server by definition"
-		star     = "--server takes server names; to remove all of a user's access use 'sshepherd revoke USER'"
+		perUser  = "access is granted per user, not per key — use 'sshepherd revoke USER --from-server NAME'"
+		operator = "--operator cannot be combined with --from-server: operators have access to every server by definition"
+		star     = "--from-server takes server names; to remove all of a user's access use 'sshepherd revoke USER'"
 	)
 	for _, tt := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{"users, --key and --server", []string{"bob", "--key", fpOf(t, 2), "--server", "web-1"}, both},
-		{"--server with --key", []string{"--key", fpOf(t, 2), "--server", "web-1"}, perUser},
-		{"--server with --key, --operator and '*'", []string{"--key", fpOf(t, 2), "--server", "*", "--operator"}, perUser},
-		{"--server with --operator", []string{"bob", "--server", "web-1", "--operator"}, operator},
-		{"--server '*' with --operator", []string{"bob", "--server", "*", "--operator"}, operator},
-		{"--server '*'", []string{"bob", "--server", "web-1", "--server", "*"}, star},
+		{"users, --key and --from-server", []string{"bob", "--key", fpOf(t, 2), "--from-server", "web-1"}, both},
+		{"--from-server with --key", []string{"--key", fpOf(t, 2), "--from-server", "web-1"}, perUser},
+		{"--from-server with --key, --operator and '*'", []string{"--key", fpOf(t, 2), "--from-server", "*", "--operator"}, perUser},
+		{"--from-server with --operator", []string{"bob", "--from-server", "web-1", "--operator"}, operator},
+		{"--from-server '*' with --operator", []string{"bob", "--from-server", "*", "--operator"}, operator},
+		{"--from-server '*'", []string{"bob", "--from-server", "web-1", "--from-server", "*"}, star},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, errBuf bytes.Buffer
@@ -42,6 +42,24 @@ func TestRevokeServerUsage(t *testing.T) {
 				t.Errorf("stderr = %q, stdout = %q; want %q", errBuf.String(), out.String(), tt.want)
 			}
 		})
+	}
+}
+
+// TestRevokeOldServerFlagRemoved: D26 renamed revoke's --server to
+// --from-server with no alias, so the old spelling is an unknown flag
+// (exit 3) and nothing is printed on stdout. apply and audit keep --server:
+// there it restricts the run, here it edited the grants.
+func TestRevokeOldServerFlagRemoved(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "bob", "--server", "web-1", "--config", "/nonexistent.yaml"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3 (stderr: %s)", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "unknown flag: --server") {
+		t.Errorf("stderr = %q, want cobra's unknown-flag error", errBuf.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing", out.String())
 	}
 }
 
@@ -67,11 +85,11 @@ func TestRevokeServerRefusals(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"unknown server", []string{"bob", "--server", "db-9"}, `no server named "db-9" in the manifest`},
-		{"operator target, no gate", []string{"ops-bot", "--server", "web-1"}, opMsg},
-		{"every ungranted pair listed", []string{"alice", "bob", "--server", "web-1", "--server", "db-1"},
+		{"unknown server", []string{"bob", "--from-server", "db-9"}, `no server named "db-9" in the manifest`},
+		{"operator target, no gate", []string{"ops-bot", "--from-server", "web-1"}, opMsg},
+		{"every ungranted pair listed", []string{"alice", "bob", "--from-server", "web-1", "--from-server", "db-1"},
 			"alice has no access to db-1; bob has no access to db-1"},
-		{"all problems, in order", []string{"carol", "ops-bot", "alice", "--server", "db-9", "--server", "db-1"},
+		{"all problems, in order", []string{"carol", "ops-bot", "alice", "--from-server", "db-9", "--from-server", "db-1"},
 			`unknown user: carol; no server named "db-9" in the manifest; ` + opMsg + "; alice has no access to db-1"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,7 +104,7 @@ func TestRevokeServerRefusals(t *testing.T) {
 				t.Errorf("stderr = %q, want %q", errBuf.String(), want)
 			}
 			if strings.Contains(errBuf.String(), "pass --operator to confirm") {
-				t.Errorf("the --server path must not run the operator gate: %q", errBuf.String())
+				t.Errorf("the --from-server path must not run the operator gate: %q", errBuf.String())
 			}
 			if out.Len() != 0 || !bytes.Equal(fileBytes(t, cfg), before) {
 				t.Error("a refused trim printed or edited something")
@@ -95,7 +113,7 @@ func TestRevokeServerRefusals(t *testing.T) {
 	}
 }
 
-// TestRevokeServerPrintsKeptAccess: 'revoke alice --server web-1' says how
+// TestRevokeServerPrintsKeptAccess: 'revoke alice --from-server web-1' says how
 // much access alice keeps, so a "web-1 first" run cannot pass for an
 // offboarding (UX-7's minimal fix).
 func TestRevokeServerPrintsKeptAccess(t *testing.T) {
@@ -104,7 +122,7 @@ func TestRevokeServerPrintsKeptAccess(t *testing.T) {
 		"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: web-2, host: 10.0.0.2, user: deploy}\n  - {name: db-1, host: 10.0.0.3, user: deploy}\n"+
 		"access:\n  - {user: alice, servers: [web-1, web-2, db-1]}\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"revoke", "alice", "--server", "web-1", "--no-apply", "--dry-run", "--config", cfg}, &out, &errBuf); code != 0 {
+	if code := run([]string{"revoke", "alice", "--from-server", "web-1", "--no-apply", "--dry-run", "--config", cfg}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d\n%s", code, errBuf.String())
 	}
 	if want := "alice keeps access to 2 other servers"; !strings.Contains(out.String(), want) {
@@ -119,7 +137,7 @@ func TestRevokeServerPrintsKeptAccess(t *testing.T) {
 func TestRevokeServerHermetic(t *testing.T) {
 	hosts, kh, cfg := twoUserFleet(t)
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"revoke", "bob", "--server", "web-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+	if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
 	}
 	for _, want := range []string{
@@ -168,7 +186,7 @@ func TestRevokeServerWildcard(t *testing.T) {
 	t.Run("except created", func(t *testing.T) {
 		hosts, kh, cfg := setup(t, "  - user: bob\n    servers: [\"*\"]\n")
 		var out, errBuf bytes.Buffer
-		if code := run([]string{"revoke", "bob", "--server", "web-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
 			t.Fatalf("exit = %d\n%s\n%s", code, out.String(), errBuf.String())
 		}
 		if want := "manifest edit: remove bob's access to web-1 (1 access entry changed, 1 server excepted); bob keeps access to 1 other server — 1 server affected\n"; !strings.Contains(out.String(), want) {
@@ -184,7 +202,7 @@ func TestRevokeServerWildcard(t *testing.T) {
 	t.Run("wildcard left covering nothing", func(t *testing.T) {
 		_, kh, cfg := setup(t, "  - {user: bob, servers: [\"*\"], except: [web-2]}\n")
 		var out, errBuf bytes.Buffer
-		if code := run([]string{"revoke", "bob", "--server", "web-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+		if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
 			t.Fatalf("exit = %d\n%s\n%s", code, out.String(), errBuf.String())
 		}
 		for _, want := range []string{
@@ -214,7 +232,7 @@ func TestRevokeServerSoleGrantee(t *testing.T) {
 		"servers:\n"+hosts["web-1"].line("web-1")+hosts["db-1"].line("db-1")+
 		"access:\n  - {user: alice, servers: [web-1]}\n  - {user: bob, servers: [web-1, db-1]}\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"revoke", "bob", "--server", "web-1", "--server", "db-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+	if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--from-server", "db-1", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
 		t.Fatalf("exit = %d, want 1\n%s\n%s", code, out.String(), errBuf.String())
 	}
 	s := out.String()
@@ -238,13 +256,13 @@ func TestRevokeServerSoleGrantee(t *testing.T) {
 
 // TestRevokeServerNoApplyDryRun: --no-apply saves and names the apply that
 // pushes it (no scope line); --dry-run saves and writes nothing; a
-// repeated --server is one server; --dry-run --no-apply prints the header
+// repeated --from-server is one server; --dry-run --no-apply prints the header
 // only.
 func TestRevokeServerNoApplyDryRun(t *testing.T) {
 	t.Run("--no-apply", func(t *testing.T) {
 		hosts, _, cfg := twoUserFleet(t)
 		var out, errBuf bytes.Buffer
-		if code := run([]string{"revoke", "bob", "--server", "web-1", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
+		if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
 			t.Fatalf("exit = %d\n%s", code, errBuf.String())
 		}
 		for _, want := range []string{
@@ -268,17 +286,17 @@ func TestRevokeServerNoApplyDryRun(t *testing.T) {
 		hosts, kh, cfg := twoUserFleet(t)
 		before := fileBytes(t, cfg)
 		var out, errBuf bytes.Buffer
-		if code := run([]string{"revoke", "bob", "--server", "web-1", "--dry-run", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--dry-run", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
 			t.Fatalf("exit = %d, want 1 (pending)\n%s", code, errBuf.String())
 		}
 		if !bytes.Equal(fileBytes(t, cfg), before) || !strings.Contains(hosts["web-1"].keys(t), testkeys.Line(t, 2)) {
 			t.Error("--dry-run changed something")
 		}
 	})
-	t.Run("duplicate --server, --dry-run --no-apply", func(t *testing.T) {
+	t.Run("duplicate --from-server, --dry-run --no-apply", func(t *testing.T) {
 		_, _, cfg := twoUserFleet(t)
 		var out, errBuf bytes.Buffer
-		if code := run([]string{"revoke", "bob", "--server", "web-1", "--server", "web-1", "--no-apply", "--dry-run", "--config", cfg}, &out, &errBuf); code != 0 {
+		if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--from-server", "web-1", "--no-apply", "--dry-run", "--config", cfg}, &out, &errBuf); code != 0 {
 			t.Fatalf("exit = %d\n%s", code, errBuf.String())
 		}
 		if out.String() != "manifest edit: remove bob's access to web-1 (1 access entry changed); bob keeps access to 1 other server — 1 server affected\n" {
@@ -296,7 +314,7 @@ func TestRevokeServerNothingCanLand(t *testing.T) {
 	}
 	before := fileBytes(t, cfg)
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"revoke", "bob", "--server", "web-1", "--server", "web-2", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+	if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--from-server", "web-2", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
 		t.Fatalf("exit = %d, want 1\n%s", code, errBuf.String())
 	}
 	if !strings.Contains(errBuf.String(), "nothing saved — bob still has access on 2 servers;") {
@@ -311,7 +329,7 @@ func TestRevokeServerNothingCanLand(t *testing.T) {
 // removed key is still bob's, so it carries owner, not former_owner.
 func TestRevokeServerJSON(t *testing.T) {
 	_, kh, cfg := twoUserFleet(t)
-	doc := runJSONDoc(context.Background(), t, 0, "revoke", "bob", "--server", "web-1", "--json", "--yes", "--config", cfg, "--known-hosts", kh)
+	doc := runJSONDoc(context.Background(), t, 0, "revoke", "bob", "--from-server", "web-1", "--json", "--yes", "--config", cfg, "--known-hosts", kh)
 	edit := doc["edit"].(map[string]any)
 	if edit["saved"] != true || edit["affected"] != float64(1) {
 		t.Errorf("edit = %v", edit)

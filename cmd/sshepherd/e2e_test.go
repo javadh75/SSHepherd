@@ -308,7 +308,7 @@ servers:
 }
 
 // TestE2ERevokeServer: tmp is granted trim-a and trim-b; revoke tmp
-// --server trim-a removes the key from trim-a only (trim-b is never
+// --from-server trim-a removes the key from trim-a only (trim-b is never
 // contacted), the manifest keeps tmp with trim-b, and audit is clean.
 func TestE2ERevokeServer(t *testing.T) {
 	bin, host, port, kh, pub := itE2E(t)
@@ -326,9 +326,9 @@ access:
 	if code, out, stderr := runBin(t, bin, "apply", "--yes", "--config", m, "--known-hosts", kh); code != 0 {
 		t.Fatalf("apply exit = %d (stderr: %s)\n%s", code, stderr, out)
 	}
-	code, out, stderr := runBin(t, bin, "revoke", "tmp", "--server", "trim-a", "--yes", "--config", m, "--known-hosts", kh)
+	code, out, stderr := runBin(t, bin, "revoke", "tmp", "--from-server", "trim-a", "--yes", "--config", m, "--known-hosts", kh)
 	if code != 0 {
-		t.Fatalf("revoke --server exit = %d (stderr: %s)\n%s", code, stderr, out)
+		t.Fatalf("revoke --from-server exit = %d (stderr: %s)\n%s", code, stderr, out)
 	}
 	for _, want := range []string{"manifest edit: remove tmp's access to trim-a (1 access entry changed); tmp keeps access to 1 other server — 1 server affected", "trim-a: applied · verified"} {
 		if !strings.Contains(out, want) {

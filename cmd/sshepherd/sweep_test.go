@@ -351,7 +351,7 @@ func TestRevokeSweepNothingLeftToRead(t *testing.T) {
 }
 
 // TestRevokeServerSweepAddsNoServers (spec §7): an access tombstone only
-// names servers the run already wrote, so revoke USER --server NAME --sweep
+// names servers the run already wrote, so revoke USER --from-server NAME --sweep
 // has no key to look for and contacts nothing beyond the affected server.
 func TestRevokeServerSweepAddsNoServers(t *testing.T) {
 	hosts, kh, _ := editFleet(t, []byte{1}, "web-1", "web-2", "web-3")
@@ -362,7 +362,7 @@ func TestRevokeServerSweepAddsNoServers(t *testing.T) {
 		"servers:\n"+hosts["web-1"].line("web-1")+hosts["web-2"].line("web-2")+hosts["web-3"].line("web-3")+
 		"access:\n  - {user: alice, servers: [web-1, web-2, web-3]}\n  - {user: bob, servers: [web-1, web-2]}\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"revoke", "bob", "--server", "web-1", "--sweep", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+	if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--sweep", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0\n%s\n%s", code, out.String(), errBuf.String())
 	}
 	if !strings.Contains(out.String(), "web-1: applied") {

@@ -641,7 +641,7 @@ func TestRemoveAccessUntouched(t *testing.T) {
 }
 
 // TestRemoveAccessGolden: one File, three users trimmed, one Encode — the
-// shape revoke USER... --server uses.
+// shape revoke USER... --from-server uses.
 func TestRemoveAccessGolden(t *testing.T) {
 	f := loadFixture(t, accessFixture(t))
 	for _, c := range []struct {

@@ -22,14 +22,14 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 		servers []string
 	)
 	cmd := &cobra.Command{
-		Use:   "revoke {USER... [--server NAME...] | --key KEY...}",
+		Use:   "revoke {USER... [--from-server NAME...] | --key KEY...}",
 		Short: "Remove users or keys from the manifest and push the change to the servers it affects",
 		Long: "Edits the manifest — comments preserved — and pushes the edit through\n" +
 			"apply's pipeline, restricted to the servers whose rendered\n" +
 			"authorized_keys changes. 'revoke USER...' removes each user and every\n" +
 			"access entry naming them (offboarding); 'revoke --key KEY...' removes\n" +
 			"single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key\n" +
-			"line, or a .pub file path. 'revoke USER... --server NAME...' removes only\n" +
+			"line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only\n" +
 			"the users' access to those servers (a wildcard grant gains an except:\n" +
 			"entry); the users and their keys stay. Operator users (and their keys)\n" +
 			"need --operator. The plan is shown and confirmed once; the manifest is\n" +
@@ -42,7 +42,7 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			"  # Lost laptop: revoke one key, keep the user\n" +
 			"  sshepherd revoke --key ~/alice-laptop.pub\n\n" +
 			"  # Remove a user's access to one server only\n" +
-			"  sshepherd revoke alice --server db-1\n\n" +
+			"  sshepherd revoke alice --from-server db-1\n\n" +
 			"  # Record the edit now, push it later\n" +
 			"  sshepherd revoke alice --no-apply",
 		Args: cobra.ArbitraryArgs,
@@ -83,8 +83,8 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 	f.register(cmd)
 	cmd.Flags().StringArrayVar(&keys, "key", nil,
 		"`KEY` to revoke: a SHA256: fingerprint, a public-key line, or a .pub file path (repeatable)")
-	cmd.Flags().StringArrayVar(&servers, "server", nil,
-		"remove the users' access to this server only (repeatable); the users and their keys stay")
+	cmd.Flags().StringArrayVar(&servers, "from-server", nil,
+		"remove the users' access to server `NAME` only (repeatable); the users and their keys stay")
 	return cmd
 }
 
@@ -124,7 +124,7 @@ func checkUserArgs(cfg *config.Config, users []string) error {
 
 // revokeUsage is revoke's flag/argument combination rules, before the
 // manifest is read; the first that matches wins. Users and keys are
-// exclusive and one is required; --server goes with users only — never
+// exclusive and one is required; --from-server goes with users only — never
 // with --key or --operator, and never '*'.
 func revokeUsage(args, keys, servers []string, operator bool) error {
 	switch {
@@ -133,11 +133,11 @@ func revokeUsage(args, keys, servers []string, operator bool) error {
 	case len(args) == 0 && len(keys) == 0:
 		return errors.New("nothing to revoke: name the users, or pass --key KEY")
 	case len(servers) > 0 && len(keys) > 0:
-		return errors.New("access is granted per user, not per key — use 'sshepherd revoke USER --server NAME'")
+		return errors.New("access is granted per user, not per key — use 'sshepherd revoke USER --from-server NAME'")
 	case len(servers) > 0 && operator:
-		return errors.New("--operator cannot be combined with --server: operators have access to every server by definition")
+		return errors.New("--operator cannot be combined with --from-server: operators have access to every server by definition")
 	case slices.Contains(servers, "*"):
-		return errors.New("--server takes server names; to remove all of a user's access use 'sshepherd revoke USER'")
+		return errors.New("--from-server takes server names; to remove all of a user's access use 'sshepherd revoke USER'")
 	}
 	return nil
 }
@@ -346,7 +346,7 @@ func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, ops []string, 
 	return cleared, nil
 }
 
-// planRevokeAccess resolves and applies 'revoke USER... --server NAME...'.
+// planRevokeAccess resolves and applies 'revoke USER... --from-server NAME...'.
 // There is no operator gate: an operator target is refused outright
 // (access to every server by definition). Every problem is listed in one
 // refusal before any edit (accessProblems). A pair an access tombstone
@@ -447,7 +447,7 @@ func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
 	return !recorded
 }
 
-// accessProblems lists why 'revoke USER... --server NAME...' cannot run,
+// accessProblems lists why 'revoke USER... --from-server NAME...' cannot run,
 // in this order: unknown users (one entry, the existing wording), unknown
 // servers, operator targets, then every non-operator user × known server
 // pair the user has no access to and no access tombstone records
@@ -495,7 +495,7 @@ func accessProblems(cfg *config.Config, users, servers []string, h followUp) (pr
 	return problems, trims, already
 }
 
-// classifyPairs sorts one user's --server targets: covered (trim), already
+// classifyPairs sorts one user's --from-server targets: covered (trim), already
 // revoked by an access tombstone (gone, with the latest date), or a problem.
 func classifyPairs(cfg *config.Config, name string, servers []string) (trim, gone []string, date string, problems []string) {
 	for _, s := range servers {

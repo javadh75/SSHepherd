@@ -216,7 +216,7 @@ func TestEditTextRemoveAccessCounts(t *testing.T) {
 }
 
 // TestEditTextKeepsServers: a remove-access edit says how many other
-// servers the user still reaches, so 'revoke alice --server web-1' meant
+// servers the user still reaches, so 'revoke alice --from-server web-1' meant
 // as "web-1 first" cannot read as an offboarding; none left says nothing
 // (the no-access-left note covers it).
 func TestEditTextKeepsServers(t *testing.T) {

@@ -88,7 +88,7 @@ FIXTURE_A='
     done
     # cas/locked/verifyfail/drop/lockout: the agent key alone (write-path
     # refusal and failure cases); trima/trimb/overlap: the agent key alone
-    # (revoke --server and rotate --keep-old E2E); stala/stalb/handed: the
+    # (revoke --from-server and rotate --keep-old E2E); stala/stalb/handed: the
     # agent key alone (revocation-memory E2E); unparse: plus a line apply
     # cannot parse.
     for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed maxauth loose e2eloose; do

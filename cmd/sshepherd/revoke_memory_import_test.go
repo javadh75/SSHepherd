@@ -8,7 +8,7 @@ import (
 
 // TestRevokeServerLastWildcardTrimRemembersExcept (PRD-1, D1a): a trim that
 // deletes a wildcard also deletes its except: list, the only record of an
-// earlier revoke --server. Each server it remembered becomes a tombstone,
+// earlier revoke --from-server. Each server it remembered becomes a tombstone,
 // or adopt --merge re-grants it from the key still installed there.
 func TestRevokeServerLastWildcardTrimRemembersExcept(t *testing.T) {
 	hosts, kh, _ := editFleet(t, []byte{1}, "web-1", "web-2")
@@ -18,13 +18,13 @@ func TestRevokeServerLastWildcardTrimRemembersExcept(t *testing.T) {
 		"servers:\n"+hosts["web-1"].line("web-1")+hosts["web-2"].line("web-2")+
 		"access:\n  - {user: alice, servers: [web-1, web-2]}\n  - {user: bob, servers: [\"*\"]}\n")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"revoke", "bob", "--server", "web-1", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
+	if code := run([]string{"revoke", "bob", "--from-server", "web-1", "--no-apply", "--yes", "--config", cfg}, &out, &errBuf); code != 0 {
 		t.Fatalf("first trim: exit %d\n%s\n%s", code, out.String(), errBuf.String())
 	}
 	if len(readCfg(t, cfg).Tombstones) != 0 || !readCfg(t, cfg).ExceptCarveOut("bob", "web-1") {
 		t.Fatal("the first trim should record web-1 in except: only")
 	}
-	if code := run([]string{"revoke", "bob", "--server", "web-2", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
+	if code := run([]string{"revoke", "bob", "--from-server", "web-2", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 0 {
 		t.Fatalf("second trim: exit %d\n%s\n%s", code, out.String(), errBuf.String())
 	}
 	saved := readCfg(t, cfg)

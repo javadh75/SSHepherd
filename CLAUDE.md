@@ -470,9 +470,9 @@ schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0, 1 or 2 (specced in
 `docs/superpowers/specs/2026-11-07-apply-json-design.md`); remote text in both JSON
 reports passes through the new `internal/sanitize` leaf.
-**`revoke --server` and `rotate --keep-old`** (specced in
+**`revoke --from-server` and `rotate --keep-old`** (specced in
 `docs/superpowers/specs/2026-11-07-revoke-server-keep-old-design.md`, planned in
-`docs/superpowers/plans/2026-11-07-revoke-server-keep-old.md`): `revoke USER... --server NAME...`
+`docs/superpowers/plans/2026-11-07-revoke-server-keep-old.md`): `revoke USER... --from-server NAME...`
 trims per-server access through the new comment-preserving `manifest.RemoveAccess`
 (explicit items removed, wildcards gain `except:`, emptied entries and wildcards left
 covering no server deleted with a warning; operators, `--key`, `'*'`, unknown servers
@@ -480,7 +480,7 @@ and ungranted pairs refused, all problems listed at once), and `rotate --keep-ol
 overlaps the old and new keys via `manifest.AddKeyAfter` (options and `expiry-time=`
 carried) and prints the `revoke --key OLD` that finishes the overlap. The save
 reminder's tail is per edit kind; JSON gains the `remove-access` edit kind and
-`keep_old` on rotate entries (schema stays 1). The E2E suite adds a `revoke --server`
+`keep_old` on rotate entries (schema stays 1). The E2E suite adds a `revoke --from-server`
 run and a keep-old overlap → finish loop.
 The gates also cover the `//go:build integration` files: `make vet` runs `go vet`
 plain and with `-tags=integration`, `.golangci.yml` sets `run.build-tags: [integration]`,

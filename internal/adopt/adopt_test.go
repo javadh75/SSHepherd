@@ -194,7 +194,7 @@ revoked:
 }
 
 // TestBuildHonoursAccessTombstone (D1a): bob's key found on db-1, whose
-// access a revoke --server removed, is not re-granted.
+// access a revoke --from-server removed, is not re-granted.
 func TestBuildHonoursAccessTombstone(t *testing.T) {
 	cfg := parseConfig(t, `
 users:
