@@ -75,6 +75,8 @@ never bring one back, `revoke --sweep` checks the rest of the fleet.
 
 Audit trust and posture: audit checks the managed file and its directories the way StrictModes does, and pages on a world-writable path, an operator key that cannot log in, a host key whose type changed, and a weak key granted on a server. Each server is offered only its granted keys (`--offer-all-keys` restores the old offer).
 
+Tags: `tags:` on a server and `@tag` selectors in `access:` mix with names, `except:` works on any selector, a tombstone blocks a tag-derived grant instead of conflicting, and a `*` reaching a root account warns (kind `wildcard_root`).
+
 ## Install
 
 **From source** (Go 1.27.3+):
@@ -271,6 +273,7 @@ servers:
     port: 22                            # optional, defaults to 22
     user: deploy
     authorized_keys_file: /etc/ssh/keys/deploy   # optional override, see below
+    tags: [prod, web]                   # optional, see Tags and selectors
 
   - name: ci
     host: ci.internal
@@ -312,6 +315,35 @@ A weak operator key freezes every grant on every server: apply refuses each one 
 `servers: ["*"]` grants every server currently in the manifest *and* every server
 added later, minus anything listed in `except:`. Use it for people (or automation)
 whose access should not need updating each time the fleet grows.
+
+A non-operator `servers: ["*"]` entry that reaches a server whose `user` is `root` warns
+once per entry, kind `wildcard_root`:
+`access for "alice": servers ["*"] includes the root account on web-1 and 3 more; list the servers or use an @tag that excludes root accounts`
+(with one root account, `on web-1;`). An `@tag` reaching root does not warn. A warning never
+changes an exit code, except that `validate --strict` exits `1`.
+
+### Tags and selectors
+
+```yaml
+servers:
+  - name: web-1
+    host: 10.0.1.5
+    user: deploy
+    tags: [prod, web]
+access:
+  - user: carol
+    servers: ["@prod", db-1]   # selectors and names mix (union)
+    except: [web-3]            # valid with "*" or any "@tag"
+```
+
+A tag matches `^[a-z0-9][a-z0-9._-]{0,62}$`, and a tag may not repeat on a server. In an
+`access:` entry, `@tag` reaches every server carrying the tag, in manifest order, and
+mixes with server names as a union. `except:` removes names from what the selectors reach; it
+needs `*` or at least one `@tag`, and each name must be a known server. A name may not be in
+both `servers:` and `except:`. An `@tag` matching no server is an error, like an unknown
+server name: `access for "carol": unknown tag "@prd"`. Fix the typo, or tag a server. A tag
+covers only servers in the manifest now: only `*` covers servers added later, and a new
+server joins a tag's grants when you tag it.
 
 ### Per-server `authorized_keys_file`
 
@@ -363,6 +395,16 @@ The loader fails the whole manifest (exit 3) on any of these:
   `permitopen`, `permitlisten` and `environment` may repeat.
 - **Server `name`, `host` and `user`** may not contain whitespace or control, format
   or line-separator characters (U+2028/U+2029 included).
+- **Server names starting with `@`** are reserved for tag selectors, like `*` for wildcard
+  grants: `servers[N]: name "@x" is reserved for tag selectors`.
+- **Tags** must match `^[a-z0-9][a-z0-9._-]{0,62}$`, and a tag may not repeat on a server:
+  `server "web-1": tag "Prod" is not valid: want lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, at most 63 characters`,
+  `server "web-1": tag "prod" is repeated`.
+- **Selectors in `access:`**: `access for "carol": unknown tag "@prd"`;
+  `access for "x": "*" must be the only servers entry`; `access for "x": except requires servers ["*"] or an @tag`;
+  `access for "x": except takes server names, not the selector "@web"`;
+  `access for "x": "web-3" is in both servers and except`;
+  `access for "x": selectors grant no servers after except`.
 - **One entry per remote file.** Two servers that resolve to the same host
   (case-insensitive), port, user and effective `authorized_keys` path are an error:
   `servers "A" and "B" both target user@host:port path; merge them into one entry`.
@@ -389,6 +431,7 @@ The loader fails the whole manifest (exit 3) on any of these:
     `revoked[N]: an entry without fingerprint needs user and servers`, and
     `revoked[N]: servers must not be empty`;
   - `*` is not a server: `revoked[N]: servers cannot be "*"; list the servers by name`;
+  - a selector is not a server name: `revoked[N]: servers cannot hold a selector; list the servers by name`;
   - `date` is required and must be `YYYY-MM-DD`: `revoked[N]: date is required`,
     `revoked[N]: date "VALUE" is not a YYYY-MM-DD date`;
   - `user` and `reason` follow the names-and-comments rule above
@@ -409,7 +452,7 @@ refuse to write a manifest that would keep one (exit 3). The two messages:
 - `key SHA256:… of user "alice" is revoked (2026-11-08, alice): remove it from users, or delete the revoked: entry to un-revoke it deliberately`
   (without a `user` label the parenthesis is the date alone);
 - `user "bob" is granted "db-1" by access[0], but revoked[0] removed that access (2026-11-08): remove the grant, or delete the revoked: entry to restore it deliberately`
-  (a wildcard grant conflicts too, unless its `except:` lists the server).
+  (a wildcard grant conflicts too, unless its `except:` lists the server; an `@tag` grant does not conflict, see [Revoked keys](#revoked-keys)).
 
 A refused save reads, for example:
 
@@ -467,6 +510,14 @@ is a deliberate un-revoke (git history is the audit trail). A server removed fro
 `servers:` but still named in an access entry is a warning —
 `revoked[N]: unknown server "NAME" — this entry is ignored for it; remove NAME from the entry once the server is gone for good`
 — never a load error; re-adding the server re-applies the entry.
+
+A grant that reaches a server only through an `@tag` does not conflict with an access entry
+for that (user, server): it is **blocked**. The tombstone acts as an `except:` for that user,
+the key is not installed, and each blocked pair prints a warning, kind `tombstone_blocks_grant`:
+`access[0]: "bob" is not granted "db-1" through @db: revoked[0] removed that access (2026-11-08); delete the revoked: entry to restore it deliberately`.
+A warning never changes an exit code, except that `validate --strict` exits `1`. A server named
+directly (`user: U` with `S` listed, or `*` not excepting it) still conflicts, even in the same
+entry as an `@tag`. An operator's implicit grant is not affected, and no warning prints for it.
 
 ## Commands
 
@@ -946,8 +997,8 @@ remote text:
 ```
 
 `manifest_warnings` carries every load warning, in the `audit` document and in the `apply`
-document. Each object has `kind` and `message`. `revoked_index` and `user` appear only on `tombstone_unknown_server`; `server` appears there and on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
-`comment_on_multi_key`, `weak_key_ungranted` and `key_expired`; ignore kinds you do not know.
+document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear on `tombstone_unknown_server` and `tombstone_blocks_grant`; `server` also on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
+`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root` and `tombstone_blocks_grant`; ignore kinds you do not know.
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`
@@ -2438,6 +2489,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
+
+A tag problem (an unknown `@tag`, a malformed tag, a selector in `except:` or in a tombstone's `servers:`) is a manifest load error, so it is exit `3` on every command. A blocked grant and the `wildcard_root` warning change no exit code, except that `validate --strict` exits `1`.
 
 `--help` shows this summary. `audit --help`:
 

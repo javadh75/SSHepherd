@@ -671,3 +671,15 @@ could not use. `adopt.Plan.Warnings` and `reconcile.Plan.Warnings` are structure
 adopt's document, and `cmd/sshepherd/import_json.go` renders import's and holds the one
 collector that assigns kinds to its string warnings. Command bodies moved to `adoptRun` and
 `importRun`.
+**Server tags and `@tag` selectors** (P10 S3a, D20, D20a, PRD-5; section S3a of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-09-p10-s3a-server-tags.md`): `tags:` on a server and `@tag` in
+`access: servers:` (mixed with names, in manifest order, with `except:` on any selector) expand
+inside `expandServers`, so `c.grants`, `DesiredFor` and `apply.Affected` keep their shape
+(`TestTaggedManifestMatchesFlatTwin` is the equivalence test). `config.ServerNameIssue` reserves
+`@…` server names, an unknown tag is a load error, and an `@tag` never covers a server not in
+the manifest yet. `internal/config/selector.go` holds `entryApplies`, `entryCovers` and
+`entryDirect`. A tombstone over a tag-only grant **blocks** it (`blockTombstoned`, `c.blocked`,
+kind `tombstone_blocks_grant`) instead of conflicting, while a name or `*` in any of the user's
+entries stays a D29 conflict. A non-operator `*` reaching a root account warns once per entry
+(kind `wildcard_root`). `Covers`' `c.blocked` check is load-bearing only from S3b.

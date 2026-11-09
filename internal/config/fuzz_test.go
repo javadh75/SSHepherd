@@ -48,6 +48,31 @@ access:
 		"serial: 7\n" + manifest(k1, k2) + "revoked:\n  - {fingerprint: " + fpFor(f, k1) + ", user: alice, date: 2026-11-08, reason: offboarded}\n  - {user: bob, servers: [web-1, db-9], date: 2026-11-08}\n",
 		"serial: -1\nusers: []\n",
 		"revoked:\n  - {fingerprint: 'SHA256:x', servers: ['*'], date: '2026-1-8', user: \"a\\e\"}\n",
+		// tags, @tag selectors, a blocked grant, reserved names
+		`
+users:
+  - {name: bob, keys: ["` + k2 + `"]}
+servers:
+  - {name: s1, host: h1, user: root, tags: [prod, a.b_c-d]}
+  - {name: s2, host: h2, user: u, tags: [prod, prod]}
+  - {name: "@x", host: h3, user: u, tags: [Bad]}
+access:
+  - {user: bob, servers: ["@prod", s2], except: [s1]}
+  - {user: bob, servers: ["@nope"]}
+revoked:
+  - {user: bob, servers: [s2, "@prod"], date: 2026-11-08}
+`,
+		`
+users:
+  - {name: bob, keys: ["` + k2 + `"]}
+servers:
+  - {name: s1, host: h1, user: root, tags: [prod]}
+  - {name: s2, host: h2, user: u, tags: [prod]}
+access:
+  - {user: bob, servers: ["@prod"]}
+revoked:
+  - {user: bob, servers: [s2], date: 2026-11-08}
+`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -71,7 +96,20 @@ access:
 					t.Fatalf("accepted server field %q %s", field, issue)
 				}
 			}
+			if issue := ServerNameIssue(s.Name); issue != "" {
+				t.Fatalf("accepted server name %q %s", s.Name, issue)
+			}
+			for _, tag := range s.Tags {
+				if !tagShape.MatchString(tag) {
+					t.Fatalf("accepted tag %q on %q", tag, s.Name)
+				}
+			}
 			checkRenderRoundTrip(t, cfg, s.Name)
+		}
+		for pair := range cfg.blocked {
+			if cfg.Covers(pair.user, pair.server) || slices.Contains(cfg.grants[pair.server], pair.user) {
+				t.Fatalf("blocked pair %+v is still granted", pair)
+			}
 		}
 		if cfg.Serial() > MaxSerial {
 			t.Fatalf("accepted serial %d over %d", cfg.Serial(), MaxSerial)

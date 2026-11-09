@@ -19,7 +19,7 @@ func samples(t *testing.T) map[string]map[string]any {
 	k := testkeys.Line(t, 1)
 	return map[string]map[string]any{
 		"User":   {"Name": "op", "Description": "d", "Comment": "c", "Operator": true, "Keys": []string{k}},
-		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy"},
+		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}},
 		"Access": {"User": "bob", "Servers": []string{"*"}, "Except": []string{"web-1"}},
 	}
 }
@@ -99,6 +99,22 @@ func TestSchemaRoundTripAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkRoundTrip(t, "Append", out, u, srv, a)
+}
+
+// TestAdoptRegenerateKeepsTagSelectors: adopt carries access: entries from
+// the loaded config, so an @tag selector and its except: come back unchanged.
+func TestAdoptRegenerateKeepsTagSelectors(t *testing.T) {
+	cfg, _, _, _ := roundTripConfig(t)
+	cfg.Access = []config.Access{{User: "bob", Servers: []string{"@web", "web-2"}, Except: []string{"web-1"}}}
+	out, err := generateAdoptManifest(cfg, adopt.Plan{}, "rt.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.Parse(out)
+	if err == nil && reflect.DeepEqual(got.Access, cfg.Access) {
+		return
+	}
+	t.Errorf("adopt changed the selector entry (err %v):\n%s", err, out)
 }
 
 // TestAdoptRegenerateKeepsRevokedAndSerial: a plain adopt rebuilds the

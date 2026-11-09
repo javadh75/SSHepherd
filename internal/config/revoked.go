@@ -170,6 +170,9 @@ func accessShape(p string, t Tombstone) []error {
 	if slices.Contains(t.Servers, "*") {
 		errs = append(errs, fmt.Errorf(`%sservers cannot be "*"; list the servers by name`, p))
 	}
+	if slices.ContainsFunc(t.Servers, isTagSelector) {
+		errs = append(errs, fmt.Errorf("%sservers cannot hold a selector; list the servers by name", p))
+	}
 	return errs
 }
 
@@ -274,19 +277,21 @@ func (c *Config) computeConflicts() []Conflict {
 }
 
 // accessConflicts: an access: entry for t's user that renders on one of
-// t's (known) servers — named explicitly, or a wildcard that does not
-// except it. One conflict per (entry, tombstoned server); Servers is every
-// server that entry renders on (spec §2), so apply refuses, and audit
-// marks critical, all of them.
+// t's (known) servers and reaches it directly — named explicitly, or a
+// wildcard that does not except it. An @tag reaching it is blocked instead,
+// and blockTombstoned leaves such a pair only when another entry is direct, so
+// an @tag entry is never the one named here. One conflict per (entry,
+// tombstoned server); Servers is every server that entry renders on (spec
+// §2), so apply refuses, and audit marks critical, all of them.
 func (c *Config) accessConflicts(m int, t Tombstone) []Conflict {
 	var out []Conflict
 	for n, a := range c.Access {
-		if a.User != t.User {
+		if !entryApplies(a, t.User) {
 			continue
 		}
 		covered := c.entryServers(a)
 		for _, s := range t.Servers {
-			if c.ignored[m][s] || !slices.Contains(covered, s) {
+			if c.ignored[m][s] || !slices.Contains(covered, s) || !entryDirect(a, s) {
 				continue
 			}
 			out = append(out, Conflict{
@@ -300,17 +305,87 @@ func (c *Config) accessConflicts(m int, t Tombstone) []Conflict {
 }
 
 // entryServers lists, in servers: order, every server access entry a
-// renders its user's keys on: its explicit names, or — for a wildcard —
-// every server its except: does not name. Never nil.
+// renders its user's keys on: what it names or selects, minus its except:
+// list and any pair an access tombstone blocked. Never nil.
 func (c *Config) entryServers(a Access) []string {
-	wildcard := slices.Contains(a.Servers, "*")
 	out := []string{}
 	for _, s := range c.Servers {
-		if (wildcard && !slices.Contains(a.Except, s.Name)) || (!wildcard && slices.Contains(a.Servers, s.Name)) {
+		if entryCovers(a, s) && !c.blocked[grantPair{a.User, s.Name}] {
 			out = append(out, s.Name)
 		}
 	}
 	return out
+}
+
+// blockTombstoned drops every (user, server) grant an access tombstone
+// covers and no entry reaches directly, so the tombstone acts as an implicit
+// except: for that user (spec "How selectors meet tombstones"). The grant
+// leaves c.grants, so DesiredFor, apply.Affected and every report see no
+// access; c.blocked keeps it out of Covers and entryServers. AccessRevoked
+// still answers, which keeps adopt, reconcile, revoke's D1c note and audit's
+// D1d label working. Each (entry, user, server) warns, unless the implicit
+// operator grant still installs the key.
+func (c *Config) blockTombstoned() {
+	c.blocked = make(map[grantPair]bool)
+	revoked := c.latestAccessTombstones()
+	for n, a := range c.Access {
+		if len(revoked[a.User]) == 0 {
+			continue
+		}
+		for _, s := range c.Servers {
+			m, gone := revoked[a.User][s.Name]
+			if !gone || !entryCovers(a, s) || c.directlyGranted(a.User, s.Name) {
+				continue
+			}
+			pair := grantPair{a.User, s.Name}
+			c.blocked[pair] = true
+			c.grants[s.Name] = slices.DeleteFunc(c.grants[s.Name], func(u string) bool { return u == a.User })
+			if !slices.Contains(c.operators, a.User) {
+				c.warnBlocked(n, m, a, s)
+			}
+		}
+	}
+}
+
+// latestAccessTombstones is AccessRevoked for every pair at once, for
+// blockTombstoned: user -> server -> index of the latest access tombstone
+// naming it, ignored (D1e) servers skipped. The one-pair walk would make the
+// load quadratic in a long revoked: list.
+func (c *Config) latestAccessTombstones() map[string]map[string]int {
+	out := make(map[string]map[string]int)
+	for i, t := range c.Tombstones {
+		if t.IsKey() {
+			continue
+		}
+		for _, s := range t.Servers {
+			if c.ignored[i][s] {
+				continue
+			}
+			if out[t.User] == nil {
+				out[t.User] = make(map[string]int)
+			}
+			out[t.User][s] = i
+		}
+	}
+	return out
+}
+
+// directlyGranted reports an entry of user reaching server by name or "*".
+func (c *Config) directlyGranted(user, server string) bool {
+	return slices.ContainsFunc(c.Access, func(a Access) bool { return entryApplies(a, user) && entryDirect(a, server) })
+}
+
+func (c *Config) warnBlocked(n, m int, a Access, s Server) {
+	through := ""
+	for _, item := range a.Servers {
+		if SelectorMatches(item, s) {
+			through = item
+			break
+		}
+	}
+	msg := fmt.Sprintf(`access[%d]: %q is not granted %q through %s: revoked[%d] removed that access (%s); delete the revoked: entry to restore it deliberately`,
+		n, a.User, s.Name, through, m, c.Tombstones[m].Date)
+	c.warn(ManifestWarning{Kind: WarnTombstoneBlocksGrant, RevokedIndex: &m, User: a.User, Server: s.Name, Message: msg})
 }
 
 // serversRendering lists, in servers: order, every server whose rendered
