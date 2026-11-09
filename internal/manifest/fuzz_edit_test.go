@@ -26,6 +26,8 @@ func FuzzManifestEdit(f *testing.F) {
 	f.Add("serial: 3\n"+editFixture(f)+"revoked:\n  - {user: bob, servers: [db-1], date: 2026-11-08}\n", uint8(1))
 	f.Add(tagEditFixture(f), uint8(1))
 	f.Add(tagEditFixture(f)+"revoked:\n  - {user: bob, servers: [web-1], date: 2026-11-08}\n", uint8(3))
+	f.Add(groupEditFixture(f), uint8(1))
+	f.Add(groupEditFixture(f), uint8(3))
 	f.Fuzz(func(t *testing.T, in string, pick uint8) {
 		mf, err := Load([]byte(in))
 		if err != nil {
@@ -121,13 +123,15 @@ func FuzzManifestEdit(f *testing.F) {
 
 // FuzzRemoveAccess asserts RemoveAccess's safety property on selector and
 // plain entries alike: on any manifest Load accepts, taking one server from a
-// non-operator user leaves a manifest Encode writes and config.Parse accepts
+// non-operator user (a pair no group grant reaches: revoke refuses those)
+// leaves a manifest Encode writes and config.Parse accepts
 // (the deletion rule must never leave an entry granting nothing), and the
 // user no longer covers that server. pick selects the user and the server.
 func FuzzRemoveAccess(f *testing.F) {
 	f.Add(tagEditFixture(f), uint8(0))
 	f.Add(tagEditFixture(f), uint8(7))
 	f.Add(editFixture(f), uint8(1))
+	f.Add(groupEditFixture(f), uint8(0))
 	f.Fuzz(func(t *testing.T, in string, pick uint8) {
 		mf, err := Load([]byte(in))
 		if err != nil {
@@ -145,6 +149,9 @@ func FuzzRemoveAccess(f *testing.F) {
 		}
 		user := users[int(pick)%len(users)]
 		server := cfg.Servers[int(pick/16)%len(cfg.Servers)].Name
+		if len(cfg.GroupGrantsReaching(user, server)) > 0 {
+			t.Skip() // revoke refuses this pair; RemoveAccess is never called on it
+		}
 		if _, err := mf.RemoveAccess(user, []string{server}); err != nil {
 			t.Fatalf("RemoveAccess(%q, %q) on input %q: %v", user, server, in, err)
 		}

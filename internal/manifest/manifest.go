@@ -9,7 +9,7 @@
 //
 //   - Append adds users, servers and access entries (config types) at the
 //     end of their sections (adopt --merge, import --merge);
-//   - RemoveUser deletes a users: entry and every access: entry naming it;
+//   - RemoveUser deletes a users: entry, every access: entry naming it and its groups: memberships;
 //   - RemoveKey deletes one keys: line, found by fingerprint;
 //   - ReplaceKey replaces one keys: line in place (same index);
 //   - SetOperator sets or removes a user's operator: flag;
@@ -112,10 +112,10 @@ func explicitFlowNulls(n *yaml.Node, inFlow bool) {
 }
 
 // topLevelKeys are the manifest's sections (config.Config's yaml keys).
-var topLevelKeys = map[string]bool{"serial": true, "users": true, "servers": true, "access": true, "revoked": true}
+var topLevelKeys = map[string]bool{"serial": true, "users": true, "groups": true, "servers": true, "access": true, "revoked": true}
 
 // checkTopLevelKeys rejects manifests whose top-level mapping keys are not
-// plain serial/users/servers/access/revoked scalars. config.Parse tolerates a few exotic
+// plain serial/users/groups/servers/access/revoked scalars. config.Parse tolerates a few exotic
 // key shapes (e.g. an anchored empty scalar, found by fuzzing) that break
 // the re-encode → re-parse self-check; anything Load accepts must be
 // structurally re-encodable, so the whole class dies here.
@@ -315,8 +315,9 @@ func strScalar(v string) *yaml.Node {
 // and cmd/sshepherd/schema_roundtrip_test.go fails until it round-trips.
 var requiredKeys = map[string]map[string]bool{
 	"User":      {"name": true, "keys": true},
+	"Group":     {"name": true, "members": true},
 	"Server":    {"name": true, "host": true, "user": true},
-	"Access":    {"user": true, "servers": true},
+	"Access":    {"servers": true}, // user: is set or group: is; the loader enforces exactly one
 	"Tombstone": {"date": true},
 }
 
@@ -364,10 +365,12 @@ func entryNodes[T any](items []T) ([]*yaml.Node, error) {
 }
 
 // Draft is everything a generated manifest holds, in output order: serial
-// (omitted at 0), users, servers, access, revoked (omitted when empty).
+// (omitted at 0), users, groups (omitted when empty), servers, access,
+// revoked (omitted when empty).
 type Draft struct {
 	Serial  uint64
 	Users   []config.User
+	Groups  []config.Group
 	Servers []config.Server
 	Access  []config.Access
 	Revoked []config.Tombstone
@@ -391,25 +394,24 @@ func GenerateWith(header string, d Draft) ([]byte, error) {
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatUint(d.Serial, 10)})
 	}
 	for _, sec := range []struct {
-		key   string
-		items func() ([]*yaml.Node, error)
+		key       string
+		items     func() ([]*yaml.Node, error)
+		omitEmpty bool
 	}{
-		{"users", func() ([]*yaml.Node, error) { return entryNodes(d.Users) }},
-		{"servers", func() ([]*yaml.Node, error) { return entryNodes(d.Servers) }},
-		{"access", func() ([]*yaml.Node, error) { return entryNodes(d.Access) }},
+		{"users", func() ([]*yaml.Node, error) { return entryNodes(d.Users) }, false},
+		{"groups", func() ([]*yaml.Node, error) { return entryNodes(d.Groups) }, true},
+		{"servers", func() ([]*yaml.Node, error) { return entryNodes(d.Servers) }, false},
+		{"access", func() ([]*yaml.Node, error) { return entryNodes(d.Access) }, false},
+		{"revoked", func() ([]*yaml.Node, error) { return entryNodes(d.Revoked) }, true},
 	} {
 		items, err := sec.items()
 		if err != nil {
 			return nil, err
 		}
-		root.Content = append(root.Content, strScalar(sec.key), &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items})
-	}
-	if len(d.Revoked) > 0 {
-		items, err := entryNodes(d.Revoked)
-		if err != nil {
-			return nil, err
+		if sec.omitEmpty && len(items) == 0 {
+			continue
 		}
-		root.Content = append(root.Content, strScalar("revoked"), &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items})
+		root.Content = append(root.Content, strScalar(sec.key), &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Content: items})
 	}
 	var buf bytes.Buffer
 	buf.WriteString(header)

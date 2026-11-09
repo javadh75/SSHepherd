@@ -13,15 +13,18 @@ import (
 
 // UserRemoval reports what RemoveUser deleted.
 type UserRemoval struct {
-	Keys   int // key lines the users: entry held
-	Grants int // access: entries whose user: named the user
+	Keys   int      // key lines the users: entry held
+	Grants int      // access: entries whose user: named the user
+	Groups []string // groups: the user was dropped from, manifest order
 }
 
-// RemoveUser deletes the users: entry named name and every access: entry
-// whose user: is name. A removed entry's head comment moves to the next
+// RemoveUser deletes the users: entry named name, every access: entry
+// whose user: is name, and the name from every groups: members list. A
+// group left empty keeps its entry (it warns at the next load, and its
+// access: entries stay). A removed entry's head comment moves to the next
 // entry of its section, or to the section's footer when none follows; its
-// line and foot comments go with it. Node tree only: nothing validates
-// until Encode.
+// line and foot comments go with it; a removed member's comments go with it.
+// Node tree only: nothing validates until Encode.
 func (f *File) RemoveUser(name string) (UserRemoval, error) {
 	m, err := f.rootMapping()
 	if err != nil {
@@ -42,7 +45,28 @@ func (f *File) RemoveUser(name string) (UserRemoval, error) {
 			return scalarField(n, "user") == name
 		}, true)
 	}
+	if _, groups := sectionOf(m, "groups"); groups != nil {
+		r.Groups = dropMember(groups, name)
+	}
 	return r, nil
+}
+
+// dropMember removes name from every group's members list and returns the
+// groups it was in, manifest order (nil for none).
+func dropMember(groups *yaml.Node, name string) []string {
+	var out []string
+	for _, g := range groups.Content {
+		members := valueOf(g, "members")
+		if g.Kind != yaml.MappingNode || members == nil || members.Kind != yaml.SequenceNode {
+			continue
+		}
+		if removeItems(nil, members, func(n *yaml.Node) bool {
+			return n.Kind == yaml.ScalarNode && n.Value == name
+		}, false) > 0 {
+			out = append(out, scalarField(g, "name"))
+		}
+	}
+	return out
 }
 
 // RemoveKey deletes the keys: line whose parsed fingerprint is fp (options,

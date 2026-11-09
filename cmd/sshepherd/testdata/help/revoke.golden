@@ -5,10 +5,11 @@ access entry naming them (offboarding); 'revoke --key KEY...' removes
 single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key
 line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only
 the users' access to those servers (a selector grant ('*' or @tag) gains an
-except: entry); the users and their keys stay. Operator users (and their keys)
-need --operator. The plan is shown and confirmed once; the manifest is
-saved after confirmation and before the first write, so commit and push
-it afterwards. --dry-run changes nothing; --no-apply saves the edit
+except: entry); the users and their keys stay. A pair a group grant reaches is
+refused; 'revoke USER...' also drops each user from every group. Operator users
+(and their keys) need --operator. The plan is shown and confirmed once; the
+manifest is saved after confirmation and before the first write, so commit and
+push it afterwards. --dry-run changes nothing; --no-apply saves the edit
 without contacting any server. A server whose only grantee is revoked is
 never emptied: the key stays installed there (a warning says so).
 

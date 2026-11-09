@@ -106,16 +106,17 @@ type jsonTombstone struct {
 // jsonEditEntry: pointer fields are present exactly for their kind, so a
 // zero count or false flag is still emitted where it belongs.
 type jsonEditEntry struct {
-	Kind           string `json:"kind"`
-	User           string `json:"user"`
-	Keys           *int   `json:"keys,omitempty"`
-	Grants         *int   `json:"grants,omitempty"`
-	Fingerprint    string `json:"fingerprint,omitempty"`
-	NewFingerprint string `json:"new_fingerprint,omitempty"`
-	KeepsExpiry    string `json:"keeps_expiry,omitempty"`
-	KeepOld        *bool  `json:"keep_old,omitempty"` // always present on rotate entries
-	NoKeysLeft     *bool  `json:"no_keys_left,omitempty"`
-	ClearsOperator *bool  `json:"clears_operator,omitempty"`
+	Kind           string   `json:"kind"`
+	User           string   `json:"user"`
+	Keys           *int     `json:"keys,omitempty"`
+	Grants         *int     `json:"grants,omitempty"`
+	Groups         []string `json:"groups,omitempty"`
+	Fingerprint    string   `json:"fingerprint,omitempty"`
+	NewFingerprint string   `json:"new_fingerprint,omitempty"`
+	KeepsExpiry    string   `json:"keeps_expiry,omitempty"`
+	KeepOld        *bool    `json:"keep_old,omitempty"` // always present on rotate entries
+	NoKeysLeft     *bool    `json:"no_keys_left,omitempty"`
+	ClearsOperator *bool    `json:"clears_operator,omitempty"`
 	// remove-access: AccessServers is a pointer so an empty list still
 	// encodes as [] (never null) while staying absent for other kinds.
 	AccessServers    *[]string `json:"access_servers,omitempty"`
@@ -341,6 +342,7 @@ func jsonEditFor(s EditSummary, saved bool) *jsonEdit {
 		case EditRemoveUser:
 			keys, grants := ed.Keys, ed.Grants
 			je.Keys, je.Grants = &keys, &grants
+			je.Groups = ed.Groups
 		case EditRemoveKey:
 			noKeys, clears := ed.NoKeysLeft, ed.ClearsOperator
 			je.Fingerprint = ed.Fingerprint

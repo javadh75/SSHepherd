@@ -702,3 +702,14 @@ it, so a group's `except:` carves out for every member. A group entry is never d
 `directlyGranted` and `accessConflicts` read `a.User`, so a tombstone over any group grant is
 blocked for that member only (`blockEntry`, `tombstone_blocks_grant`), and `Covers`' `c.blocked`
 check is load-bearing (a group `*` or literal matches its raw scan).
+`groups:` flows through `manifest.Draft`/`GenerateWith` (omitted when empty, after `users:`), and
+`requiredKeys["Access"]` no longer lists `user`, so a group entry regenerates without a junk key.
+`RemoveUser` drops the name from every `groups[].members` (a group left empty stays and warns) and
+reports `UserRemoval.Groups`, shown in the edit header and on `remove-user` JSON as `groups`.
+`revoke USER --from-server S` is refused when `Config.GroupGrantsReaching` is non-empty, with or
+without a direct grant (exit 3, nothing saved); a blocked member gets the D1c note. `NoGrantsLeft`
+stays the S3a count, which already answers for groups through `Covers`, so `HasAccessEntry` was not
+added. `accessTombstones` and `forgottenCarveOut` read `Config.OwnExceptCarveOut`, so a group's
+`except:` is not memory for a personal trim (D1a); `ExceptCarveOut` stays group-aware for adopt and
+reconcile. `TestE2EGroupGrant` is the E2E (fixture accounts `grpa`, `grpb`). `FuzzRemoveAccess` skips a
+pair a group grant reaches, because `revoke` refuses it.

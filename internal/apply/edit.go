@@ -30,6 +30,8 @@ type Edit struct {
 	// Keys and Grants count what EditRemoveUser deletes: the user's key
 	// lines and the access: entries naming the user.
 	Keys, Grants int
+	// Groups (EditRemoveUser) names the groups the user was dropped from.
+	Groups []string
 	// Fingerprint is the removed key (EditRemoveKey) or the old key
 	// (EditRotate); NewFingerprint is the rotated-in key.
 	Fingerprint, NewFingerprint string
@@ -146,8 +148,11 @@ func RenderEditHeader(w io.Writer, s EditSummary, opts RenderOptions) {
 func editText(e Edit) string {
 	switch e.Kind {
 	case EditRemoveUser:
-		return fmt.Sprintf("remove user %s (%s, %s)", e.User,
-			Plural(e.Keys, "key", "keys"), Plural(e.Grants, "access grant", "access grants"))
+		counts := Plural(e.Keys, "key", "keys") + ", " + Plural(e.Grants, "access grant", "access grants")
+		if len(e.Groups) > 0 {
+			counts += ", " + Plural(len(e.Groups), "group", "groups")
+		}
+		return fmt.Sprintf("remove user %s (%s)", e.User, counts)
 	case EditRemoveKey:
 		return fmt.Sprintf("remove key %s from %s", e.Fingerprint, e.User)
 	case EditRecordKey:

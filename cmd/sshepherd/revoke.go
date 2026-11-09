@@ -31,10 +31,11 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			"single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key\n" +
 			"line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only\n" +
 			"the users' access to those servers (a selector grant ('*' or @tag) gains an\n" +
-			"except: entry); the users and their keys stay. Operator users (and their keys)\n" +
-			"need --operator. The plan is shown and confirmed once; the manifest is\n" +
-			"saved after confirmation and before the first write, so commit and push\n" +
-			"it afterwards. --dry-run changes nothing; --no-apply saves the edit\n" +
+			"except: entry); the users and their keys stay. A pair a group grant reaches is\n" +
+			"refused; 'revoke USER...' also drops each user from every group. Operator users\n" +
+			"(and their keys) need --operator. The plan is shown and confirmed once; the\n" +
+			"manifest is saved after confirmation and before the first write, so commit and\n" +
+			"push it afterwards. --dry-run changes nothing; --no-apply saves the edit\n" +
 			"without contacting any server. A server whose only grantee is revoked is\n" +
 			"never emptied: the key stays installed there (a warning says so).\n\n" + exitCodesWrite,
 		Example: "  # Offboard a user everywhere\n" +
@@ -185,7 +186,7 @@ func planRevokeUsers(mf *manifest.File, users []string, operator bool, h followU
 		if err != nil {
 			return editPlan{}, fmt.Errorf("edit manifest: %w", err)
 		}
-		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{Kind: apply.EditRemoveUser, User: u.Name, Keys: r.Keys, Grants: r.Grants})
+		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{Kind: apply.EditRemoveUser, User: u.Name, Keys: r.Keys, Grants: r.Grants, Groups: r.Groups})
 		ep.removesKey = ep.removesKey || r.Keys > 0
 		for _, fp := range userFingerprints(u) {
 			tombs = append(tombs, config.Tombstone{Fingerprint: fp, User: u.Name, Date: memo.date, Reason: memo.reason})
@@ -352,10 +353,11 @@ func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, ops []string, 
 // refusal before any edit (accessProblems). A pair an access tombstone
 // already records is a note (D1c). A server no except: remembers after the
 // edit is tombstoned (D1a); one that gained an except: entry needs none —
-// the except: already remembers it.
+// the except: already remembers it. A group's except: does not count: it
+// stops applying when the member leaves the group.
 func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, memo editMemo) (editPlan, error) {
 	cfg := mf.Config()
-	problems, trims, already := accessProblems(cfg, users, servers, h)
+	problems, trims, already := accessProblems(cfg, users, servers, h, memo.date)
 	if len(problems) > 0 {
 		return editPlan{}, errors.New(strings.Join(problems, "; "))
 	}
@@ -409,6 +411,8 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 
 // accessTombstones: one entry per user, naming the trimmed servers no
 // selector except: remembers in mid (the manifest after the access edit).
+// A group's except: is not memory here (it stops applying when the member
+// leaves the group), so the check reads OwnExceptCarveOut.
 // A selector entry this trim deleted took its except: list with it, so a
 // server only that list remembered is tombstoned too, or a later adopt
 // --merge would re-grant it (D1a); the original date is unknown, so this
@@ -419,7 +423,7 @@ func accessTombstones(former, mid *config.Config, users []string, trims map[stri
 	for _, name := range users {
 		var lost []string
 		for _, s := range trims[name] {
-			if !mid.ExceptCarveOut(name, s) {
+			if !mid.OwnExceptCarveOut(name, s) {
 				lost = append(lost, s)
 			}
 		}
@@ -437,12 +441,13 @@ func accessTombstones(former, mid *config.Config, users []string, trims map[stri
 
 // forgottenCarveOut reports a server only a deleted selector entry's except:
 // remembered: excluded in former, neither excluded nor covered in mid, and
-// not already recorded by an access tombstone.
+// not already recorded by an access tombstone. Both sides read the user's own
+// except:, so a group's except: is neither forgotten nor memory.
 func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
-	if former.Covers(user, server) || !former.ExceptCarveOut(user, server) {
+	if former.Covers(user, server) || !former.OwnExceptCarveOut(user, server) {
 		return false
 	}
-	if mid.ExceptCarveOut(user, server) || mid.Covers(user, server) {
+	if mid.OwnExceptCarveOut(user, server) || mid.Covers(user, server) {
 		return false
 	}
 	_, recorded := former.AccessRevoked(user, server)
@@ -453,10 +458,12 @@ func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
 // in this order: unknown users (one entry, the existing wording), unknown
 // servers, operator targets, then every non-operator user × known server
 // pair the user has no access to and no access tombstone records
-// (config.Covers: selectors and except: included). It also returns, per
+// (config.Covers: selectors and except: included), and every pair a group
+// grant reaches (refused whether or not a direct grant exists, because
+// trimming that one would leave the access). It also returns, per
 // user, the servers to trim, and the pairs already revoked (D1c). h
 // carries the run's flags into the operator hint.
-func accessProblems(cfg *config.Config, users, servers []string, h followUp) (problems []string, trims map[string][]string, already []apply.AlreadyRevoked) {
+func accessProblems(cfg *config.Config, users, servers []string, h followUp, runDate string) (problems []string, trims map[string][]string, already []apply.AlreadyRevoked) {
 	var unknown, ops []string
 	for _, name := range users {
 		i := slices.IndexFunc(cfg.Users, func(u config.User) bool { return u.Name == name })
@@ -487,7 +494,7 @@ func accessProblems(cfg *config.Config, users, servers []string, h followUp) (pr
 		if slices.Contains(unknown, name) || slices.Contains(ops, name) {
 			continue
 		}
-		trim, gone, date, missing := classifyPairs(cfg, name, known)
+		trim, gone, date, missing := classifyPairs(cfg, name, known, runDate)
 		trims[name] = trim
 		problems = append(problems, missing...)
 		if len(gone) > 0 {
@@ -497,10 +504,16 @@ func accessProblems(cfg *config.Config, users, servers []string, h followUp) (pr
 	return problems, trims, already
 }
 
-// classifyPairs sorts one user's --from-server targets: covered (trim), already
-// revoked by an access tombstone (gone, with the latest date), or a problem.
-func classifyPairs(cfg *config.Config, name string, servers []string) (trim, gone []string, date string, problems []string) {
+// classifyPairs sorts one user's --from-server targets: reached by a group
+// grant (a problem: trimming a direct grant would leave the access), covered
+// (trim), already revoked by an access tombstone (gone, with the latest date),
+// or a problem. runDate goes in the refusal's paste-ready tombstone.
+func classifyPairs(cfg *config.Config, name string, servers []string, runDate string) (trim, gone []string, date string, problems []string) {
 	for _, s := range servers {
+		if groups := cfg.GroupGrantsReaching(name, s); len(groups) > 0 {
+			problems = append(problems, groupRefusal(name, s, groups, runDate))
+			continue
+		}
 		if cfg.Covers(name, s) {
 			trim = append(trim, s)
 			continue
@@ -512,6 +525,16 @@ func classifyPairs(cfg *config.Config, name string, servers []string) (trim, gon
 		problems = append(problems, fmt.Sprintf("%s has no access to %s", name, s))
 	}
 	return trim, gone, date, problems
+}
+
+// groupRefusal is revoke's message for a (user, server) pair a group grant
+// reaches: the three ways out, the third a paste-ready tombstone carrying the
+// run's date.
+func groupRefusal(user, server string, groups []string, date string) string {
+	return fmt.Sprintf("%s's access to %s comes from %s %s; remove the user from the %s, trim the %s, or add revoked: [{user: %s, servers: [%s], date: %s}] to block only this member",
+		user, server, pluralWord(len(groups), "group", "groups"), strings.Join(groups, ", "),
+		pluralWord(len(groups), "group", "groups"), pluralWord(len(groups), "group's grant", "groups' grants"),
+		user, server, date)
 }
 
 // pluralWord picks the singular or plural form for n.

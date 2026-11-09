@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/javadh75/SSHepherd/internal/adopt"
@@ -143,5 +144,34 @@ func TestAdoptRegenerateKeepsRevokedAndSerial(t *testing.T) {
 	}
 	if got.Serial() != 7 || !reflect.DeepEqual(got.Tombstones, cfg.Tombstones) {
 		t.Errorf("adopt lost memory: serial %d, revoked %+v\n%s", got.Serial(), got.Tombstones, out)
+	}
+}
+
+// TestAdoptRegenerateKeepsGroups: a plain adopt rebuilds the manifest from
+// structs; it must carry groups: and a group entry, or one adopt would erase
+// every group. Every Group field needs a sample (fill fails otherwise).
+// Append cannot carry a group: it has no groups parameter, and adopt and
+// import never create one.
+func TestAdoptRegenerateKeepsGroups(t *testing.T) {
+	cfg, _, _, _ := roundTripConfig(t)
+	group := fill[config.Group](t, map[string]map[string]any{"Group": {
+		"Name": "web-team", "Description": "d", "Members": []string{"op", "bob"},
+	}})
+	entry := config.Access{Group: "web-team", Servers: []string{"web-2"}}
+	cfg.Groups = []config.Group{group}
+	cfg.Access = append(cfg.Access, entry)
+	out, err := generateAdoptManifest(cfg, adopt.Plan{}, "rt.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.Parse(out)
+	if err != nil {
+		t.Fatalf("adopt output does not load: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(got.Groups, cfg.Groups) || !reflect.DeepEqual(got.Access[len(got.Access)-1], entry) {
+		t.Errorf("adopt lost the group: groups %+v, access %+v\n%s", got.Groups, got.Access, out)
+	}
+	if strings.Contains(string(out), `user: ""`) {
+		t.Errorf("a group entry was written with a junk user key:\n%s", out)
 	}
 }

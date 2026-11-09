@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -593,6 +593,7 @@ access:
 - Group names match the tag pattern and are unique.
 - Every member is a known user. A repeated member is an error.
 - An empty group is **valid, with a warning**, kind `empty_group`: `group "web-team" has no members; its grants add nothing`. So revoking the last member never breaks the manifest.
+- A bad name reads `group "X": name is not valid: want lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, at most 63 characters`, a repeated name `duplicate group "X"`, an unknown member `group "X": unknown member "y"`, a repeated member `group "X": member "y" is repeated`, and neither or both of `user:` and `group:` `access[N]: set exactly one of user or group`.
 
 **Error text.** `validateAccess` and `expandServers` format every error with `a.User`,
 so a group entry would print `access for ""`. An entry-label helper prints `"x"` for a
@@ -612,26 +613,25 @@ already emitted; the existing "redundant grant" skip applies.
 A group entry with `servers: ["*"]` reaching a `user: root` server warns once per entry,
 kind `wildcard_root`:
 `access for group "web-team": servers ["*"] includes the root account on web-1 and 3 more; list the servers or use an @tag that excludes root accounts`.
+The entry warns whoever its members are, an empty or all-operator group included (its grant stands for whoever joins later).
 
 **Group access is not a personal grant.** `entryApplies(a, user)` is true when `a.User`
 is the user or `a.Group` contains the user. `Covers` and `ExceptCarveOut` use it. A
-group entry carries an `except:` for every member. `cmd/sshepherd` cannot call an
-unexported helper, so `Config` exports `HasAccessEntry(user)` and
-`GroupGrantsReaching(user, server) []string`.
+group entry carries an `except:` for every member. `revoke`'s D1a check reads `OwnExceptCarveOut`, which ignores group entries: a group's `except:` stops applying when the member leaves the group, so it is no memory for a personal trim. Adopt and reconcile keep `ExceptCarveOut`. `cmd/sshepherd` cannot call an
+unexported helper, so `Config` exports `GroupGrantsReaching(user, server) []string`. `directlyGranted` and `accessConflicts` read `a.User`, so a group entry is never direct.
 
 **Editor.**
 
 - `checkTopLevelKeys` accepts `groups`.
 - `RemoveUser` also drops the name from every `groups[].members` and reports it in
-  `UserRemoval.Groups`. A group left empty keeps its entry and gets the warning.
+  `UserRemoval.Groups`, shown in the edit header (`1 group`) and additively on `remove-user` JSON as `groups`. A group left empty keeps its entry and gets the warning.
 - `revoke USER --from-server S` is **refused** when any group grant reaches (USER, S),
   whether or not a direct grant also exists, because trimming the direct one would leave
   the access in place. `GroupGrantsReaching` ignores blocked pairs, so a blocked member
   gets the D1c note instead:
   `alice's access to web-1 comes from group web-team; remove the user from the group, trim the group's grant, or add revoked: [{user: alice, servers: [web-1], date: 2026-11-08}] to block only this member`
-  (exit 3, nothing saved). The date printed is the run's date.
-- `NoGrantsLeft` in `planRevokeAccess` scans `a.User` today. It moves to
-  `HasAccessEntry`, so a user with group access is not told they have none left.
+  (exit 3, nothing saved). The date printed is the run's date. Two groups reaching the pair are named together: `bob's access to web-1 comes from groups web-team, solo; remove the user from the groups, trim the groups' grants, or add revoked: [{user: bob, servers: [web-1], date: 2026-11-09}] to block only this member`. When a direct grant also exists, the third way out is a W4 conflict until that direct grant is removed too.
+- `NoGrantsLeft` stays `KeepsServers == 0` (S3a), which already answers for group access through `Covers`, so a user with group access is not told they have none left. The `HasAccessEntry` this design first named would have had no caller.
 - `adopt` regenerate carries `Groups` through `Draft`. `adopt` and `import` never
   create groups.
 
@@ -640,7 +640,7 @@ Other members keep the grant. A key tombstone behaves as today: `serversRenderin
 reads `c.grants`, so it covers group grants.
 
 **Files.** `internal/config/{config,revoked}.go`, `internal/manifest/{manifest,edit}.go`,
-`cmd/sshepherd/{adopt,revoke}.go`, `cmd/sshepherd/schema_roundtrip_test.go`.
+`cmd/sshepherd/{adopt,revoke}.go`, `cmd/sshepherd/schema_roundtrip_test.go`, `internal/apply/{edit,json}.go`, `scripts/integration.sh`.
 
 **README.** **The manifest**: new "Groups" subsection; **Validation rules**;
 **`sshepherd revoke`** (group refusal, removal from groups); **Revoked keys** (blocked for
@@ -655,7 +655,7 @@ one member); **Exit codes**.
   entry over a tombstone: `Covers` false, D1c note, `KeepsServers` not inflated; adopt and
   reconcile as in S3a.
 - `wildcard_root` for a group `*` entry reaching a root server.
-- Manifest edit goldens: remove a member; the refused trim; removing the last member.
+- Manifest edit goldens: remove a member; removing the last member. The refused trim writes nothing, so a test pins its text and that the file is byte-identical.
 - Round-trip: a group entry regenerates without `user:` (the `requiredKeys` fix). The
   `Group` sample in `samples["Access"]` is `""` with a comment: `fill` sets every field,
   and a user plus a group would fail exactly-one-of. `TestSchemaRoundTripAppend` cannot
@@ -1301,7 +1301,7 @@ same commit, then an independent verifier, then repair.
 | S2 | A: `import.go`, `adopt.go`, `internal/reconcile` message · B: `revoke.go`, `editrun.go`, `internal/apply/edit.go` · C: `identity.go`, `internal/keyfile` |
 | S8 | A: `internal/adopt`, `adopt.go`, `manifest_out.go` · B: `import_json.go`, `import.go`, `internal/reconcile` |
 | S3a | A: `internal/config` and the consumer tests · B: `internal/manifest`, `revoke.go` · C: `import.go` (B and C after A: the runner compiles each lane on earlier rounds) |
-| S3b | A: `internal/config` · B: `internal/manifest` · C: `revoke.go`, `adopt.go` |
+| S3b | A: `internal/config` and the consumer tests · B (after A): `internal/manifest`, `group_reach.go`, `internal/apply/{edit,json}.go`, `revoke.go`, `adopt.go` (a group manifest needs both editor and schema, so one lane) |
 | S4 | A: `internal/config` · B: `internal/audit` · C: `internal/apply`, `editrun.go`, `revoke.go`, `rotate.go`, `internal/reconcile` |
 | S5 | A: `internal/config`, `internal/fleet`, `internal/manifest/edit.go` · B: `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit/{audit,report,json}.go` · C: `internal/sshcfg`, `internal/reconcile`, `import.go` · D: `internal/apply/{exec,plan,report,json}.go`, `adopt.go`, `sweep.go` · integrator: `scripts/integration.sh` |
 | S6 | A: `internal/config` · B: `internal/authkeys/render.go`, `internal/apply` · C: `internal/audit`, `internal/adopt` |

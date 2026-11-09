@@ -77,6 +77,8 @@ Audit trust and posture: audit checks the managed file and its directories the w
 
 Tags: `tags:` on a server and `@tag` selectors in `access:` mix with names, `except:` works on any selector, a tombstone blocks a tag-derived grant instead of conflicting, and a `*` reaching a root account warns (kind `wildcard_root`).
 
+Groups: `groups:` and `access: - group: X` grant every member, a tombstone blocks a group grant for one member only, and `revoke USER --from-server` is refused where a group grant reaches the pair.
+
 ## Install
 
 **From source** (Go 1.27.3+):
@@ -1827,8 +1829,8 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
-**Users or keys, not both.** `revoke USER...` deletes each user and every `access:`
-entry whose `user:` is that user (unknown users are listed and nothing happens).
+**Users or keys, not both.** `revoke USER...` deletes each user, every `access:` entry whose `user:` is that user, and the user from every group's `members:` (a group left empty stays and warns) (unknown users are listed and nothing happens).
+The edit header counts the groups: `manifest edit: remove user bob (1 key, 0 access grants, 1 group) — 2 servers affected`.
 `revoke NAME` looks NAME up in the manifest first, so users called `tunnel` or
 `Alice Smith` are revoked by name. Only an unknown name that looks like a key or
 fingerprint gets `NAME looks like a key — did you mean --key?`.
@@ -1851,7 +1853,7 @@ instead of failing; repeating it prints
 
 **Revocation memory.** Every revoke that saves records what it removed in `revoked:` —
 `revoke USER` one key entry per key, `revoke --key` one per key (labelled with its
-owner), `revoke USER --from-server NAME` one access entry naming the servers no `except:` remembers (a selector's new `except:` already remembers its server) — and bumps
+owner), `revoke USER --from-server NAME` one access entry naming the servers none of that user's own `except:` lists remembers (a selector's new `except:` already remembers its server; a group's `except:` does not count, because it stops applying when the member leaves the group) — and bumps
 `serial:` once. `revoke` refuses to save a manifest that would keep a policy conflict,
 exit `3`, nothing saved —
 `refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`;
@@ -1866,12 +1868,14 @@ restricts which servers a run touches, `revoke --from-server` edits the grants.)
 explicit `servers:` list loses every occurrence of the server, and an entry left
 empty is deleted (its comment moves on, as for a removed user). A selector entry (`servers: ["*"]`, or one with an `@tag`) gets each server it still reaches appended to `except:` — created right after `servers:` when absent. A server the entry also names loses that item too. A wildcard keeps covering servers added later, so a wildcard that would then cover no current server is deleted, with a warning that later servers are no longer granted automatically. An `@tag` entry left with no name and nothing but excepted members is deleted the same way, without that warning, because a tag promises no future server. When a trim deletes an entry with an `except:`, every server that `except:` remembered also gets an access tombstone, because the deleted `except:` was the only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--from-server`
 with `--key` (access is per user), with `--operator`, or on an operator user
-(operators have every server by definition), `--from-server` with `*` or an `@tag` (use `revoke USER`), an
+(operators have every server by definition), `--from-server` with `*` or an `@tag` (use `revoke USER`), any user × server pair a group grant reaches, whether or not a direct grant exists too (a direct trim would leave the access): `bob's access to web-1 comes from group web-team; remove the user from the group, trim the group's grant, or add revoked: [{user: bob, servers: [web-1], date: 2026-11-09}] to block only this member`; an
 unknown server, and any user × server pair the user has no access to — every problem
 is listed in one message. Only the trimmed servers are contacted, and there is no
 `check every server:` line (no key is removed). The edit
 header says how many other servers each user keeps; `revoke USER` without `--from-server`
 removes every grant.
+
+The third way out blocks that one member and leaves the group alone. If the user also holds a direct grant of the server, that tombstone is a policy conflict until you remove the direct grant too. A pair a tombstone already blocks reads as already revoked, exit `0`.
 
 ```console
 manifest edit: remove alice's access to web-1 (1 access entry changed); alice keeps access to 3 other servers — 1 server affected
@@ -1992,7 +1996,7 @@ is absent:
 **JSON.** Under `--json` (see [`apply`](#sshepherd-apply)) the document adds an
 `edit` section — `saved` (the manifest was written: `false` under `--dry-run` and
 when nothing could land), `edits` (one per change, fields by `kind`:
-`remove-user`, `remove-key`, `rotate` (with `keep_old`), `remove-access`
+`remove-user` (with `groups` when the user was in a group), `remove-key`, `rotate` (with `keep_old`), `remove-access`
 (`access_servers`, `entries_changed`, `entries_removed`, `servers_excepted`,
 `wildcards_removed`, `no_grants_left`)), `affected`, `operators` and `emptied` — and a
 removed key the edited manifest no longer owns carries `former_owner`. `--no-apply`
@@ -2516,7 +2520,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
 
-A tag problem (an unknown `@tag`, a malformed tag, a selector in `except:` or in a tombstone's `servers:`) is a manifest load error, so it is exit `3` on every command. A blocked grant and the `wildcard_root` warning change no exit code, except that `validate --strict` exits `1`.
+A tag or group problem (an unknown `@tag` or group, a malformed tag or group name, a selector in `except:` or in a tombstone's `servers:`, an entry with both or neither of `user:` and `group:`) is a manifest load error, so it is exit `3` on every command. A blocked grant, the `wildcard_root` warning and the `empty_group` warning change no exit code, except that `validate --strict` exits `1`.
 
 `--help` shows this summary. `audit --help`:
 

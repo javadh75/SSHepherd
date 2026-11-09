@@ -1,0 +1,22 @@
+# fleet manifest
+users:
+  - {name: alice, keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOU"]}
+# who works on what
+groups:
+  - name: web-team
+    description: docs only # kept
+    members:
+      # lead
+      - alice
+  - name: solo
+    members: []
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy, tags: [web]}
+  - {name: web-2, host: 10.0.0.2, user: deploy, tags: [web]}
+access:
+  # the team
+  - group: web-team
+    servers: ["@web"]
+  - group: solo
+    servers: [web-1]
+# end of manifest

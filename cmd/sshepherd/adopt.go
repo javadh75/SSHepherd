@@ -65,7 +65,7 @@ func generateAdoptManifest(cfg *config.Config, plan adopt.Plan, src string, gaps
 		header.WriteString("# " + g + "\n")
 	}
 	return manifest.GenerateWith(header.String(), manifest.Draft{ //nolint:wrapcheck // "encode manifest: …"
-		Serial: cfg.Serial(), Users: users, Servers: cfg.Servers, Access: access, Revoked: cfg.Tombstones,
+		Serial: cfg.Serial(), Users: users, Groups: cfg.Groups, Servers: cfg.Servers, Access: access, Revoked: cfg.Tombstones,
 	})
 }
 
