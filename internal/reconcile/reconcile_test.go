@@ -527,6 +527,14 @@ func TestBuildExceptCarveOutNeverRegranted(t *testing.T) {
 	}
 	wantContains(t, "Warnings", messages(p.Warnings),
 		`key of "bob" used for "db-1" in the ssh config, which their except: list deliberately excludes — not re-granted; audit flags this drift`)
+	if len(p.Warnings) != 1 {
+		t.Fatalf("Warnings = %q, want only the carve-out", messages(p.Warnings))
+	}
+	got := p.Warnings[0]
+	got.Message = ""
+	if want := (Warning{Kind: KindMergeConflict, Server: "db-1", User: "bob"}); got != want {
+		t.Errorf("Warning = %+v, want %+v", got, want)
+	}
 	if p.ConflictsSkipped() != 1 {
 		t.Errorf("ConflictsSkipped() = %d, want 1", p.ConflictsSkipped())
 	}

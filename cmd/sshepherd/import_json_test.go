@@ -523,3 +523,17 @@ func TestImportJSONToolErrorNoDocument(t *testing.T) {
 		})
 	}
 }
+
+// TestImportJSONSSHConfigOwnWarningKind: a warning sshcfg.Load itself returns
+// is ssh_config, with no other import warning in the run to hide a wrong kind.
+func TestImportJSONSSHConfigOwnWarningKind(t *testing.T) {
+	hermeticHome(t)
+	path := writeSSHConfig(t, "Host plain\n  HostName 10.0.0.1\n  User deploy\nMatch all\n  User x\n")
+	code, doc, stderr := importJSONCLI(t, path, "--servers-only")
+	if code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+	}
+	if len(doc.Warnings) != 1 || doc.Warnings[0].Kind != importWarnSSHConfig || !strings.Contains(doc.Warnings[0].Message, "Match block skipped") {
+		t.Errorf("warnings = %+v, want the one Match warning as %s", doc.Warnings, importWarnSSHConfig)
+	}
+}
