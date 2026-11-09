@@ -173,3 +173,63 @@ func TestHelpShowsIdentityVarnames(t *testing.T) {
 		}
 	}
 }
+
+// readmeText returns the repository README.
+func readmeText(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("README: %v", err)
+	}
+	return string(raw)
+}
+
+// readmeParagraph returns the blank-line-delimited README block containing
+// marker.
+func readmeParagraph(t *testing.T, readme, marker string) string {
+	t.Helper()
+	for _, block := range strings.Split(readme, "\n\n") {
+		if strings.Contains(block, marker) {
+			return block
+		}
+	}
+	t.Fatalf("README has no block containing %q", marker)
+	return ""
+}
+
+// TestREADMELayoutNamesEveryCommand: the Layout block's cmd/sshepherd line
+// lists every command the root registers, so a new command cannot leave the
+// repo layout stale (PRD-11).
+func TestREADMELayoutNamesEveryCommand(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	root := newRootCmd(&app{}, &out, &errBuf)
+	_, section, ok := strings.Cut(readmeText(t), "\n### Layout\n")
+	if !ok {
+		t.Fatal(`README has no "### Layout" heading`)
+	}
+	_, line, ok := strings.Cut(section, "\ncmd/sshepherd/")
+	if !ok {
+		t.Fatal("README Layout has no cmd/sshepherd/ line")
+	}
+	line, _, _ = strings.Cut(line, "\n")
+	words := strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == ',' || r == ':' })
+	for _, c := range root.Commands() {
+		if !slices.Contains(words, c.Name()) {
+			t.Errorf("README Layout line for cmd/sshepherd/ omits %s: %q", c.Name(), line)
+		}
+	}
+}
+
+// TestREADMEAuditSkippedIsConditional: summary.skipped is omitempty, so a
+// --server run naming the whole fleet has no key and no closing line
+// (TestAuditServerRepeatable). The README must not promise them on every
+// --server run, and must list the field as optional (PRD-11).
+func TestREADMEAuditSkippedIsConditional(t *testing.T) {
+	readme := readmeText(t)
+	if p := readmeParagraph(t, readme, "Optional fields, present only when they apply:"); !strings.Contains(p, "`summary.skipped`") {
+		t.Errorf("optional-fields list omits summary.skipped:\n%s", p)
+	}
+	if p := readmeParagraph(t, readme, "skipped by --server)`"); !strings.Contains(p, "names every server") {
+		t.Errorf("--server paragraph does not state the whole-fleet case:\n%s", p)
+	}
+}

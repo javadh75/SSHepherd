@@ -567,9 +567,10 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
-With `--server`, the report ends with `(N servers skipped by --server)` and the JSON
-summary gains `skipped`. The manifest's policy conflicts are about the manifest, not one
-server, so they are still printed and still exit `2`.
+When `--server` leaves servers out, the report ends with `(N servers skipped by --server)`
+and the JSON summary gains `skipped`; a run that names every server gets neither. The
+manifest's policy conflicts are about the manifest, not one server, so they are still
+printed and still exit `2`.
 
 **Drift classes.** Besides missing, unauthorized and unparseable entries, these
 security-relevant classes make a server non-compliant, always on (exit 1 unless the
@@ -950,7 +951,8 @@ document. Each object has `kind` and `message`. `revoked_index` and `user` appea
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`
-(omitted when 0), `keys.present[].options_drift` (`{"actual": [...], "desired": [...]}`),
+(omitted when 0), `summary.skipped` (servers `--server` left out; omitted when 0),
+`keys.present[].options_drift` (`{"actual": [...], "desired": [...]}`),
 `keys.present[].comment_drift` (with `--comments`), `servers[].duplicates`
 (`[{"owner", "fingerprint", "count"}]`), `servers[].authorized_keys2_present`,
 `servers[].hint` (remediation text, present only when the failure has one; `error`
@@ -2673,7 +2675,7 @@ checks (`goleak` in every package), and golden snapshots of rendered output.
 ### Layout
 
 ```
-cmd/sshepherd/       CLI: root command, audit, import, adopt, apply, revoke, rotate, E2E tests
+cmd/sshepherd/       CLI: root command, audit, import, adopt, apply, revoke, rotate, validate, E2E tests
 internal/config/     manifest load + strict validation, access resolution, revocation memory (revoked:, serial:, policy conflicts)
 internal/authkeys/   authorized_keys parser and renderer, managed header grammar (Header/ParseHeader, serial), option semantics, key offer order (OfferOrder/OfferRank)
 internal/audit/      fan-out, diffing, text/JSON reports, exit codes
