@@ -73,7 +73,7 @@ and bump them, apply refuses a server written by a newer manifest unless the wri
 removes keys, audit pages on a revoked key still installed, adopt and `import --merge`
 never bring one back, `revoke --sweep` checks the rest of the fleet.
 
-Audit trust and posture: audit checks the managed file and its directories the way StrictModes does, and pages on a world-writable path, an operator key that cannot log in, a host key whose type changed, and a weak key granted on a server. Each server is offered only its granted keys (`--offer-all-keys` restores the old offer).
+Audit trust and posture: audit checks the managed file and its directories the way StrictModes does, and pages on a world-writable path, an operator or protected key that cannot log in, a host key whose type changed, and a weak key granted on a server. Each server is offered only its granted keys (`--offer-all-keys` restores the old offer).
 
 Tags: `tags:` on a server and `@tag` selectors in `access:` mix with names, `except:` works on any selector, a tombstone blocks a tag-derived grant instead of conflicting, and a `*` reaching a root account warns (kind `wildcard_root`).
 
@@ -697,7 +697,7 @@ entry says otherwise):
 - a non-empty, unmanaged **`~/.ssh/authorized_keys2`** (checked when the audited
   path is the default or resolves to it);
 - **Unsafe permissions** — audit checks what sshd's StrictModes checks: the managed file and its directories up to `$HOME` (up to `/` for an override path outside it). A group-writable path, a path owned by neither the login user nor root, or a symlinked managed file is drift (exit 1); a world-writable path is critical (exit 2), since anyone on the host can add a key. The report says to fix by hand (`chmod go-w`, `chown`); `apply` refuses to write through these paths (exit 48 in the write script; 45 for a symlinked managed file). A root-owned file audits clean, though `apply` refuses to write it. The probe is evidence about an honest server: a compromised one can print nothing and look clean.
-- **Operator key that cannot log in** — a present operator key on a line sshd will not honour (a `cert-authority`/`principals=` line the manifest does not declare, a passed `expiry-time` whether declared or not, or every line ignored) is critical. Audit checks every line of a key, as sshd does: a working second line keeps it non-critical.
+- **Operator or protected key that cannot log in** — a present operator or protected key on a line sshd will not honour (a `cert-authority`/`principals=` line the manifest does not declare, a passed `expiry-time` whether declared or not, or every line ignored) is critical. Audit checks every line of a key, as sshd does: a working second line keeps it non-critical.
 
 Rows are annotated ` · WEAK (dsa)`, ` · WEAK (rsa 1024)` and ` · EXPIRED`; annotations alone do not change the exit code.
 
@@ -1075,8 +1075,8 @@ manifest does not own).
 
 The trust posture adds these, also present only when they apply:
 
-- Server: `posture`: `[{"path", "issue", "mode", "uid"}]`; `critical_reasons`: sorted list from `forged_serial`, `operator_cannot_log_in`, `operator_missing`, `policy_conflict`, `revoked_key`, `world_writable`, present exactly when `status` is `critical`. A host-key alert is `status: unreachable` and carries no reason; `error_kind` and `summary.host_key_alerts` say why.
-- Key: `cannot_log_in` (`cert_only`, `expired`, `ignored`) on a present operator key that is critical, with `operator: true`; `key_issues` (`dsa`, `rsa_under_2048`, `expired`), never on a key with `revoked`.
+- Server: `posture`: `[{"path", "issue", "mode", "uid"}]`; `critical_reasons`: sorted list from `forged_serial`, `operator_cannot_log_in`, `operator_missing`, `policy_conflict`, `protected_cannot_log_in`, `protected_missing`, `revoked_key`, `world_writable` (the `protected_*` values appear only for a `protected: true` user who is not an operator), present exactly when `status` is `critical`. A host-key alert is `status: unreachable` and carries no reason; `error_kind` and `summary.host_key_alerts` say why.
+- Key: `cannot_log_in` (`cert_only`, `expired`, `ignored`) on a present operator or protected key that is critical, with `operator: true` or `protected: true`; `key_issues` (`dsa`, `rsa_under_2048`, `expired`), never on a key with `revoked`.
 - `policy_conflicts` carries the new `kind: "weak_key"`. New `error_kind`: `host_key_type_changed`.
 
 ```json

@@ -723,3 +723,8 @@ not. `DesiredFor` emits protected-and-granted keys first in users order, then th
 order. `GrantCount`, `blockEntry`, `serversRendering` read `FleetWide`. An `@tag` or literal `user:`
 entry for a fleet-wide operator warns (`operator_grant_redundant`, exit 0, `validate --strict` 1).
 `render_operator_unchanged.golden` was taken from pre-S4 code and is never `-update`d.
+Audit grades every protected key: `criticalReasons` and the `CANNOT LOG IN` row read
+`IsProtected()` (a protected non-operator's rows say `protected key`, an operator's, however
+scoped, `operator key`), `critical_reasons` gains `protected_missing` and
+`protected_cannot_log_in`, and JSON key objects carry `protected: true` (additive, set only for a
+non-operator) beside `operator: true`, so a report with no protected user is byte-identical.

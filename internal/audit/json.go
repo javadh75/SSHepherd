@@ -111,14 +111,15 @@ type jsonKeySets struct {
 
 // jsonKey field presence is deliberately mixed: owner is always emitted
 // (null = unknown key), while comment (identity hint, often empty) and
-// operator (exception marker: missing keys, and present keys that cannot
-// log in) are omitted when unset.
+// operator, protected (exception marker: missing keys, and present keys that
+// cannot log in) are omitted when unset.
 type jsonKey struct {
 	Owner       *string `json:"owner"`
 	Comment     string  `json:"comment,omitempty"`
 	Fingerprint string  `json:"fingerprint"`
 	Type        string  `json:"type"`
 	Operator    bool    `json:"operator,omitempty"`
+	Protected   bool    `json:"protected,omitempty"`
 	// CommentDrift is additive-optional (schema stays 1): present keys only,
 	// and only when JSONOptions.Comments is on AND the on-server comment
 	// differs from the decided write-time comment (config.DesiredComment).
@@ -136,7 +137,7 @@ type jsonKey struct {
 	// additive-optional (schema stays 1).
 	Revoked       *jsonRevoked       `json:"revoked,omitempty"`
 	AccessRevoked *jsonAccessRevoked `json:"access_revoked,omitempty"`
-	// CannotLogIn (a present operator key that is critical) and KeyIssues
+	// CannotLogIn (a present protected key that is critical) and KeyIssues
 	// (dsa, rsa_under_2048, expired; never on a revoked key) are
 	// additive-optional (schema stays 1).
 	CannotLogIn string   `json:"cannot_log_in,omitempty"`
@@ -283,7 +284,10 @@ func jsonPresentKey(cfg *config.Config, r ServerResult, k authkeys.Key, opts JSO
 		jk.CommentDrift = &jsonCommentDrift{Actual: sanitize.Remote(actual), Desired: sanitize.Remote(desired)}
 	}
 	if reason, _ := r.cannotLogIn(cfg, k); reason != "" {
-		jk.CannotLogIn, jk.Operator = reason, true
+		jk.CannotLogIn = reason
+		if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
+			jk.markTier(u)
+		}
 	}
 	jk.KeyIssues = keyIssues(k, true)
 	return jk
@@ -359,18 +363,26 @@ func ManifestFindings(cfg *config.Config) ([]config.Conflict, []config.ManifestW
 }
 
 // jsonKeyFor renders one key. markOperator is true only for missing keys:
-// operator: true is the JSON twin of the CRITICAL rendering, and appears
-// otherwise only on a present key that cannot log in (set in jsonPresentKey).
+// the exception marker (markTier) is the JSON twin of the CRITICAL rendering,
+// and appears otherwise only on a present key that cannot log in (set in
+// jsonPresentKey).
 func jsonKeyFor(cfg *config.Config, k authkeys.Key, markOperator bool) jsonKey {
 	jk := jsonKey{Comment: sanitize.Remote(k.Comment), Fingerprint: k.Fingerprint, Type: k.Type}
 	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
 		name := u.Name
 		jk.Owner = &name
-		if markOperator && u.Operator {
-			jk.Operator = true
+		if markOperator && u.IsProtected() {
+			jk.markTier(u)
 		}
 	}
 	return jk
+}
+
+// markTier sets the exception marker: operator on an operator's key,
+// protected on any other protected user's, never both, so a document with no
+// protected user is byte-identical to before.
+func (jk *jsonKey) markTier(u config.User) {
+	jk.Operator, jk.Protected = u.Operator, !u.Operator
 }
 
 // sanitizeAll renders an options list with each entry through

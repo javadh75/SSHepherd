@@ -21,7 +21,7 @@ import (
 // is not drift); 1 drift and/or unreachable servers — including a server
 // written by a newer manifest (D4a) and a key installed where its access
 // was revoked (D1d) or a posture finding short of world-writable; 2 critical
-// — any of criticalReasons (a missing operator key or one that cannot log
+// — any of criticalReasons (a missing protected key or one that cannot log
 // in, a revoked key still installed (D2), a forged header serial, a
 // world-writable path, a policy conflict naming the server), a policy
 // conflict in the manifest (D29, even with no server read), or a host key
@@ -178,10 +178,10 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 			glyph, label(cfg, k), k.Fingerprint, k.Type, status)
 	}
 	for _, k := range r.Diff.Missing {
-		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tauthorized but %s (%s: operator key)\n",
+		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.IsProtected() {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tauthorized but %s (%s: %s)\n",
 				pal.paint(codeBoldRed, "‼"), label(cfg, k), k.Fingerprint, k.Type,
-				pal.paint(codeRed, "MISSING"), pal.paint(codeBoldRed, "CRITICAL"))
+				pal.paint(codeRed, "MISSING"), pal.paint(codeBoldRed, "CRITICAL"), protectedKind(u))
 			continue
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\tauthorized but %s\n",
@@ -290,18 +290,19 @@ func unauthorizedLabel(cfg *config.Config, server string, k authkeys.Key) string
 	return label(cfg, k)
 }
 
-// okStatus renders a matched key's glyph and status cell. An operator key
-// that cannot log in outranks every other cell: it is the same class as a
-// missing operator key.
+// okStatus renders a matched key's glyph and status cell. A protected key
+// (operator: or protected:) that cannot log in outranks every other cell: it
+// is the same class as a missing protected key.
 func okStatus(cfg *config.Config, r ServerResult, k authkeys.Key, pal palette, comments bool) (glyph, status string) {
 	glyph = pal.paint(codeGreen, "✓")
 	status = "present & authorized"
 	reason, expired := r.cannotLogIn(cfg, k)
 	switch actual, desired, drifted := r.optionsDrift(k); {
 	case reason != "":
+		u, _ := cfg.OwnerOf(k.Fingerprint) // cannotLogIn found it, or reason is ""
 		glyph = pal.paint(codeBoldRed, "‼")
-		status = fmt.Sprintf("present but %s (%s: operator key; %s)",
-			pal.paint(codeRed, "CANNOT LOG IN"), pal.paint(codeBoldRed, "CRITICAL"), cannotLogInText(reason, expired))
+		status = fmt.Sprintf("present but %s (%s: %s; %s)",
+			pal.paint(codeRed, "CANNOT LOG IN"), pal.paint(codeBoldRed, "CRITICAL"), protectedKind(u), cannotLogInText(reason, expired))
 	case drifted:
 		// Options drift is security drift (a stripped from=/command=/restrict
 		// widens the key's power), so it changes the glyph and the verdict;
@@ -451,15 +452,17 @@ func commentDrift(cfg *config.Config, r ServerResult, k authkeys.Key) (actual, d
 
 // The critical_reasons values: why a server is critical.
 const (
-	reasonForgedSerial  = "forged_serial"
-	reasonCannotLogIn   = "operator_cannot_log_in"
-	reasonMissing       = "operator_missing"
-	reasonPolicy        = "policy_conflict"
-	reasonRevokedKey    = "revoked_key"
-	reasonWorldWritable = "world_writable"
+	reasonForgedSerial         = "forged_serial"
+	reasonCannotLogIn          = "operator_cannot_log_in"
+	reasonMissing              = "operator_missing"
+	reasonPolicy               = "policy_conflict"
+	reasonProtectedCannotLogIn = "protected_cannot_log_in"
+	reasonProtectedMissing     = "protected_missing"
+	reasonRevokedKey           = "revoked_key"
+	reasonWorldWritable        = "world_writable"
 )
 
-// The cannot_log_in values on a present operator key.
+// The cannot_log_in values on a present protected key.
 const (
 	cannotLogInCertOnly = "cert_only"
 	cannotLogInExpired  = "expired"
@@ -475,15 +478,15 @@ func criticalDrift(cfg *config.Config, r ServerResult) bool {
 	return len(criticalReasons(cfg, r)) > 0
 }
 
-// cannotLogIn grades a matched key owned by an operator over every line sshd
+// cannotLogIn grades a matched key owned by a protected user over every line sshd
 // honours: a key with one usable line can log in, whatever its other lines
 // say. It returns the first dead-line reason sshd honoured (expired or
 // cert_only), else "ignored" when sshd ignores all of them, and the expiry
 // when that is the reason. A manifest that declares cert-authority does not
 // make the key cert_only. "" means the key can log in, or the owner is not
-// an operator.
+// protected.
 func (r ServerResult) cannotLogIn(cfg *config.Config, k authkeys.Key) (reason string, expired time.Time) {
-	if u, ok := cfg.OwnerOf(k.Fingerprint); !ok || !u.Operator {
+	if u, ok := cfg.OwnerOf(k.Fingerprint); !ok || !u.IsProtected() {
 		return "", time.Time{}
 	}
 	lines := r.Lines[k.Fingerprint]
@@ -514,7 +517,7 @@ func (r ServerResult) cannotLogIn(cfg *config.Config, k authkeys.Key) (reason st
 }
 
 // criticalReasons lists why this server is critical, sorted and without
-// duplicates; nil when it is not. A missing operator key and a present one
+// duplicates; nil when it is not. A missing protected key and a present one
 // that cannot log in are the same emergency. An unreachable server has no
 // reasons: nothing is knowable about its keys.
 func criticalReasons(cfg *config.Config, r ServerResult) []string {
@@ -527,13 +530,14 @@ func criticalReasons(cfg *config.Config, r ServerResult) []string {
 		reasonWorldWritable: slices.ContainsFunc(r.Posture, func(p fleet.PostureIssue) bool { return p.Issue == fleet.PostureWorldWritable }),
 	}
 	for _, k := range r.Diff.Missing {
-		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.Operator {
-			found[reasonMissing] = true
+		if u, ok := cfg.OwnerOf(k.Fingerprint); ok && u.IsProtected() {
+			found[tierReason(u, reasonMissing, reasonProtectedMissing)] = true
 		}
 	}
 	for _, k := range r.Diff.OK {
 		if reason, _ := r.cannotLogIn(cfg, k); reason != "" {
-			found[reasonCannotLogIn] = true
+			u, _ := cfg.OwnerOf(k.Fingerprint) // cannotLogIn found it
+			found[tierReason(u, reasonCannotLogIn, reasonProtectedCannotLogIn)] = true
 		}
 	}
 	for _, k := range r.Diff.Unauthorized {
@@ -549,6 +553,24 @@ func criticalReasons(cfg *config.Config, r ServerResult) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// protectedKind names a protected key in a CRITICAL cell: an operator's, or
+// any other protected user's.
+func protectedKind(u config.User) string {
+	if u.Operator {
+		return "operator key"
+	}
+	return "protected key"
+}
+
+// tierReason picks the critical_reasons value of a protected key: operator
+// for an operator, however scoped, protected for anyone else.
+func tierReason(u config.User, operator, protected string) string {
+	if u.Operator {
+		return operator
+	}
+	return protected
 }
 
 // forged: the header claims a serial more than authkeys.ForgedMargin above

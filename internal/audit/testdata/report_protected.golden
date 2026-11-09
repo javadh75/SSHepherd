@@ -1,0 +1,10 @@
+web-1 (deploy@10.0.0.1:22)
+  ✓  alice              SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ‼  ci (ci@sshepherd)  SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY  ssh-ed25519  authorized but MISSING (CRITICAL: protected key)
+  → 2 authorized · 1 present · 1 missing · 0 unauthorized
+
+web-2 (deploy@10.0.0.2:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 1/2 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2
