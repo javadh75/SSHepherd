@@ -10,13 +10,14 @@ const (
 	WarnWildcardRoot           = "wildcard_root"
 	WarnTombstoneBlocksGrant   = "tombstone_blocks_grant"
 	WarnEmptyGroup             = "empty_group"
+	WarnOperatorGrantRedundant = "operator_grant_redundant"
 )
 
 // ManifestWarning is one load warning in structured form: an object of
 // manifest_warnings in the audit, apply and validate JSON. RevokedIndex, User
 // and Server belong to tombstone_unknown_server and tombstone_blocks_grant;
-// Server also to validate's host_key_not_recorded. RevokedIndex is a pointer
-// so revoked[0] still prints.
+// User also to operator_grant_redundant, Server to validate's
+// host_key_not_recorded. RevokedIndex is a pointer so revoked[0] still prints.
 type ManifestWarning struct {
 	Kind         string `json:"kind"`
 	RevokedIndex *int   `json:"revoked_index,omitempty"`

@@ -713,3 +713,13 @@ added. `accessTombstones` and `forgottenCarveOut` read `Config.OwnExceptCarveOut
 `except:` is not memory for a personal trim (D1a); `ExceptCarveOut` stays group-aware for adopt and
 reconcile. `TestE2EGroupGrant` is the E2E (fixture accounts `grpa`, `grpb`). `FuzzRemoveAccess` skips a
 pair a group grant reaches, because `revoke` refuses it.
+**`protected: true`** (P10 S4, D21, D21a, PRD-7; section S4 of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-09-p10-s4-protected.md`): `User.IsProtected()` (`operator:` or
+`protected:`) decides the critical tier, the `--operator` gate and written-first order;
+`Config.FleetWide(name)` (an operator with no `user:` entry holding `*`) decides the implicit
+grant. An operator's own `*` entry and its `except:` replace the implicit grant; a group's `*` does
+not. `DesiredFor` emits protected-and-granted keys first in users order, then the rest in access
+order. `GrantCount`, `blockEntry`, `serversRendering` read `FleetWide`. An `@tag` or literal `user:`
+entry for a fleet-wide operator warns (`operator_grant_redundant`, exit 0, `validate --strict` 1).
+`render_operator_unchanged.golden` was taken from pre-S4 code and is never `-update`d.

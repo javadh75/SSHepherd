@@ -348,7 +348,7 @@ func (c *Config) blockEntry(n int, a Access, user string, gone map[string]int) {
 		}
 		c.blocked[grantPair{user, s.Name}] = true
 		c.grants[s.Name] = slices.DeleteFunc(c.grants[s.Name], func(u string) bool { return u == user })
-		if !slices.Contains(c.operators, user) {
+		if !c.FleetWide(user) {
 			c.warnBlocked(n, m, a, user, s)
 		}
 	}
@@ -405,12 +405,12 @@ func grantVia(a Access, s Server) string {
 }
 
 // serversRendering lists, in servers: order, every server whose rendered
-// file holds u's keys: all of them for an operator, else u's grants. Never
-// nil (the JSON servers list is always present).
+// file holds u's keys: all of them for a fleet-wide operator, else u's grants.
+// Never nil (the JSON servers list is always present).
 func (c *Config) serversRendering(u User) []string {
 	out := []string{}
 	for _, s := range c.Servers {
-		if u.Operator || slices.Contains(c.grants[s.Name], u.Name) {
+		if c.FleetWide(u.Name) || slices.Contains(c.grants[s.Name], u.Name) {
 			out = append(out, s.Name)
 		}
 	}

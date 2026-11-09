@@ -206,7 +206,7 @@ func TestReportOperatorCertOnlyGolden(t *testing.T) {
 func TestReportKeyIssuesGolden(t *testing.T) {
 	pinNow(t)
 	op := `expiry-time=\"20260101\" ` + testkeys.Line(t, 1)
-	cfg := trustConfig(t, op, "  - {user: op, servers: [web-1]}\n")
+	cfg := trustConfig(t, op, "")
 	dsa := testkeys.DSALine(t, 7)
 	results := []ServerResult{runOne(t, cfg, fleet.ReadResult{Content: content(
 		`expiry-time="20260101" `+testkeys.Line(t, 1), testkeys.Line(t, 2), dsa, testkeys.RSALine(t, 8, 1024),

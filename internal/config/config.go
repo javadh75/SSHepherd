@@ -23,9 +23,16 @@ type User struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"` // docs only, never sent to a server
 	Comment     string   `yaml:"comment"`     // written as the key comment by the apply slice
-	Operator    bool     `yaml:"operator"`    // fleet-wide grant; protected from removal by apply/revoke
+	Operator    bool     `yaml:"operator"`    // protected, plus an implicit grant of every server (FleetWide)
+	Protected   bool     `yaml:"protected"`   // critical when missing, --operator to touch, written first, where granted
 	Keys        []string `yaml:"keys"`
 }
+
+// IsProtected reports whether u's keys are protected: operator: true or
+// protected: true. It decides the audit critical tier, the --operator
+// acknowledgement and written-first order. It says nothing about reach; that
+// is Config.FleetWide.
+func (u User) IsProtected() bool { return u.Operator || u.Protected }
 
 // Server is one machine in the fleet and the account we manage on it.
 type Server struct {
@@ -95,6 +102,8 @@ type Config struct {
 	owners     map[string]User           // fingerprint -> owning user
 	grants     map[string][]string       // server name -> user names, access order
 	operators  []string                  // operator user names, users order
+	protected  []string                  // operator: or protected: user names, users order
+	fleetWide  map[string]bool           // operators whose implicit grant applies (FleetWide)
 	ignored    map[int]map[string]bool   // revoked index -> unknown servers it names (D1e)
 	blocked    map[grantPair]bool        // @tag grants an access tombstone dropped (spec "How selectors meet tombstones")
 	members    map[string][]string       // group name -> members, as listed
@@ -154,6 +163,7 @@ func (c *Config) validateUsers() []error {
 	c.keysByUser = make(map[string][]authkeys.Key)
 	c.owners = make(map[string]User)
 	c.operators = nil
+	c.protected = nil
 	c.Warnings = nil
 	c.ManifestWarnings = nil
 	seen := make(map[string]bool)
@@ -204,6 +214,9 @@ func (c *Config) validateUsers() []error {
 				continue
 			}
 			c.operators = append(c.operators, u.Name)
+		}
+		if u.IsProtected() {
+			c.protected = append(c.protected, u.Name)
 		}
 	}
 	return errs
@@ -396,6 +409,7 @@ func (c *Config) validateAccess() []error {
 		servers[s.Name] = true
 	}
 	c.grants = make(map[string][]string)
+	c.fleetWide = c.fleetWideOperators()
 	granted := make(map[string]map[string]bool) // server -> user -> already granted
 	for i, a := range c.Access {
 		if err := c.entrySubjectError(i, a, users); err != nil {
@@ -408,6 +422,7 @@ func (c *Config) validateAccess() []error {
 			continue
 		}
 		c.warnWildcardRoot(a, targets)
+		c.warnRedundantGrant(a)
 		who := c.entryUsers(a)
 		for _, srv := range targets {
 			if !servers[srv] {
@@ -497,8 +512,9 @@ func (c *Config) tagInUse(selector string) bool {
 }
 
 // warnWildcardRoot records D20a: a non-operator servers: ["*"] entry that
-// reaches a root account, once per entry. An operator is fleet-wide by
-// definition and an @tag is a deliberate list, so neither warns.
+// reaches a root account, once per entry. An operator's own "*" never warns:
+// it replaces an implicit grant that reached every server. An @tag is a
+// deliberate list, so it does not warn either.
 // A group entry always warns: its members are not operators by default and
 // its grant stands for whoever joins later.
 func (c *Config) warnWildcardRoot(a Access, targets []string) {
@@ -523,24 +539,24 @@ func (c *Config) warnWildcardRoot(a Access, targets []string) {
 		entryLabel(a), where)})
 }
 
-// DesiredFor returns the desired key set for a server: operator users' keys
-// first (users order — operators are implicitly granted every server), then
-// the keys of every user granted access to it (access order). Deterministic;
-// a user is never emitted twice.
-// An operator's implicit grant also wins over any except carve-out in that
-// user's own access entries — operator means every server, unconditionally.
+// DesiredFor returns the desired key set for a server: protected keys first
+// (users order; a fleet-wide operator everywhere, any other protected user
+// only where granted), then the keys of every other granted user (access
+// order). Deterministic; a user is never emitted twice. An operator's own
+// servers: ["*"] entry replaces the implicit grant, so its except: applies.
 func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 	var keys []authkeys.Key
-	asOperator := make(map[string]bool, len(c.operators))
-	for _, name := range c.operators {
-		asOperator[name] = true
-		keys = append(keys, c.keysByUser[name]...)
+	first := make(map[string]bool, len(c.protected))
+	for _, name := range c.protected {
+		if c.fleetWide[name] || slices.Contains(c.grants[serverName], name) {
+			first[name] = true
+			keys = append(keys, c.keysByUser[name]...)
+		}
 	}
 	for _, userName := range c.grants[serverName] {
-		if asOperator[userName] { // redundant grant for an operator: already emitted
-			continue
+		if !first[userName] { // redundant grant for a protected user: already emitted
+			keys = append(keys, c.keysByUser[userName]...)
 		}
-		keys = append(keys, c.keysByUser[userName]...)
 	}
 	return keys
 }
@@ -577,10 +593,10 @@ func (c *Config) OwnerOf(fingerprint string) (User, bool) {
 // The c.blocked check comes first because a group entry's "*" or literal
 // name matches the raw scan below for a member a tombstone blocked.
 //
-// Operators' implicit fleet-wide grant is deliberately excluded — check
-// Operator first. Reading Covers(op, srv) == false as "no access" would
-// contradict DesiredFor, which grants operators every server
-// unconditionally.
+// A fleet-wide operator's implicit grant is deliberately excluded: check
+// FleetWide first. Reading Covers(op, srv) == false as "no access" would
+// contradict DesiredFor, which grants such an operator every server. An
+// operator with its own "*" entry is an ordinary grantee here.
 func (c *Config) Covers(user, server string) bool {
 	if c.blocked[grantPair{user, server}] {
 		return false

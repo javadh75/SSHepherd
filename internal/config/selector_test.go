@@ -333,8 +333,8 @@ func TestWildcardExceptIsNotDirect(t *testing.T) {
 
 func TestOperatorBlockedPairNoWarning(t *testing.T) {
 	cfg := mustParse(t, tagFleet(t, "  - {user: op, servers: [\"@db\"]}\n", "revoked:\n  - {user: op, servers: [db-1], date: 2026-11-08}\n"))
-	if len(cfg.Warnings) != 0 || len(cfg.Conflicts()) != 0 {
-		t.Errorf("Warnings = %q, Conflicts = %+v, want neither", cfg.Warnings, cfg.Conflicts())
+	if len(cfg.ManifestWarnings) != 1 || cfg.ManifestWarnings[0].Kind != WarnOperatorGrantRedundant || len(cfg.Conflicts()) != 0 {
+		t.Errorf("ManifestWarnings = %+v, Conflicts = %+v, want only the redundant-grant warning", cfg.ManifestWarnings, cfg.Conflicts())
 	}
 	if !hasKey(t, cfg, 4, "db-1") {
 		t.Error("the implicit operator grant must still install the key")

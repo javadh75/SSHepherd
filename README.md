@@ -268,6 +268,11 @@ users:
     keys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
 
+  - name: ci
+    protected: true                     # protected where granted, no implicit grant (see below)
+    keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...
+
 groups:                                 # optional, see Groups
   - name: web-team
     description: docs only
@@ -310,15 +315,37 @@ revoked:                                # optional; revoke/rotate append; deleti
 
 ### Operator users
 
-`operator: true` grants a user **every** server implicitly — no `access:` entry
-needed — and marks their keys as protected management keys:
+`operator: true` makes a user **protected** (below) and grants **every** server implicitly, with no
+`access:` entry needed.
 
-- `audit` renders a missing operator key as **CRITICAL** (exit code 2), because that
-  is the drift class that threatens your ability to reach the fleet at all.
-- `apply` writes operator keys **first** in every rendered file.
 - `import --operator-key <key-file>` marks a key's owner as an operator at import time.
+- An operator's own `servers: ["*"]` entry replaces the implicit grant, so its `except:` takes
+  effect: `servers: ["*"], except: [legacy-1]` keeps the operator's key off `legacy-1`. A group's
+  `*` entry does not count. **Before this, an operator's own `except:` was ignored, so a manifest
+  that already has one narrows when you upgrade.**
+- An operator with an `@tag` or literal entry stays fleet-wide, and the entry warns, kind
+  `operator_grant_redundant`: `operator "x": this access entry adds nothing; operator: true still grants every server`.
+  To limit an operator's scope, drop `operator: true` and use `protected: true`.
 
-A weak operator key freezes every grant on every server: apply refuses each one until `rotate` replaces it. Removals still land.
+A weak operator key freezes every grant on every server it renders on: apply refuses each one until
+`rotate` replaces it. Removals still land.
+
+### Protected users
+
+`protected: true` protects a user's keys **only where its `access:` entries grant them**. It grants
+nothing by itself, and a protected user with no keys is valid: it has nothing to protect.
+
+- `audit` renders a missing protected key as **CRITICAL** (exit code 2) on a server it is granted,
+  because that is the drift class that threatens your ability to reach the fleet. A protected key
+  that is not granted on a server is not missing there.
+- `apply` writes protected keys **first** in every rendered file, in `users:` order, then the other
+  granted keys in `access:` order.
+- `revoke` and `rotate` refuse a protected target until you pass `--operator`, whether or not it holds
+  a grant. `revoke --from-server` may trim a protected non-operator with `--operator`; an operator
+  stays refused.
+
+The flag lives in the manifest, so only `revoke` and `rotate` can check it. A hand edit that deletes
+the user is an ordinary key removal to `apply`, and only the lockout guard stands in its way.
 
 ### Wildcard access
 
@@ -1033,8 +1060,8 @@ remote text:
 ```
 
 `manifest_warnings` carries every load warning, in the `audit` document and in the `apply`
-document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear on `tombstone_unknown_server` and `tombstone_blocks_grant`; `server` also on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
-`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root`, `tombstone_blocks_grant` and `empty_group`; ignore kinds you do not know.
+document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear on `tombstone_unknown_server` and `tombstone_blocks_grant`; `user` also on `operator_grant_redundant`; `server` also on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
+`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root`, `tombstone_blocks_grant`, `empty_group` and `operator_grant_redundant`; ignore kinds you do not know.
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`
@@ -2520,7 +2547,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
 
-A tag or group problem (an unknown `@tag` or group, a malformed tag or group name, a selector in `except:` or in a tombstone's `servers:`, an entry with both or neither of `user:` and `group:`) is a manifest load error, so it is exit `3` on every command. A blocked grant, the `wildcard_root` warning and the `empty_group` warning change no exit code, except that `validate --strict` exits `1`.
+A tag or group problem (an unknown `@tag` or group, a malformed tag or group name, a selector in `except:` or in a tombstone's `servers:`, an entry with both or neither of `user:` and `group:`) is a manifest load error, so it is exit `3` on every command. A blocked grant, the `wildcard_root`, `empty_group` and `operator_grant_redundant` warnings change no exit code, except that `validate --strict` exits `1`.
 
 `--help` shows this summary. `audit --help`:
 

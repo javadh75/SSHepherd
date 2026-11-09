@@ -764,7 +764,7 @@ access:
 `
 	cfg, err := Parse([]byte(y))
 	if err != nil {
-		t.Fatalf("Parse: %v (a redundant grant for an operator must union silently)", err)
+		t.Fatalf("Parse: %v (a redundant grant for an operator must union without a duplicate key)", err)
 	}
 	if got := len(cfg.DesiredFor("s1")); got != 1 {
 		t.Errorf("DesiredFor(s1) = %d keys, want 1 (no duplicate emission)", got)

@@ -92,6 +92,21 @@ revoked:
   - {user: alice, servers: [s1], date: 2026-11-08}
 `,
 		"groups:\n  - {name: Bad, members: [x, x]}\n  - {name: Bad}\naccess:\n  - {user: a, group: b, servers: []}\n  - {servers: [s]}\n  - {group: nope, servers: [s]}\n",
+		// protected: no key needed, an operator's own wildcard, a redundant entry
+		`
+users:
+  - {name: ci, protected: true, keys: []}
+  - {name: alice, protected: true, keys: ["` + k1 + `"]}
+  - {name: op, operator: true, keys: ["` + k2 + `"]}
+servers:
+  - {name: s1, host: h1, user: root, tags: [prod]}
+  - {name: s2, host: h2, user: u}
+access:
+  - {user: ci, servers: [s1]}
+  - {user: alice, servers: ["@prod"]}
+  - {user: op, servers: ["*"], except: [s2]}
+  - {user: op, servers: ["@prod"]}
+`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -143,6 +158,19 @@ revoked:
 		for _, a := range cfg.Access {
 			if (a.User == "") == (a.Group == "") {
 				t.Fatalf("accepted access entry %+v with neither or both of user and group", a)
+			}
+		}
+		for _, u := range cfg.Users {
+			if !cfg.FleetWide(u.Name) {
+				continue
+			}
+			if !u.Operator || slices.ContainsFunc(cfg.Access, func(a Access) bool { return a.User == u.Name && slices.Contains(a.Servers, "*") }) {
+				t.Fatalf("user %q is fleet-wide but is no operator, or holds its own wildcard", u.Name)
+			}
+			for _, s := range cfg.Servers {
+				if !slices.Contains(desiredFPs(cfg, s.Name), cfg.keysByUser[u.Name][0].Fingerprint) {
+					t.Fatalf("fleet-wide operator %q is not desired on %q", u.Name, s.Name)
+				}
 			}
 		}
 		if cfg.Serial() > MaxSerial {

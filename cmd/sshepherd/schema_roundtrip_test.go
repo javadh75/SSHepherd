@@ -19,7 +19,7 @@ func samples(t *testing.T) map[string]map[string]any {
 	t.Helper()
 	k := testkeys.Line(t, 1)
 	return map[string]map[string]any{
-		"User":   {"Name": "op", "Description": "d", "Comment": "c", "Operator": true, "Keys": []string{k}},
+		"User":   {"Name": "op", "Description": "d", "Comment": "c", "Operator": true, "Protected": true, "Keys": []string{k}},
 		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}},
 		// Group is "": fill sets every field, and a user plus a group would
 		// fail exactly-one-of. TestAdoptRegenerateKeepsGroups proves a group
