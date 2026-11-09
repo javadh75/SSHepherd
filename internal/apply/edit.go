@@ -3,6 +3,7 @@ package apply
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/javadh75/SSHepherd/internal/config"
@@ -45,6 +46,10 @@ type Edit struct {
 	// after the whole edit; ClearsOperator that the owner was an operator
 	// whose flag the edit clears (operator: true needs a key).
 	NoKeysLeft, ClearsOperator bool
+	// StillProtected (EditRemoveKey, EditRemoveAccess) reports that the user
+	// stays protected after the edit, so the header's 'sshepherd revoke USER'
+	// hint needs --operator. Text only; not in the JSON.
+	StillProtected bool
 	// AccessServers (EditRemoveAccess) are the servers the user loses, as
 	// named on the command line (de-duplicated, order kept).
 	AccessServers []string
@@ -81,7 +86,10 @@ type AlreadyRevoked struct {
 type EditSummary struct {
 	Edits     []Edit
 	Affected  int      // servers whose rendered desired file changes
-	Operators []string // operator targets, acknowledged with --operator
+	Operators []string // fleet-wide operator targets, acknowledged with --operator
+	// Protected are the other acknowledged targets: a protected non-operator
+	// or an operator with its own "*" entry. Each is printed as protected.
+	Protected []string
 	Emptied   []EmptiedServer
 	// Serial is the manifest serial the edit saves (every saving revoke and
 	// rotate bumps it once).
@@ -103,8 +111,8 @@ type EditSummary struct {
 // per-server plan (and alone under --no-apply): one line per edit (the
 // affected-server count on the line of a lone edit, else on a closing
 // line), a note per user left without keys or without access, a warning
-// per user whose wildcard grant is removed, an OPERATOR line per operator
-// target, and a warning per emptied server.
+// per user whose wildcard grant is removed, an OPERATOR or PROTECTED line per
+// acknowledged target, and a warning per emptied server.
 func RenderEditHeader(w io.Writer, s EditSummary, opts RenderOptions) {
 	pal := palette{on: opts.Color}
 	affected := Plural(s.Affected, "server", "servers") + " affected"
@@ -126,17 +134,24 @@ func RenderEditHeader(w io.Writer, s EditSummary, opts RenderOptions) {
 			fmt.Fprintf(w, "%s %s's wildcard grant is removed — it would cover no current server; servers added later are no longer granted to %s automatically\n",
 				pal.paint(codeYellow, "warning:"), e.User, e.User)
 		}
+		flags := s.FollowUp
+		if e.StillProtected {
+			flags += " --operator" // the hint is paste-ready: without it, it exits 3
+		}
 		switch {
 		case e.NoGrantsLeft:
-			fmt.Fprintf(w, "note: %s has no access left — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, s.FollowUp)
+			fmt.Fprintf(w, "note: %s has no access left — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, flags)
 		case e.ClearsOperator:
-			fmt.Fprintf(w, "note: %s has no keys left, so its operator flag is cleared — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, s.FollowUp)
+			fmt.Fprintf(w, "note: %s has no keys left, so its operator flag is cleared — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, flags)
 		case e.NoKeysLeft:
-			fmt.Fprintf(w, "note: %s has no keys left — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, s.FollowUp)
+			fmt.Fprintf(w, "note: %s has no keys left — 'sshepherd revoke %s%s' removes the user\n", e.User, e.User, flags)
 		}
 	}
 	for _, op := range s.Operators {
 		fmt.Fprintf(w, "%s %s is an operator (fleet-wide, protected); --operator given\n", pal.paint(codeBoldRed, "OPERATOR:"), op)
+	}
+	for _, name := range s.Protected {
+		fmt.Fprintf(w, "%s %s is protected; --operator given\n", pal.paint(codeBoldRed, "PROTECTED:"), name)
 	}
 	for _, e := range s.Emptied {
 		fmt.Fprintf(w, "%s %s would have no granted keys — apply never empties a server, so %s installed there; grant another user (or an operator) on %s first, or remove the key by hand\n",
@@ -219,15 +234,17 @@ func stayText(e EmptiedServer) string {
 
 // EditPrompt is revoke/rotate's confirmation question (confirm appends
 // " [y/N] "): the save is always asked for, with the write count when
-// servers will be written, prefixed "OPERATOR NAME: " for one operator
-// target, or "OPERATORS A, B: " for several.
-func EditPrompt(operators []string, toWrite, affected int, noApply bool) string {
+// servers will be written, prefixed "OPERATOR NAME: " for one fleet-wide
+// operator target, "OPERATORS A, B: " for several, or "PROTECTED A, B: "
+// when any target is not a fleet-wide operator.
+func EditPrompt(operators, protected []string, toWrite, affected int, noApply bool) string {
 	var b strings.Builder
-	switch len(operators) {
-	case 0:
-	case 1:
+	switch {
+	case len(protected) > 0:
+		fmt.Fprintf(&b, "PROTECTED %s: ", strings.Join(slices.Concat(operators, protected), ", "))
+	case len(operators) == 1:
 		fmt.Fprintf(&b, "OPERATOR %s: ", operators[0])
-	default:
+	case len(operators) > 1:
 		fmt.Fprintf(&b, "OPERATORS %s: ", strings.Join(operators, ", "))
 	}
 	switch {

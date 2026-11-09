@@ -79,6 +79,8 @@ Tags: `tags:` on a server and `@tag` selectors in `access:` mix with names, `exc
 
 Groups: `groups:` and `access: - group: X` grant every member, a tombstone blocks a group grant for one member only, and `revoke USER --from-server` is refused where a group grant reaches the pair.
 
+Protected users: `protected: true` makes a key critical when missing, requires `--operator` to touch and is written first, only where the user is granted; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
+
 ## Install
 
 **From source** (Go 1.27.3+):
@@ -1841,7 +1843,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | ---- | ------- | ----------- |
 | `--key KEY` | none | Key to revoke: a `SHA256:` fingerprint, a public-key line, or a `.pub` file path (repeatable) |
 | `--from-server NAME` | none | Remove the users' access to this server only (repeatable); the users and their keys stay |
-| `--operator` | off | Confirm that a target is, or belongs to, an operator user (fleet-wide, protected) |
+| `--operator` | off | Confirm that a target is, or belongs to, a protected user (`operator: true` or `protected: true`) |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--reason` | none | Free text recorded with each `revoked:` entry this run adds (printed by every tool; at most 256 bytes) |
 | `--sweep` | off | After the writes, read every other server and report any that still has a key this run revoked (read-only; exit `2` when one is found; skipped with `--dry-run` and `--no-apply`) |
@@ -1894,10 +1896,9 @@ entry, its keys and its other grants stay. (Unlike `apply --server`, which only
 restricts which servers a run touches, `revoke --from-server` edits the grants.) An
 explicit `servers:` list loses every occurrence of the server, and an entry left
 empty is deleted (its comment moves on, as for a removed user). A selector entry (`servers: ["*"]`, or one with an `@tag`) gets each server it still reaches appended to `except:` — created right after `servers:` when absent. A server the entry also names loses that item too. A wildcard keeps covering servers added later, so a wildcard that would then cover no current server is deleted, with a warning that later servers are no longer granted automatically. An `@tag` entry left with no name and nothing but excepted members is deleted the same way, without that warning, because a tag promises no future server. When a trim deletes an entry with an `except:`, every server that `except:` remembered also gets an access tombstone, because the deleted `except:` was the only record; the entry carries this run's date. Refused with exit `3` and nothing edited: `--from-server`
-with `--key` (access is per user), with `--operator`, or on an operator user
-(operators have every server by definition), `--from-server` with `*` or an `@tag` (use `revoke USER`), any user × server pair a group grant reaches, whether or not a direct grant exists too (a direct trim would leave the access): `bob's access to web-1 comes from group web-team; remove the user from the group, trim the group's grant, or add revoked: [{user: bob, servers: [web-1], date: 2026-11-09}] to block only this member`; an
+with `--key` (access is per user), or on an operator user (`x is an operator: --from-server cannot trim it; remove the user with 'sshepherd revoke x --operator', or edit its access by hand`), `--from-server` with `*` or an `@tag` (use `revoke USER`), any user × server pair a group grant reaches, whether or not a direct grant exists too (a direct trim would leave the access): `bob's access to web-1 comes from group web-team; remove the user from the group, trim the group's grant, or add revoked: [{user: bob, servers: [web-1], date: 2026-11-09}] to block only this member`; an
 unknown server, and any user × server pair the user has no access to — every problem
-is listed in one message. Only the trimmed servers are contacted, and there is no
+is listed in one message. A protected non-operator can be trimmed with `--operator`, following the same rules: a literal server gets a tombstone, a selector grant gets `except:`. Only the trimmed servers are contacted, and there is no
 `check every server:` line (no key is removed). The edit
 header says how many other servers each user keeps; `revoke USER` without `--from-server`
 removes every grant.
@@ -2025,7 +2026,7 @@ is absent:
 when nothing could land), `edits` (one per change, fields by `kind`:
 `remove-user` (with `groups` when the user was in a group), `remove-key`, `rotate` (with `keep_old`), `remove-access`
 (`access_servers`, `entries_changed`, `entries_removed`, `servers_excepted`,
-`wildcards_removed`, `no_grants_left`)), `affected`, `operators` and `emptied` — and a
+`wildcards_removed`, `no_grants_left`)), `affected`, `operators` (fleet-wide operator targets), `protected` (other acknowledged targets; omitted when none) and `emptied` — and a
 removed key the edited manifest no longer owns carries `former_owner`. `--no-apply`
 prints the edit section with `servers: []`. `revoke --no-apply --json` still needs
 `--yes` (or `--dry-run`). The shape, from the revoke golden fixture (`former_owner`
@@ -2131,13 +2132,15 @@ with no granted keys):
 }
 ```
 
-**Operators.** A target that is, or belongs to, an `operator: true` user refuses the
-whole command until you pass `--operator` (and `--operator` with no operator target
+**Protected users.** A target that is, or belongs to, an `operator: true` or `protected: true` user refuses the
+whole command until you pass `--operator` (and `--operator` with no protected target
 is refused too); `--yes` never substitutes for it. With it, the header carries an
-`OPERATOR:` line, the prompt is prefixed `OPERATOR NAME: ` (`OPERATORS A, B: ` for
-several), and revoking an
-operator's last key also clears its `operator:` flag. The lockout guard still
-applies on top.
+`OPERATOR:` line for a fleet-wide operator and a `PROTECTED:` line for anyone else, the
+prompt is prefixed `OPERATOR NAME: ` (`OPERATORS A, B: ` for several), or `PROTECTED A, B: `
+when any target is not a fleet-wide operator, and revoking an operator's last key also clears its
+`operator:` flag (`protected:` needs no key and stays). The lockout guard still applies on top.
+
+Removing a protected key through an `except:` prints a warning in the plan, because the guard judges only this run's keys: `removes protected key of "ci" (its except: excludes this server)`. In `--json` it is `notes.protected_removals`. Key objects carry `protected: true` beside `operator: true`.
 
 **Limitations.**
 
@@ -2191,7 +2194,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | `--old KEY` | — | Key to rotate out: a `SHA256:` fingerprint, a public-key line, or a `.pub` file path |
 | `--new KEY` | — | Key to rotate in: a public-key line or a `.pub` file path |
 | `--keep-old` | off | Add the new key alongside the old one instead of replacing it (overlap; the new key keeps the old line's options, `expiry-time` included); finish later with `sshepherd revoke --key OLD` |
-| `--operator` | off | Confirm that the user is an operator (fleet-wide, protected); the flag is kept |
+| `--operator` | off | Confirm that the user is protected (`operator: true` or `protected: true`); the flag is kept |
 | `--no-apply` | off | Edit and save the manifest after confirmation; contact no server |
 | `--reason` | none | Free text recorded with the old key's `revoked:` entry (`rotated out` when not given; printed by every tool; at most 256 bytes) |
 | `--sweep` | off | After the writes, read every other server and report any that still has a key this run revoked (read-only; exit `2` when one is found; skipped with `--dry-run` and `--no-apply`) |
@@ -2219,7 +2222,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 - Plain `rotate` records the old key in `revoked:` (`reason` is `--reason`, or
   `rotated out` when not given); `--keep-old` records nothing — the finishing
   `revoke --key OLD` does — but bumps `serial:` all the same.
-- Confirmation, saving, `--dry-run`, `--no-apply`, operators and the `check every server: sshepherd audit` line work
+- Confirmation, saving, `--dry-run`, `--no-apply`, protected users and the `check every server: sshepherd audit` line work
   exactly as for `revoke` (no check line under `--keep-old`: nothing is removed).
 - `--sweep` works as in [`revoke`'s post-revoke sweep](#sshepherd-revoke): it looks for
   the rotated-out key on every other server; `--keep-old` revokes nothing, so it has
@@ -2259,7 +2262,7 @@ only; never under `--json` or `--dry-run`, nor when nothing was saved) with the 
 command that finishes the overlap once every client uses the new key —
 `sshepherd revoke --key OLD`, plus the run's own `--config`, `--known-hosts` and
 `--identity*` flags when not the defaults (paths only, so it can be pasted as is) and
-`--operator` for an operator, whose hint gets a second line about `--identity`. It reads
+`--operator` for a protected user, whose hint gets a second line about `--identity`. It reads
 `overlap started — …` when every affected server holds both keys,
 `overlap incomplete — N servers do not have the new key yet …` after a partial run,
 `overlap recorded, not pushed — …` under `--no-apply`, and
@@ -2409,7 +2412,7 @@ web-2 (deploy@10.0.0.2:22)
 Guard refusals list every key you hold with its source:
 
 ```console
-web-1 (deploy@10.0.0.1:22)  REFUSED: none of the 2 keys you hold (identity files + agent) would remain in web-1's authorized_keys — applying would lock this session out (held: SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o (/home/ci/.ssh/ci_old), SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent)). Add one of your keys to the manifest (or mark its user operator: true); rotating an --identity key? pass the new key with another --identity, so the guard and the post-write login probe can use it
+web-1 (deploy@10.0.0.1:22)  REFUSED: none of the 2 keys you hold (identity files + agent) would remain in web-1's authorized_keys — applying would lock this session out (held: SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o (/home/ci/.ssh/ci_old), SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent)). Add one of your keys to the manifest (or grant its user this server); rotating an --identity key? pass the new key with another --identity, so the guard and the post-write login probe can use it
 ```
 
 **Headless key rotation.** Run `rotate` with both keys: the write logs in with the
@@ -2527,7 +2530,7 @@ SIGKILL cannot be handled, so give a write time to finish: `docker stop -t 150`,
 
 ### Key offering
 
-Each server is offered only the keys the manifest grants there (plus operator keys), so a managed server never learns the rest of your keys. A held key that matches through a certificate's key or its CA counts as granted.
+Each server is offered only the keys the manifest grants there, so a managed server never learns the rest of your keys. A held key that matches through a certificate's key or its CA counts as granted.
 
 `revoke` and `rotate`, including their `--sweep`, offer the keys granted before the edit first, then the keys granted after it: a server that has not been written yet still holds the old keys. A sweep that cannot log in to a server reports it unreachable (exit `1`) and logs each distinct hint once, on stderr.
 
@@ -2542,8 +2545,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`) | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator key or an operator key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
+| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
 
@@ -2557,10 +2560,10 @@ Exit codes:
   1  drift or unreachable servers (compliance not proven), including a server
      written by a newer manifest serial and a key installed where its access
      was revoked
-  2  critical: a missing operator key or one that cannot log in, a changed or
-     @revoked host key or a changed host key type, a world-writable managed
-     path, a revoked key still installed, a forged header serial, or a policy
-     conflict in the manifest
+  2  critical: a missing operator or protected key or one that cannot log
+     in, a changed or @revoked host key or a changed host key type, a
+     world-writable managed path, a revoked key still installed, a forged
+     header serial, or a policy conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted
 ```
 
@@ -2628,7 +2631,7 @@ Exit codes:
 **Full-file rewrite.** Each managed file is rendered from scratch: a managed header
 (`# Managed by SSHepherd. Manual edits will be overwritten by 'sshepherd apply'.`, or
 `# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.` once the manifest has a `serial:`),
-operator keys first, then the granted keys, with the decided comment policy applied.
+protected keys first (operators included), then the granted keys, with the decided comment policy applied.
 Non-key lines — hand-written comments, blank lines — are **deleted** by the rewrite;
 the plan shows a `normalize` row with the exact count *before* anything is written.
 Output is deterministic, so a repeated `apply` is a byte-for-byte no-op.
@@ -2801,7 +2804,7 @@ also avoids sshd `MaxAuthTries` lockouts with many held keys,
 in one order shared by audit, adopt, apply and the post-write probe: plain lines
 first, then lines that may reject the login (`from=`, `expiry-time=`, `restrict`),
 then forced `command=` lines, then certificate-only lines (`cert-authority`,
-`principals=`); manifest order (operators first, then grant order) within each group.
+`principals=`); manifest order (protected keys first, then grant order) within each group.
 A session therefore authenticates with an unrestricted key whenever one is held, so
 a key that gains a forced `command=` cannot capture later runs. Remote commands always run under `/bin/sh`. Audit's posture check mirrors StrictModes.
 

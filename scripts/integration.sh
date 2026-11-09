@@ -82,16 +82,17 @@ FIXTURE_A='
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true
     done
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose e2eloose grpa grpb; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose e2eloose grpa grpb prota protb; do
       mkuser "$u"
       mkdir -p "/home/$u/.ssh"
     done
     # cas/locked/verifyfail/drop/lockout: the agent key alone (write-path
     # refusal and failure cases); trima/trimb/overlap: the agent key alone
     # (revoke --from-server and rotate --keep-old E2E); grpa/grpb: the agent
-    # key alone (group-grant E2E); stala/stalb/handed: the agent key alone
+    # key alone (group-grant E2E); prota/protb: the agent key alone
+    # (protected-user E2E); stala/stalb/handed: the agent key alone
     # (revocation-memory E2E); unparse: plus a line apply cannot parse.
-    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed maxauth loose e2eloose grpa grpb; do
+    for u in cas locked verifyfail drop lockout trima trimb overlap fdir ffile fanc probecmd probefrom probeok stala stalb handed maxauth loose e2eloose grpa grpb prota protb; do
       cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
     done
     { cat /seed/key.pub; echo "this line is not a key"; } > /home/unparse/.ssh/authorized_keys
@@ -118,7 +119,7 @@ FIXTURE_A='
     # through it for login.
     cp /seed/key.pub /home/sym/.ssh/authorized_keys_real
     ln -s authorized_keys_real /home/sym/.ssh/authorized_keys
-    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose e2eloose grpa grpb; do
+    for u in writer virgin sym e2e cas locked verifyfail drop lockout unparse idaudit idenc rotate e2eh rotatecmd trima trimb overlap fdir ffile fanc rootvictim probecmd probefrom probeok fleet nra nrb stala stalb handed maxauth e2eroll loose e2eloose grpa grpb prota protb; do
       chown -R "$u:$u" "/home/$u/.ssh"
       chmod 700 "/home/$u/.ssh"
       chmod 600 "/home/$u/.ssh/"authorized_keys* 2>/dev/null || true

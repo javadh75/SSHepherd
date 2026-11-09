@@ -114,8 +114,13 @@ type ServerPlan struct {
 	// AgentOnly warns that --identity keys were given but only agent keys
 	// survive here: a later run without this agent (the next headless CI
 	// job) would be locked out. Not a refusal — union semantics.
-	AgentOnly  string
-	FileAbsent bool // phase-1 diagnostic, carried into the report
+	AgentOnly string
+	// ProtectedRemovals warns, one line per user, that an except: takes a
+	// protected user's key off this server. The lockout guard judges only
+	// this run's keys, so a human run would otherwise remove CI's key with
+	// no sign (spec S4). Set only on a server that will be written.
+	ProtectedRemovals []string
+	FileAbsent        bool // phase-1 diagnostic, carried into the report
 	// AuthorizedKeys2 carries the phase-1 finding that an unmanaged,
 	// non-empty ~/.ssh/authorized_keys2 exists: sshd may accept keys from it
 	// whatever apply writes, so a change plan also disables it (see
@@ -325,6 +330,7 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 		return p, nil
 	}
 	p.Note, p.Warning, p.AgentOnly = v.Note, v.Warning, v.AgentOnly
+	p.ProtectedRemovals = protectedRemovals(cfg, r.Server.Name, p.Remove)
 	p.Class = ClassChange
 	return p, nil
 }
@@ -343,8 +349,27 @@ func revokedRemovals(cfg *config.Config, remove []authkeys.Key) []string {
 	return out
 }
 
+// protectedRemovals words one warning per protected user whose key an except:
+// takes off server. A key in remove is not desired here, so the grant union
+// does not cover the pair, as ExceptCarveOut requires; a group's except:
+// counts too.
+func protectedRemovals(cfg *config.Config, server string, remove []authkeys.Key) []string {
+	var out []string
+	for _, k := range remove {
+		u, ok := cfg.OwnerOf(k.Fingerprint)
+		if !ok || !u.IsProtected() || !cfg.ExceptCarveOut(u.Name, server) {
+			continue
+		}
+		msg := fmt.Sprintf("removes protected key of %q (its except: excludes this server)", u.Name)
+		if !slices.Contains(out, msg) {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
 // desiredEntries builds the render input for one server: DesiredFor order
-// (operators first), comments resolved through config.DesiredComment — the
+// (protected keys first), comments resolved through config.DesiredComment — the
 // single write-time comment policy, shared with audit --comments so the
 // preview and the write can never disagree.
 func desiredEntries(cfg *config.Config, serverName string) []authkeys.RenderEntry {
@@ -528,7 +553,7 @@ func lockoutRefusal(server string, keys []authkeys.Key, held []fleet.HeldKey, se
 		held1 = "the 1 key you hold (identity files + agent) would not remain"
 	}
 	refusal := fmt.Sprintf(
-		"%s in %s's authorized_keys — applying would lock this session out (held: %s). Add one of your keys to the manifest (or mark its user operator: true)",
+		"%s in %s's authorized_keys — applying would lock this session out (held: %s). Add one of your keys to the manifest (or grant its user this server)",
 		held1, server, heldList(held))
 	for _, k := range keys {
 		if set[k.Fingerprint] {

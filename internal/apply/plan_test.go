@@ -313,7 +313,7 @@ func TestGuardRefusesLockout(t *testing.T) {
 	if p.Class != ClassRefused {
 		t.Fatalf("Class = %s, want refused (predicted lockout)", p.Class)
 	}
-	for _, want := range []string{"none of the 2 keys you hold (identity files + agent)", "lock this session out", "operator: true"} {
+	for _, want := range []string{"none of the 2 keys you hold (identity files + agent)", "lock this session out", "(or grant its user this server)"} {
 		if !strings.Contains(p.Refusal, want) {
 			t.Errorf("Refusal = %q, want it to contain %q", p.Refusal, want)
 		}

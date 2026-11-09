@@ -32,8 +32,9 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			"line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only\n" +
 			"the users' access to those servers (a selector grant ('*' or @tag) gains an\n" +
 			"except: entry); the users and their keys stay. A pair a group grant reaches is\n" +
-			"refused; 'revoke USER...' also drops each user from every group. Operator users\n" +
-			"(and their keys) need --operator. The plan is shown and confirmed once; the\n" +
+			"refused; 'revoke USER...' also drops each user from every group. Protected users\n" +
+			"(operator: or protected:, and their keys) need --operator; --from-server never\n" +
+			"trims an operator. The plan is shown and confirmed once; the\n" +
 			"manifest is saved after confirmation and before the first write, so commit and\n" +
 			"push it afterwards. --dry-run changes nothing; --no-apply saves the edit\n" +
 			"without contacting any server. A server whose only grantee is revoked is\n" +
@@ -52,7 +53,7 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			users, keyArgs, trim, err := revokeTargets(args, keys, servers, f.operator)
+			users, keyArgs, trim, err := revokeTargets(args, keys, servers)
 			if err != nil {
 				return err
 			}
@@ -68,7 +69,7 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 			memo := f.memo()
 			switch {
 			case len(trim) > 0:
-				ep, err = planRevokeAccess(mf, users, trim, h, memo)
+				ep, err = planRevokeAccess(mf, users, trim, f.operator, h, memo)
 			case len(users) > 0:
 				ep, err = planRevokeUsers(mf, users, f.operator, h, memo)
 			default:
@@ -93,8 +94,8 @@ func newRevokeCmd(a *app, stdout io.Writer) *cobra.Command {
 // --key arguments (step 1); duplicate users, keys and servers are dropped
 // silently. User arguments are checked against the manifest later
 // (checkUserArgs), so a user called tunnel is never mistaken for a key.
-func revokeTargets(args, keys, servers []string, operator bool) (users []string, keyArgs []keyArg, trim []string, err error) {
-	if err := revokeUsage(args, keys, servers, operator); err != nil {
+func revokeTargets(args, keys, servers []string) (users []string, keyArgs []keyArg, trim []string, err error) {
+	if err := revokeUsage(args, keys, servers); err != nil {
 		return nil, nil, nil, err
 	}
 	for _, k := range keys {
@@ -125,9 +126,9 @@ func checkUserArgs(cfg *config.Config, users []string) error {
 
 // revokeUsage is revoke's flag/argument combination rules, before the
 // manifest is read; the first that matches wins. Users and keys are
-// exclusive and one is required; --from-server goes with users only — never
-// with --key or --operator, and never a selector ('*', @tag).
-func revokeUsage(args, keys, servers []string, operator bool) error {
+// exclusive and one is required; --from-server goes with users only, and
+// never a selector ('*', @tag).
+func revokeUsage(args, keys, servers []string) error {
 	switch {
 	case len(args) > 0 && len(keys) > 0:
 		return errors.New("revoke takes users or --key, not both")
@@ -135,8 +136,6 @@ func revokeUsage(args, keys, servers []string, operator bool) error {
 		return errors.New("nothing to revoke: name the users, or pass --key KEY")
 	case len(servers) > 0 && len(keys) > 0:
 		return errors.New("access is granted per user, not per key — use 'sshepherd revoke USER --from-server NAME'")
-	case len(servers) > 0 && operator:
-		return errors.New("--operator cannot be combined with --from-server: operators have access to every server by definition")
 	case slices.ContainsFunc(servers, config.IsSelector):
 		return errors.New("--from-server takes server names; to remove all of a user's access use 'sshepherd revoke USER'")
 	}
@@ -179,7 +178,7 @@ func planRevokeUsers(mf *manifest.File, users []string, operator bool, h followU
 	if err != nil {
 		return editPlan{}, err
 	}
-	ep.summary.Operators = ops
+	ep.acknowledge(cfg, ops)
 	var tombs []config.Tombstone
 	for _, u := range live {
 		r, err := mf.RemoveUser(u.Name)
@@ -303,16 +302,18 @@ func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, memo editMe
 	if err != nil {
 		return editPlan{}, err
 	}
-	ep.summary.Operators, ep.removesKey = ops, true
+	ep.acknowledge(cfg, ops)
+	ep.removesKey = true
 	var tombs []config.Tombstone
 	for _, k := range owned {
 		owner, last, err := mf.RemoveKey(k.Fingerprint)
 		if err != nil {
 			return editPlan{}, fmt.Errorf("edit manifest: %w", err)
 		}
+		u, _ := cfg.OwnerOf(k.Fingerprint) // owned: found by the classification above
 		ep.summary.Edits = append(ep.summary.Edits, apply.Edit{
 			Kind: apply.EditRemoveKey, User: owner, Fingerprint: k.Fingerprint,
-			NoKeysLeft: last, ClearsOperator: last && cleared[owner],
+			NoKeysLeft: last, ClearsOperator: last && cleared[owner], StillProtected: u.Protected,
 		})
 		tombs = append(tombs, config.Tombstone{Fingerprint: k.Fingerprint, User: owner, Date: memo.date, Reason: memo.reason})
 	}
@@ -330,13 +331,14 @@ func planRevokeKeys(mf *manifest.File, keys []keyArg, operator bool, memo editMe
 	return ep, nil
 }
 
-// clearEmptiedOperators clears operator: on each operator target that
-// loses every key in this edit, and reports which.
-func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, ops []string, removing map[string]int) (map[string]bool, error) {
+// clearEmptiedOperators clears operator: on each acknowledged target that is
+// an operator and loses every key in this edit (operator: true with no keys
+// fails validation; protected: needs none), and reports which.
+func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, targets []string, removing map[string]int) (map[string]bool, error) {
 	cleared := map[string]bool{}
-	for _, name := range ops {
+	for _, name := range targets {
 		for _, u := range cfg.Users {
-			if u.Name == name && removing[name] == len(u.Keys) {
+			if u.Name == name && u.Operator && removing[name] == len(u.Keys) {
 				if err := mf.SetOperator(name, false); err != nil {
 					return nil, fmt.Errorf("edit manifest: %w", err)
 				}
@@ -348,14 +350,14 @@ func clearEmptiedOperators(mf *manifest.File, cfg *config.Config, ops []string, 
 }
 
 // planRevokeAccess resolves and applies 'revoke USER... --from-server NAME...'.
-// There is no operator gate: an operator target is refused outright
-// (access to every server by definition). Every problem is listed in one
-// refusal before any edit (accessProblems). A pair an access tombstone
+// An operator target is refused outright (accessProblems); a protected
+// non-operator needs --operator (D21a, accessGate). Every problem is listed
+// in one refusal before any edit (accessProblems). A pair an access tombstone
 // already records is a note (D1c). A server no except: remembers after the
 // edit is tombstoned (D1a); one that gained an except: entry needs none —
 // the except: already remembers it. A group's except: does not count: it
 // stops applying when the member leaves the group.
-func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, memo editMemo) (editPlan, error) {
+func planRevokeAccess(mf *manifest.File, users, servers []string, operator bool, h followUp, memo editMemo) (editPlan, error) {
 	cfg := mf.Config()
 	problems, trims, already := accessProblems(cfg, users, servers, h, memo.date)
 	if len(problems) > 0 {
@@ -368,10 +370,15 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 			trimmed = append(trimmed, name)
 		}
 	}
+	acked, err := accessGate(cfg, users, trimmed, operator)
+	if err != nil {
+		return editPlan{}, err
+	}
 	if len(trimmed) == 0 {
 		ep.noop = true
 		return ep, nil
 	}
+	ep.acknowledge(cfg, acked)
 	ep.stillHas = strings.Join(trimmed, ", ") + " still " + pluralWord(len(trimmed), "has", "have")
 	for _, name := range trimmed {
 		r, err := mf.RemoveAccess(name, trims[name])
@@ -382,6 +389,7 @@ func planRevokeAccess(mf *manifest.File, users, servers []string, h followUp, me
 			Kind: apply.EditRemoveAccess, User: name, AccessServers: trims[name],
 			EntriesChanged: r.EntriesChanged, EntriesRemoved: r.EntriesRemoved,
 			ServersExcepted: r.ServersExcepted, WildcardsRemoved: r.WildcardsRemoved,
+			StillProtected: slices.Contains(acked, name),
 		})
 	}
 	_, mid, err := encodeEdit(mf) // only to see which servers an except: now remembers
@@ -454,9 +462,23 @@ func forgottenCarveOut(former, mid *config.Config, user, server string) bool {
 	return !recorded
 }
 
+// accessGate is --from-server's operatorGate (D21a). --operator needs a
+// protected target among the named users, even one whose pair is a D1c no-op.
+// A missing --operator is refused only for a user this edit trims, and only
+// those are acknowledged in the header.
+func accessGate(cfg *config.Config, users, trimmed []string, operator bool) ([]string, error) {
+	if !operator {
+		return operatorGate(cfg, trimmed, false)
+	}
+	if _, err := operatorGate(cfg, users, true); err != nil {
+		return nil, err
+	}
+	return protectedTargets(cfg, trimmed), nil
+}
+
 // accessProblems lists why 'revoke USER... --from-server NAME...' cannot run,
 // in this order: unknown users (one entry, the existing wording), unknown
-// servers, operator targets, then every non-operator user × known server
+// servers, operator targets (always refused, D21a), then every non-operator user × known server
 // pair the user has no access to and no access tombstone records
 // (config.Covers: selectors and except: included), and every pair a group
 // grant reaches (refused whether or not a direct grant exists, because
@@ -486,7 +508,7 @@ func accessProblems(cfg *config.Config, users, servers []string, h followUp, run
 		}
 	}
 	for _, name := range ops {
-		problems = append(problems, fmt.Sprintf("%s is an operator (access to every server by definition); remove the user with '%s', or clear operator: true by hand",
+		problems = append(problems, fmt.Sprintf("%s is an operator: --from-server cannot trim it; remove the user with '%s', or edit its access by hand",
 			name, h.command("revoke", []string{hintArg(name)}, "--operator")))
 	}
 	trims = map[string][]string{}

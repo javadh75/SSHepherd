@@ -194,6 +194,7 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 	if p.AgentOnly != "" {
 		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), p.AgentOnly)
 	}
+	protectedRemovalWarnings(w, p, pal)
 	for _, rw := range p.Rewrites {
 		renderRewriteWarning(w, cfg, opts, pal, rw.Key, "drops restrictive", rw.Loosens)
 	}
@@ -217,6 +218,14 @@ func headerOnlyRow(tw io.Writer, p ServerPlan, pal palette) {
 func serialWarning(w io.Writer, p ServerPlan, pal palette) {
 	if p.SerialNote != "" {
 		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), p.SerialNote)
+	}
+}
+
+// protectedRemovalWarnings prints one warning per protected key an except:
+// takes off this server.
+func protectedRemovalWarnings(w io.Writer, p ServerPlan, pal palette) {
+	for _, msg := range p.ProtectedRemovals {
+		fmt.Fprintf(w, "  %s %s\n", pal.paint(codeYellow, "warning:"), msg)
 	}
 }
 

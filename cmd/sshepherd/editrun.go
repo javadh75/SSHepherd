@@ -37,7 +37,7 @@ type editFlags struct {
 func (f *editFlags) register(cmd *cobra.Command) {
 	f.run.register(cmd)
 	cmd.Flags().BoolVar(&f.operator, "operator", false,
-		"confirm that a target is, or belongs to, an operator user (fleet-wide, protected)")
+		"confirm that a target is, or belongs to, a protected user (operator: true or protected: true)")
 	cmd.Flags().BoolVar(&f.noApply, "no-apply", false,
 		"edit and save the manifest after confirmation; contact no server")
 	cmd.Flags().StringVar(&f.reason, "reason", "",
@@ -122,28 +122,51 @@ func loadForEdit(log *slog.Logger, path string) (manifestTarget, *manifest.File,
 	return m, mf, nil
 }
 
-// operatorGate enforces the operator protection contract over every
-// resolved target user before any edit: an operator target needs
-// --operator, and --operator needs an operator target (a habitually
-// passed flag would empty the gate). Returns the operator targets.
+// operatorGate enforces the protection contract over every resolved target
+// before any edit: a protected target (operator: or protected:) needs
+// --operator, and --operator needs a protected target (a habitually passed
+// flag would empty the gate). Returns the protected targets, target order,
+// once each.
 func operatorGate(cfg *config.Config, users []string, acknowledged bool) ([]string, error) {
-	var ops []string
+	gated := protectedTargets(cfg, users)
+	switch {
+	case len(gated) > 0 && !acknowledged:
+		return nil, gateRefusal(cfg, gated)
+	case len(gated) == 0 && acknowledged:
+		return nil, errors.New("--operator given but no target is an operator; drop the flag")
+	}
+	return gated, nil
+}
+
+// protectedTargets lists the users that are protected, target order, once
+// each.
+func protectedTargets(cfg *config.Config, users []string) []string {
+	var gated []string
 	for _, name := range users {
 		for _, u := range cfg.Users {
-			if u.Name == name && u.Operator && !slices.Contains(ops, name) {
-				ops = append(ops, name)
+			if u.Name == name && u.IsProtected() && !slices.Contains(gated, name) {
+				gated = append(gated, name)
 			}
 		}
 	}
+	return gated
+}
+
+// gateRefusal words the missing acknowledgement. "fleet-wide" is kept only
+// while it is true of every name: a list mixing a fleet-wide operator with
+// anyone else uses the protected form (spec S4).
+func gateRefusal(cfg *config.Config, gated []string) error {
+	names := strings.Join(gated, ", ")
+	fleetWide := !slices.ContainsFunc(gated, func(n string) bool { return !cfg.FleetWide(n) })
 	switch {
-	case len(ops) == 1 && !acknowledged:
-		return nil, fmt.Errorf("%s is an operator (fleet-wide, protected); pass --operator to confirm", ops[0])
-	case len(ops) > 1 && !acknowledged:
-		return nil, fmt.Errorf("%s are operators (fleet-wide, protected); pass --operator to confirm", strings.Join(ops, ", "))
-	case len(ops) == 0 && acknowledged:
-		return nil, errors.New("--operator given but no target is an operator; drop the flag")
+	case fleetWide && len(gated) == 1:
+		return fmt.Errorf("%s is an operator (fleet-wide, protected); pass --operator to confirm", names)
+	case fleetWide:
+		return fmt.Errorf("%s are operators (fleet-wide, protected); pass --operator to confirm", names)
+	case len(gated) == 1:
+		return fmt.Errorf("%s is protected; pass --operator to confirm", names)
 	}
-	return ops, nil
+	return fmt.Errorf("%s are protected; pass --operator to confirm", names)
 }
 
 // editPlan is a resolved, encoded manifest edit (steps 1–3), ready for
@@ -181,12 +204,24 @@ func (ep *editPlan) remember(mf *manifest.File, tombs []config.Tombstone) error 
 	return nil
 }
 
+// acknowledge records the --operator targets on the summary, each under what
+// the header may truthfully say of it: a fleet-wide operator, or protected.
+func (ep *editPlan) acknowledge(cfg *config.Config, targets []string) {
+	for _, name := range targets {
+		if cfg.FleetWide(name) {
+			ep.summary.Operators = append(ep.summary.Operators, name)
+			continue
+		}
+		ep.summary.Protected = append(ep.summary.Protected, name)
+	}
+}
+
 // overlapFinish is rotate --keep-old's pending finish: the revoke --key
 // that ends the overlap once every client uses the new key.
 type overlapFinish struct {
 	user     string // the rotated user
 	oldFP    string // the old key, which the finish revokes
-	operator bool   // the user is an operator: the finish needs --operator
+	operator bool   // the user is protected: the finish needs --operator
 }
 
 // overlapHint is rotate --keep-old's finish hint for one text-mode path
@@ -288,7 +323,7 @@ func runEdit(cmd *cobra.Command, a *app, stdout io.Writer, f *editFlags, ids ide
 					ep.stillHas, apply.Plural(len(plans), "server", "servers")))
 				return "", workflow.ErrWithheld
 			}
-			return apply.EditPrompt(ep.summary.Operators, toWrite, len(plans), false), nil
+			return apply.EditPrompt(ep.summary.Operators, ep.summary.Protected, toWrite, len(plans), false), nil
 		},
 		// The save: after confirmation (and the held-key re-list when a
 		// server will be written), before the first write.
@@ -471,7 +506,7 @@ func saveOnly(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFla
 	if err != nil {
 		return err
 	}
-	ok, err := confirmGate(cmd.Context(), cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, 0, len(aff.Servers), f.noApply))
+	ok, err := confirmGate(cmd.Context(), cmd, f.run.yes, apply.EditPrompt(ep.summary.Operators, ep.summary.Protected, 0, len(aff.Servers), f.noApply))
 	if err != nil {
 		return err
 	}

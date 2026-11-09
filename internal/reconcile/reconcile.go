@@ -251,9 +251,10 @@ func pubPath(source string) string {
 // knownKey handles an incoming key the manifest already owns: the owner
 // wins — no new user — and access proceeds against the owner's name. Each
 // server is checked in the locked coverage order: conflicted alias (grant
-// dropped with the server), operator owner (implicit fleet-wide grant, never
-// extended), Covers (explicit grant or wildcard absorption — a "*" user
-// gains every appended server automatically), except carve-out (never
+// dropped with the server), fleet-wide operator owner (implicit grant, never
+// extended; a scoped operator goes through coverage like anyone), Covers
+// (explicit grant or wildcard absorption — a "*" user gains every appended
+// server automatically), except carve-out (never
 // re-granted), an access tombstone (never re-granted, D1a), else an
 // extension pair.
 func (b *builder) knownKey(u identity.User, owner config.User, fp string) error {
@@ -262,8 +263,8 @@ func (b *builder) knownKey(u identity.User, owner config.User, fp string) error 
 			"--operator-key %s belongs to manifest user %q, who is not an operator — promotion must be an explicit manifest edit",
 			fp, owner.Name)
 	}
-	if u.Operator {
-		return nil // owner already an operator: idempotent --operator-key re-run, silent no-op
+	if u.Operator && b.cfg.FleetWide(owner.Name) {
+		return nil // owner already holds the implicit grant: idempotent --operator-key re-run, silent no-op
 	}
 	extended := false
 	for _, srv := range b.redirect(u.Servers) {
@@ -272,7 +273,7 @@ func (b *builder) knownKey(u identity.User, owner config.User, fp string) error 
 			b.plan.conflicts++
 			b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Server: srv, User: owner.Name,
 				Message: fmt.Sprintf("access for %q to %q dropped: the server conflicts with the manifest", owner.Name, srv)})
-		case owner.Operator:
+		case b.cfg.FleetWide(owner.Name):
 		case b.cfg.Covers(owner.Name, srv):
 		case b.cfg.ExceptCarveOut(owner.Name, srv):
 			b.plan.conflicts++

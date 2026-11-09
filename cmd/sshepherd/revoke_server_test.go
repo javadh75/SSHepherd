@@ -15,10 +15,9 @@ import (
 func TestRevokeServerUsage(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	const (
-		both     = "revoke takes users or --key, not both"
-		perUser  = "access is granted per user, not per key — use 'sshepherd revoke USER --from-server NAME'"
-		operator = "--operator cannot be combined with --from-server: operators have access to every server by definition"
-		star     = "--from-server takes server names; to remove all of a user's access use 'sshepherd revoke USER'"
+		both    = "revoke takes users or --key, not both"
+		perUser = "access is granted per user, not per key — use 'sshepherd revoke USER --from-server NAME'"
+		star    = "--from-server takes server names; to remove all of a user's access use 'sshepherd revoke USER'"
 	)
 	for _, tt := range []struct {
 		name string
@@ -28,8 +27,7 @@ func TestRevokeServerUsage(t *testing.T) {
 		{"users, --key and --from-server", []string{"bob", "--key", fpOf(t, 2), "--from-server", "web-1"}, both},
 		{"--from-server with --key", []string{"--key", fpOf(t, 2), "--from-server", "web-1"}, perUser},
 		{"--from-server with --key, --operator and '*'", []string{"--key", fpOf(t, 2), "--from-server", "*", "--operator"}, perUser},
-		{"--from-server with --operator", []string{"bob", "--from-server", "web-1", "--operator"}, operator},
-		{"--from-server '*' with --operator", []string{"bob", "--from-server", "*", "--operator"}, operator},
+		{"--from-server '*' with --operator", []string{"bob", "--from-server", "*", "--operator"}, star},
 		{"--from-server '*'", []string{"bob", "--from-server", "web-1", "--from-server", "*"}, star},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,7 +77,7 @@ func accessRefusalBody(t *testing.T) string {
 // --operator gate; nothing is edited and nothing is printed on stdout.
 func TestRevokeServerRefusals(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
-	const opMsg = "ops-bot is an operator (access to every server by definition); remove the user with 'sshepherd revoke ops-bot --config CFG --operator', or clear operator: true by hand"
+	const opMsg = "ops-bot is an operator: --from-server cannot trim it; remove the user with 'sshepherd revoke ops-bot --config CFG --operator', or edit its access by hand"
 	for _, tt := range []struct {
 		name string
 		args []string

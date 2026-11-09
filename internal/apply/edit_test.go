@@ -127,13 +127,13 @@ func TestRenderEditHeaderColorStrippedEqualsPlain(t *testing.T) {
 func TestEditPromptGolden(t *testing.T) {
 	var buf bytes.Buffer
 	for _, q := range []string{
-		EditPrompt(nil, 2, 3, false),
-		EditPrompt(nil, 0, 3, false),
-		EditPrompt(nil, 0, 0, false),
-		EditPrompt(nil, 0, 3, true),
-		EditPrompt([]string{"ops-bot"}, 1, 4, false),
-		EditPrompt([]string{"ops-bot", "ci"}, 0, 2, true),
-		EditPrompt(nil, 1, 1, false),
+		EditPrompt(nil, nil, 2, 3, false),
+		EditPrompt(nil, nil, 0, 3, false),
+		EditPrompt(nil, nil, 0, 0, false),
+		EditPrompt(nil, nil, 0, 3, true),
+		EditPrompt([]string{"ops-bot"}, nil, 1, 4, false),
+		EditPrompt([]string{"ops-bot", "ci"}, nil, 0, 2, true),
+		EditPrompt(nil, nil, 1, 1, false),
 	} {
 		fmt.Fprintln(&buf, q+" [y/N]")
 	}

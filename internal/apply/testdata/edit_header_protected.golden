@@ -1,0 +1,5 @@
+manifest edit: remove user ci (1 key, 1 access grant)
+manifest edit: remove user ops-bot (1 key, 0 access grants)
+manifest edit: 2 changes — 2 servers affected
+OPERATOR: ops-bot is an operator (fleet-wide, protected); --operator given
+PROTECTED: ci is protected; --operator given

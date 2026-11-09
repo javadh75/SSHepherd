@@ -6,8 +6,9 @@ single keys (a lost laptop): KEY is a SHA256: fingerprint, a public-key
 line, or a .pub file path. 'revoke USER... --from-server NAME...' removes only
 the users' access to those servers (a selector grant ('*' or @tag) gains an
 except: entry); the users and their keys stay. A pair a group grant reaches is
-refused; 'revoke USER...' also drops each user from every group. Operator users
-(and their keys) need --operator. The plan is shown and confirmed once; the
+refused; 'revoke USER...' also drops each user from every group. Protected users
+(operator: or protected:, and their keys) need --operator; --from-server never
+trims an operator. The plan is shown and confirmed once; the
 manifest is saved after confirmation and before the first write, so commit and
 push it afterwards. --dry-run changes nothing; --no-apply saves the edit
 without contacting any server. A server whose only grantee is revoked is
@@ -61,7 +62,7 @@ Flags:
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
       --no-apply                        edit and save the manifest after confirmation; contact no server
       --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
-      --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
+      --operator                        confirm that a target is, or belongs to, a protected user (operator: true or protected: true)
       --parallel int                    max concurrent server connections (default 32)
       --reason string                   free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)
       --sweep                           after the writes, read every other server and report any that still has a key this run revoked (read-only; exit 2 when one is found; skipped with --dry-run and --no-apply)

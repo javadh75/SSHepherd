@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -694,16 +694,17 @@ access:
 - An operator with an `@tag` or literal entry stays fleet-wide. To limit scope, drop
   `operator: true` and use `protected: true`. A warning, kind `operator_grant_redundant`,
   says so: `operator "x": this access entry adds nothing; operator: true still grants every server`.
+  The warning fires on `user:` entries only: a group entry still grants its other members, and a group's `*` never replaces the implicit grant. The `--operator` acknowledgement is per target and applies whether or not the user holds a grant; "only where granted" governs critical-when-missing and written-first order.
 
 **Two helpers, not one.** The plan grouped every `u.Operator` site under "protected",
 but they mean two things:
 
 - `User.IsProtected()` is `Operator || Protected`. It replaces `u.Operator` in the
   audit critical tier and report (`criticalDrift`, the missing-key row,
-  `audit/json.go`), `apply/json.go`, `operatorGate`, `apply/edit.go` and `planRotate`'s
+  `audit/json.go`), `apply/json.go` (additively: `operator` stays `u.Operator` and `protected` is new), `operatorGate`, `apply/edit.go` and `planRotate`'s
   finish hint.
 - `Config.FleetWide(user)` is "operator with no own wildcard entry". It replaces
-  `u.Operator` in `DesiredFor`, `serversRendering` and reconcile's coverage branches.
+  `u.Operator` in `DesiredFor`, `GrantCount`, `blockEntry`, `serversRendering` and reconcile's coverage branches.
   A scoped operator then goes through normal coverage, including `ExceptCarveOut`.
 
 `DesiredFor` emits protected-and-granted keys first, in users order, then the rest in
@@ -711,27 +712,27 @@ access order. The `Covers` comment is updated.
 
 **JSON and reports.** `protected: true` is additive next to `operator`, schema 1. The
 missing-key row reads `(CRITICAL: protected key)` for a protected non-operator and
-stays `(CRITICAL: operator key)` for an operator.
+stays `(CRITICAL: operator key)` for an operator. `critical_reasons` gains `protected_missing` and `protected_cannot_log_in`, set only for a non-operator. A protected key object carries `protected: true`, set only for a non-operator, so a report with no protected user is byte-identical. `edit.operators` lists fleet-wide operator targets and additive `edit.protected` the other acknowledged targets.
 
 **`revoke --from-server` (D21a).** `revokeUsage`'s blanket "`--operator` cannot be
 combined" goes. `planRevokeAccess` gains the `operator` argument and calls `operatorGate`
 on the non-operator targets. A protected non-operator needs `--operator`. An operator
 stays refused:
-`x is an operator: --from-server cannot trim it; remove the user with 'revoke x --operator', or edit its access by hand`.
-`--operator` with no protected target is refused, as today.
+`x is an operator: --from-server cannot trim it; remove the user with 'sshepherd revoke x --operator', or edit its access by hand`.
+`--operator` with no protected target is refused, as today. `--operator` needs a protected target among the named users, even when the pair is a D1c no-op; a missing `--operator` is refused only for a user actually trimmed.
 
 **Wording.** Today's text, `is an operator (fleet-wide, protected)`, is false for a
 protected non-operator and for a scoped operator. `operatorGate` and `apply/edit.go`'s
 header keep it, byte-identical, only for a fleet-wide operator. Anyone else prints `x is
 protected; pass --operator to confirm` and `PROTECTED: x is protected; --operator
 given`. A list mixing the two uses the second form. The edit summary carries which is
-which.
+which. The prompt prefix is `OPERATOR x: ` / `OPERATORS a, b: ` for fleet-wide operators and `PROTECTED a, b: ` otherwise, including a mixed list. The header prints one line per target, so it is not a list: a fleet-wide operator keeps its `OPERATOR:` line in a mixed run.
 
 **Lockout.** An `except:` can take the management key off a server. The guard refuses
 any write that leaves this run no held key, but it sees only this run's keys, so a human
 run could remove CI's protected key with no refusal. The plan therefore warns when an
 `except:` removes a protected key from a server:
-`removes protected key of "ci" (its except: excludes this server)`. `lockoutRefusal`'s
+`removes protected key of "ci" (its except: excludes this server)`. It is warn-only (`notes.protected_removals` in JSON), and a group's `except:` counts. A hand edit that deletes a protected user cannot be gated: `apply` sees only the new manifest. `lockoutRefusal`'s
 hint `or mark its user operator: true` becomes `or grant its user this server`, because
 the flag does nothing for an excepted operator. Today's `DesiredFor` ignores an
 operator's own `except:`, so a manifest that has one narrows when S4 lands; the README
@@ -744,7 +745,7 @@ entry and operators cannot be trimmed by the tool.
 
 **Files.** `internal/config` (`IsProtected`, `FleetWide`, `DesiredFor`, field),
 `internal/audit/{report,json}.go`, `internal/apply/{json,edit,plan}.go`,
-`internal/reconcile/reconcile.go`, `cmd/sshepherd/{editrun,revoke,rotate}.go`.
+`internal/reconcile/reconcile.go`, `cmd/sshepherd/{editrun,revoke,rotate}.go`, `internal/config/{protected,grants,revoked}.go`, `internal/apply/report.go`, `internal/adopt` (tests only), `cmd/sshepherd/{run,apply}.go`, `scripts/integration.sh`.
 
 **README.** **Operator users** (split into operator and protected, with the note that an
 operator's own `except:` now takes effect); **`sshepherd revoke`**, **`sshepherd
@@ -1302,7 +1303,7 @@ same commit, then an independent verifier, then repair.
 | S8 | A: `internal/adopt`, `adopt.go`, `manifest_out.go` · B: `import_json.go`, `import.go`, `internal/reconcile` |
 | S3a | A: `internal/config` and the consumer tests · B: `internal/manifest`, `revoke.go` · C: `import.go` (B and C after A: the runner compiles each lane on earlier rounds) |
 | S3b | A: `internal/config` and the consumer tests · B (after A): `internal/manifest`, `group_reach.go`, `internal/apply/{edit,json}.go`, `revoke.go`, `adopt.go` (a group manifest needs both editor and schema, so one lane) |
-| S4 | A: `internal/config` · B: `internal/audit` · C: `internal/apply`, `editrun.go`, `revoke.go`, `rotate.go`, `internal/reconcile` |
+| S4 | A: `internal/config` · B (after A): `internal/audit` · C (after B, whose critical tier its E2E asserts): `internal/apply`, `internal/reconcile`, `editrun.go`, `revoke.go`, `rotate.go`, `run.go` |
 | S5 | A: `internal/config`, `internal/fleet`, `internal/manifest/edit.go` · B: `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit/{audit,report,json}.go` · C: `internal/sshcfg`, `internal/reconcile`, `import.go` · D: `internal/apply/{exec,plan,report,json}.go`, `adopt.go`, `sweep.go` · integrator: `scripts/integration.sh` |
 | S6 | A: `internal/config` · B: `internal/authkeys/render.go`, `internal/apply` · C: `internal/audit`, `internal/adopt` |
 | S7 | A: `internal/authkeys/options.go`, `internal/config` · B: `internal/audit`, `conflicts.go`, `editrun.go`, `adopt.go`, `import.go` · integrator: tests and README |

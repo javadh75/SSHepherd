@@ -22,6 +22,7 @@ func FuzzManifestEdit(f *testing.F) {
 	f.Add(editFixture(f), uint8(5))
 	f.Add(commentedFixture(f), uint8(2))
 	f.Add(`users: [{name: ops, operator: true, keys: ["`+testkeys.Line(f, 1)+`"]}]`, uint8(0))
+	f.Add(`users: [{name: ci, protected: true, keys: ["`+testkeys.Line(f, 1)+`"]}]`, uint8(0))
 	f.Add("users: []\nservers: []\naccess: []\n", uint8(0))
 	f.Add("serial: 3\n"+editFixture(f)+"revoked:\n  - {user: bob, servers: [db-1], date: 2026-11-08}\n", uint8(1))
 	f.Add(tagEditFixture(f), uint8(1))

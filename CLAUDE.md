@@ -728,3 +728,17 @@ Audit grades every protected key: `criticalReasons` and the `CANNOT LOG IN` row 
 scoped, `operator key`), `critical_reasons` gains `protected_missing` and
 `protected_cannot_log_in`, and JSON key objects carry `protected: true` (additive, set only for a
 non-operator) beside `operator: true`, so a report with no protected user is byte-identical.
+`operatorGate` gates every protected target (`revoke`, `revoke --key`, `revoke --from-server`,
+`rotate`, a group membership change through `revoke USER`); `gateRefusal` keeps the fleet-wide
+wording only when every name is a fleet-wide operator. `editPlan.acknowledge` splits acknowledged
+targets into `EditSummary.Operators` and `Protected` (JSON `edit.protected`, additive), which print
+`OPERATOR:` / `PROTECTED:` and the `PROTECTED A, B: ` prompt prefix. `revoke --from-server` may
+trim a protected non-operator with `--operator` (D21a, `accessGate`); an operator stays refused, a
+D1c no-op needs no acknowledgement, and `--operator` still needs a protected target among the named
+users. The gate is per target, whether or not the user holds a grant, and a header note's `sshepherd
+revoke` hint carries `--operator` while the user stays protected (`Edit.StillProtected`).
+`clearEmptiedOperators` reads `u.Operator`: a protected user keeps its flag with no keys. `planWrite` adds `ProtectedRemovals` (`notes.protected_removals`), the warning
+when an `except:` removes a protected key, because the guard judges only this run's keys; a hand
+edit that deletes the user cannot be gated. Reconcile's coverage branch and `--operator-key` early
+return read `FleetWide`, so a scoped operator's excepted server warns. `TestE2EProtected` is the E2E (fixture accounts `prota`,
+`protb`).

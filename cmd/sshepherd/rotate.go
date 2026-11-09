@@ -36,7 +36,7 @@ func newRotateCmd(a *app, stdout io.Writer) *cobra.Command {
 			"fingerprint, a public-key line, or a .pub path; --new is a public-key\n" +
 			"line or a .pub path. Rotating the key you log in with? Pass the new\n" +
 			"private key with --identity, so the lockout guard and the post-write\n" +
-			"login probe can use it. Operators need --operator (the flag is kept).\n" +
+			"login probe can use it. Protected users need --operator (the flag is kept).\n" +
 			"Saves and confirms like revoke.\n\n" + exitCodesWrite,
 		Example: "  # Replace a key in place\n" +
 			"  sshepherd rotate alice --old ~/.ssh/alice_old.pub --new ~/.ssh/alice_new.pub\n\n" +
@@ -139,17 +139,18 @@ func planRotate(mf *manifest.File, user string, oldArg, newArg keyArg, opts rota
 	}
 	ep := editPlan{
 		former: cfg,
-		summary: apply.EditSummary{Operators: ops, Edits: []apply.Edit{{
+		summary: apply.EditSummary{Edits: []apply.Edit{{
 			Kind: apply.EditRotate, User: user, Fingerprint: oldArg.Fingerprint,
 			NewFingerprint: newArg.Fingerprint, KeepsExpiry: expiry, KeepOld: opts.keepOld,
 		}}},
 	}
+	ep.acknowledge(cfg, ops)
 	var tombs []config.Tombstone
 	if opts.keepOld {
 		err = mf.AddKeyAfter(user, oldArg.Fingerprint, line)
 		ep.stillHas = user + "'s new key would get no"
 		ep.saveNote = "an apply from a copy without this edit removes the new key — clients that already switched would be locked out"
-		ep.overlap = &overlapFinish{user: user, oldFP: oldArg.Fingerprint, operator: u.Operator}
+		ep.overlap = &overlapFinish{user: user, oldFP: oldArg.Fingerprint, operator: u.IsProtected()}
 	} else {
 		err = mf.ReplaceKey(user, oldArg.Fingerprint, line)
 		ep.formerNote, ep.removesKey, ep.stillHas = "rotated out", true, user+"'s old key still has"

@@ -84,7 +84,10 @@ type jsonEdit struct {
 	Edits     []jsonEditEntry `json:"edits"`
 	Affected  int             `json:"affected"`
 	Operators []string        `json:"operators"`
-	Emptied   []jsonEmptied   `json:"emptied"`
+	// Protected is additive (schema stays 1): the acknowledged targets that
+	// are not fleet-wide operators. Omitted when empty.
+	Protected []string      `json:"protected,omitempty"`
+	Emptied   []jsonEmptied `json:"emptied"`
 	// Serial, Revoked, AlreadyRevoked and CheckCommand are additive (schema
 	// stays 1). Serial is present only when the edit was saved; Revoked is
 	// [] when none.
@@ -201,6 +204,7 @@ type jsonKey struct {
 	Type        string  `json:"type"`
 	Comment     string  `json:"comment,omitempty"`
 	Operator    bool    `json:"operator,omitempty"`
+	Protected   bool    `json:"protected,omitempty"`
 	// Options is additive-optional (schema stays 1): remove keys neither
 	// the rendered nor the former manifest owns, their on-server options,
 	// sanitized.
@@ -213,6 +217,7 @@ type jsonRewrite struct {
 	Fingerprint   string             `json:"fingerprint"`
 	Type          string             `json:"type"`
 	Operator      bool               `json:"operator,omitempty"`
+	Protected     bool               `json:"protected,omitempty"`
 	OptionsChange *jsonOptionsChange `json:"options_change,omitempty"`
 	CommentChange *jsonCommentChange `json:"comment_change,omitempty"`
 	Loosens       []string           `json:"loosens"`
@@ -245,6 +250,8 @@ type jsonNotes struct {
 	RestrictiveOptions string `json:"restrictive_options,omitempty"`
 	AgentOnlySurvivors string `json:"agent_only_survivors,omitempty"`
 	Serial             string `json:"serial,omitempty"`
+	// ProtectedRemovals is additive (schema stays 1); omitted when empty.
+	ProtectedRemovals []string `json:"protected_removals,omitempty"`
 }
 
 // RenderJSON writes the write-path report as one indented JSON document
@@ -334,6 +341,7 @@ func jsonEditFor(s EditSummary, saved bool) *jsonEdit {
 		Edits:     make([]jsonEditEntry, 0, len(s.Edits)),
 		Affected:  s.Affected,
 		Operators: append([]string{}, s.Operators...),
+		Protected: s.Protected,
 		Emptied:   make([]jsonEmptied, 0, len(s.Emptied)),
 	}
 	for _, ed := range s.Edits {
@@ -403,6 +411,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 			RestrictiveOptions: clean(p.Warning),
 			AgentOnlySurvivors: clean(p.AgentOnly),
 			Serial:             clean(p.SerialNote),
+			ProtectedRemovals:  cleanAll(p.ProtectedRemovals),
 		},
 		Serial:              jsonSerialFor(p),
 		RestoredRevokedKeys: cleanAll(rolledBackRevoked(p)),
@@ -503,7 +512,7 @@ func jsonKeyFor(cfg, former *config.Config, k authkeys.Key) jsonKey {
 	if u, ok := cfg.OwnerOf(k.Fingerprint); ok {
 		name := u.Name
 		jk.Owner = &name
-		jk.Operator = u.Operator
+		jk.Operator, jk.Protected = u.Operator, u.Protected && !u.Operator
 		return jk
 	}
 	if former != nil {
@@ -523,7 +532,7 @@ func jsonRewriteFor(cfg *config.Config, rw RewriteRow) jsonRewrite {
 	if u, ok := cfg.OwnerOf(rw.Key.Fingerprint); ok {
 		name := u.Name
 		jr.Owner = &name
-		jr.Operator = u.Operator
+		jr.Operator, jr.Protected = u.Operator, u.Protected && !u.Operator
 	}
 	if rw.OptionsDiffer {
 		jr.OptionsChange = &jsonOptionsChange{From: cleanAll(rw.ActualOptions), To: cleanAll(rw.Key.Options)}

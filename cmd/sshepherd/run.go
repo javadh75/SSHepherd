@@ -49,7 +49,7 @@ var errNonCompliant = errors.New("fleet not compliant")
 var errFleetUnreadable = errors.New("fleet not fully readable")
 
 // errCriticalDrift signals exit code 2: the audit ran and at least one
-// server is missing an operator key — the drift class that threatens fleet
+// server is missing a protected key — the drift class that threatens fleet
 // access itself.
 var errCriticalDrift = errors.New("fleet has critical drift")
 
@@ -199,10 +199,10 @@ const exitCodesAudit = `Exit codes:
   1  drift or unreachable servers (compliance not proven), including a server
      written by a newer manifest serial and a key installed where its access
      was revoked
-  2  critical: a missing operator key or one that cannot log in, a changed or
-     @revoked host key or a changed host key type, a world-writable managed
-     path, a revoked key still installed, a forged header serial, or a policy
-     conflict in the manifest
+  2  critical: a missing operator or protected key or one that cannot log
+     in, a changed or @revoked host key or a changed host key type, a
+     world-writable managed path, a revoked key still installed, a forged
+     header serial, or a policy conflict in the manifest
   3  tool error: bad flags, unloadable manifest, failed preflight, interrupted`
 
 const exitCodesWrite = `Exit codes:

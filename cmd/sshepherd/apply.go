@@ -40,7 +40,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 		Use:   "apply",
 		Short: "Make each server's authorized_keys match the manifest (writes to the fleet)",
 		Long: "Makes each targeted server's authorized_keys equal the manifest's rendered\n" +
-			"desired state — a FULL-FILE rewrite (managed header, operator keys first,\n" +
+			"desired state — a FULL-FILE rewrite (managed header, protected keys first,\n" +
 			"decided comment policy). Non-key lines (hand-written comments, blank lines)\n" +
 			"are DELETED by the rewrite; the plan shows a normalize row with the count\n" +
 			"before anything is written. Flow: read the whole fleet, show one plan,\n" +
@@ -103,7 +103,7 @@ func newApplyCmd(a *app, stdout io.Writer) *cobra.Command {
 			return runWorkflow(cmd, a, stdout, &rf, ids, applySpec{
 				cfg:     cfg,
 				servers: targets,
-				// Offer each server its granted keys (operators first), so
+				// Offer each server its granted keys (protected keys first), so
 				// it learns no other key and many held keys cannot exhaust
 				// sshd's MaxAuthTries before the key that matters is tried.
 				preferKeys: grantedOn(cfg),

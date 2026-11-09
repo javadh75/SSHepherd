@@ -1,0 +1,8 @@
+web-1 (deploy@10.0.0.1:22)  converged (no changes)
+
+web-2 (deploy@10.0.0.2:22)
+  -  ci     SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  remove (unauthorized)
+  ~  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  rewrite comment: "" → "alice"
+  warning: removes protected key of "ci" (its except: excludes this server)
+  → 1 key desired · 0 add · 1 remove · 1 rewrite
+

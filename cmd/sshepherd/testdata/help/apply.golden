@@ -1,5 +1,5 @@
 Makes each targeted server's authorized_keys equal the manifest's rendered
-desired state — a FULL-FILE rewrite (managed header, operator keys first,
+desired state — a FULL-FILE rewrite (managed header, protected keys first,
 decided comment policy). Non-key lines (hand-written comments, blank lines)
 are DELETED by the rewrite; the plan shows a normalize row with the count
 before anything is written. Flow: read the whole fleet, show one plan,

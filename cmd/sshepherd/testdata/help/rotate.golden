@@ -6,7 +6,7 @@ fleet-wide in the same run (unless --keep-old). --old is a SHA256:
 fingerprint, a public-key line, or a .pub path; --new is a public-key
 line or a .pub path. Rotating the key you log in with? Pass the new
 private key with --identity, so the lockout guard and the post-write
-login probe can use it. Operators need --operator (the flag is kept).
+login probe can use it. Protected users need --operator (the flag is kept).
 Saves and confirms like revoke.
 
 Exit codes:
@@ -55,7 +55,7 @@ Flags:
       --no-apply                        edit and save the manifest after confirmation; contact no server
       --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
       --old KEY                         the KEY to rotate out: a SHA256: fingerprint, a public-key line, or a .pub file path
-      --operator                        confirm that a target is, or belongs to, an operator user (fleet-wide, protected)
+      --operator                        confirm that a target is, or belongs to, a protected user (operator: true or protected: true)
       --parallel int                    max concurrent server connections (default 32)
       --reason string                   free text recorded with each revoked: entry this run adds (printed by every tool; at most 256 bytes)
       --sweep                           after the writes, read every other server and report any that still has a key this run revoked (read-only; exit 2 when one is found; skipped with --dry-run and --no-apply)
