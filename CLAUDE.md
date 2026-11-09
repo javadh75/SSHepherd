@@ -384,7 +384,7 @@ multi-arch image.
 `docs/superpowers/specs/2026-10-16-identity-keyfile-auth-design.md`, planned in
 `docs/superpowers/plans/2026-10-16-identity-keyfile-auth.md`): `audit`,
 `adopt` and `apply` take repeatable `--identity PATH` plus
-`--identity-passphrase-file FILE` / `--identity-passphrase KEY=FILE`
+`--identity-passphrase-file FILE` / `--identity-passphrase PATH=FILE`
 (TTY prompt as the last resort; no passphrase env var or flag value), in union
 with the agent (agent optional once a key file is given). The new
 `internal/keyfile` does the OpenSSH permission rule on the opened descriptor
@@ -648,3 +648,12 @@ warns about a missing default known_hosts, each server with no recorded host key
 manifest the editor refuses, and exits 3 on a policy conflict, including a granted weak
 key. `--json` writes a schema-1 document on every exit 3 except an unreadable manifest, a
 bad flag or a bad explicit `--known-hosts`.
+**Flag renames (P10 S2, D26, UX-7)** (specced in section S2 of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-09-p10-s2-flag-renames.md`): `import --operator-key PATH`,
+`revoke --from-server NAME` and the `--identity-passphrase PATH=FILE` varname replace
+`--operator`, `--server` and `KEY=FILE`, with no aliases (no release has shipped, so the
+old names are unknown flags, exit 3). `apply`'s `--server` keeps its name because it only
+restricts a run, so `revoke`'s apply-phase hint still prints it; `revoke`/`rotate`'s bool
+`--operator` keeps its name; `--merge` keeps both names with clearer help. No exit code or
+JSON field changed.

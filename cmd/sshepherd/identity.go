@@ -23,14 +23,14 @@ type identityFlags struct {
 }
 
 // register declares the three flags on cmd. The backticked words are the
-// --help varnames (PATH, FILE, KEY=FILE) the README tables mirror.
+// --help varnames (PATH, FILE, PATH=FILE) the README tables mirror.
 func (f *identityFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringArrayVar(&f.paths, "identity", nil,
 		"private key `PATH` to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)")
 	cmd.Flags().StringVar(&f.defaultFile, "identity-passphrase-file", "",
 		"`FILE` holding the default passphrase for any encrypted --identity key")
 	cmd.Flags().StringArrayVar(&f.perKey, "identity-passphrase", nil,
-		"`KEY=FILE`: passphrase file for one --identity key (repeatable; split at the first =)")
+		"`PATH=FILE`: passphrase file for one --identity key (repeatable; split at the first =)")
 }
 
 // identities is a run's validated key-file inputs: step 1 of every

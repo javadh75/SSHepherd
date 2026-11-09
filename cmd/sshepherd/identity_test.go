@@ -120,7 +120,7 @@ func TestIdentityFlagValidation(t *testing.T) {
 		{"unmatched KEY lists the cleaned paths", []string{"--identity", "/keys/./a", "--identity-passphrase", "/keys/b=/pw"},
 			"--identity-passphrase: /keys/b matches no --identity (--identity paths: /keys/a)"},
 		{"same KEY twice", []string{"--identity", "/k", "--identity-passphrase", "/k=/a", "--identity-passphrase", "/k=/b"}, "/k is given twice"},
-		{"malformed mapping", []string{"--identity", "/k", "--identity-passphrase", "/k"}, "want KEY=FILE"},
+		{"malformed mapping", []string{"--identity", "/k", "--identity-passphrase", "/k"}, "want PATH=FILE"},
 	}
 	for _, cmd := range []string{"audit", "adopt", "apply"} {
 		for _, tt := range tests {
@@ -139,7 +139,7 @@ func TestIdentityFlagValidation(t *testing.T) {
 }
 
 func TestIdentityFirstEqualsSplit(t *testing.T) {
-	// KEY=FILE splits at the first "=": the FILE may contain "=", the KEY
+	// PATH=FILE splits at the first "=": the FILE may contain "=", the PATH
 	// may not (documented) — here the mapping names a file "pw=x".
 	t.Setenv("SSH_AUTH_SOCK", "")
 	key := encryptedKey(t, 7)

@@ -166,10 +166,13 @@ func TestHelpShowsIdentityVarnames(t *testing.T) {
 		if code := run([]string{name, "--help"}, &out, &errBuf); code != 0 {
 			t.Fatalf("%s --help exit = %d", name, code)
 		}
-		for _, want := range []string{"--identity PATH", "--identity-passphrase-file FILE", "--identity-passphrase KEY=FILE"} {
+		for _, want := range []string{"--identity PATH", "--identity-passphrase-file FILE", "--identity-passphrase PATH=FILE"} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("%s --help lacks %q:\n%s", name, want, out.String())
 			}
+		}
+		if strings.Contains(out.String(), "KEY=FILE") {
+			t.Errorf("%s --help still shows the old KEY=FILE varname:\n%s", name, out.String())
 		}
 	}
 }

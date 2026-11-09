@@ -268,7 +268,7 @@ func decryptError(c *candidate, err error) error {
 
 // noSourceError is the headless verdict for an encrypted key.
 func noSourceError(c *candidate, defaultFile string) error {
-	msg := fmt.Sprintf("%s is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase KEY=FILE)", c.path)
+	msg := fmt.Sprintf("%s is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase PATH=FILE)", c.path)
 	if c.defaultTried {
 		msg += fmt.Sprintf("; the default passphrase file %s did not unlock it", defaultFile)
 	}

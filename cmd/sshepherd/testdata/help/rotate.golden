@@ -46,7 +46,7 @@ Flags:
       --dry-run                         plan and report only; never write
   -h, --help                            help for rotate
       --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
-      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase PATH=FILE   PATH=FILE: passphrase file for one --identity key (repeatable; split at the first =)
       --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
       --json                            emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)
       --keep-old                        add the new key alongside the old one instead of replacing it (overlap; the new key keeps the old line's options, expiry-time included); finish later with 'sshepherd revoke --key OLD'

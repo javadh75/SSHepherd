@@ -60,11 +60,11 @@ func Resolve(identities []string, defaultFile string, perKey []string, home, cwd
 	return specs, pp, nil
 }
 
-// splitMapping splits KEY=FILE at the first "=" and cleans both halves.
+// splitMapping splits PATH=FILE at the first "=" and cleans both halves.
 func splitMapping(kv, home, cwd string) (key, file string, err error) {
 	k, f, ok := strings.Cut(kv, "=")
 	if !ok || k == "" || f == "" {
-		return "", "", fmt.Errorf("--identity-passphrase %q: want KEY=FILE", kv)
+		return "", "", fmt.Errorf("--identity-passphrase %q: want PATH=FILE", kv)
 	}
 	if key, err = cleanPath(k, home, cwd); err != nil {
 		return "", "", fmt.Errorf("--identity-passphrase: %w", err)

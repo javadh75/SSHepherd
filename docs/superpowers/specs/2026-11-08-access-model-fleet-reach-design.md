@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -381,6 +381,10 @@ flag. The W1 line `keeps access to N other servers` stays.
 **Files.** `cmd/sshepherd/{import,adopt,revoke,identity,editrun}.go`,
 `internal/keyfile/{keyfile,resolve}.go`, `internal/reconcile` (message),
 `internal/apply/edit.go` (comment), `testdata/help/*.golden`.
+`editrun.go` and the `accessProblems` hint needed no change: `applyHint` builds `apply`'s
+`--server`, and the hint builds `--operator`. The same section's lanes run in two rounds,
+because `adopt.golden` and `revoke.golden` carry both a renamed flag and the `PATH=FILE`
+varname.
 
 **README.** Every touched flag table in **`sshepherd import`**, **`sshepherd adopt`**,
 **`sshepherd audit`**, **`sshepherd apply`**, **`sshepherd revoke`**, **`sshepherd

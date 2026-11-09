@@ -565,7 +565,7 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--comments` | off | Also report comment drift on present keys (informational) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
-| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+| `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 When `--server` leaves servers out, the report ends with `(N servers skipped by --server)`
 and the JSON summary gains `skipped`; a run that names every server gets neither. The
@@ -1167,7 +1167,7 @@ A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in bot
 | `--merge` | off | Merge into `--config`: preserve its text and append what is new |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
-| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+| `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 Any unreadable server aborts the run unless `--partial` is set — adopting a
 half-read fleet would silently drop real access. Each unreadable server gets its
@@ -1240,7 +1240,7 @@ rendered desired state.
 | `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
-| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+| `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 `--dry-run` and `--yes` are mutually exclusive. `--yes` skips only the `[y/N]`
 confirmation: an encrypted `--identity` key may still prompt for its passphrase on
@@ -1581,7 +1581,7 @@ $ sshepherd revoke --key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4
 | `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
-| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+| `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 **Users or keys, not both.** `revoke USER...` deletes each user and every `access:`
 entry whose `user:` is that user (unknown users are listed and nothing happens).
@@ -1936,7 +1936,7 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
 | `--json` | off | Emit the plan and outcome as machine-readable JSON on stdout (needs `--dry-run` or `--yes`) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
-| `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+| `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
 - Exactly one `--old` and one `--new`; a repeated flag is refused
   (`rotate takes exactly one --old (got 2)`), never resolved to the last value.
@@ -2061,12 +2061,12 @@ loaded (`certificate KEY-cert.pub not used; authenticating with the plain key`).
 
 **Passphrases.** An encrypted key is unlocked by the first source that applies:
 
-1. its `--identity-passphrase KEY=FILE` mapping — a wrong passphrase there is an
+1. its `--identity-passphrase PATH=FILE` mapping — a wrong passphrase there is an
    error (exit 3), never a fall-through;
 2. `--identity-passphrase-file FILE` — a shared default: if it does not unlock this
    key, resolution continues;
 3. a prompt on the controlling terminal (`/dev/tty`, three attempts, like `ssh`);
-4. otherwise exit 3: `KEY is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase KEY=FILE)`.
+4. otherwise exit 3: `PATH is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase PATH=FILE)`.
 
 There is **no passphrase environment variable and no passphrase flag value** (both
 leak through `/proc/<pid>/environ`, `ps`, shell history or core dumps). Files, secret
@@ -2104,8 +2104,8 @@ manifest typo or a bad `--known-hosts` therefore never costs you a passphrase.
 - **Size caps:** key files 64 KiB, passphrase files 4 KiB.
 - **Paths are matched lexically:** `~/` expands from `$HOME`, relative paths resolve
   against the working directory, then `filepath.Clean` — no symlink resolution, case
-  sensitive. An `--identity-passphrase` KEY must name an `--identity` exactly as
-  cleaned (the error lists the cleaned paths); the same KEY twice is an error; a
+  sensitive. An `--identity-passphrase` PATH must name an `--identity` exactly as
+  cleaned (the error lists the cleaned paths); the same PATH twice is an error; a
   path given twice to `--identity` is used once. Two paths holding the same key keep
   the first (an info line names the dropped one).
 - **The fingerprint is always the decrypted key's.** A sibling `KEY.pub` (legacy PEM)

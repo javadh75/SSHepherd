@@ -36,9 +36,9 @@ func TestResolve(t *testing.T) {
 			wantErrSub: "matches no --identity"},
 		{name: "matching is case sensitive", ids: []string{"/K"}, perKey: []string{"/k=/pw"}, wantErrSub: "matches no --identity"},
 		{name: "same KEY twice", ids: []string{"/k"}, perKey: []string{"/k=/a", "/k=/b"}, wantErrSub: "--identity-passphrase: /k is given twice"},
-		{name: "missing =", ids: []string{"/k"}, perKey: []string{"/k"}, wantErrSub: `--identity-passphrase "/k": want KEY=FILE`},
-		{name: "empty FILE", ids: []string{"/k"}, perKey: []string{"/k="}, wantErrSub: "want KEY=FILE"},
-		{name: "empty KEY", ids: []string{"/k"}, perKey: []string{"=/pw"}, wantErrSub: "want KEY=FILE"},
+		{name: "missing =", ids: []string{"/k"}, perKey: []string{"/k"}, wantErrSub: `--identity-passphrase "/k": want PATH=FILE`},
+		{name: "empty FILE", ids: []string{"/k"}, perKey: []string{"/k="}, wantErrSub: "want PATH=FILE"},
+		{name: "empty KEY", ids: []string{"/k"}, perKey: []string{"=/pw"}, wantErrSub: "want PATH=FILE"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

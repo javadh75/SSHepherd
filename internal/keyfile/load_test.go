@@ -156,7 +156,7 @@ func TestLoadPassphraseResolution(t *testing.T) {
 		{name: "default wrong falls through to the prompt", files: map[string]string{"/def": "wrong"}, pp: Passphrases{Default: "/def"},
 			prompter: &fakePrompter{avail: true, answers: []string{"right"}}, wantPrompts: 1},
 		{name: "default wrong and headless names the default", files: map[string]string{"/def": "wrong"}, pp: Passphrases{Default: "/def"},
-			prompter: &fakePrompter{}, wantErr: []string{"/k is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase KEY=FILE)", "the default passphrase file /def did not unlock it"}},
+			prompter: &fakePrompter{}, wantErr: []string{"/k is encrypted and no passphrase source is available (use --identity-passphrase-file or --identity-passphrase PATH=FILE)", "the default passphrase file /def did not unlock it"}},
 		{name: "prompt ok", prompter: &fakePrompter{avail: true, answers: []string{"right"}}, wantPrompts: 1},
 		{name: "prompt wrong then right", prompter: &fakePrompter{avail: true, answers: []string{"no", "right"}}, wantPrompts: 2},
 		{name: "prompt wrong three times", prompter: &fakePrompter{avail: true, answers: []string{"a", "b", "c", "right"}}, wantPrompts: 3,

@@ -53,7 +53,7 @@ Flags:
       --from-server NAME                remove the users' access to server NAME only (repeatable); the users and their keys stay
   -h, --help                            help for revoke
       --identity PATH                   private key PATH to authenticate with, in addition to ssh-agent (repeatable; ~/ expands from $HOME)
-      --identity-passphrase KEY=FILE    KEY=FILE: passphrase file for one --identity key (repeatable; split at the first =)
+      --identity-passphrase PATH=FILE   PATH=FILE: passphrase file for one --identity key (repeatable; split at the first =)
       --identity-passphrase-file FILE   FILE holding the default passphrase for any encrypted --identity key
       --json                            emit the plan and outcome as machine-readable JSON on stdout (needs --dry-run or --yes)
       --key KEY                         KEY to revoke: a SHA256: fingerprint, a public-key line, or a .pub file path (repeatable)
