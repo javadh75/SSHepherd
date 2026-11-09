@@ -44,7 +44,7 @@ func TestGenerateManifestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
-	if len(skipped) != 1 || !strings.Contains(skipped[0], "nouser") {
+	if len(skipped) != 1 || !strings.Contains(skipped[0].Message, "nouser") {
 		t.Errorf("skipped = %v, want one note about nouser", skipped)
 	}
 	if _, err := config.Parse(got); err != nil {
@@ -69,7 +69,7 @@ func TestGenerateManifestUsersGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
-	if len(notes) != 1 || !strings.Contains(notes[0], "wildcard") {
+	if len(notes) != 1 || !strings.Contains(notes[0].Message, "wildcard") {
 		t.Errorf("notes = %v, want one wildcard-compaction note for javad-work", notes)
 	}
 	c, err := config.Parse(got)

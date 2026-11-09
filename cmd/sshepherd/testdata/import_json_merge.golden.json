@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "command": "import",
+  "mode": "merge",
+  "output": {
+    "path": "fleet.yaml",
+    "written": true
+  },
+  "summary": {
+    "hosts": 3,
+    "users": 5,
+    "grants": 7,
+    "conflicts": 3,
+    "warnings": 5,
+    "exit_code": 0
+  },
+  "new_servers": [
+    {
+      "name": "app-1",
+      "host": "10.0.0.5",
+      "port": 2200,
+      "user": "deploy"
+    }
+  ],
+  "new_users": [
+    {
+      "name": "javad-carol",
+      "fingerprint": "SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE",
+      "type": "ssh-ed25519",
+      "servers": [
+        "app-1"
+      ]
+    },
+    {
+      "name": "alice-2",
+      "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+      "type": "ssh-ed25519",
+      "servers": [
+        "app-1"
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "user": "alice",
+      "servers": [
+        "app-1"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "merge_conflict",
+      "server": "db-1",
+      "message": "server \"db-1\" in the ssh config differs from the manifest (host/port/user) — manifest kept"
+    },
+    {
+      "kind": "merge_conflict",
+      "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+      "user": "alice",
+      "message": "key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 from the ssh config belongs to manifest user \"alice\" — extending their access"
+    },
+    {
+      "kind": "merge_conflict",
+      "server": "db-1",
+      "user": "javad-carol",
+      "message": "access for \"javad-carol\" to \"db-1\" dropped: the server conflicts with the manifest"
+    },
+    {
+      "kind": "merge_conflict",
+      "user": "javad-doomed",
+      "message": "user \"javad-doomed\" not added: its only server \"db-1\" conflicts with the manifest"
+    },
+    {
+      "kind": "merge_conflict",
+      "user": "alice-2",
+      "message": "user name \"alice\" already taken, using \"alice-2\" for the incoming key"
+    }
+  ],
+  "notes": [
+    "server \"web-1\" already in the manifest — identical, skipped",
+    "key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o from the ssh config belongs to manifest user \"bob\" — already covered"
+  ]
+}

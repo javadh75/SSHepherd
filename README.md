@@ -59,7 +59,7 @@ rotate → audit**.
 | -------- | ----- | ------------ |
 | `audit`  | ✅ | Read-only drift report (text + `--json`, monitoring exit codes) |
 | `validate` | ✅ | Offline manifest check: schema, policy conflicts, host-key coverage (text + `--json`, `--strict`) |
-| `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported) |
+| `import` | ✅ | Convert an OpenSSH client config into a starter manifest (`--merge` supported, text + `--json`) |
 | `adopt`  | ✅ | Read the live fleet and generate a manifest that accounts for every installed key (`--merge` supported, text + `--json`) |
 | `apply`  | ✅ | The write path: plan → confirm → guarded atomic write → verify → login probe (text + `--json`) |
 | `revoke` / `rotate` | ✅ | Comment-preserving manifest edit + `apply` over the affected servers: offboard a user, take away one server (`--from-server`), drop a lost key, swap a key in place or overlap old and new (`--keep-old`) (text + `--json`) |
@@ -505,7 +505,7 @@ Check the manifest offline. It never opens a socket and never reads a key. It pa
 
 A valid manifest prints one line on stdout, e.g. `manifest OK: 1 user, 1 server, 1 grant (0 warnings)`. A policy conflict prints `manifest has 1 policy conflict: MESSAGE` on stderr and exits `3`. A weak key granted on a server is a policy conflict; an ungranted one is a warning.
 
-`--json` writes one document. It is written on exit `3` too, when the manifest is invalid or has a policy conflict, with `valid: false`, and when the default known_hosts exists but cannot be loaded (`valid: true`, the reason in `errors`). An unreadable manifest, a bad flag or a bad `--known-hosts` file given explicitly writes no document. A run that fails only under `--strict` has `valid: true` and exit `1`. `manifest_warnings` adds the kinds `manifest_not_editable`, `known_hosts_missing` and `host_key_not_recorded`; ignore kinds you do not know. `host_keys_checked` is `false` when no known_hosts file loaded.
+`--json` writes one document. It is written on exit `3` too, when the manifest is invalid or has a policy conflict, with `valid: false`, and when the default known_hosts exists but cannot be loaded (`valid: true`, the reason in `errors`). An unreadable manifest, a bad flag or a bad `--known-hosts` file given explicitly writes no document. `import` and `adopt` are the opposite: they write a document on almost no exit `3`, only `adopt --partial` with no server read does. A run that fails only under `--strict` has `valid: true` and exit `1`. `manifest_warnings` adds the kinds `manifest_not_editable`, `known_hosts_missing` and `host_key_not_recorded`; ignore kinds you do not know. `host_keys_checked` is `false` when no known_hosts file loaded.
 
 ```json
 {
@@ -1066,6 +1066,96 @@ are never read. Run it where you actually `ssh` from.
 | `--servers-only` | off | Emit servers only; skip identity resolution |
 | `--operator-key PATH` | — | Key file whose owner becomes an operator (repeatable) |
 | `--merge FILE` | — | Merge into `FILE`: preserve its text and append what is new |
+| `--json` | off | Machine-readable report on stdout (schema 1); the manifest goes to `-o`, or into the report's `manifest` field |
+
+`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds, and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped`; ignore kinds you do not know.
+
+```json
+{
+  "schema": 1,
+  "command": "import",
+  "mode": "merge",
+  "output": {
+    "path": "fleet.yaml",
+    "written": true
+  },
+  "summary": {
+    "hosts": 3,
+    "users": 5,
+    "grants": 7,
+    "conflicts": 3,
+    "warnings": 5,
+    "exit_code": 0
+  },
+  "new_servers": [
+    {
+      "name": "app-1",
+      "host": "10.0.0.5",
+      "port": 2200,
+      "user": "deploy"
+    }
+  ],
+  "new_users": [
+    {
+      "name": "javad-carol",
+      "fingerprint": "SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE",
+      "type": "ssh-ed25519",
+      "servers": [
+        "app-1"
+      ]
+    },
+    {
+      "name": "alice-2",
+      "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+      "type": "ssh-ed25519",
+      "servers": [
+        "app-1"
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "user": "alice",
+      "servers": [
+        "app-1"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "merge_conflict",
+      "server": "db-1",
+      "message": "server \"db-1\" in the ssh config differs from the manifest (host/port/user) — manifest kept"
+    },
+    {
+      "kind": "merge_conflict",
+      "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+      "user": "alice",
+      "message": "key SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 from the ssh config belongs to manifest user \"alice\" — extending their access"
+    },
+    {
+      "kind": "merge_conflict",
+      "server": "db-1",
+      "user": "javad-carol",
+      "message": "access for \"javad-carol\" to \"db-1\" dropped: the server conflicts with the manifest"
+    },
+    {
+      "kind": "merge_conflict",
+      "user": "javad-doomed",
+      "message": "user \"javad-doomed\" not added: its only server \"db-1\" conflicts with the manifest"
+    },
+    {
+      "kind": "merge_conflict",
+      "user": "alice-2",
+      "message": "user name \"alice\" already taken, using \"alice-2\" for the incoming key"
+    }
+  ],
+  "notes": [
+    "server \"web-1\" already in the manifest — identical, skipped",
+    "key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o from the ssh config belongs to manifest user \"bob\" — already covered"
+  ]
+}
+```
 
 `--merge` is strictly additive: only genuinely new entries are appended, the
 existing manifest wins every conflict (with a loud warning), and re-running with no
@@ -2345,6 +2435,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`) | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator key or an operator key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, an operator target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
+
+With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
 
 `--help` shows this summary. `audit --help`:
 

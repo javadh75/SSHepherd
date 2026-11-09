@@ -23,7 +23,7 @@ import (
 // --force drops its serial: and revoked: entries, so every revoked key
 // could be re-granted. --force names the overwrite, so this warns rather
 // than refuses. Best effort: a missing or invalid file has nothing to lose.
-func warnMemoryLost(log *slog.Logger, out string, force bool) {
+func warnMemoryLost(w *importWarnings, out string, force bool) {
 	if out == "" || !force {
 		return
 	}
@@ -35,7 +35,7 @@ func warnMemoryLost(log *slog.Logger, out string, force bool) {
 	if err != nil || (cfg.Serial() == 0 && len(cfg.Tombstones) == 0) {
 		return
 	}
-	log.Warn(fmt.Sprintf("%s holds revocation memory (serial %d, %s) that this fresh import drops: a revoked key could be re-granted; keep it with --merge %s",
+	w.addAll(importWarnMemoryDropped, fmt.Sprintf("%s holds revocation memory (serial %d, %s) that this fresh import drops: a revoked key could be re-granted; keep it with --merge %s",
 		out, cfg.Serial(), apply.Plural(len(cfg.Tombstones), "revoked: entry", "revoked: entries"), hintArg(out)))
 }
 
@@ -49,7 +49,7 @@ func serverWorthy(h sshcfg.Host) bool { return h.User != "" }
 // format runes — e.g. a quoted `Host "web 1"`), warning for each. Filtering
 // before identity resolution and target collapse keeps such a host from
 // deriving grants or winning a same-target collapse.
-func dropUnsafeHosts(log *slog.Logger, hosts []sshcfg.Host) []sshcfg.Host {
+func dropUnsafeHosts(w *importWarnings, hosts []sshcfg.Host) []sshcfg.Host {
 	kept := hosts[:0:0]
 	for _, h := range hosts {
 		bad := ""
@@ -62,7 +62,7 @@ func dropUnsafeHosts(log *slog.Logger, hosts []sshcfg.Host) []sshcfg.Host {
 			}
 		}
 		if bad != "" {
-			log.Warn(fmt.Sprintf("host %q: %s, skipped (not valid in a manifest)", h.Alias, bad))
+			w.addAll(importWarnUnsafeHost, fmt.Sprintf("host %q: %s, skipped (not valid in a manifest)", h.Alias, bad))
 			continue
 		}
 		kept = append(kept, h)
@@ -81,18 +81,18 @@ func dropUnsafeHosts(log *slog.Logger, hosts []sshcfg.Host) []sshcfg.Host {
 // covers wildcard-compaction: a non-operator user covering every server is
 // emitted as servers: ["*"] and noted for review (stderr-only — it does not
 // affect completeness).
-func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([]byte, []string, error) {
+func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([]byte, []reconcile.Warning, error) {
 	var (
 		servers []config.Server
 		mUsers  []config.User
 		access  []config.Access
-		notes   []string
+		notes   []reconcile.Warning
 		skipped []string // aliases dropped from the manifest, for the header
 	)
 	for _, h := range hosts {
 		if !serverWorthy(h) {
-			notes = append(notes, fmt.Sprintf(
-				"host %q: no User resolved, skipped (the manifest requires user)", h.Alias))
+			notes = append(notes, reconcile.Warning{Kind: importWarnSSHConfig, Message: fmt.Sprintf(
+				"host %q: no User resolved, skipped (the manifest requires user)", h.Alias)})
 			skipped = append(skipped, h.Alias)
 			continue
 		}
@@ -123,8 +123,8 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 			// Grants only reference server-worthy hosts, so matching the count
 			// means covering the fleet. "*" deliberately opts this user into
 			// servers added later — flagged so review catches it.
-			notes = append(notes, fmt.Sprintf(
-				"access for %q covers every server; emitted as wildcard %q (includes servers added later)", u.Name, "*"))
+			notes = append(notes, reconcile.Warning{Kind: reconcile.KindWildcardGrant, User: u.Name, Message: fmt.Sprintf(
+				"access for %q covers every server; emitted as wildcard %q (includes servers added later)", u.Name, "*")})
 			access = append(access, config.Access{User: u.Name, Servers: []string{"*"}})
 			continue
 		}
@@ -170,7 +170,7 @@ func resolveUsers(hosts []sshcfg.Host, operators []string) ([]identity.User, []s
 
 // deriveUsers runs identity resolution for the convert pipeline, logging its
 // warnings; nil under --servers-only (identity resolution skipped entirely).
-func deriveUsers(log *slog.Logger, serversOnly bool, hosts []sshcfg.Host, operators []string) ([]identity.User, error) {
+func deriveUsers(w *importWarnings, serversOnly bool, hosts []sshcfg.Host, operators []string) ([]identity.User, error) {
 	if serversOnly {
 		return nil, nil
 	}
@@ -178,10 +178,8 @@ func deriveUsers(log *slog.Logger, serversOnly bool, hosts []sshcfg.Host, operat
 	if err != nil {
 		return nil, err
 	}
-	for _, w := range warnings {
-		log.Warn(w)
-	}
-	log.Info("derived " + apply.Plural(len(users), "user", "users") + " from identity files")
+	w.addAll(importWarnIdentity, warnings...)
+	w.log.Info("derived " + apply.Plural(len(users), "user", "users") + " from identity files")
 	return users, nil
 }
 
@@ -191,11 +189,9 @@ func deriveUsers(log *slog.Logger, serversOnly bool, hosts []sshcfg.Host, operat
 // both, and their derived grants move onto the kept alias. It runs after
 // identity resolution so a key used only through a dropped alias still
 // reaches the machine.
-func collapseTargets(log *slog.Logger, hosts []sshcfg.Host, users []identity.User) ([]sshcfg.Host, []identity.User) {
+func collapseTargets(w *importWarnings, hosts []sshcfg.Host, users []identity.User) ([]sshcfg.Host, []identity.User) {
 	hosts, users, warnings := reconcile.CollapseTargets(hosts, users)
-	for _, w := range warnings {
-		log.Warn(w)
-	}
+	w.addAll(importWarnCollapsed, warnings...)
 	return hosts, users
 }
 
@@ -203,10 +199,10 @@ func collapseTargets(log *slog.Logger, hosts []sshcfg.Host, users []identity.Use
 // ProxyJump/ProxyCommand: SSHepherd dials servers directly, so a
 // bastion-only host would otherwise surface later as an unexplained
 // unreachable (or a misleading host-key mismatch).
-func warnProxies(log *slog.Logger, hosts []sshcfg.Host) {
+func warnProxies(w *importWarnings, hosts []sshcfg.Host) {
 	for _, h := range hosts {
 		if serverWorthy(h) && h.Proxy != "" {
-			log.Warn(fmt.Sprintf("host %q: %s set — dialed directly; bastion hosts are not supported yet", h.Alias, h.Proxy))
+			w.addAll(importWarnProxy, fmt.Sprintf("host %q: %s set — dialed directly; bastion hosts are not supported yet", h.Alias, h.Proxy))
 		}
 	}
 }
@@ -214,18 +210,18 @@ func warnProxies(log *slog.Logger, hosts []sshcfg.Host) {
 // renderImport picks the rendering path: a comment-preserving merge append
 // when --merge loaded a manifest (mf non-nil), the full generated draft
 // otherwise. date feeds the merge marker only.
-func renderImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, error) {
+func renderImport(w *importWarnings, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, *reconcile.Plan, error) {
 	if mf != nil {
-		return mergeImport(log, mf, raw, hosts, users, src, date)
+		return mergeImport(w, mf, raw, hosts, users, src, date)
 	}
 	rendered, notes, err := generateManifest(hosts, users, src)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, n := range notes {
-		log.Warn(n)
+		w.add(n)
 	}
-	return rendered, nil
+	return rendered, nil, nil
 }
 
 // loadMergeTarget reads the --merge manifest once through the store — the
@@ -253,31 +249,35 @@ func loadMergeTarget(log *slog.Logger, path string) (manifestTarget, *manifest.F
 // was appended. Unlike generateManifest, skipped-host warnings stay on
 // stderr and are not embedded in the output: the merged file is the
 // operator's own document, and only plan warnings ride the marker block.
-func mergeImport(log *slog.Logger, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, error) {
+func mergeImport(w *importWarnings, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, *reconcile.Plan, error) {
 	var worthy []sshcfg.Host
 	for _, h := range hosts {
 		if !serverWorthy(h) {
-			log.Warn(fmt.Sprintf("host %q: no User resolved, skipped (the manifest requires user)", h.Alias))
+			w.addAll(importWarnSSHConfig, fmt.Sprintf("host %q: no User resolved, skipped (the manifest requires user)", h.Alias))
 			continue
 		}
 		worthy = append(worthy, h)
 	}
 	plan, err := reconcile.Build(mf.Config(), worthy, users)
 	if err != nil {
-		return nil, fmt.Errorf("merge: %w", err)
+		return nil, nil, fmt.Errorf("merge: %w", err)
 	}
-	for _, w := range plan.Warnings {
-		log.Warn(w)
+	for _, pw := range plan.Warnings {
+		w.add(pw)
 	}
 	for _, n := range plan.Notes {
-		log.Info(n)
+		w.log.Info(n)
 	}
 	if plan.Empty() {
-		log.Info("nothing to merge: the manifest already covers " + src)
-		return raw, nil
+		w.log.Info("nothing to merge: the manifest already covers " + src)
+		return raw, &plan, nil
 	}
-	log.Info(mergeSummary(plan))
-	return renderMergedImport(mf, raw, plan, src, date)
+	w.log.Info(mergeSummary(plan))
+	rendered, err := renderMergedImport(mf, raw, plan, src, date)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rendered, &plan, nil
 }
 
 // renderMergedImport renders the plan as a comment-preserving append to the
@@ -299,7 +299,7 @@ func renderMergedImport(mf *manifest.File, raw []byte, plan reconcile.Plan, src,
 	}
 	comments := []string{fmt.Sprintf("merged by sshepherd import from %s on %s", src, date)}
 	for _, w := range plan.Warnings {
-		comments = append(comments, "WARNING: "+w)
+		comments = append(comments, "WARNING: "+w.Message)
 	}
 	users := make([]config.User, 0, len(plan.NewUsers))
 	for _, u := range plan.NewUsers {
@@ -354,14 +354,90 @@ func localUsername() string {
 	return "user"
 }
 
-func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
+// importOpts are import's flags.
+type importOpts struct {
+	outPath     string
+	force       bool
+	serversOnly bool
+	operators   []string
+	mergePath   string
+	json        bool
+}
+
+// importRun is one import run.
+type importRun struct {
+	log    *slog.Logger
+	stdout io.Writer
+	opts   importOpts
+}
+
+func (r *importRun) run(args []string) error {
+	if r.opts.serversOnly && len(r.opts.operators) > 0 {
+		return fmt.Errorf("--operator-key conflicts with --servers-only (operators are users)")
+	}
+	src := defaultSSHConfig
+	if len(args) == 1 {
+		src = args[0]
+	}
+	srcPath, err := expandHome(src)
+	if err != nil {
+		return err
+	}
+	// m stays the zero manifestTarget without --merge: -o is then
+	// always a new-file publish.
 	var (
-		outPath     string
-		force       bool
-		serversOnly bool
-		operators   []string
-		mergePath   string
+		m  manifestTarget
+		mf *manifest.File
 	)
+	if r.opts.mergePath != "" {
+		// Read FILE up front: failing fast beats converting first,
+		// and the store read is what lets an in-place
+		// -o FILE --force refuse a concurrent change.
+		m, mf, err = loadMergeTarget(r.log, r.opts.mergePath)
+		if err != nil {
+			return err
+		}
+	}
+	warns := &importWarnings{log: r.log}
+	hosts, sshWarnings, err := sshcfg.Load(srcPath)
+	if err != nil {
+		return fmt.Errorf("load ssh config: %w", err) // wrapcheck: wrap at package boundary
+	}
+	parsed := len(hosts)
+	r.log.Info("parsed " + src + ": " + apply.Plural(parsed, "host", "hosts"))
+	warns.addAll(importWarnSSHConfig, sshWarnings...)
+	hosts = dropUnsafeHosts(warns, hosts)
+	users, err := deriveUsers(warns, r.opts.serversOnly, hosts, r.opts.operators)
+	if err != nil {
+		return err
+	}
+	hosts, users = collapseTargets(warns, hosts, users)
+	warnProxies(warns, hosts)
+	// The clock is read only here, so tests inject a fixed date.
+	rendered, plan, err := renderImport(warns, mf, m.Loaded, hosts, users, src, time.Now().Format("2006-01-02"))
+	if err != nil {
+		return err
+	}
+	// Self-check: never emit a manifest our own loader would reject,
+	// nor (under --merge) one that keeps a policy conflict (D29).
+	saved, err := config.Parse(rendered)
+	if err != nil {
+		return fmt.Errorf("bug: generated manifest fails validation: %w", err)
+	}
+	if err := conflictRefusal(formerManifest(m), saved); err != nil {
+		return err
+	}
+	if r.opts.mergePath == "" {
+		warnMemoryLost(warns, r.opts.outPath, r.opts.force)
+	}
+	if !r.opts.json {
+		return emitManifest(r.stdout, m, r.opts.outPath, rendered, r.opts.force)
+	}
+	return r.finishJSON(m, rendered, saved, plan, importStatsOf(parsed, users), warns.list)
+}
+
+func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
+	var opts importOpts
 	cmd := &cobra.Command{
 		Use:   "import [ssh-config-path]",
 		Short: "Convert an OpenSSH client config into a starter manifest",
@@ -382,77 +458,22 @@ func newImportCmd(a *app, stdout io.Writer) *cobra.Command {
 			"  # Servers and users from one config, with an operator key\n" +
 			"  sshepherd import ~/.ssh/config --operator-key ~/.ssh/ops.pub -o sshepherd.yaml\n\n" +
 			"  # Add hosts that are new in the ssh config to an existing manifest\n" +
-			"  sshepherd import --merge sshepherd.yaml -o merged.yaml",
+			"  sshepherd import --merge sshepherd.yaml -o merged.yaml\n\n" +
+			"  # A report for a script; the manifest goes to the file\n" +
+			"  sshepherd import --json -o sshepherd.yaml",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if serversOnly && len(operators) > 0 {
-				return fmt.Errorf("--operator-key conflicts with --servers-only (operators are users)")
-			}
-			src := defaultSSHConfig
-			if len(args) == 1 {
-				src = args[0]
-			}
-			srcPath, err := expandHome(src)
-			if err != nil {
-				return err
-			}
-			log := a.logger
-			// m stays the zero manifestTarget without --merge: -o is then
-			// always a new-file publish.
-			var (
-				m  manifestTarget
-				mf *manifest.File
-			)
-			if mergePath != "" {
-				// Read FILE up front: failing fast beats converting first,
-				// and the store read is what lets an in-place
-				// -o FILE --force refuse a concurrent change.
-				m, mf, err = loadMergeTarget(log, mergePath)
-				if err != nil {
-					return err
-				}
-			}
-			hosts, warnings, err := sshcfg.Load(srcPath)
-			if err != nil {
-				return fmt.Errorf("load ssh config: %w", err) // wrapcheck: wrap at package boundary
-			}
-			log.Info("parsed " + src + ": " + apply.Plural(len(hosts), "host", "hosts"))
-			for _, w := range warnings {
-				log.Warn(w)
-			}
-			hosts = dropUnsafeHosts(log, hosts)
-			users, err := deriveUsers(log, serversOnly, hosts, operators)
-			if err != nil {
-				return err
-			}
-			hosts, users = collapseTargets(log, hosts, users)
-			warnProxies(log, hosts)
-			// The clock is read only here, so tests inject a fixed date.
-			rendered, err := renderImport(log, mf, m.Loaded, hosts, users, src, time.Now().Format("2006-01-02"))
-			if err != nil {
-				return err
-			}
-			// Self-check: never emit a manifest our own loader would reject,
-			// nor (under --merge) one that keeps a policy conflict (D29).
-			saved, err := config.Parse(rendered)
-			if err != nil {
-				return fmt.Errorf("bug: generated manifest fails validation: %w", err)
-			}
-			if err := conflictRefusal(formerManifest(m), saved); err != nil {
-				return err
-			}
-			if mergePath == "" {
-				warnMemoryLost(log, outPath, force)
-			}
-			return emitManifest(stdout, m, outPath, rendered, force)
+			r := &importRun{log: a.logger, stdout: stdout, opts: opts}
+			return r.run(args)
 		},
 	}
-	cmd.Flags().StringVarP(&outPath, "output", "o", "", "write the manifest to this file instead of stdout")
-	cmd.Flags().BoolVar(&force, "force", false, "allow --output to overwrite an existing file")
-	cmd.Flags().BoolVar(&serversOnly, "servers-only", false, "leave the users and access sections empty (skip identity resolution)")
-	cmd.Flags().StringArrayVar(&operators, "operator-key", nil,
+	cmd.Flags().StringVarP(&opts.outPath, "output", "o", "", "write the manifest to this file instead of stdout")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "allow --output to overwrite an existing file")
+	cmd.Flags().BoolVar(&opts.serversOnly, "servers-only", false, "leave the users and access sections empty (skip identity resolution)")
+	cmd.Flags().StringArrayVar(&opts.operators, "operator-key", nil,
 		"key file `PATH` whose owner is an operator: granted every server and protected from removal (repeatable)")
-	cmd.Flags().StringVar(&mergePath, "merge", "",
+	cmd.Flags().StringVar(&opts.mergePath, "merge", "",
 		"merge into `FILE`: preserve its text and append what is new")
+	cmd.Flags().BoolVar(&opts.json, "json", false, "emit a machine-readable report on stdout (the manifest goes to -o, or into the report's manifest field)")
 	return cmd
 }

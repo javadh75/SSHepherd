@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "command": "import",
+  "mode": "generate",
+  "output": {
+    "path": "fleet.yaml",
+    "written": true
+  },
+  "summary": {
+    "hosts": 3,
+    "users": 2,
+    "grants": 2,
+    "conflicts": 0,
+    "warnings": 2,
+    "exit_code": 0
+  },
+  "new_servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy"
+    },
+    {
+      "name": "ci",
+      "host": "ci.internal",
+      "port": 2222,
+      "user": "git"
+    }
+  ],
+  "new_users": [
+    {
+      "name": "javad-work",
+      "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+      "type": "ssh-ed25519",
+      "servers": [
+        "*"
+      ]
+    },
+    {
+      "name": "javad-ops",
+      "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+      "type": "ssh-ed25519",
+      "operator": true,
+      "servers": []
+    }
+  ],
+  "extensions": [],
+  "warnings": [
+    {
+      "kind": "ssh_config",
+      "message": "host \"nouser\": no User resolved, skipped (the manifest requires user)"
+    },
+    {
+      "kind": "wildcard_grant",
+      "user": "javad-work",
+      "message": "access for \"javad-work\" covers every server; emitted as wildcard \"*\" (includes servers added later)"
+    }
+  ],
+  "notes": []
+}

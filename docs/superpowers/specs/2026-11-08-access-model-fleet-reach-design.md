@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -430,6 +430,8 @@ document's `manifest` field when there is no `-o` (OP3). Logs stay on stderr.
 }
 ```
 
+`unreadable` holds servers that could not be read, each with `error_kind`. A line adopt could not use on a server it did read is a row of the additive, always-present `line_issues: [{server, detail}]`; `summary.partly_read` counts those servers.
+
 `import` has `mode` (`generate` or `merge`), `summary` (`hosts`, `users`, `grants`,
 `conflicts`, `warnings`, `exit_code`), `new_servers`, `new_users`, `extensions`,
 `warnings`, the same `output`/`manifest` choice, and `notes`: a list of plain strings
@@ -437,24 +439,24 @@ from `reconcile.Plan.Notes`, not counted in `summary.warnings`, because they rep
 steady state and stderr logs them at info level.
 
 With no `-o`, the document has `manifest` (the YAML) and no `output`, so
-`… --json | jq -r .manifest` gives the same bytes a non-JSON run prints. A document with
+`… --json | jq -j .manifest` gives the same bytes a non-JSON run prints. A document with
 `"emitted": false` has neither.
 
 **Warning kinds** (`message` is the stderr text, unchanged). Consumers must ignore
 kinds they do not know.
 
 - adopt: `revoked_key_skipped`, `revoked_access_skipped` (shapes from P04),
-  `except_skipped`, `key_differs`, `comment_dropped`.
+  `except_skipped`, `key_differs`, `comment_dropped`, `weak_key_skipped` (P09, added by the S8 plan).
 - import: `revoked_pub_skipped`, `revoked_access_skipped` (shapes from P04),
   `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`,
-  `merge_conflict`.
+  `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped` (warnings that exist today, added by the S8 plan); a host with no `User` is `ssh_config`.
 
 **Mechanics.** `adopt.Plan.Warnings` and `reconcile.Plan.Warnings` become structured
-(`Warning{Kind, Server, Fingerprint, User, Date, Message}`); stderr still prints
+(`Warning{Kind, Server, Fingerprint, User, Date, Message}` (`reconcile.Warning` also has P04's `Identity`)); stderr still prints
 `Message`, so text output and goldens do not change. Import's other warnings log
 directly or return strings today: `sshcfg.Load`, `resolveUsers`, `CollapseTargets`,
 `warnProxies` and the host filter. Those functions return their warnings to one
-collector in `import_json.go`, which assigns the kinds; the non-JSON path prints them
+collector in `import_json.go` (the helpers receive the collector, so each message logs at today's point), which assigns the kinds; the non-JSON path prints them
 exactly as today. `--json` adds no behavior: the manifest bytes match a non-JSON run
 exactly. Adopt's renderer is `internal/adopt/json.go`, which imports no CLI framework;
 import's is `cmd/sshepherd/import_json.go`, because import's run lives in cmd.
@@ -462,7 +464,7 @@ import's is `cmd/sshepherd/import_json.go`, because import's run lives in cmd.
 **Tombstones.** Skips are reported through the P04 warning kinds. No rule changes.
 
 **Files.** `internal/adopt/{adopt,json}.go`, `internal/reconcile/reconcile.go`,
-`internal/sshcfg`, `cmd/sshepherd/{adopt,import,import_json}.go`.
+`cmd/sshepherd/{adopt,import,import_json,manifest_out}.go`.
 
 **README.** **`sshepherd import`** and **`sshepherd adopt`** flag tables and a JSON
 sample each; **Exit codes** note on when a document is written. `sshepherd validate`
@@ -1293,7 +1295,7 @@ same commit, then an independent verifier, then repair.
 |---|---|
 | S1 | A: `validate.go`, `validate_test.go`, `run.go` · B: `audit.go`, `fleet.go`, `apply.go`, `internal/audit/json.go`, `internal/apply/json.go`, their JSON tests |
 | S2 | A: `import.go`, `adopt.go`, `internal/reconcile` message · B: `revoke.go`, `editrun.go`, `internal/apply/edit.go` · C: `identity.go`, `internal/keyfile` |
-| S8 | A: `internal/adopt`, `adopt.go` · B: `import_json.go`, `import.go`, `internal/reconcile`, `internal/sshcfg` |
+| S8 | A: `internal/adopt`, `adopt.go`, `manifest_out.go` · B: `import_json.go`, `import.go`, `internal/reconcile` |
 | S3a | A: `internal/config` (types in the plan first) · B: `internal/manifest` · C: `revoke.go`, `import.go` |
 | S3b | A: `internal/config` · B: `internal/manifest` · C: `revoke.go`, `adopt.go` |
 | S4 | A: `internal/config` · B: `internal/audit` · C: `internal/apply`, `editrun.go`, `revoke.go`, `rotate.go`, `internal/reconcile` |

@@ -30,9 +30,13 @@ Examples:
   # Add hosts that are new in the ssh config to an existing manifest
   sshepherd import --merge sshepherd.yaml -o merged.yaml
 
+  # A report for a script; the manifest goes to the file
+  sshepherd import --json -o sshepherd.yaml
+
 Flags:
       --force               allow --output to overwrite an existing file
   -h, --help                help for import
+      --json                emit a machine-readable report on stdout (the manifest goes to -o, or into the report's manifest field)
       --merge FILE          merge into FILE: preserve its text and append what is new
       --operator-key PATH   key file PATH whose owner is an operator: granted every server and protected from removal (repeatable)
   -o, --output string       write the manifest to this file instead of stdout

@@ -40,8 +40,8 @@ type UserAdd struct {
 // is used for beyond the manifest's current grants — one entry per owning
 // user, in cfg.Users order, servers in first-touch order.
 type Extension struct {
-	User    string
-	Servers []string
+	User    string   `json:"user"`
+	Servers []string `json:"servers"`
 }
 
 // Grant is a new user's access entry, post-rename and post-compaction
@@ -49,6 +49,28 @@ type Extension struct {
 type Grant struct {
 	User    string
 	Servers []string
+}
+
+// The Warning kinds reconcile assigns. Consumers ignore kinds they do not
+// know.
+const (
+	KindMergeConflict        = "merge_conflict"
+	KindRevokedPubSkipped    = "revoked_pub_skipped"
+	KindRevokedAccessSkipped = "revoked_access_skipped"
+	KindWildcardGrant        = "wildcard_grant"
+)
+
+// Warning is one finding for the operator. Message is the stderr text; the
+// other fields are the structured form --json carries, omitted when they do
+// not apply. Identity is the .pub path the key came from.
+type Warning struct {
+	Kind        string `json:"kind"`
+	Server      string `json:"server,omitempty"`
+	Identity    string `json:"identity,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	User        string `json:"user,omitempty"`
+	Date        string `json:"date,omitempty"`
+	Message     string `json:"message"`
 }
 
 // Plan is everything the merge would append, plus the operator-facing
@@ -60,7 +82,7 @@ type Plan struct {
 	NewUsers   []UserAdd
 	Extensions []Extension
 	NewGrants  []Grant
-	Warnings   []string
+	Warnings   []Warning
 	Notes      []string
 
 	conflicts int // incoming items dropped by manifest-wins rules
@@ -154,7 +176,8 @@ func (b *builder) servers(hosts []sshcfg.Host) {
 			if owner, dup := targets[t]; dup {
 				b.aliasOf[h.Alias] = owner
 				b.plan.conflicts++
-				b.plan.Warnings = append(b.plan.Warnings, sameTarget(h.Alias, owner, "manifest server"))
+				b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Server: h.Alias,
+					Message: sameTarget(h.Alias, owner, "manifest server")})
 				continue
 			}
 			targets[t] = h.Alias
@@ -181,8 +204,8 @@ func (b *builder) servers(hosts []sshcfg.Host) {
 		}
 		b.conflicted[h.Alias] = true
 		b.plan.conflicts++
-		b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-			"server %q in the ssh config differs from the manifest (host/port/user) — manifest kept", h.Alias))
+		b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Server: h.Alias,
+			Message: fmt.Sprintf("server %q in the ssh config differs from the manifest (host/port/user) — manifest kept", h.Alias)})
 	}
 }
 
@@ -198,8 +221,10 @@ func (b *builder) users(users []identity.User) error {
 		}
 		if t, revoked := b.cfg.Revoked(k.Fingerprint); revoked {
 			b.plan.conflicts++
-			b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-				"key %s from %s is REVOKED (%s) — not imported", k.Fingerprint, pubPath(u.Source), t.Label()))
+			b.plan.Warnings = append(b.plan.Warnings, Warning{
+				Kind: KindRevokedPubSkipped, Identity: pubPath(u.Source), Fingerprint: k.Fingerprint, User: t.User, Date: t.Date,
+				Message: fmt.Sprintf("key %s from %s is REVOKED (%s) — not imported", k.Fingerprint, pubPath(u.Source), t.Label()),
+			})
 			continue
 		}
 		if owner, known := b.cfg.OwnerOf(k.Fingerprint); known {
@@ -245,21 +270,23 @@ func (b *builder) knownKey(u identity.User, owner config.User, fp string) error 
 		switch {
 		case b.conflicted[srv]:
 			b.plan.conflicts++
-			b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-				"access for %q to %q dropped: the server conflicts with the manifest", owner.Name, srv))
+			b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Server: srv, User: owner.Name,
+				Message: fmt.Sprintf("access for %q to %q dropped: the server conflicts with the manifest", owner.Name, srv)})
 		case owner.Operator:
 		case b.cfg.Covers(owner.Name, srv):
 		case b.cfg.ExceptCarveOut(owner.Name, srv):
 			b.plan.conflicts++
-			b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-				"key of %q used for %q in the ssh config, which their except: list deliberately excludes — not re-granted; audit flags this drift",
-				owner.Name, srv))
+			b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Server: srv, User: owner.Name,
+				Message: fmt.Sprintf("key of %q used for %q in the ssh config, which their except: list deliberately excludes — not re-granted; audit flags this drift",
+					owner.Name, srv)})
 		default:
 			if t, gone := b.cfg.AccessRevoked(owner.Name, srv); gone {
 				b.plan.conflicts++
-				b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-					"key %s of %q found on %q, whose access was revoked (%s) — not re-granted; audit flags this drift",
-					fp, owner.Name, srv, t.Date))
+				b.plan.Warnings = append(b.plan.Warnings, Warning{
+					Kind: KindRevokedAccessSkipped, Identity: pubPath(u.Source), Server: srv, Fingerprint: fp, User: owner.Name, Date: t.Date,
+					Message: fmt.Sprintf("key %s of %q found on %q, whose access was revoked (%s) — not re-granted; audit flags this drift",
+						fp, owner.Name, srv, t.Date),
+				})
 				continue
 			}
 			extended = b.extend(owner.Name, srv) || extended
@@ -270,8 +297,8 @@ func (b *builder) knownKey(u identity.User, owner config.User, fp string) error 
 		// plan change; the covered steady state is a note, or a deterministic
 		// re-run would warn forever.
 		if extended {
-			b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-				"key %s from the ssh config belongs to manifest user %q — extending their access", fp, owner.Name))
+			b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Fingerprint: fp, User: owner.Name,
+				Message: fmt.Sprintf("key %s from the ssh config belongs to manifest user %q — extending their access", fp, owner.Name)})
 		} else {
 			b.plan.Notes = append(b.plan.Notes, fmt.Sprintf(
 				"key %s from the ssh config belongs to manifest user %q — already covered", fp, owner.Name))
@@ -321,14 +348,14 @@ func (b *builder) newUser(u identity.User) {
 		// no name is claimed either.
 		if len(dropped) > 0 {
 			b.plan.conflicts++
-			b.plan.Warnings = append(b.plan.Warnings, notAdded(u.Name, dropped))
+			b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, User: u.Name, Message: notAdded(u.Name, dropped)})
 		}
 		return
 	}
 	for _, srv := range dropped {
 		b.plan.conflicts++
-		b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-			"access for %q to %q dropped: the server conflicts with the manifest", u.Name, srv))
+		b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, Server: srv, User: u.Name,
+			Message: fmt.Sprintf("access for %q to %q dropped: the server conflicts with the manifest", u.Name, srv)})
 	}
 	name := b.claim(u.Name)
 	b.plan.NewUsers = append(b.plan.NewUsers, UserAdd{
@@ -337,8 +364,8 @@ func (b *builder) newUser(u identity.User) {
 	servers := surviving
 	if b.coversFleet(surviving) {
 		servers = []string{"*"}
-		b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-			"access for %q covers every server; emitted as wildcard %q (includes servers added later)", name, "*"))
+		b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindWildcardGrant, User: name,
+			Message: fmt.Sprintf("access for %q covers every server; emitted as wildcard %q (includes servers added later)", name, "*")})
 	}
 	b.plan.NewGrants = append(b.plan.NewGrants, Grant{User: name, Servers: servers})
 }
@@ -369,8 +396,8 @@ func notAdded(name string, dropped []string) string {
 func (b *builder) claim(want string) string {
 	name, renamed := naming.Claim(b.taken, want)
 	if renamed {
-		b.plan.Warnings = append(b.plan.Warnings, fmt.Sprintf(
-			"user name %q already taken, using %q for the incoming key", want, name))
+		b.plan.Warnings = append(b.plan.Warnings, Warning{Kind: KindMergeConflict, User: name,
+			Message: fmt.Sprintf("user name %q already taken, using %q for the incoming key", want, name)})
 	}
 	return name
 }

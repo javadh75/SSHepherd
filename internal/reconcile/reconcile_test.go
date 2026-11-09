@@ -90,13 +90,13 @@ revoked:
 		t.Fatalf("plan = %+v, want nothing imported", p)
 	}
 	// IDENTITY is the .pub the import read (plan decision 13, spec §9).
-	wantContains(t, "Warnings", p.Warnings, "key "+fp9+" from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported")
+	wantContains(t, "Warnings", messages(p.Warnings), "key "+fp9+" from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported")
 	if p.ConflictsSkipped() != 1 {
 		t.Errorf("ConflictsSkipped = %d, want 1", p.ConflictsSkipped())
 	}
 	// An IdentityFile that already names the .pub is printed as is.
 	q := mustBuild(t, cfg, nil, []identity.User{{Name: "me-id_old", Source: "~/.ssh/id_old.pub", Key: k9, Servers: []string{"web-1"}}})
-	wantContains(t, "Warnings", q.Warnings, "key "+fp9+" from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported")
+	wantContains(t, "Warnings", messages(q.Warnings), "key "+fp9+" from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported")
 }
 
 // TestReconcileHonoursAccessTombstone (D1a): a known key used for a server
@@ -117,7 +117,7 @@ revoked:
 	if len(p.Extensions) != 0 {
 		t.Fatalf("Extensions = %+v, want none", p.Extensions)
 	}
-	wantContains(t, "Warnings", p.Warnings,
+	wantContains(t, "Warnings", messages(p.Warnings),
 		"key "+mustFP(t, testkeys.Line(t, 4))+` of "bob" found on "db-1", whose access was revoked (2026-11-08) — not re-granted; audit flags this drift`)
 }
 
@@ -201,7 +201,7 @@ func TestBuildServerConflict(t *testing.T) {
 			if len(p.NewServers) != 0 || !p.Empty() {
 				t.Errorf("plan = %+v, want the conflicting entry dropped", p)
 			}
-			wantContains(t, "Warnings", p.Warnings, `server "web-1" in the ssh config differs from the manifest (host/port/user) — manifest kept`)
+			wantContains(t, "Warnings", messages(p.Warnings), `server "web-1" in the ssh config differs from the manifest (host/port/user) — manifest kept`)
 			if p.ConflictsSkipped() != 1 {
 				t.Errorf("ConflictsSkipped() = %d, want 1", p.ConflictsSkipped())
 			}
@@ -238,7 +238,7 @@ func TestBuildConflictedServerGrantDropped(t *testing.T) {
 	if len(p.Extensions) != 0 || !p.Empty() {
 		t.Errorf("plan = %+v, want the grant dropped alongside the server", p)
 	}
-	wantContains(t, "Warnings", p.Warnings,
+	wantContains(t, "Warnings", messages(p.Warnings),
 		"manifest kept",
 		`access for "alice" to "db-1" dropped: the server conflicts with the manifest`)
 	if p.ConflictsSkipped() != 2 {
@@ -277,7 +277,7 @@ func TestBuildSameTargetAsManifestServer(t *testing.T) {
 	if !reflect.DeepEqual(p.Extensions, wantExt) {
 		t.Errorf("Extensions = %+v, want %+v", p.Extensions, wantExt)
 	}
-	wantContains(t, "Warnings", p.Warnings,
+	wantContains(t, "Warnings", messages(p.Warnings),
 		`server "web1.example.com" in the ssh config targets the same host, port, user and authorized_keys file as manifest server "web-1"`,
 		`server "DB" in the ssh config targets the same host, port, user and authorized_keys file as manifest server "db-1"`,
 		`belongs to manifest user "carol" — extending their access`)
@@ -382,7 +382,7 @@ func TestBuildKnownKeyDifferentNameClassification(t *testing.T) {
 		if len(p.NewUsers) != 0 {
 			t.Errorf("NewUsers = %+v, want none (manifest owner wins)", p.NewUsers)
 		}
-		wantContains(t, "Warnings", p.Warnings, `belongs to manifest user "alice" — extending their access`)
+		wantContains(t, "Warnings", messages(p.Warnings), `belongs to manifest user "alice" — extending their access`)
 	})
 	t.Run("already covered: note", func(t *testing.T) {
 		hosts := []sshcfg.Host{{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"}}
@@ -435,7 +435,7 @@ servers:
 	if !reflect.DeepEqual(p.NewGrants, wantGrants) {
 		t.Errorf("NewGrants = %+v, want %+v (renames must cascade to the grants)", p.NewGrants, wantGrants)
 	}
-	wantContains(t, "Warnings", p.Warnings,
+	wantContains(t, "Warnings", messages(p.Warnings),
 		`user name "x" already taken`,
 		`user name "x-2" already taken`)
 }
@@ -465,7 +465,7 @@ func TestBuildGrantlessUserSkipVsPartialSurvival(t *testing.T) {
 	if !reflect.DeepEqual(p.NewGrants, wantGrants) {
 		t.Errorf("NewGrants = %+v, want %+v", p.NewGrants, wantGrants)
 	}
-	wantContains(t, "Warnings", p.Warnings,
+	wantContains(t, "Warnings", messages(p.Warnings),
 		"manifest kept",
 		`user "doomed" not added: its only server "db-1" conflicts with the manifest`,
 		`access for "partial" to "db-1" dropped`)
@@ -525,7 +525,7 @@ func TestBuildExceptCarveOutNeverRegranted(t *testing.T) {
 	if !p.Empty() {
 		t.Errorf("plan = %+v, want empty (carve-out never re-granted)", p)
 	}
-	wantContains(t, "Warnings", p.Warnings,
+	wantContains(t, "Warnings", messages(p.Warnings),
 		`key of "bob" used for "db-1" in the ssh config, which their except: list deliberately excludes — not re-granted; audit flags this drift`)
 	if p.ConflictsSkipped() != 1 {
 		t.Errorf("ConflictsSkipped() = %d, want 1", p.ConflictsSkipped())
@@ -623,7 +623,7 @@ access:
 		if !reflect.DeepEqual(p.NewGrants, wantGrants) {
 			t.Errorf("NewGrants = %+v, want %+v", p.NewGrants, wantGrants)
 		}
-		wantContains(t, "Warnings", p.Warnings, "covers every server; emitted as wildcard")
+		wantContains(t, "Warnings", messages(p.Warnings), "covers every server; emitted as wildcard")
 	})
 	t.Run("partial coverage stays explicit", func(t *testing.T) {
 		hosts := []sshcfg.Host{{Alias: "app-1", HostName: "10.0.1.1", User: "deploy"}}
@@ -706,4 +706,91 @@ func TestBuildDeterminism(t *testing.T) {
 	if !reflect.DeepEqual(a, b) {
 		t.Errorf("Build is not deterministic:\n%+v\n%+v", a, b)
 	}
+}
+
+// messages is the stderr text of ws.
+func messages(ws []Warning) []string {
+	out := make([]string, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, w.Message)
+	}
+	return out
+}
+
+// TestWarningKinds pins each site's kind and structured fields. The messages
+// stay pinned by the tests above.
+func TestWarningKinds(t *testing.T) {
+	k4, k9 := testkeys.Line(t, 4), testkeys.Line(t, 9)
+	fp4, fp9 := mustFP(t, k4), mustFP(t, k9)
+	web1Differs := []sshcfg.Host{{Alias: "web-1", HostName: "9.9.9.9", User: "deploy"}}
+	for _, tt := range []struct {
+		name  string
+		cfg   *config.Config
+		hosts []sshcfg.Host
+		users []identity.User
+		want  Warning
+	}{
+		{
+			name: "revoked pub",
+			cfg: parseCfg(t, "servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\nrevoked:\n"+
+				"  - {fingerprint: "+fp9+", user: alice, date: 2026-11-08}\n"),
+			users: []identity.User{{Name: "me", Source: "~/.ssh/id_old", Key: k9, Servers: []string{"web-1"}}},
+			want:  Warning{Kind: KindRevokedPubSkipped, Identity: "~/.ssh/id_old.pub", Fingerprint: fp9, User: "alice", Date: "2026-11-08"},
+		},
+		{
+			name: "revoked access",
+			cfg: parseCfg(t, `
+users:
+  - {name: bob, keys: ["`+k4+`"]}
+servers:
+  - {name: db-1, host: 10.0.0.3, user: deploy}
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: bob, servers: [web-1]}
+revoked:
+  - {user: bob, servers: [db-1], date: 2026-11-08}
+`),
+			users: []identity.User{{Name: "bob", Source: "~/.ssh/id_bob", Key: k4, Servers: []string{"db-1"}}},
+			want:  Warning{Kind: KindRevokedAccessSkipped, Identity: "~/.ssh/id_bob.pub", Server: "db-1", Fingerprint: fp4, User: "bob", Date: "2026-11-08"},
+		},
+		{
+			name:  "server differs",
+			cfg:   baseCfg(t),
+			hosts: web1Differs,
+			want:  Warning{Kind: KindMergeConflict, Server: "web-1"},
+		},
+		{
+			name:  "alias targets a manifest server",
+			cfg:   baseCfg(t),
+			hosts: []sshcfg.Host{{Alias: "web1.example.com", HostName: "10.0.0.1", User: "deploy"}},
+			want:  Warning{Kind: KindMergeConflict, Server: "web1.example.com"},
+		},
+		{
+			name:  "wildcard compaction",
+			cfg:   baseCfg(t),
+			users: []identity.User{{Name: "dave", Source: "~/.ssh/dave", Key: k9, Servers: []string{"db-1", "web-1"}}},
+			want:  Warning{Kind: KindWildcardGrant, User: "dave"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := mustBuild(t, tt.cfg, tt.hosts, tt.users)
+			if len(p.Warnings) != 1 {
+				t.Fatalf("Warnings = %q, want one", messages(p.Warnings))
+			}
+			got := p.Warnings[0]
+			if got.Message == "" {
+				t.Error("Message is empty")
+			}
+			got.Message = ""
+			if got != tt.want {
+				t.Errorf("Warning = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+	t.Run("user with no surviving server", func(t *testing.T) {
+		p := mustBuild(t, baseCfg(t), web1Differs, []identity.User{{Name: "dave", Source: "~/.ssh/dave", Key: k9, Servers: []string{"web-1"}}})
+		if len(p.Warnings) != 2 || p.Warnings[1].Kind != KindMergeConflict || p.Warnings[1].User != "dave" {
+			t.Errorf("Warnings = %+v", p.Warnings)
+		}
+	})
 }
