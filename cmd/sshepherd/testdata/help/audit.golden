@@ -22,6 +22,9 @@ Examples:
   # Monitoring: JSON report on stdout, alert on the exit code
   sshepherd audit --json --config fleet.yaml
 
+  # One server after a change; a policy conflict anywhere still exits 2
+  sshepherd audit --server web-1 --config fleet.yaml
+
 Flags:
       --comments                        also report comment drift on present keys (informational; never affects the exit code)
       --config string                   path to the manifest (default "sshepherd.yaml")
@@ -33,6 +36,7 @@ Flags:
       --known-hosts string              path to known_hosts (strict host-key checking) (default "~/.ssh/known_hosts")
       --offer-all-keys                  offer every loaded key to every server (default: only the keys the manifest grants there)
       --parallel int                    max concurrent server audits (default 32)
+      --server stringArray              audit only this server (repeatable); a policy conflict anywhere in the manifest still exits 2
 
 Global Flags:
       --color string   colorize output: auto, always, or never (default "auto")

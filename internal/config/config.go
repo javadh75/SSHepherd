@@ -69,9 +69,9 @@ type Config struct {
 	// on a multi-key user). The manifest is still valid and safe to act on;
 	// callers surface these on stderr. Never part of the YAML itself.
 	Warnings []string `yaml:"-"`
-	// TombstoneWarnings are the D1e findings of Warnings in structured form
-	// (the JSON manifest_warnings objects).
-	TombstoneWarnings []TombstoneWarning `yaml:"-"`
+	// ManifestWarnings are Warnings in structured form (the JSON
+	// manifest_warnings objects), one per entry, in the same order.
+	ManifestWarnings []ManifestWarning `yaml:"-"`
 
 	// Built during validation.
 	keysByUser map[string][]authkeys.Key // user name -> parsed keys, manifest order
@@ -134,6 +134,7 @@ func (c *Config) validateUsers() []error {
 	c.owners = make(map[string]User)
 	c.operators = nil
 	c.Warnings = nil
+	c.ManifestWarnings = nil
 	seen := make(map[string]bool)
 	for ui, u := range c.Users {
 		if u.Name == "" {
@@ -158,9 +159,9 @@ func (c *Config) validateUsers() []error {
 			// Not an error: collapsing every key to one comment is a valid,
 			// deliberate normalization (2026-07-16 memo) — but make it a
 			// conscious choice.
-			c.Warnings = append(c.Warnings, fmt.Sprintf(
+			c.warn(ManifestWarning{Kind: WarnCommentOnMultiKey, Message: fmt.Sprintf(
 				"user %q: comment is set on a user with %d keys; apply will write the same comment on every key",
-				u.Name, len(u.Keys)))
+				u.Name, len(u.Keys))})
 		}
 		for i, line := range u.Keys {
 			k, err := parseUserKey(u, i, line)

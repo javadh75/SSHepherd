@@ -56,9 +56,9 @@ type jsonDoc struct {
 	Servers []jsonServer `json:"servers"`
 	// PolicyConflicts, ManifestWarnings and SerialBump are additive-optional
 	// (schema stays 1), each omitted when empty.
-	PolicyConflicts  []config.Conflict         `json:"policy_conflicts,omitempty"`
-	ManifestWarnings []config.TombstoneWarning `json:"manifest_warnings,omitempty"`
-	SerialBump       *SerialBump               `json:"serial_bump,omitempty"`
+	PolicyConflicts  []config.Conflict        `json:"policy_conflicts,omitempty"`
+	ManifestWarnings []config.ManifestWarning `json:"manifest_warnings,omitempty"`
+	SerialBump       *SerialBump              `json:"serial_bump,omitempty"`
 	// Sweep is additive-optional (schema stays 1): revoke/rotate --sweep
 	// only; omitted when no sweep ran (--dry-run, --no-apply, or no flag).
 	Sweep *SweepReport `json:"sweep,omitempty"`
@@ -286,17 +286,17 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 // would emit raw; idempotent on already-sanitized text.
 func clean(s string) string { return sanitize.Remote(s) }
 
-// cleanMemory is the manifest's policy conflicts and D1e warnings with
+// cleanMemory is the manifest's policy conflicts and load warnings with
 // every manifest-derived text passed through clean (spec §9: "sanitized
 // like today's text fields"). A D1e warning's server can be any string —
 // even one with control runes (plan decision 3) — so this is not
 // cosmetic. Each list stays nil when empty (omitted).
-func cleanMemory(cfg *config.Config) ([]config.Conflict, []config.TombstoneWarning) {
+func cleanMemory(cfg *config.Config) ([]config.Conflict, []config.ManifestWarning) {
 	cs := cfg.Conflicts() // a copy
 	for i := range cs {
 		cs[i].Message, cs[i].User = clean(cs[i].Message), clean(cs[i].User)
 	}
-	ws := slices.Clone(cfg.TombstoneWarnings)
+	ws := slices.Clone(cfg.ManifestWarnings)
 	for i := range ws {
 		ws[i].User, ws[i].Server, ws[i].Message = clean(ws[i].User), clean(ws[i].Server), clean(ws[i].Message)
 	}

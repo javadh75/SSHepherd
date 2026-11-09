@@ -206,9 +206,7 @@ func (pa *plainApply) finish(out workflow.Outcome, _ *fleetSession) error {
 		}, out, nil)
 	}
 	apply.RenderSummary(pa.stdout, pa.cfg, out.Plans, pa.ropts)
-	if pa.skipped > 0 {
-		fmt.Fprintf(pa.stdout, "(%s skipped by --server)\n", apply.Plural(pa.skipped, "server", "servers"))
-	}
+	printSkipped(pa.stdout, pa.skipped)
 	printDryRunBump(pa.stdout, pa.log, pa.rf.dryRun, pa.bump)
 	return exitFor(out.ExitCode())
 }
@@ -431,34 +429,6 @@ func relistPrefix(creds *sshconn.Credentials) string {
 		return "re-listing agent keys after confirmation"
 	}
 	return "re-listing the keys you hold after confirmation"
-}
-
-// selectServers resolves --server names to manifest servers, preserving
-// manifest order and deduplicating; no names selects the whole fleet. An
-// unknown name is a usage error — a canary typo must not silently apply
-// nothing.
-func selectServers(cfg *config.Config, names []string) ([]config.Server, error) {
-	if len(names) == 0 {
-		return cfg.Servers, nil
-	}
-	known := make(map[string]bool, len(cfg.Servers))
-	for _, s := range cfg.Servers {
-		known[s.Name] = true
-	}
-	wanted := make(map[string]bool, len(names))
-	for _, n := range names {
-		if !known[n] {
-			return nil, fmt.Errorf("--server: unknown server %q", n)
-		}
-		wanted[n] = true
-	}
-	var targets []config.Server
-	for _, s := range cfg.Servers {
-		if wanted[s.Name] {
-			targets = append(targets, s)
-		}
-	}
-	return targets, nil
 }
 
 // promptStreams returns the confirmation prompt's input, output and TTY

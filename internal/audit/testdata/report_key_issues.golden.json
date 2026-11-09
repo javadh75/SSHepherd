@@ -1,5 +1,11 @@
 {
   "schema": 1,
+  "manifest_warnings": [
+    {
+      "kind": "key_expired",
+      "message": "user \"op\" key 1: expiry-time=\"20260101\" has passed; sshd no longer accepts this key"
+    }
+  ],
   "summary": {
     "servers": 1,
     "compliant": 0,

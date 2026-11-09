@@ -182,6 +182,10 @@ shared D28 table:
 goldens stay byte-identical. Text that comes from a server passes through
 `internal/sanitize`.
 
+P09's load warnings landed after this rule was written. S1 gives them the kinds
+`weak_key_ungranted` and `key_expired`, so `report_key_issues.golden.json` gains one
+additive `manifest_warnings` entry. That is the only golden that changed.
+
 ## How selectors meet tombstones
 
 W4 defined one behavior for a grant over a D1a access tombstone: it is a D29 policy
@@ -336,7 +340,7 @@ it adds no new rule. `audit --server` does not change any tombstone rule.
 
 **Files.** `cmd/sshepherd/validate.go` (new), `validate_test.go` (new), `run.go`
 (`AddCommand`, `exitCodesValidate`), `fleet.go`, `audit.go`, `apply.go` (move),
-`internal/audit/json.go` and `internal/apply/json.go` (the `ManifestWarning` rename) with
+`adopt.go` (the `readFleet` call), `internal/audit/json.go` and `internal/apply/json.go` (the `ManifestWarning` rename) with
 their JSON tests, `internal/config` (`GrantCount`, `ManifestWarning`).
 
 **README.** Command list under **Commands**; new **`sshepherd validate`** section,

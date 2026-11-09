@@ -87,17 +87,6 @@ func rejectNullSerial(data []byte) error {
 	return nil
 }
 
-// TombstoneWarning is one D1e finding: an access tombstone names a server
-// that is not in servers:. That entry is ignored for that server. The json
-// tags are the wire shape of audit's and apply's manifest_warnings.
-type TombstoneWarning struct {
-	Kind         string `json:"kind"` // always "tombstone_unknown_server"
-	RevokedIndex int    `json:"revoked_index"`
-	User         string `json:"user"`
-	Server       string `json:"server"`
-	Message      string `json:"message"`
-}
-
 // The policy-conflict kinds (D29).
 const (
 	ConflictRevokedKey    = "revoked_key"
@@ -130,7 +119,6 @@ const maxTombstoneText = 256
 // not in servers: is ignored for that entry, never an error.
 func (c *Config) validateRevoked() []error {
 	var errs []error
-	c.TombstoneWarnings = nil
 	c.ignored = make(map[int]map[string]bool)
 	known := make(map[string]bool, len(c.Servers))
 	for _, s := range c.Servers {
@@ -228,10 +216,7 @@ func (c *Config) warnUnknownServers(i int, t Tombstone, known map[string]bool) {
 			bare = strconv.Quote(s)
 		}
 		msg := fmt.Sprintf("revoked[%d]: unknown server %q — this entry is ignored for it; remove %s from the entry once the server is gone for good", i, s, bare)
-		c.Warnings = append(c.Warnings, msg)
-		c.TombstoneWarnings = append(c.TombstoneWarnings, TombstoneWarning{
-			Kind: "tombstone_unknown_server", RevokedIndex: i, User: t.User, Server: s, Message: msg,
-		})
+		c.warn(ManifestWarning{Kind: WarnTombstoneUnknownServer, RevokedIndex: &i, User: t.User, Server: s, Message: msg})
 	}
 }
 

@@ -285,7 +285,7 @@ func newAdoptCmd(a *app, stdout io.Writer) *cobra.Command {
 				return err
 			}
 			logManifest(log, cfg)
-			results, err := readFleet(cmd.Context(), log, cfg, &cf, ids, "reading")
+			results, err := readFleet(cmd.Context(), log, cfg, cfg.Servers, &cf, ids, "reading")
 			if err != nil {
 				return err
 			}

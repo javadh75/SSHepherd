@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"strings"
@@ -209,18 +210,53 @@ func (s *fleetSession) dialer(preferKeys func(config.Server) []string) *sshconn.
 		DialTimeout: dialTimeout, PreferKeys: preferKeys, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
 }
 
-// readFleet is audit's and adopt's whole read: an empty fleet needs no
-// credentials (never reads a key, never prompts) and returns nil.
-func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, f *connFlags, ids identities, verb string) ([]audit.ServerResult, error) {
-	if len(cfg.Servers) == 0 {
+// readFleet is audit's and adopt's whole read over targets: an empty list
+// needs no credentials (never reads a key, never prompts) and returns nil.
+func readFleet(ctx context.Context, log *slog.Logger, cfg *config.Config, targets []config.Server, f *connFlags, ids identities, verb string) ([]audit.ServerResult, error) {
+	if len(targets) == 0 {
 		return nil, nil
 	}
 	s, err := openFleet(ctx, log, f, ids, false)
 	if err != nil {
 		return nil, err
 	}
-	s.warnNoGrantedKeys(ctx, cfg.Servers, grantedOn(cfg))
-	return s.Read(ctx, verb, cfg, cfg.Servers, grantedOn(cfg))
+	s.warnNoGrantedKeys(ctx, targets, grantedOn(cfg))
+	return s.Read(ctx, verb, cfg, targets, grantedOn(cfg))
+}
+
+// selectServers resolves --server names to manifest servers, preserving
+// manifest order and deduplicating; no names selects the whole fleet. An
+// unknown name is a usage error: a canary typo must not silently apply or
+// audit nothing.
+func selectServers(cfg *config.Config, names []string) ([]config.Server, error) {
+	if len(names) == 0 {
+		return cfg.Servers, nil
+	}
+	known := make(map[string]bool, len(cfg.Servers))
+	for _, s := range cfg.Servers {
+		known[s.Name] = true
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, n := range names {
+		if !known[n] {
+			return nil, fmt.Errorf("--server: unknown server %q", n)
+		}
+		wanted[n] = true
+	}
+	var targets []config.Server
+	for _, s := range cfg.Servers {
+		if wanted[s.Name] {
+			targets = append(targets, s)
+		}
+	}
+	return targets, nil
+}
+
+// printSkipped is the report's closing line when --server left servers out.
+func printSkipped(w io.Writer, skipped int) {
+	if skipped > 0 {
+		fmt.Fprintf(w, "(%s skipped by --server)\n", apply.Plural(skipped, "server", "servers"))
+	}
 }
 
 // grantedOn is every command's PreferKeys for cfg: the keys it grants on srv.

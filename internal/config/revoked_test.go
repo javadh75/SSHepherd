@@ -142,10 +142,12 @@ func TestAccessTombstoneUnknownServerWarns(t *testing.T) {
 	if len(cfg.Warnings) != 1 || cfg.Warnings[0] != want {
 		t.Errorf("Warnings = %q, want [%q]", cfg.Warnings, want)
 	}
-	if len(cfg.TombstoneWarnings) != 1 || cfg.TombstoneWarnings[0] != (TombstoneWarning{
-		Kind: "tombstone_unknown_server", RevokedIndex: 0, User: "bob", Server: "db-9", Message: want,
-	}) {
-		t.Errorf("TombstoneWarnings = %+v", cfg.TombstoneWarnings)
+	if len(cfg.ManifestWarnings) != 1 {
+		t.Fatalf("ManifestWarnings = %+v, want one", cfg.ManifestWarnings)
+	}
+	if w := cfg.ManifestWarnings[0]; w.Kind != WarnTombstoneUnknownServer || w.RevokedIndex == nil || *w.RevokedIndex != 0 ||
+		w.User != "bob" || w.Server != "db-9" || w.Message != want {
+		t.Errorf("ManifestWarnings[0] = %+v", w)
 	}
 	if _, ok := cfg.AccessRevoked("bob", "db-9"); ok {
 		t.Error("AccessRevoked matched an ignored (unknown) server")

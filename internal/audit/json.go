@@ -24,15 +24,18 @@ type jsonReport struct {
 	Schema int `json:"schema"`
 	// ManifestSerial, PolicyConflicts and ManifestWarnings are
 	// additive-optional (schema stays 1), each omitted when zero/empty.
-	ManifestSerial   uint64                    `json:"manifest_serial,omitempty"`
-	PolicyConflicts  []config.Conflict         `json:"policy_conflicts,omitempty"`
-	ManifestWarnings []config.TombstoneWarning `json:"manifest_warnings,omitempty"`
-	Summary          jsonSummary               `json:"summary"`
-	Servers          []jsonServer              `json:"servers"`
+	ManifestSerial   uint64                   `json:"manifest_serial,omitempty"`
+	PolicyConflicts  []config.Conflict        `json:"policy_conflicts,omitempty"`
+	ManifestWarnings []config.ManifestWarning `json:"manifest_warnings,omitempty"`
+	Summary          jsonSummary              `json:"summary"`
+	Servers          []jsonServer             `json:"servers"`
 }
 
 type jsonSummary struct {
-	Servers     int `json:"servers"`
+	Servers int `json:"servers"`
+	// Skipped is additive-optional (schema stays 1): servers --server left
+	// out. Omitted when zero.
+	Skipped     int `json:"skipped,omitempty"`
 	Compliant   int `json:"compliant"`
 	Drift       int `json:"drift"`
 	Critical    int `json:"critical"`
@@ -171,6 +174,8 @@ type jsonParseError struct {
 // informational only.
 type JSONOptions struct {
 	Comments bool
+	// Skipped is the number of manifest servers --server left out.
+	Skipped int
 }
 
 // RenderJSON writes the machine-readable audit report: one indented JSON
@@ -178,13 +183,14 @@ type JSONOptions struct {
 // takes the same inputs.
 func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult, opts JSONOptions) error {
 	rep := jsonReport{Schema: schemaVersion, ManifestSerial: cfg.Serial(), Servers: make([]jsonServer, 0, len(results))}
-	rep.PolicyConflicts, rep.ManifestWarnings = memoryJSON(cfg)
+	rep.PolicyConflicts, rep.ManifestWarnings = ManifestFindings(cfg)
 	for _, r := range results {
 		rep.Servers = append(rep.Servers, jsonServerFor(cfg, r, opts))
 	}
 	c := tallyResults(cfg, results)
 	rep.Summary = jsonSummary{
 		Servers:         len(results),
+		Skipped:         opts.Skipped,
 		Compliant:       c.compliant,
 		Drift:           c.drift,
 		Critical:        c.critical,
@@ -336,16 +342,16 @@ func memoryKey(jk *jsonKey, cfg *config.Config, server string, k authkeys.Key) {
 	}
 }
 
-// memoryJSON is the manifest's policy conflicts and D1e warnings with
+// ManifestFindings is the manifest's policy conflicts and load warnings with
 // every manifest-derived text through sanitize.Remote (spec §9). A D1e
-// warning's server may hold control runes (plan decision 3). Each list
-// stays nil when empty (omitted).
-func memoryJSON(cfg *config.Config) ([]config.Conflict, []config.TombstoneWarning) {
+// warning's server may hold control runes. Each list stays nil when empty
+// (omitted). validate's document uses it too.
+func ManifestFindings(cfg *config.Config) ([]config.Conflict, []config.ManifestWarning) {
 	cs := cfg.Conflicts() // a copy
 	for i := range cs {
 		cs[i].Message, cs[i].User = sanitize.Remote(cs[i].Message), sanitize.Remote(cs[i].User)
 	}
-	ws := slices.Clone(cfg.TombstoneWarnings)
+	ws := slices.Clone(cfg.ManifestWarnings)
 	for i := range ws {
 		ws[i].User, ws[i].Server, ws[i].Message = sanitize.Remote(ws[i].User), sanitize.Remote(ws[i].Server), sanitize.Remote(ws[i].Message)
 	}

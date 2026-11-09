@@ -635,3 +635,10 @@ errors and its "applying N servers" log before the held-key re-list (logs and se
 recorded in one sequence), the edit header printing before a failing preflight, and the
 edit commit guard's converged escape (a vanished agent still saves when an affected
 server already holds the edited render).
+**`audit --server`** (P10 S1, OP4, PRD-11; specced in
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-09-p10-s1-validate-audit-server.md`): `audit --server NAME`
+(repeatable) restricts the read, adds `summary.skipped`, and still exits 2 on a policy
+conflict about another server (OP4). `Config.ManifestWarnings` replaces `TombstoneWarnings`
+and carries every load warning in JSON, each with a kind (`Config.warn` records both
+forms). `selectServers` moved to `cmd/sshepherd/fleet.go` and `readFleet` takes its targets.

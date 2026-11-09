@@ -707,9 +707,9 @@ revoked:
 	to := uint64(8)
 	got := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "apply", DryRun: true, SerialBump: &SerialBump{From: 7, To: &to}})
 	var doc struct {
-		PolicyConflicts []config.Conflict         `json:"policy_conflicts"`
-		ManifestWarns   []config.TombstoneWarning `json:"manifest_warnings"`
-		SerialBump      map[string]any            `json:"serial_bump"`
+		PolicyConflicts []config.Conflict        `json:"policy_conflicts"`
+		ManifestWarns   []config.ManifestWarning `json:"manifest_warnings"`
+		SerialBump      map[string]any           `json:"serial_bump"`
 	}
 	if err := json.Unmarshal(got, &doc); err != nil {
 		t.Fatal(err)
@@ -772,8 +772,8 @@ revoked:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.TombstoneWarnings) != 1 || !strings.ContainsRune(cfg.TombstoneWarnings[0].Server, 0x1b) {
-		t.Fatalf("fixture: warnings = %+v, want one naming a server with ESC", cfg.TombstoneWarnings)
+	if len(cfg.ManifestWarnings) != 1 || !strings.ContainsRune(cfg.ManifestWarnings[0].Server, 0x1b) {
+		t.Fatalf("fixture: warnings = %+v, want one naming a server with ESC", cfg.ManifestWarnings)
 	}
 	for _, command := range []string{"apply", "revoke", "rotate"} {
 		got := renderJSONCfg(t, cfg, nil, JSONOptions{Command: command, DryRun: true})
@@ -781,7 +781,7 @@ revoked:
 			t.Errorf("%s: a control rune from the manifest reached the document:\n%s", command, got)
 		}
 		var doc struct {
-			Warns []config.TombstoneWarning `json:"manifest_warnings"`
+			Warns []config.ManifestWarning `json:"manifest_warnings"`
 		}
 		if err := json.Unmarshal(got, &doc); err != nil {
 			t.Fatal(err)
@@ -877,5 +877,22 @@ func TestRenderJSONFailuresGolden(t *testing.T) {
 	}
 	if !strings.Contains(rollback.Error, "alice ("+alice.Fingerprint+", on the revoked: list)") {
 		t.Errorf("rollback error = %q", rollback.Error)
+	}
+}
+
+// TestRenderJSONCarriesEveryManifestWarning: apply's document carries a
+// non-tombstone warning too.
+func TestRenderJSONCarriesEveryManifestWarning(t *testing.T) {
+	cfg, err := config.Parse([]byte(`users:
+  - {name: alice, comment: "a", keys: ["` + testkeys.Line(t, 2) + `", "` + testkeys.Line(t, 3) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := renderJSONCfg(t, cfg, nil, JSONOptions{Command: "apply", DryRun: true})
+	if !bytes.Contains(got, []byte(`"kind": "comment_on_multi_key"`)) {
+		t.Errorf("document lacks the warning:\n%s", got)
 	}
 }

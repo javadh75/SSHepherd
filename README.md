@@ -500,12 +500,17 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
 | `--parallel` | `32` | Max concurrent server audits |
+| `--server` | all | Audit only this server (repeatable). An unknown name exits `3` before anything connects. A policy conflict anywhere in the manifest still exits `2` |
 | `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `--json` | off | Machine-readable report on stdout (schema 1) |
 | `--comments` | off | Also report comment drift on present keys (informational) |
 | `--identity PATH` | none | Private key file to authenticate with, in addition to `ssh-agent` (repeatable); `~/` expands from `$HOME` |
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase KEY=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
+
+With `--server`, the report ends with `(N servers skipped by --server)` and the JSON
+summary gains `skipped`. The manifest's policy conflicts are about the manifest, not one
+server, so they are still printed and still exit `2`.
 
 **Drift classes.** Besides missing, unauthorized and unparseable entries, these
 security-relevant classes make a server non-compliant, always on (exit 1 unless the
@@ -879,6 +884,11 @@ remote text:
   ]
 }
 ```
+
+`manifest_warnings` carries every load warning, in the `audit` document and in the `apply`
+document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear
+only on `tombstone_unknown_server`. The kinds are `tombstone_unknown_server`,
+`comment_on_multi_key`, `weak_key_ungranted` and `key_expired`; ignore kinds you do not know.
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`

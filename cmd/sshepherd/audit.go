@@ -26,9 +26,10 @@ const (
 
 func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 	var (
-		cf       connFlags
-		jsonOut  bool
-		comments bool
+		cf        connFlags
+		jsonOut   bool
+		comments  bool
+		serverSel []string
 	)
 	cmd := &cobra.Command{
 		Use:   "audit",
@@ -38,7 +39,9 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 		Example: "  # Check the whole fleet\n" +
 			"  sshepherd audit --config fleet.yaml\n\n" +
 			"  # Monitoring: JSON report on stdout, alert on the exit code\n" +
-			"  sshepherd audit --json --config fleet.yaml",
+			"  sshepherd audit --json --config fleet.yaml\n\n" +
+			"  # One server after a change; a policy conflict anywhere still exits 2\n" +
+			"  sshepherd audit --server web-1 --config fleet.yaml",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ids, err := cf.validate()
@@ -51,22 +54,28 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 				return manifestError("--config", cf.cfgPath, err)
 			}
 			logManifest(log, cfg)
+			targets, err := selectServers(cfg, serverSel)
+			if err != nil {
+				return err
+			}
+			skipped := len(cfg.Servers) - len(targets)
 			// One render path for the empty-fleet early return and the main
 			// flow, so the two cannot drift apart.
 			render := func(results []audit.ServerResult) error {
 				if jsonOut {
-					return audit.RenderJSON(stdout, cfg, results, audit.JSONOptions{Comments: comments})
+					return audit.RenderJSON(stdout, cfg, results, audit.JSONOptions{Comments: comments, Skipped: skipped})
 				}
 				audit.Render(stdout, cfg, results, audit.RenderOptions{Color: a.reportColor, Comments: comments})
+				printSkipped(stdout, skipped)
 				return nil
 			}
-			if len(cfg.Servers) == 0 {
+			if len(targets) == 0 {
 				if err := render(nil); err != nil {
 					return err
 				}
 				return auditVerdict(cfg, nil) // a policy conflict is critical with no server read
 			}
-			results, err := readFleet(cmd.Context(), log, cfg, &cf, ids, "auditing")
+			results, err := readFleet(cmd.Context(), log, cfg, targets, &cf, ids, "auditing")
 			if err != nil {
 				return err
 			}
@@ -80,6 +89,8 @@ func newAuditCmd(a *app, stdout io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the report as machine-readable JSON on stdout")
 	cmd.Flags().BoolVar(&comments, "comments", false,
 		"also report comment drift on present keys (informational; never affects the exit code)")
+	cmd.Flags().StringArrayVar(&serverSel, "server", nil,
+		"audit only this server (repeatable); a policy conflict anywhere in the manifest still exits 2")
 	return cmd
 }
 

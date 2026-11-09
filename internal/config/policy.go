@@ -44,7 +44,7 @@ func (c *Config) weakConflicts() []Conflict {
 				Servers: c.serversRendering(u), Message: weakMessage(u.Name, i+1, k)}
 			c.weak = append(c.weak, w)
 			if len(w.Servers) == 0 {
-				c.Warnings = append(c.Warnings, fmt.Sprintf("user %q key %d (%s): %s key, granted on no server", u.Name, i+1, k.Fingerprint, k.Weak))
+				c.warn(ManifestWarning{Kind: WarnWeakKeyUngranted, Message: fmt.Sprintf("user %q key %d (%s): %s key, granted on no server", u.Name, i+1, k.Fingerprint, k.Weak)})
 				continue
 			}
 			out = append(out, Conflict{Kind: ConflictWeakKey, User: u.Name, Fingerprint: k.Fingerprint, Servers: w.Servers, Message: w.Message})
@@ -69,7 +69,7 @@ func (c *Config) warnExpired() {
 		for i, k := range c.keysByUser[u.Name] {
 			if authkeys.Expired(k.Options, now(), time.Local) {
 				opt, _, _ := authkeys.EarliestExpiry(k.Options, time.Local)
-				c.Warnings = append(c.Warnings, fmt.Sprintf("user %q key %d: %s has passed; sshd no longer accepts this key", u.Name, i+1, opt))
+				c.warn(ManifestWarning{Kind: WarnKeyExpired, Message: fmt.Sprintf("user %q key %d: %s has passed; sshd no longer accepts this key", u.Name, i+1, opt)})
 			}
 		}
 	}

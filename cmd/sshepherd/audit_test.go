@@ -12,6 +12,7 @@ import (
 	"github.com/javadh75/SSHepherd/internal/audit"
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
 
@@ -406,5 +407,126 @@ func TestAuditVerdict(t *testing.T) {
 	}
 	if err := auditVerdict(cfg, critical); !errors.Is(err, errCriticalDrift) {
 		t.Errorf("critical verdict = %v, want errCriticalDrift", err)
+	}
+}
+
+// auditSubsetFleet is hermeticFleet plus web-2 on a closed port (any read of
+// it is unreachable, exit 1), with extra appended to the manifest.
+func auditSubsetFleet(t *testing.T, extra string) (cfg, kh string) {
+	t.Helper()
+	srv, hostKey, base := hermeticFleet(t, shortHome(t))
+	raw, err := os.ReadFile(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web2 := "  - {name: web-2, host: 127.0.0.1, port: " + strconvItoa(closedPort(t)) + ", user: deploy}\n"
+	return writeConfig(t, strings.Replace(string(raw), "access:\n", web2+"access:\n", 1)+extra),
+		sshtest.KnownHostsFile(t, srv.KnownHostsLine(hostKey))
+}
+
+// TestAuditWithoutServerReadsEveryServer is the control for the subset
+// tests: with no --server, the closed web-2 is dialed.
+func TestAuditWithoutServerReadsEveryServer(t *testing.T) {
+	cfg, kh := auditSubsetFleet(t, "")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "web-2") || strings.Contains(out.String(), "skipped by --server") {
+		t.Errorf("stdout = %q", out.String())
+	}
+}
+
+func TestAuditServerSubset(t *testing.T) {
+	cfg, kh := auditSubsetFleet(t, "")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", cfg, "--known-hosts", kh, "--server", "web-1"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.HasSuffix(out.String(), "(1 server skipped by --server)\n") || strings.Contains(out.String(), "web-2") {
+		t.Errorf("stdout = %q", out.String())
+	}
+}
+
+// TestAuditServerRepeatable: --server repeats, and a run that selects every
+// server skips none.
+func TestAuditServerRepeatable(t *testing.T) {
+	cfg, kh := auditSubsetFleet(t, "")
+	var out, errBuf bytes.Buffer
+	args := []string{"audit", "--config", cfg, "--known-hosts", kh, "--server", "web-1", "--server", "web-2"}
+	if code := run(args, &out, &errBuf); code != 1 {
+		t.Fatalf("exit = %d, want 1\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "web-1") || !strings.Contains(out.String(), "web-2") || strings.Contains(out.String(), "skipped by --server") {
+		t.Errorf("stdout = %q", out.String())
+	}
+	out.Reset()
+	if code := run(append([]string{"audit", "--json"}, args[1:]...), &out, &errBuf); code != 1 {
+		t.Fatalf("json exit = %d, want 1", code)
+	}
+	doc := oneJSONDoc(t, out.String())
+	if _, ok := doc["summary"].(map[string]any)["skipped"]; ok {
+		t.Errorf("skipped must be omitted when nothing was skipped:\n%s", out.String())
+	}
+	if got := len(docServers(doc)); got != 2 {
+		t.Errorf("servers = %d, want 2", got)
+	}
+}
+
+func TestAuditServerUnknownName(t *testing.T) {
+	cfg, kh := auditSubsetFleet(t, "")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", cfg, "--known-hosts", kh, "--server", "nope"}, &out, &errBuf); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
+	}
+	if !strings.Contains(errBuf.String(), `--server: unknown server "nope"`) || out.Len() != 0 {
+		t.Errorf("stdout %q, stderr %q", out.String(), errBuf.String())
+	}
+}
+
+// TestAuditServerJSONSkipped: summary.skipped appears under --server and is
+// omitted otherwise.
+func TestAuditServerJSONSkipped(t *testing.T) {
+	cfg, kh := auditSubsetFleet(t, "")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--json", "--config", cfg, "--known-hosts", kh, "--server", "web-1"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, errBuf.String())
+	}
+	doc := oneJSONDoc(t, out.String())
+	summary := doc["summary"].(map[string]any)
+	if summary["skipped"] != float64(1) || summary["servers"] != float64(1) || len(docServers(doc)) != 1 {
+		t.Errorf("summary = %v", summary)
+	}
+	if strings.Contains(out.String(), "skipped by --server") {
+		t.Errorf("text leaked into the document:\n%s", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"audit", "--json", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
+		t.Fatalf("whole-fleet exit = %d, want 1", code)
+	}
+	if _, ok := oneJSONDoc(t, out.String())["summary"].(map[string]any)["skipped"]; ok {
+		t.Errorf("skipped must be omitted when 0:\n%s", out.String())
+	}
+}
+
+// TestAuditServerConflictOutsideSubsetExits2 (OP4): a policy conflict is about
+// the manifest, so it is printed and exits 2 even when --server excludes the
+// server it names.
+func TestAuditServerConflictOutsideSubsetExits2(t *testing.T) {
+	cfg, kh := auditSubsetFleet(t, "  - {user: alice, servers: [web-2]}\nrevoked:\n  - {user: alice, servers: [web-2], date: 2026-11-08}\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"audit", "--config", cfg, "--known-hosts", kh, "--server", "web-1"}, &out, &errBuf); code != 2 {
+		t.Fatalf("exit = %d, want 2\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(out.String(), "(CRITICAL: policy conflict)") {
+		t.Errorf("stdout = %q", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"audit", "--json", "--config", cfg, "--known-hosts", kh, "--server", "web-1"}, &out, &errBuf); code != 2 {
+		t.Fatalf("json exit = %d, want 2", code)
+	}
+	doc := oneJSONDoc(t, out.String())
+	if conflicts, ok := doc["policy_conflicts"].([]any); !ok || len(conflicts) != 1 {
+		t.Errorf("policy_conflicts = %v", doc["policy_conflicts"])
 	}
 }

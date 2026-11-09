@@ -448,3 +448,30 @@ func TestRenderJSONUnauthorizedOptions(t *testing.T) {
 		t.Errorf("web-2 unauthorized = %+v, want bob's owned key without options", owned)
 	}
 }
+
+// TestRenderJSONCarriesEveryManifestWarning: a non-tombstone warning reaches
+// manifest_warnings with kind and message only.
+func TestRenderJSONCarriesEveryManifestWarning(t *testing.T) {
+	cfg, err := config.Parse([]byte(`users:
+  - {name: alice, comment: "a", keys: ["` + testkeys.Line(t, 1) + `", "` + testkeys.Line(t, 2) + `"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Warnings []map[string]any `json:"manifest_warnings"`
+	}
+	if err := json.Unmarshal(renderJSON(t, cfg, nil), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Warnings) != 1 || doc.Warnings[0]["kind"] != config.WarnCommentOnMultiKey {
+		t.Fatalf("manifest_warnings = %v", doc.Warnings)
+	}
+	for _, absent := range []string{"revoked_index", "user", "server"} {
+		if _, ok := doc.Warnings[0][absent]; ok {
+			t.Errorf("%s must be omitted: %v", absent, doc.Warnings[0])
+		}
+	}
+}
