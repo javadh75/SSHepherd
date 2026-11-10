@@ -193,6 +193,9 @@ test that fails before the fix and passes after.
   `TestE2EStaleManifestRefused` (an old copy refused on every affected server, including
   a header-only one) and `TestE2EStaleManifestAfterHandEdit` (D4b).
   `TestE2ERevokeRollbackRestoresRevokedKey` drives a refused login check to a rollback that puts a revoked key back (exit 2).
+  `TestE2EPreserve` keeps a Gitea-style `command=` line and its mark through apply against real
+  sshd, checks a re-apply is a no-op and audit is clean, that dropping the rule plans its removal,
+  and that a key tombstone beats `preserve:` (audit 2, apply removes the line).
   `TestE2EBastion` drives apply and audit through A as a bastion to C, a `jump_only` bastion with a nologin shell, a changed bastion key (audit 2, apply 1), a refused forward and the forwarding guard.
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
@@ -579,7 +582,7 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
-Fuzz oracles and corpus (P13, round 2): every one of the 24 `Fuzz*` targets has a
+Fuzz oracles and corpus (P13, round 2): every one of the 25 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on
@@ -813,3 +816,5 @@ command. `FuzzScanFile` is the 25th `Fuzz*` target.
 Apply prints `note: N externally managed lines kept` on a write and on a converged server
 (`keptNote`) and `remove the empty externally-managed section` as its own row; JSON gains
 `external_kept` (converged and change only) and `normalize.empty_external_section`, both additive.
+`TestPreserveHermetic` drives apply, audit and adopt in-process against `sshtest` (authorizing
+from the written file); `TestE2EPreserve` is the E2E (fixture account `presv`).

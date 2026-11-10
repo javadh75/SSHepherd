@@ -544,6 +544,37 @@ them at any time.
 **Comment rules are weaker.** Anyone who can write a key comment can keep a key that
 matches a `comment:` rule. Prefer `command:` rules, which match what the line runs.
 
+**A Gitea account.** Gitea writes one `command="<gitea binary> … serv key-N"` line per
+user key into its account's `authorized_keys`. Copy the command from one of those lines
+into a rule, replacing the key number with `[0-9]+`; for the file shown above, whose
+lines run `/usr/local/bin/gitea serv key-7`:
+
+```yaml
+users:
+  - name: alice
+    operator: true
+    keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c alice"
+servers:
+  - name: gitea
+    host: git.example.com
+    user: git
+    preserve:
+      - command: '/usr/local/bin/gitea serv key-[0-9]+'
+```
+
+A Gitea started with `--config` writes that flag into the command too, and the rule must
+match it: `'/usr/local/bin/gitea --config=/etc/gitea/app.ini serv key-[0-9]+'`. Then:
+
+```sh
+sshepherd apply --dry-run   # Gitea's lines are not listed for removal; a "note: N externally managed lines kept" says how many stay
+sshepherd apply
+```
+
+The file then reads as the sample under **What apply writes** above: the managed keys,
+the marker, and Gitea's lines with their `# gitea public key` comments. To stop keeping
+the lines, delete the rule: the next plan lists them as `remove (unauthorized)`.
+
 ### Validation rules
 
 The loader fails the whole manifest (exit 3) on any of these:

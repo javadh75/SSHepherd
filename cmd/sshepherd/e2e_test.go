@@ -278,7 +278,7 @@ func e2eRemoteCat(t *testing.T, host, port, kh, user string) string {
 	defer func() { _ = conn.Close() }()
 	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, `cat "$HOME/.ssh/authorized_keys"`, nil)
 	if err != nil || code != 0 {
-		t.Fatalf("cat: code %d, err %v, stderr %q", code, err, stderr.String())
+		t.Fatalf("cat: code %d, err %v, stderr %q", code, err, execStderr(stderr))
 	}
 	return stdout.String()
 }
@@ -776,9 +776,19 @@ func e2eRemote(t *testing.T, host, port, kh, user, script string) string {
 	defer func() { _ = conn.Close() }()
 	code, stdout, stderr, err := sshconn.Exec(ctx, conn.Client, script, nil)
 	if err != nil || code != 0 {
-		t.Fatalf("remote: code %d, err %v, stderr %q", code, err, stderr.String())
+		t.Fatalf("remote: code %d, err %v, stderr %q", code, err, execStderr(stderr))
 	}
 	return stdout.String()
+}
+
+// execStderr is an Exec result's stderr for a failure message: Exec returns
+// nil buffers with its error (a multi-line script, a dropped session), and
+// dereferencing one would panic and abort every later E2E in the package.
+func execStderr(b *sshconn.CappedBuffer) string {
+	if b == nil {
+		return ""
+	}
+	return b.String()
 }
 
 // TestE2EPostureGroupWritable: a 0775 directory on the managed path is

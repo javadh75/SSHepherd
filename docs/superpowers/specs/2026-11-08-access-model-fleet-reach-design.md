@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions), S6 built (plan 2026-11-10-p10-s6-preserve); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -1089,7 +1089,9 @@ servers:
 **Go shape.** `type PreserveRule struct { Command string `yaml:"command,omitempty"`;
 Comment string `yaml:"comment,omitempty"` }` and `Server.Preserve []PreserveRule`
 (`yaml:"preserve"`). Without `omitempty`, `entryNode` would write `comment: ""` beside
-`command:`. Compiled patterns live in a `Config` map behind an exported matcher; they
+`command:`. Compiled patterns live in a `Config` map behind an exported matcher
+(`Config.PreserveRuleFor(server, key)`, which returns the rule kind or `""`; it judges one
+line, audit applies the every-line rule); they
 cannot sit on `Server` or the rule, because `checkRoundTrip` compares those types with
 `reflect.DeepEqual`.
 
@@ -1102,10 +1104,19 @@ cannot sit on `Server` or the rule, because `checkRoundTrip` compares those type
   for you, so a pattern does not write `^` or `$`.
 - The unanchored pattern must have a literal prefix of at least 4 bytes
   (`regexp.LiteralPrefix`). This rejects `.*`, `.+`, `.{10,}`, `.+@.+\..+` and `/.*`.
-  A top-level alternation or `(?i)` has no literal prefix: write two rules.
+  `(?i)` has no literal prefix, and neither has a top-level alternation unless its
+  branches share 4 leading bytes (RE2 factors them: `gitea serv|gitea hook` loads): write
+  two rules. A pattern that writes `^` or `$` itself loads; the added anchors make them
+  redundant. An unterminated `\Q` is refused as not compiling.
 - The pattern must not match the empty string, `x`, `user@host`, `alice@laptop.local`,
   `root@ip-10-0-0-1.ec2.internal`, `ed25519-key-20260101`, 64 `a` characters, `/bin/sh`
-  or `/usr/bin/rrsync /srv`.
+  or `/usr/bin/rrsync /srv`. The empty-string and `x` probes can never fire: every match
+  of a pattern begins with its literal prefix, so the 4-byte prefix rule already refuses
+  any pattern that could match them. They stay in the probe list as documentation.
+- Load-error wordings: `server "X": preserve[N]: set exactly one of command: or comment:`,
+  `pattern is N bytes, at most 512`, `pattern does not compile: …`,
+  `pattern "P" must start with at least 4 literal bytes; …`,
+  `pattern "P" also matches "PROBE"; make it specific to the tool's lines`.
 
 **What a line is.** A line matches when its `command="…"` value or its comment matches a
 rule. Classification reads every line from `authkeys.ParseFile(r.Content)`, not `Diff`,
@@ -1116,6 +1127,10 @@ it stays in `Diff.Unauthorized`, none of its lines is kept, and duplicate drift 
 as today. A rule-matching line next to a plain copy of the same key, in either order,
 is therefore never kept: `ServerResult.Duplicates` documents why an unrestricted copy
 defeats a restricted one.
+
+A comment line keeps every byte except trailing carriage returns, so re-rendering is a
+fixed point. A blank line, a key line, an unparseable line, the managed header (on any
+line) and the marker end a run of comment lines.
 
 **Lines that are never preserved:**
 
@@ -1139,10 +1154,21 @@ marker or those comment lines as removed.
 A marker left with nothing under it (the tool removed its lines, or the rule was
 dropped) gets its own plan text: `remove the empty externally-managed section`.
 
+Two or more markers: the render writes one; each extra marker is a removed non-key line.
+The empty-section text is its own plan row,
+`~ (preserve:) remove the empty externally-managed section`; JSON
+`normalize.empty_external_section`.
+
+The first write after `preserve:` is added to a server whose tool lines are already
+present only inserts the marker; the plan shows it as
+`(formatting) normalize: whitespace/format`, the wording for any byte drift no row
+explains.
+
 **Empty-server rule stays.** A server with no desired keys is **never written**.
 Preserved lines are not unauthorized, so such a server becomes `converged` instead of
 `refused`. Any other unauthorized key, or a non-empty `authorized_keys2` (D30), still
-refuses. This is not a wipe mode.
+refuses (an unparseable line too:
+`0 keys and 1 unparseable line installed but manifest grants none — refusing to wipe`). This is not a wipe mode.
 
 **Guard.** Preserved keys never count as surviving held keys, because the external tool
 may delete them. `Survivors` already reads only `p.Desired`, so no new code is needed
@@ -1150,28 +1176,42 @@ there. `guardCheck`'s `removes the key this session logged in with` note reads
 `Diff.Actual`, which still lists preserved keys, so it must also skip a session key that
 is external: that line stays.
 
+A key the run holds that sits only on a kept line is never a survivor, so it never
+satisfies the lockout guard, S5's forwarding guard or the post-write login check, and
+D17 never offers it (only `--offer-all-keys` does, as for any unknown key).
+
 **Audit.** `auditOne` builds a new `ServerResult.External` (one entry per line: the key,
 the matching rule kind, and the comment lines above it) and removes those fingerprints
 from `Diff.Unauthorized`. That alone makes adopt skip them and apply keep them. A
 duplicate is exempt from drift only under the every-line condition above. Text row:
-`~ externally managed (preserve: command)` or `(preserve: comment)`. JSON: `keys.external`,
-additive, each with `rule` (`command` or `comment`) so comment-matched keys can be
-reviewed. Not drift (exit 0). Every line is listed by fingerprint, so "who can log in"
+`~  (unknown) "COMMENT"  FP  TYPE  externally managed (preserve: command)` (or
+`comment`), with the unowned key's ` · options:` suffix and `WEAK` note; the counts line
+gains ` · N externally managed` when N > 0. JSON `keys.external` objects have the
+unowned-key shape (`owner: null`, `comment`, `fingerprint`, `type`, `options`,
+`key_issues`) plus `rule`, additive, so comment-matched keys can be reviewed; the comment
+lines above are not in JSON. A file holding only kept lines is not the empty-file
+paradox. Not drift (exit 0). Every line is listed by fingerprint, so "who can log in"
 stays answerable.
 
 P04's serial row for removal-only writes must not treat a preserved line as a removal.
-The plan report prints `N externally managed lines kept` when N is not zero.
+Apply prints `note: N externally managed lines kept` on a write and on a converged
+server; JSON `external_kept` on those two classes only.
 
 **Security note.** Anyone who can write a `comment` can keep a key that matches a
 comment rule. The README warns about this and prefers `command:` rules (D24a).
 
 **Tombstones.** Key tombstones beat `preserve:`. Access tombstones do not interact: an
-owned key is always managed, never preserved.
+owned key is always managed, never preserved. `revoke --key` of a kept (unowned) key
+records a key tombstone (D1b), which beats `preserve:` from then on; revoke's own push
+reaches only `apply.Affected` servers, so the next `apply` (or `--sweep`, exit 2) is what
+removes or reports it.
 
-**Files.** `internal/config`, `internal/authkeys/render.go` (and a scan that returns each
-key with the comment lines above it), `internal/audit`,
-`internal/apply/{plan,serial,report,json}.go`, `internal/adopt` (through audit),
-`cmd/sshepherd/schema_roundtrip_test.go`.
+**Files.** `internal/config/{preserve,preserve_match}.go`,
+`internal/authkeys/{scan,render}.go`, `internal/audit/{preserve,audit,report,json}.go`,
+`internal/apply/{plan,report,json}.go`, `internal/adopt` (test only: adopt reads
+`Diff.Unauthorized`), `cmd/sshepherd/schema_roundtrip_test.go`, `scripts/integration.sh`
+(fixture `presv`). `internal/apply/serial.go` needs no code: its rows read
+`Diff.Unauthorized`/`Remove`, which no longer hold kept keys.
 
 **README.** **Safety model** ("Full-file rewrite" gains the exception); **The manifest**:
 new `preserve:` subsection with the warning; **Validation rules**; **`sshepherd audit`**;
@@ -1327,7 +1367,7 @@ same commit, then an independent verifier, then repair.
 | S3b | A: `internal/config` and the consumer tests · B (after A): `internal/manifest`, `group_reach.go`, `internal/apply/{edit,json}.go`, `revoke.go`, `adopt.go` (a group manifest needs both editor and schema, so one lane) |
 | S4 | A: `internal/config` · B (after A): `internal/audit` · C (after B, whose critical tier its E2E asserts): `internal/apply`, `internal/reconcile`, `editrun.go`, `revoke.go`, `rotate.go`, `run.go` |
 | S5 | A: `internal/config` · B (after A): `internal/fleet`, `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit`, the `DialHint` mirrors in `internal/apply`, `cmd/sshepherd/{fleet,apply,sweep,run}.go`, `scripts/integration.sh` · C (beside B): `internal/sshcfg`, `internal/reconcile`, `import.go`, `import_json.go` · D (after B): `internal/apply`, `internal/authkeys/forward.go`, `internal/workflow`, `adopt.go`, `sweep.go`, `run.go` |
-| S6 | A: `internal/config` · B: `internal/authkeys/render.go`, `internal/apply` · C: `internal/audit`, `internal/adopt` |
+| S6 | A: `internal/config`, `internal/authkeys/{scan,render}.go`, `internal/audit`, `internal/adopt` (test), `internal/apply/plan.go` (one lane and one commit: the schema alone would let apply delete the lines a rule names, and audit's classification without the render would too) · B (after A): `internal/apply/{report,json}.go` · C (beside B): the hermetic and E2E tests, `scripts/integration.sh` |
 | S7 | A: `internal/authkeys/options.go`, `internal/config` · B: `internal/audit`, `conflicts.go`, `editrun.go`, `adopt.go`, `import.go` · integrator: tests and README |
 
 ## Risks
