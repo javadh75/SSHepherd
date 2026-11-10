@@ -233,6 +233,12 @@ type ServerConfig struct {
 	Handle     Handler         // exec handler; nil exits 0 with no output
 	Stall      bool            // accept TCP but never speak SSH
 
+	// SilentSessions completes the handshake and login but never answers a
+	// session channel open (no confirmation, no rejection), so the client's
+	// NewSession waits until the connection ends: the x/crypto race behind
+	// sshconn.Exec's bounded session open, made deterministic.
+	SilentSessions bool
+
 	// AuthorizedKeysFile, when set, replaces Authorized. Every login
 	// re-reads this file, as sshd does, so tests see exactly what a write
 	// left there. It honors the options the login probe depends on:
@@ -253,7 +259,8 @@ type Server struct {
 	Host string
 	Port int
 
-	forward func(string, uint32) (net.Conn, ssh.RejectionReason)
+	forward        func(string, uint32) (net.Conn, ssh.RejectionReason)
+	silentSessions bool
 
 	mu       sync.Mutex
 	attempts []string
@@ -294,7 +301,7 @@ func NewServer(tb testing.TB, cfg ServerConfig) *Server {
 	if err != nil {
 		tb.Fatalf("sshtest: listen: %v", err)
 	}
-	s := &Server{Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port, forward: cfg.Forward}
+	s := &Server{Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port, forward: cfg.Forward, silentSessions: cfg.SilentSessions}
 	tr := &tracker{l: l}
 	tb.Cleanup(tr.close)
 
@@ -413,6 +420,8 @@ func (s *Server) serveConn(c net.Conn, sc *ssh.ServerConfig, h Handler, wg *sync
 		case nc.ChannelType() != "session":
 			_ = nc.Reject(ssh.UnknownChannelType, "session only")
 			continue
+		case s.silentSessions:
+			continue // never answered: the open waits until the connection ends
 		}
 		ch, creqs, err := nc.Accept()
 		if err != nil {

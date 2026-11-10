@@ -47,6 +47,30 @@ func TestHandshakeKindAuthNeedsVerifiedHostKey(t *testing.T) {
 	}
 }
 
+// pastDeadlineCtx is a ctx whose deadline has passed while its own timer
+// has not fired yet (Err is still nil): the instant between a socket
+// deadline set to the same time firing and the context noticing.
+type pastDeadlineCtx struct{ context.Context }
+
+func (pastDeadlineCtx) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+
+// TestHandshakeKindPastDeadlineIsTimeout: a via target's handshake runs
+// over the hop, whose socket carries ctx's deadline, so the hop's read
+// timeout can end the tunnel (an EOF here) a moment before ctx.Err is set.
+// That failure is the deadline's, so it is a timeout, not a handshake
+// failure (TestConnectThroughHopDeadlineAndCancel's flake).
+func TestHandshakeKindPastDeadlineIsTimeout(t *testing.T) {
+	ctx := pastDeadlineCtx{context.Background()}
+	if got := handshakeKind(ctx, io.EOF, true); got != fleet.ErrorKindTimeout {
+		t.Errorf("handshakeKind past the deadline = %q, want %q", got, fleet.ErrorKindTimeout)
+	}
+	future, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	if got := handshakeKind(future, io.EOF, true); got != fleet.ErrorKindHandshake {
+		t.Errorf("handshakeKind before the deadline = %q, want %q", got, fleet.ErrorKindHandshake)
+	}
+}
+
 // TestAuthExhaustedText pins the MaxAuthTries signal: the text sshd sends,
 // and only after the host key verified.
 func TestAuthExhaustedText(t *testing.T) {
@@ -403,8 +427,10 @@ func TestExecMarksASessionThatNeverOpened(t *testing.T) {
 		// Wait for the client to be fully dead first. x/crypto's mux drops
 		// its channels before the transport records its write error, so a
 		// NewSession started in that gap sends into the closed socket
-		// without error and waits forever for a reply. Wait returns only
-		// after the transport's Close, which records the error.
+		// without error and gets no reply; Exec gives up on it after
+		// SessionOpenTimeout as timeout (TestExecBoundsASessionThatNeverOpens).
+		// Wait returns only after the transport's Close, which records the
+		// error, so this open fails at once and stays remote.
 		_ = conn.Client.Wait()
 		_, _, _, err := Exec(context.Background(), conn.Client, "x", nil)
 		if !errors.Is(err, ErrSessionNotOpened) || !strings.HasPrefix(err.Error(), "open session: ") || kindOf(t, err) != fleet.ErrorKindRemote {

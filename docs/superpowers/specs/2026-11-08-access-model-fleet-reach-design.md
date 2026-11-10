@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions), S6 built (plan 2026-11-10-p10-s6-preserve); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions), S6 built (plan 2026-11-10-p10-s6-preserve), F1 owner follow-ups built (plan 2026-11-10-p10-f1-owner-followups); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -1368,6 +1368,7 @@ same commit, then an independent verifier, then repair.
 | S4 | A: `internal/config` · B (after A): `internal/audit` · C (after B, whose critical tier its E2E asserts): `internal/apply`, `internal/reconcile`, `editrun.go`, `revoke.go`, `rotate.go`, `run.go` |
 | S5 | A: `internal/config` · B (after A): `internal/fleet`, `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit`, the `DialHint` mirrors in `internal/apply`, `cmd/sshepherd/{fleet,apply,sweep,run}.go`, `scripts/integration.sh` · C (beside B): `internal/sshcfg`, `internal/reconcile`, `import.go`, `import_json.go` · D (after B): `internal/apply`, `internal/authkeys/forward.go`, `internal/workflow`, `adopt.go`, `sweep.go`, `run.go` |
 | S6 | A: `internal/config`, `internal/authkeys/{scan,render}.go`, `internal/audit`, `internal/adopt` (test), `internal/apply/plan.go` (one lane and one commit: the schema alone would let apply delete the lines a rule names, and audit's classification without the render would too) · B (after A): `internal/apply/{report,json}.go` · C (beside B): the hermetic and E2E tests, `scripts/integration.sh` |
+| F1 | A: `import.go`, `import_settings.go`, `import_json.go` · B: `internal/apply/{plan,report,json}.go`, the preserve plan goldens and `TestPreserveHermetic` · C: `internal/sshconn` (`connect.go`, `sshtest`), the sshread session-open test and two sshwrite rows (one round) |
 | S7 | A: `internal/authkeys/options.go`, `internal/config` · B: `internal/audit`, `conflicts.go`, `editrun.go`, `adopt.go`, `import.go` · integrator: tests and README |
 
 ## Risks

@@ -3,6 +3,7 @@ package sshwrite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -267,23 +268,35 @@ func TestApplyReconnectAfterDrop(t *testing.T) {
 			})
 		})
 	}
-	t.Run("a session that never opened did not start the upload", func(t *testing.T) {
-		never := execResp{err: &sshconn.Error{Kind: fleet.ErrorKindRemote, Err: sshconn.ErrSessionNotOpened}}
-		refused := []error{kinded(fleet.ErrorKindAuth, "unable to authenticate")}
-		t.Run("in stage 1: a refused reconnect is not a lockout", func(t *testing.T) {
-			err := seamedWriter(&scriptedExec{responses: []execResp{never}}, &seamedConnect{fullErrs: refused}).Apply(ctx, srv, req(content))
-			var lo *LockoutError
-			if errors.As(err, &lo) || err == nil || !strings.Contains(err.Error(), "unknown state") || fleet.ErrorKindOf(err) != fleet.ErrorKindAuth {
-				t.Fatalf("err = %v (kind %q), want an unknown state keeping the kind", err, fleet.ErrorKindOf(err))
-			}
+	// A session open the server refused (remote) and one Exec gave up on
+	// after SessionOpenTimeout (timeout, F1 Q4) both carry the never-opened
+	// marker; stage 1 reads the marker, never the kind (gap 13). The second
+	// row is a documentation pin: it kills no mutant the first does not.
+	for _, nv := range []struct {
+		name string
+		err  error
+	}{
+		{"refused", &sshconn.Error{Kind: fleet.ErrorKindRemote, Err: sshconn.ErrSessionNotOpened}},
+		{"given up after the bound", &sshconn.Error{Kind: fleet.ErrorKindTimeout, Err: fmt.Errorf("%w: no answer from the server within 10s", sshconn.ErrSessionNotOpened)}},
+	} {
+		t.Run("a session that never opened did not start the upload: "+nv.name, func(t *testing.T) {
+			never := execResp{err: nv.err}
+			refused := []error{kinded(fleet.ErrorKindAuth, "unable to authenticate")}
+			t.Run("in stage 1: a refused reconnect is not a lockout", func(t *testing.T) {
+				err := seamedWriter(&scriptedExec{responses: []execResp{never}}, &seamedConnect{fullErrs: refused}).Apply(ctx, srv, req(content))
+				var lo *LockoutError
+				if errors.As(err, &lo) || err == nil || !strings.Contains(err.Error(), "unknown state") || fleet.ErrorKindOf(err) != fleet.ErrorKindAuth {
+					t.Fatalf("err = %v (kind %q), want an unknown state keeping the kind", err, fleet.ErrorKindOf(err))
+				}
+			})
+			t.Run("in verify: stage 1 had finished, so it is a lockout", func(t *testing.T) {
+				err := seamedWriter(&scriptedExec{responses: []execResp{{code: 0}, never}}, &seamedConnect{fullErrs: refused}).Apply(ctx, srv, req(content))
+				if lo := lockoutOf(t, err); !errors.Is(lo.Restore, fleet.ErrNoSession) {
+					t.Fatalf("Restore = %v", lo.Restore)
+				}
+			})
 		})
-		t.Run("in verify: stage 1 had finished, so it is a lockout", func(t *testing.T) {
-			err := seamedWriter(&scriptedExec{responses: []execResp{{code: 0}, never}}, &seamedConnect{fullErrs: refused}).Apply(ctx, srv, req(content))
-			if lo := lockoutOf(t, err); !errors.Is(lo.Restore, fleet.ErrNoSession) {
-				t.Fatalf("Restore = %v", lo.Restore)
-			}
-		})
-	})
+	}
 	t.Run("a verify that read different bytes never reconnects", func(t *testing.T) {
 		c := &seamedConnect{}
 		err := seamedWriter(&scriptedExec{responses: []execResp{{code: 0}, {stdout: "tampered\n"}}}, c).Apply(ctx, srv, req(content))

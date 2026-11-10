@@ -43,6 +43,10 @@ func TestClassifyProbe(t *testing.T) {
 		{"EOF after login", stageAuthed, io.EOF, verdictRejected},
 		{"wrong output", stageAuthed, errors.New("probe command did not run as sent"), verdictRejected},
 		{"exec deadline", stageAuthed, kinded(fleet.ErrorKindTimeout, "x"), verdictRejected},
+		// F1 Q4: a session open Exec gave up on runs after a good login, so it
+		// is REJECTED and restores (gap 9); documentation pin, as every
+		// stageAuthed error without a hop is.
+		{"session open given up", stageAuthed, fmt.Errorf("probe command: %w", &sshconn.Error{Kind: fleet.ErrorKindTimeout, Err: fmt.Errorf("%w: no answer from the server within 10s", sshconn.ErrSessionNotOpened)}), verdictRejected},
 		{"unknown after auth", stageAuthed, errors.New("x"), verdictRejected},
 		{"unknown before auth", stageDial, errors.New("x"), verdictTransient},
 		{"canceled before auth", stageDial, kinded(fleet.ErrorKindCanceled, "x"), verdictTransient},

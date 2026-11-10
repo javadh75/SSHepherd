@@ -648,6 +648,74 @@ func remoteCommand(script string) string {
 // script cannot have started. Its text is the failure message's prefix.
 var ErrSessionNotOpened = errors.New("open session")
 
+// SessionOpenTimeout bounds how long Exec waits for the server to answer a
+// session open when ctx allows longer, or has no deadline at all (a caller
+// that passed context.WithoutCancel). Opening a session on an authenticated
+// connection is one round trip, cheaper than the TCP connect and key
+// exchange the CLI bounds by its 10 s dial timeout, so the same 10 s is a
+// generous ceiling for a healthy server (F1 Q4).
+const SessionOpenTimeout = 10 * time.Second
+
+// sessionOpenWait is SessionOpenTimeout; tests shorten it.
+var sessionOpenWait = SessionOpenTimeout
+
+// openSession opens a session on client, giving up when ctx ends or
+// sessionOpenWait elapses. x/crypto's NewSession takes no context and can
+// wait forever on a dying connection: the mux drops its channels before the
+// transport records its write error, and an open sent in that gap goes
+// into the closed socket without error and waits for a reply that never
+// comes (TestExecMarksASessionThatNeverOpened). On giving up it closes
+// client: on a direct connection that ends a NewSession still waiting; on
+// a tunnelled (via:) target the client runs over a direct-tcpip channel,
+// so the wait ends when the bastion answers the channel close or when
+// Conn.Close closes the hop. In the true race nothing will ever answer the
+// open, so its goroutine stays blocked until the process exits: one
+// goroutine per stuck open, in a short-lived CLI. A session that opens
+// after the wait ended is closed by the goroutine. Either way the exec
+// request was never sent, so no script ran: the error wraps
+// ErrSessionNotOpened.
+func openSession(ctx context.Context, client *ssh.Client) (*ssh.Session, error) {
+	type opened struct {
+		sess *ssh.Session
+		err  error
+	}
+	result := make(chan opened)
+	gaveUp := make(chan struct{})
+	go func() {
+		sess, err := client.NewSession()
+		select {
+		case result <- opened{sess, err}:
+		case <-gaveUp:
+			if sess != nil {
+				_ = sess.Close()
+			}
+		}
+	}()
+	wait := sessionOpenWait
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	var (
+		cause error
+		kind  = fleet.ErrorKindTimeout
+	)
+	select {
+	case o := <-result:
+		if o.err != nil {
+			// A rejected channel (*ssh.OpenChannelError) carries the server's
+			// free-text message: bounded like stderr (SEC-8).
+			return nil, classify(fleet.ErrorKindRemote, fmt.Errorf("%w: %w", ErrSessionNotOpened, remoteText{o.err}))
+		}
+		return o.sess, nil
+	case <-ctx.Done():
+		cause, kind = ctx.Err(), ctxKind(ctx)
+	case <-timer.C:
+		cause = fmt.Errorf("no answer from the server within %s", wait)
+	}
+	close(gaveUp)
+	_ = client.Close() // ends a waiting NewSession (on a tunnel: once the bastion answers, or Conn.Close)
+	return nil, classify(kind, fmt.Errorf("%w: %w", ErrSessionNotOpened, cause))
+}
+
 // Exec runs the single-line POSIX-sh script in one session over client
 // (as exec /bin/sh -c, see remoteCommand), optionally feeding stdin, and
 // returns the remote exit code with capped stdout/stderr. A nonzero exit is
@@ -656,6 +724,9 @@ var ErrSessionNotOpened = errors.New("open session")
 // non-nil only for transport-level failures (session open, channel I/O) or
 // ctx ending the run: cancellation closes the session at once, so a caller
 // that must let a started command finish passes context.WithoutCancel.
+// Opening the session is bounded too: by ctx, and by SessionOpenTimeout when
+// ctx allows longer (openSession); a session that never opens closes client
+// and wraps ErrSessionNotOpened.
 func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reader) (code int, stdout, stderr *CappedBuffer, err error) {
 	if strings.ContainsAny(script, "\n\r") {
 		return 0, nil, nil, classify(fleet.ErrorKindRemote, errors.New("remote script must be a single line"))
@@ -663,11 +734,9 @@ func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reade
 	if ctx.Err() != nil {
 		return 0, nil, nil, classify(ctxKind(ctx), fmt.Errorf("run remote command: %w", ctx.Err()))
 	}
-	sess, err := client.NewSession()
+	sess, err := openSession(ctx, client)
 	if err != nil {
-		// A rejected channel (*ssh.OpenChannelError) carries the server's
-		// free-text message: bounded like stderr (SEC-8).
-		return 0, nil, nil, classify(fleet.ErrorKindRemote, fmt.Errorf("%w: %w", ErrSessionNotOpened, remoteText{err}))
+		return 0, nil, nil, err // already classified, marked ErrSessionNotOpened
 	}
 	defer func() { _ = sess.Close() }()
 	stop := context.AfterFunc(ctx, func() { _ = sess.Close() })

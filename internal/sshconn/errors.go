@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/javadh75/SSHepherd/internal/fleet"
 )
@@ -72,12 +73,15 @@ const tooManyAuthText = "Too many authentication failures"
 // auth case has no typed error in x/crypto, so its fixed message prefix is
 // the only signal, and it counts only after the host key verified: a
 // disconnect sent before key exchange can carry any text, and an auth
-// verdict rolls a server back.
+// verdict rolls a server back. A failure once ctx's deadline has passed is
+// a timeout even before ctx.Err is set: a via target's handshake runs over
+// the hop, whose socket deadline is the same instant, and the hop's read
+// timeout can end the tunnel (an EOF) a moment before ctx's timer fires.
 func handshakeKind(ctx context.Context, err error, hostVerified bool) fleet.ErrorKind {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return fleet.ErrorKindCanceled
-	case ctx.Err() != nil:
+	case ctx.Err() != nil, pastDeadline(ctx):
 		return fleet.ErrorKindTimeout
 	}
 	var ne net.Error
@@ -95,6 +99,13 @@ func handshakeKind(ctx context.Context, err error, hostVerified bool) fleet.Erro
 // error, so the text is the only signal.
 func authExhausted(err error, hostVerified bool) bool {
 	return hostVerified && strings.Contains(err.Error(), tooManyAuthText)
+}
+
+// pastDeadline reports whether ctx's deadline has passed, whether or not
+// its timer has fired yet.
+func pastDeadline(ctx context.Context) bool {
+	dl, ok := ctx.Deadline()
+	return ok && !time.Now().Before(dl)
 }
 
 // ctxKind classifies a ctx that ended an exchange.

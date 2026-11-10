@@ -830,3 +830,12 @@ does not reproduce, `jump_only:` or `preserve:` rules (`cmd/sshepherd/import_set
 apply's plan shows a write that adds the `preserve:` marker as its own row, `(preserve:) add the
 externally-managed section marker` (`Normalize.ExternalSection`, JSON
 `normalize.external_section`, additive), instead of `(formatting) normalize: whitespace/format`.
+`sshconn.Exec` opens its session through `openSession`: it stops waiting when ctx ends or after
+`SessionOpenTimeout` (10 s; callers with `context.WithoutCancel` are bounded too), closes the
+client and returns the `ErrSessionNotOpened`-marked error with kind `timeout` (or ctx's kind),
+so x/crypto's dying-connection race can no longer hang a run (its goroutine may stay blocked
+until exit); `sshtest.ServerConfig.SilentSessions` makes it testable. sshread and sshwrite keep
+their meaning (the stage-1 "never started" rule, the login check's REJECTED verdict).
+Merge fix: `handshakeKind` counts a failure once ctx's deadline has passed as `timeout` even
+before `ctx.Err` is set (`pastDeadline`), because a via target's hop socket shares the deadline
+and can end the tunnel first (`TestConnectThroughHopDeadlineAndCancel` failed 3-6% under `-race`).
