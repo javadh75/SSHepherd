@@ -87,7 +87,7 @@ func dropUnsafeHosts(w *importWarnings, hosts []sshcfg.Host) []sshcfg.Host {
 // covers wildcard-compaction: a non-operator user covering every server is
 // emitted as servers: ["*"] and noted for review (stderr-only — it does not
 // affect completeness).
-func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([]byte, []reconcile.Warning, error) {
+func generateManifest(hosts []sshcfg.Host, users []identity.User, routes reconcile.Routes, src string) ([]byte, []reconcile.Warning, error) {
 	var (
 		servers []config.Server
 		mUsers  []config.User
@@ -103,7 +103,7 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 			continue
 		}
 		// The encoder omits port 0 and 22 (both spell the default).
-		servers = append(servers, config.Server{Name: h.Alias, Host: h.HostName, Port: h.Port, User: h.User})
+		servers = append(servers, config.Server{Name: h.Alias, Host: h.HostName, Port: h.Port, User: h.User, Via: routes.Via(h.Alias)})
 	}
 	// Resolve guarantees every derived user has ≥1 server; only users added
 	// via --operator-key are grantless (their fleet-wide grant is implied).
@@ -124,6 +124,9 @@ func generateManifest(hosts []sshcfg.Host, users []identity.User, src string) ([
 		})
 		if u.Operator {
 			continue // fleet-wide grant is implied; no access entry
+		}
+		if len(u.Servers) == 0 {
+			continue // its only server was dropped as another route (OP7): no access entry
 		}
 		if len(servers) >= 2 && len(u.Servers) == len(servers) {
 			// Grants only reference server-worthy hosts, so matching the count
@@ -201,26 +204,39 @@ func collapseTargets(w *importWarnings, hosts []sshcfg.Host, users []identity.Us
 	return hosts, users
 }
 
-// warnProxies flags every host that will become a server but sits behind a
-// ProxyJump/ProxyCommand: SSHepherd dials servers directly, so a
-// bastion-only host would otherwise surface later as an unexplained
-// unreachable (or a misleading host-key mismatch).
-func warnProxies(w *importWarnings, hosts []sshcfg.Host) {
+// warnProxies flags every server-worthy host whose ProxyJump/ProxyCommand
+// could not be mapped to a via: (spec S5): it would be dialed directly and
+// surface later as an unexplained unreachable. A mapped chain is carried by
+// the manifest and warns nothing.
+func warnProxies(w *importWarnings, hosts []sshcfg.Host, routes reconcile.Routes) {
 	for _, h := range hosts {
-		if serverWorthy(h) && h.Proxy != "" {
-			w.addAll(importWarnProxy, fmt.Sprintf("host %q: %s set — dialed directly; bastion hosts are not supported yet", h.Alias, h.Proxy))
+		if !serverWorthy(h) || h.Proxy == "" {
+			continue
+		}
+		if why, bad := routes.NotMapped(h.Alias); bad {
+			w.addAll(importWarnProxy, fmt.Sprintf("host %q: %s not mapped to via: (%s) — dialed directly; add via: by hand", h.Alias, h.Proxy, why))
 		}
 	}
 }
 
+// manifestServers is the --merge manifest's servers (nil for a fresh
+// import): the hops a ProxyJump may name besides the converted hosts.
+func manifestServers(mf *manifest.File) []config.Server {
+	if mf == nil {
+		return nil
+	}
+	return mf.Config().Servers
+}
+
 // renderImport picks the rendering path: a comment-preserving merge append
 // when --merge loaded a manifest (mf non-nil), the full generated draft
-// otherwise. date feeds the merge marker only.
-func renderImport(w *importWarnings, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, src, date string) ([]byte, *reconcile.Plan, error) {
+// otherwise. date feeds the merge marker only. routes carries the mapped
+// ProxyJump chains for the fresh draft; a merge maps its own (reconcile.Build).
+func renderImport(w *importWarnings, mf *manifest.File, raw []byte, hosts []sshcfg.Host, users []identity.User, routes reconcile.Routes, src, date string) ([]byte, *reconcile.Plan, error) {
 	if mf != nil {
 		return mergeImport(w, mf, raw, hosts, users, src, date)
 	}
-	rendered, notes, err := generateManifest(hosts, users, src)
+	rendered, notes, err := generateManifest(hosts, users, routes, src)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -316,7 +332,7 @@ func renderMergedImport(mf *manifest.File, raw []byte, plan reconcile.Plan, src,
 	}
 	servers := make([]config.Server, 0, len(plan.NewServers))
 	for _, s := range plan.NewServers {
-		servers = append(servers, config.Server{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User})
+		servers = append(servers, config.Server{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User, Via: s.Via})
 	}
 	access := make([]config.Access, 0, len(plan.Extensions)+len(plan.NewGrants))
 	for _, e := range plan.Extensions {
@@ -418,9 +434,10 @@ func (r *importRun) run(args []string) error {
 		return err
 	}
 	hosts, users = collapseTargets(warns, hosts, users)
-	warnProxies(warns, hosts)
+	routes := reconcile.MapRoutes(hosts, manifestServers(mf))
+	warnProxies(warns, hosts, routes)
 	// The clock is read only here, so tests inject a fixed date.
-	rendered, plan, err := renderImport(warns, mf, m.Loaded, hosts, users, src, time.Now().Format("2006-01-02"))
+	rendered, plan, err := renderImport(warns, mf, m.Loaded, hosts, users, routes, src, time.Now().Format("2006-01-02"))
 	if err != nil {
 		return err
 	}

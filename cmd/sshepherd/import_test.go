@@ -10,6 +10,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/identity"
+	"github.com/javadh75/SSHepherd/internal/reconcile"
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -40,7 +41,7 @@ func TestGenerateManifestGolden(t *testing.T) {
 		{Alias: "bastion", HostName: "bastion", User: "ops"},             // port 0 omitted
 		{Alias: "nouser", HostName: "10.0.0.9"},                          // skipped
 	}
-	got, skipped, err := generateManifest(hosts, nil, "~/.ssh/config")
+	got, skipped, err := generateManifest(hosts, nil, reconcile.Routes{}, "~/.ssh/config")
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
@@ -65,7 +66,7 @@ func TestGenerateManifestUsersGolden(t *testing.T) {
 		{Name: "javad-work", Source: "~/.ssh/work",
 			Key: testkeys.Line(t, 2), Servers: []string{"web-1", "ci"}},
 	}
-	got, notes, err := generateManifest(hosts, users, "~/.ssh/config")
+	got, notes, err := generateManifest(hosts, users, reconcile.Routes{}, "~/.ssh/config")
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestGenerateManifestOperatorGolden(t *testing.T) {
 		{Name: "javad-work", Source: "~/.ssh/work",
 			Key: testkeys.Line(t, 3), Servers: []string{"web-1"}},
 	}
-	got, notes, err := generateManifest(hosts, users, "~/.ssh/config")
+	got, notes, err := generateManifest(hosts, users, reconcile.Routes{}, "~/.ssh/config")
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestGenerateManifestNoCompactionSingleServer(t *testing.T) {
 	hosts := []sshcfg.Host{{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"}}
 	users := []identity.User{{Name: "javad-work", Source: "~/.ssh/work",
 		Key: testkeys.Line(t, 1), Servers: []string{"web-1"}}}
-	got, notes, err := generateManifest(hosts, users, "x")
+	got, notes, err := generateManifest(hosts, users, reconcile.Routes{}, "x")
 	if err != nil || len(notes) != 0 {
 		t.Fatalf("notes %v, err %v — a single-server fleet says nothing about \"everywhere\"", notes, err)
 	}
@@ -136,7 +137,7 @@ func TestGenerateManifestNoCompactionSingleServer(t *testing.T) {
 }
 
 func TestGenerateManifestEmpty(t *testing.T) {
-	got, skipped, err := generateManifest(nil, nil, "x")
+	got, skipped, err := generateManifest(nil, nil, reconcile.Routes{}, "x")
 	if err != nil || len(skipped) != 0 {
 		t.Fatalf("generateManifest(nil) = skipped %v, err %v", skipped, err)
 	}
@@ -361,7 +362,7 @@ func TestGenerateManifestQuotesSpecialChars(t *testing.T) {
 		Servers: []string{"web-1"},
 	}}
 	hosts := []sshcfg.Host{{Alias: "web-1", HostName: "10.0.0.1", User: "deploy"}}
-	got, _, err := generateManifest(hosts, users, "~/.ssh/config")
+	got, _, err := generateManifest(hosts, users, reconcile.Routes{}, "~/.ssh/config")
 	if err != nil {
 		t.Fatalf("generateManifest: %v", err)
 	}
@@ -499,26 +500,33 @@ func TestImportCollapsesSameTargetAliases(t *testing.T) {
 	}
 }
 
-// TestImportWarnsProxyHosts: bastion-only hosts are imported but flagged,
-// since SSHepherd dials every server directly.
-func TestImportWarnsProxyHosts(t *testing.T) {
+// TestImportWarnsUnmappedProxies: a proxy import cannot map is flagged with
+// why; a mapped ProxyJump and a direct host are not (spec S5 Import).
+func TestImportWarnsUnmappedProxies(t *testing.T) {
 	hermeticHome(t)
-	path := writeSSHConfig(t, "Host inner\n  HostName 10.1.0.5\n  User u\n  ProxyJump bastion\n"+
+	path := writeSSHConfig(t, "Host bastion\n  HostName bastion.example.com\n  User jump\n"+
+		"Host inner\n  HostName 10.1.0.5\n  User u\n  ProxyJump bastion\n"+
+		"Host lost\n  HostName 10.1.0.6\n  User u\n  ProxyJump gw\n"+
 		"Host cmd\n  User u\n  ProxyCommand ssh -W %h:%p gw\nHost direct\n  User u\n")
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"import", path, "--servers-only"}, &out, &errBuf); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errBuf.String())
 	}
 	for _, want := range []string{
-		`host "inner": ProxyJump bastion set — dialed directly; bastion hosts are not supported yet`,
-		`host "cmd": ProxyCommand ssh -W %h:%p gw set — dialed directly`,
+		`host "lost": ProxyJump gw not mapped to via: (hop "gw" is not a server in the ssh config or the manifest) — dialed directly; add via: by hand`,
+		`host "cmd": ProxyCommand ssh -W %h:%p gw not mapped to via: (only ProxyJump [user@]host[:port] hops are mapped) — dialed directly; add via: by hand`,
 	} {
 		if !strings.Contains(errBuf.String(), want) {
 			t.Errorf("stderr = %q, want %q", errBuf.String(), want)
 		}
 	}
-	if strings.Contains(errBuf.String(), `"direct"`) {
-		t.Errorf("stderr = %q, direct host must not be flagged", errBuf.String())
+	for _, quiet := range []string{`"inner"`, `"direct"`, `"bastion"`} {
+		if strings.Contains(errBuf.String(), quiet) {
+			t.Errorf("stderr = %q, %s must not be flagged", errBuf.String(), quiet)
+		}
+	}
+	if !strings.Contains(out.String(), "via: bastion") {
+		t.Errorf("manifest lacks inner's via:\n%s", out.String())
 	}
 }
 

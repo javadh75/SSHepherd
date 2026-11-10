@@ -768,3 +768,10 @@ treats a hop failure as "could not check" (UNPROVEN, never a restore) and, on a 
 `--internal` network, container C (`hopped`, `hopw`, `hope2e`) and bastion accounts `jump`, `jumpnl`
 (nologin), `jumpw`, `jumpnofwd` (AllowTcpForwarding no) on A, which sets `AllowTcpForwarding yes`
 globally (alpine's stock config says no).
+`import` maps `ProxyJump` onto `via:` through `sshcfg.ParseJump` (fuzzed: `FuzzParseJump`) and
+`reconcile.MapRoutes` (hop by alias or host/port/user, explicit `user@`/`:port` must match, at most 3
+deep, no hop with two parents, the first hop keeps its own route, no alias the manifest and the ssh
+config name for different machines; anything else warns `proxy_not_mapped`). `CollapseTargets` and merge compare routes: one target or one address reached two
+ways drops the later host without moving its grants (OP7). Merge adds no grant on a `jump_only`
+server (a note), and the fleet set behind `*` compaction leaves it out; `import --json`'s
+`new_servers` gain `via`. `FuzzParseJump` is the 24th `Fuzz*` target.

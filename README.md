@@ -81,7 +81,7 @@ Groups: `groups:` and `access: - group: X` grant every member, a tombstone block
 
 Protected users: `protected: true` makes a key critical when missing and writes it first, only where the user is granted, and `revoke`/`rotate` refuse a protected target without `--operator` whether or not it holds a grant; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
 
-Bastions: `via:` reaches a server through up to 3 bastions, each its own strict-`known_hosts` SSH connection, and `jump_only: true` makes a bastion a tunnel that is never read or written (see [Bastions](#bastions-via)).
+Bastions: `via:` reaches a server through up to 3 bastions, each its own strict-`known_hosts` SSH connection, and `jump_only: true` makes a bastion a tunnel that is never read or written (see [Bastions](#bastions-via)); `import` maps `ProxyJump` onto `via:`.
 
 ## Install
 
@@ -453,7 +453,8 @@ servers:
 `via:` must name another server, never the server itself, with no loop; a chain is at
 most 3 bastions deep. Each hop is its own SSH connection with strict `known_hosts`, and
 the bastion resolves and connects to the server's `host` and `port`, so `10.0.1.5` is
-the address as the bastion sees it.
+the address as the bastion sees it. `import` turns an ssh config's `ProxyJump` into
+`via:` where it can (see [`sshepherd import`](#sshepherd-import-ssh-config-path)).
 
 **A bastion without `jump_only` is a normal managed server:** apply rewrites its whole
 file like any other server's, a `servers: ["*"]` entry or an operator's implicit grant
@@ -1303,7 +1304,7 @@ are never read. Run it where you actually `ssh` from.
 | `--merge FILE` | — | Merge into `FILE`: preserve its text and append what is new |
 | `--json` | off | Machine-readable report on stdout (schema 1); the manifest goes to `-o`, or into the report's `manifest` field |
 
-`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. A manifest that is not UTF-8 (a `--merge` with nothing to add returns a UTF-16 file's bytes unchanged) cannot go into a JSON string, so without `-o` the run exits `3` and writes no report; with `-o` the file gets the bytes unchanged. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds, and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped`; ignore kinds you do not know.
+`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. A manifest that is not UTF-8 (a `--merge` with nothing to add returns a UTF-16 file's bytes unchanged) cannot go into a JSON string, so without `-o` the run exits `3` and writes no report; with `-o` the file gets the bytes unchanged. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds (`new_servers[].via` names the bastion a mapped `ProxyJump` puts the server behind; omitted when empty, additive, schema 1), and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped`; ignore kinds you do not know.
 
 ```json
 {
@@ -1432,8 +1433,43 @@ What gets skipped or merged, always with a warning on stderr:
   skipped; access derived through a skipped alias is granted on the kept one. Under
   `--merge`, an alias whose target is already a manifest server is skipped the same
   way, its access goes to that server, and it counts toward "conflicts skipped".
-- Hosts with `ProxyJump`/`ProxyCommand` are still imported, with
-  `host "X": ProxyJump <v> set — dialed directly; bastion hosts are not supported yet`.
+- A `ProxyJump` chain becomes `via:` (`ProxyJump a,b` puts the target behind `b` and
+  `b` behind `a`) when every hop is an imported host or a manifest server — by alias,
+  or by host, port and user — an explicit `user@`/`:port` on a hop matches that server,
+  the route is at most 3 deep, and no hop would need two different parents. Anything
+  else (`ProxyCommand`, an `ssh://` hop, a hop that is no server) is left direct and
+  warned, kind `proxy_not_mapped`:
+  `host "X": <Proxy> not mapped to via: (<reason>) — dialed directly; add via: by hand`.
+  `import` never sets `jump_only:`: add it by hand to a bastion SSHepherd must not
+  manage (see [Bastions](#bastions-via)). Under `--merge` the manifest wins: only new
+  servers get `via:`, a hop whose alias names a manifest server that the ssh config
+  describes as another machine (host, port or user differ) is not mapped, and a key
+  used on a `jump_only` server adds no access there (a note says so).
+- **One entry and one route per address.** Two hosts at one address reached by
+  different routes may be different machines: the later one is skipped with a warning
+  and its access is not moved.
+
+For example, `bastion` direct, `inner` with `ProxyJump bastion`, and `web` with
+`ProxyJump bastion,inner` give, with `import --servers-only` (`SSHCONFIG` is the
+ssh-config path, as typed):
+
+```yaml
+# generated by sshepherd import from SSHCONFIG — review before use
+users: []
+servers:
+  - name: bastion
+    host: bastion.example.com
+    user: jump
+  - name: inner
+    host: 10.0.0.9
+    user: ops
+    via: bastion
+  - name: web
+    host: 10.0.1.5
+    user: deploy
+    via: inner
+access: []
+```
 
 **Output files** (`-o`, shared with `adopt`): written mode `0600`, fsynced, and
 published without ever clobbering an existing file unless `--force` is given.

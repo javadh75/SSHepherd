@@ -60,6 +60,7 @@ type importServerJSON struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
 	User string `json:"user"`
+	Via  string `json:"via,omitempty"` // the mapped ProxyJump's bastion (spec S5); additive, schema 1
 }
 
 type importUserJSON struct {
@@ -144,7 +145,7 @@ func planOutcome(plan reconcile.Plan) importOutcome {
 		if port == 0 {
 			port = 22
 		}
-		out.servers = append(out.servers, importServerJSON{Name: s.Name, Host: s.Host, Port: port, User: s.User})
+		out.servers = append(out.servers, importServerJSON{Name: s.Name, Host: s.Host, Port: port, User: s.User, Via: s.Via})
 	}
 	for _, u := range plan.NewUsers {
 		out.users = append(out.users, newImportUser(u.Name, u.Keys[0], u.Operator, grants[u.Name]))
@@ -163,7 +164,7 @@ func freshOutcome(cfg *config.Config) importOutcome {
 		extensions: []reconcile.Extension{},
 	}
 	for _, s := range cfg.Servers {
-		out.servers = append(out.servers, importServerJSON{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User})
+		out.servers = append(out.servers, importServerJSON{Name: s.Name, Host: s.Host, Port: s.Port, User: s.User, Via: s.Via})
 	}
 	for _, u := range cfg.Users {
 		out.users = append(out.users, newImportUser(u.Name, u.Keys[0], u.Operator, grants[u.Name]))

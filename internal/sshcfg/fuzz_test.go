@@ -1,6 +1,10 @@
 package sshcfg
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 // FuzzParse asserts the safety property for arbitrary config input: parsing
 // and resolving must never panic or hang, and every resolved host must be
@@ -48,5 +52,38 @@ func FuzzMatchGlob(f *testing.F) {
 	f.Add("", "")
 	f.Fuzz(func(_ *testing.T, pattern, s string) {
 		_ = matchGlob(pattern, s)
+	})
+}
+
+// FuzzParseJump asserts ParseJump never panics, accepts only well-formed
+// hops, and that what it accepts renders back to itself: the hops import
+// maps are exactly the ones the config spelled.
+func FuzzParseJump(f *testing.F) {
+	for _, s := range []string{
+		"ProxyJump bastion",
+		"ProxyJump jump@bastion.example.com:2200,inner",
+		"ProxyJump [2001:db8::1]:22",
+		"ProxyCommand nc %h %p",
+		"ProxyJump ssh://u@h:22",
+		"ProxyJump a,,b",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		hops, ok := ParseJump(in)
+		if !ok {
+			return
+		}
+		parts := make([]string, 0, len(hops))
+		for _, h := range hops {
+			if h.Host == "" || h.Port < 0 || h.Port > 65535 || strings.ContainsAny(h.Host+h.User, ", \t") {
+				t.Fatalf("ParseJump(%q) accepted hop %+v", in, h)
+			}
+			parts = append(parts, h.String())
+		}
+		again, ok := ParseJump("ProxyJump " + strings.Join(parts, ","))
+		if !ok || !slices.Equal(again, hops) {
+			t.Fatalf("ParseJump(%q) = %+v, but its rendering parses to %+v (ok %v)", in, hops, again, ok)
+		}
 	})
 }

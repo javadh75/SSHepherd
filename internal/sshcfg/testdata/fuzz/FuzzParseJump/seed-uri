@@ -1,0 +1,2 @@
+go test fuzz v1
+string("ProxyJump ssh://jump@bastion:22")

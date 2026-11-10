@@ -224,6 +224,17 @@ var loadResolutionCases = []resolutionCase{
 		want:   []Host{{Alias: "a", HostName: "a", User: "u"}},
 	},
 	{
+		name: "ProxyJump chain with a user and a port",
+		config: "Host web\n  HostName 10.0.1.5\n  User deploy\n  ProxyJump jump@bastion.example.com:2200,inner\n" +
+			"Host inner\n  HostName 10.0.0.9\n  User ops\n  ProxyJump bastion\n" +
+			"Host bastion\n  HostName bastion.example.com\n  User jump\n",
+		want: []Host{
+			{Alias: "web", HostName: "10.0.1.5", User: "deploy", Proxy: "ProxyJump jump@bastion.example.com:2200,inner"},
+			{Alias: "inner", HostName: "10.0.0.9", User: "ops", Proxy: "ProxyJump bastion"},
+			{Alias: "bastion", HostName: "bastion.example.com", User: "jump"},
+		},
+	},
+	{
 		name:    "IdentityFile with no value warns",
 		config:  "Host a\n  User u\n  IdentityFile\n",
 		want:    []Host{{Alias: "a", HostName: "a", User: "u"}},

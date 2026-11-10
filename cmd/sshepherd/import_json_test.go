@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,7 +66,7 @@ func TestImportJSONGenerateGolden(t *testing.T) {
 		{Name: "javad-work", Source: "~/.ssh/work", Key: testkeys.Line(t, 2), Servers: []string{"web-1", "ci"}},
 		{Name: "javad-ops", Source: "~/.ssh/ops", Operator: true, Key: testkeys.Line(t, 3)},
 	}
-	data, notes, err := generateManifest(hosts, users, "~/.ssh/config")
+	data, notes, err := generateManifest(hosts, users, reconcile.Routes{}, "~/.ssh/config")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +153,7 @@ type importJSONDoc struct {
 	NewServers []struct {
 		Name string `json:"name"`
 		Port int    `json:"port"`
+		Via  string `json:"via"`
 	} `json:"new_servers"`
 	NewUsers []struct {
 		Fingerprint string   `json:"fingerprint"`
@@ -535,5 +537,47 @@ func TestImportJSONSSHConfigOwnWarningKind(t *testing.T) {
 	}
 	if len(doc.Warnings) != 1 || doc.Warnings[0].Kind != importWarnSSHConfig || !strings.Contains(doc.Warnings[0].Message, "Match block skipped") {
 		t.Errorf("warnings = %+v, want the one Match warning as %s", doc.Warnings, importWarnSSHConfig)
+	}
+}
+
+// TestImportJSONCarriesVia: new_servers[].via names a mapped ProxyJump's
+// bastion (additive, schema 1); a direct server has no via key at all.
+func TestImportJSONCarriesVia(t *testing.T) {
+	hermeticHome(t)
+	path := writeSSHConfig(t, "Host bastion\n  HostName bastion.example.com\n  User jump\n"+
+		"Host web\n  HostName 10.0.1.5\n  User deploy\n  ProxyJump bastion\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", "--json", path, "--servers-only"}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, errBuf.String())
+	}
+	var doc struct {
+		NewServers []map[string]any `json:"new_servers"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("stdout is not a document: %v\n%s", err, out.String())
+	}
+	vias := map[string]any{}
+	for _, s := range doc.NewServers {
+		if v, has := s["via"]; has {
+			vias[fmt.Sprint(s["name"])] = v
+		}
+	}
+	if len(vias) != 1 || vias["web"] != "bastion" {
+		t.Errorf("new_servers vias = %v, want only web via bastion", vias)
+	}
+}
+
+// TestImportJSONMergeCarriesVia: under --merge, new_servers[].via names the
+// manifest bastion a new server's ProxyJump maps onto (planOutcome).
+func TestImportJSONMergeCarriesVia(t *testing.T) {
+	hermeticHome(t)
+	m := writeConfig(t, "users: []\nservers:\n  - {name: gw, host: gw.example.com, user: jump}\n")
+	path := writeSSHConfig(t, "Host app\n  HostName 10.0.1.7\n  User deploy\n  ProxyJump gw\n")
+	code, doc, stderr := importJSONCLI(t, path, "--servers-only", "--merge", m)
+	if code != 0 {
+		t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+	}
+	if len(doc.NewServers) != 1 || doc.NewServers[0].Name != "app" || doc.NewServers[0].Via != "gw" {
+		t.Errorf("new_servers = %+v, want app via gw", doc.NewServers)
 	}
 }
