@@ -742,3 +742,13 @@ when an `except:` removes a protected key, because the guard judges only this ru
 edit that deletes the user cannot be gated. Reconcile's coverage branch and `--operator-key` early
 return read `FleetWide`, so a scoped operator's excepted server warns. `TestE2EProtected` is the E2E (fixture accounts `prota`,
 `protb`).
+**Bastions** (P10 S5, D23, OP2, OP7, OP8; specced in
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-10-p10-s5-bastions.md`): `servers:` entries gain `via:` (a known
+server, never itself, no loop, at most `config.MaxViaDepth` = 3 bastions; `Config.Chain` root first,
+`Config.Dependents`, `Config.ServerNamed`) and `jump_only: true` (a tunnel only: `config.SelectorMatches`,
+`Covers`, `DesiredFor`'s implicit operator grant, `GrantCount` and `serversRendering` skip it;
+`access:` cannot name it in `servers:` or `except:`; a tag only it carries is refused; no
+`authorized_keys_file`; `jump_only_unused` warns when no `via` names it). One address is one entry
+and one route (OP7, `claimAddress`): a repeated target through different hops and two routes to one
+`host:port` are load errors until a future `host_key_alias:`.

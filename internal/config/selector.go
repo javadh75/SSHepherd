@@ -21,9 +21,13 @@ func IsSelector(item string) bool { return item == "*" || isTagSelector(item) }
 func isTagSelector(item string) bool { return strings.HasPrefix(item, tagSelectorPrefix) }
 
 // SelectorMatches reports whether selector item reaches server s: "*" reaches
-// every server, "@tag" those carrying the tag. A server name is not a
-// selector and matches nothing here.
+// every server, "@tag" those carrying the tag, and neither reaches a
+// jump_only server, which no grant may reach (spec S5, OP8). A server name
+// is not a selector and matches nothing here.
 func SelectorMatches(item string, s Server) bool {
+	if s.JumpOnly {
+		return false
+	}
 	if item == "*" {
 		return true
 	}

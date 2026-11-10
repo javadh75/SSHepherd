@@ -405,12 +405,12 @@ func grantVia(a Access, s Server) string {
 }
 
 // serversRendering lists, in servers: order, every server whose rendered
-// file holds u's keys: all of them for a fleet-wide operator, else u's grants.
-// Never nil (the JSON servers list is always present).
+// file holds u's keys: all of them but the jump_only ones for a fleet-wide
+// operator, else u's grants. Never nil (the JSON servers list is always present).
 func (c *Config) serversRendering(u User) []string {
 	out := []string{}
 	for _, s := range c.Servers {
-		if c.FleetWide(u.Name) || slices.Contains(c.grants[s.Name], u.Name) {
+		if (c.FleetWide(u.Name) && !s.JumpOnly) || slices.Contains(c.grants[s.Name], u.Name) {
 			out = append(out, s.Name)
 		}
 	}

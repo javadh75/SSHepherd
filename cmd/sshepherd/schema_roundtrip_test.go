@@ -19,8 +19,12 @@ func samples(t *testing.T) map[string]map[string]any {
 	t.Helper()
 	k := testkeys.Line(t, 1)
 	return map[string]map[string]any{
-		"User":   {"Name": "op", "Description": "d", "Comment": "c", "Operator": true, "Protected": true, "Keys": []string{k}},
-		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}},
+		"User": {"Name": "op", "Description": "d", "Comment": "c", "Operator": true, "Protected": true, "Keys": []string{k}},
+		// JumpOnly is false: fill sets every field, and true would clash with
+		// the sampled authorized_keys_file and with access's except: [web-1].
+		// TestAdoptRegenerateKeepsJumpOnly proves a jump_only server
+		// round-trips. Via names web-2, the roundTripConfig's second server.
+		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}, "Via": "web-2", "JumpOnly": false},
 		// Group is "": fill sets every field, and a user plus a group would
 		// fail exactly-one-of. TestAdoptRegenerateKeepsGroups proves a group
 		// entry round-trips; Append has no groups parameter.

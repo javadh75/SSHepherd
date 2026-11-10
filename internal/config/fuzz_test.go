@@ -107,6 +107,43 @@ access:
   - {user: op, servers: ["*"], except: [s2]}
   - {user: op, servers: ["@prod"]}
 `,
+		// bastions that load: a jump_only hop, a two-hop chain, two users at
+		// one address over one route, the operator on "*"
+		`
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+servers:
+  - {name: edge, host: e, user: jump, jump_only: true}
+  - {name: mid, host: m, user: u, via: edge}
+  - {name: s1, host: h1, user: u, via: mid}
+  - {name: s2, host: h1, user: v, via: mid}
+access:
+  - {user: op, servers: ["*"]}
+`,
+		// bastions refused: one address over two routes, a via loop, a tag
+		// only the jump_only server carries
+		`
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+servers:
+  - {name: edge, host: e, user: jump, jump_only: true, tags: [edge]}
+  - {name: mid, host: m, user: u, via: edge}
+  - {name: s1, host: h1, user: u, via: mid}
+  - {name: s2, host: h1, user: v, via: edge}
+  - {name: x, host: x, user: u, via: y}
+  - {name: y, host: y, user: u, via: x}
+access:
+  - {user: op, servers: ["@edge"]}
+`,
+		// a fleet-wide operator (no own "*") beside a jump_only bastion: the
+		// implicit grant skips the bastion
+		`
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+servers:
+  - {name: edge, host: e, user: jump, jump_only: true}
+  - {name: s1, host: h1, user: u, via: edge}
+`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -140,6 +177,20 @@ access:
 			}
 			checkRenderRoundTrip(t, cfg, s.Name)
 		}
+		for _, s := range cfg.Servers {
+			chain := cfg.Chain(s)
+			if len(chain) > MaxViaDepth || slices.Contains(chain, s.Name) {
+				t.Fatalf("accepted %q behind chain %v", s.Name, chain)
+			}
+			for _, hop := range chain {
+				if _, ok := cfg.ServerNamed(hop); !ok {
+					t.Fatalf("accepted %q via %q, which is not a server", s.Name, hop)
+				}
+			}
+			if s.JumpOnly && len(cfg.DesiredFor(s.Name)) > 0 {
+				t.Fatalf("jump_only %q renders keys", s.Name)
+			}
+		}
 		for pair := range cfg.blocked {
 			if cfg.Covers(pair.user, pair.server) || slices.Contains(cfg.grants[pair.server], pair.user) {
 				t.Fatalf("blocked pair %+v is still granted", pair)
@@ -168,6 +219,9 @@ access:
 				t.Fatalf("user %q is fleet-wide but is no operator, or holds its own wildcard", u.Name)
 			}
 			for _, s := range cfg.Servers {
+				if s.JumpOnly {
+					continue // the implicit grant skips a jump_only server (spec S5)
+				}
 				if !slices.Contains(desiredFPs(cfg, s.Name), cfg.keysByUser[u.Name][0].Fingerprint) {
 					t.Fatalf("fleet-wide operator %q is not desired on %q", u.Name, s.Name)
 				}

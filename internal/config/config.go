@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -52,6 +54,16 @@ type Server struct {
 	// Tags name this server in @tag selectors of access: entries (spec
 	// 2026-11-08 S3a). Each matches tagShape; a tag repeats on no server.
 	Tags []string `yaml:"tags"`
+	// Via names the server this one is reached through: SSHepherd connects
+	// to Via first and opens a direct-tcpip channel to this server's host and
+	// port from there (spec 2026-11-08 S5, D23). Every hop's host key is
+	// checked strictly. Empty dials the host directly.
+	Via string `yaml:"via"`
+	// JumpOnly makes the server a tunnel and nothing else (OP8): no grant
+	// reaches it ("*", @tag and the operator's implicit grant skip it,
+	// access: cannot name it), and audit and apply list it as "jump only"
+	// without reading or writing its authorized_keys.
+	JumpOnly bool `yaml:"jump_only"`
 }
 
 // Group names a set of users for access: entries (spec 2026-11-08 S3b). An
@@ -151,6 +163,7 @@ func (c *Config) validate() error {
 	var errs []error
 	errs = append(errs, c.validateUsers()...)
 	errs = append(errs, c.validateServers()...)
+	errs = append(errs, c.validateVia()...)
 	errs = append(errs, c.validateGroups()...)
 	errs = append(errs, c.validateAccess()...)
 	errs = append(errs, c.validateRevoked()...)
@@ -277,7 +290,8 @@ type target struct {
 func (c *Config) validateServers() []error {
 	var errs []error
 	seen := make(map[string]bool)
-	targets := make(map[target]string) // target -> first server name
+	targets := make(map[target]int) // target -> index of the first server
+	routes := make(map[string]int)  // lower-cased host:port -> index of the first server there
 	for i := range c.Servers {
 		s := &c.Servers[i]
 		if s.Name == "" {
@@ -298,19 +312,43 @@ func (c *Config) validateServers() []error {
 			errs = append(errs, fieldErrs...)
 			continue // an invalid entry has no meaningful target
 		}
-		t := target{host: strings.ToLower(s.Host), port: s.Port, user: s.User, path: s.AuthorizedKeysFile}
-		if t.path == "" {
-			t.path = defaultAuthorizedKeysFile
+		if err := c.claimAddress(i, targets, routes); err != nil {
+			errs = append(errs, err)
 		}
-		if first, dup := targets[t]; dup {
-			errs = append(errs, fmt.Errorf(
-				"servers %q and %q both target %s@%s:%d %s; merge them into one entry",
-				first, s.Name, s.User, s.Host, s.Port, t.path))
-			continue
-		}
-		targets[t] = s.Name
 	}
 	return errs
+}
+
+// claimAddress records server i's target and route (OP7): a second entry for
+// one target is refused, worded by whether the two take the same route, and
+// so is a second route to one host:port, whatever the user or file:
+// known_hosts is keyed by address, so it could not tell two machines apart.
+func (c *Config) claimAddress(i int, targets map[target]int, routes map[string]int) error {
+	s := c.Servers[i]
+	t := target{host: strings.ToLower(s.Host), port: s.Port, user: s.User, path: s.AuthorizedKeysFile}
+	if t.path == "" {
+		t.path = defaultAuthorizedKeysFile
+	}
+	if first, dup := targets[t]; dup {
+		f := c.Servers[first]
+		if f.Via != s.Via {
+			return fmt.Errorf("servers %q and %q both target %s@%s:%d %s through different hops; a manifest holds one entry per address, so remove one",
+				f.Name, s.Name, s.User, s.Host, s.Port, t.path)
+		}
+		return fmt.Errorf("servers %q and %q both target %s@%s:%d %s; merge them into one entry",
+			f.Name, s.Name, s.User, s.Host, s.Port, t.path)
+	}
+	targets[t] = i
+	addr := net.JoinHostPort(t.host, strconv.Itoa(s.Port))
+	first, seen := routes[addr]
+	switch {
+	case !seen:
+		routes[addr] = i
+	case c.Servers[first].Via != s.Via:
+		return fmt.Errorf("servers %q and %q reach %s through different hops; every entry at one address must use the same route; if these are different machines, give each a hostname its own hop can resolve",
+			c.Servers[first].Name, s.Name, net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
+	}
+	return nil
 }
 
 // validateServerFields checks one named server's host, user, port (applying
@@ -332,6 +370,9 @@ func validateServerFields(s *Server) []error {
 	}
 	if s.Port < 1 || s.Port > 65535 {
 		errs = append(errs, fmt.Errorf("server %q: port %d out of range", s.Name, s.Port))
+	}
+	if s.JumpOnly && s.AuthorizedKeysFile != "" {
+		errs = append(errs, fmt.Errorf("server %q: jump_only has no managed file; remove authorized_keys_file", s.Name))
 	}
 	errs = append(errs, validateTags(s)...)
 	return append(errs, validateAuthorizedKeysFile(s.Name, s.AuthorizedKeysFile)...)
@@ -476,7 +517,8 @@ func (c *Config) expandServers(a Access, servers map[string]bool) ([]string, []e
 
 // entryShape is the access-entry rules that hold before any expansion: "*"
 // stands alone, except: needs a selector and lists known server names none of
-// which the entry also names, and every @tag is carried by some server.
+// which the entry also names, every @tag is carried by a server a grant can
+// reach, and no name is a jump_only server.
 func (c *Config) entryShape(a Access, servers map[string]bool) []error {
 	if slices.Contains(a.Servers, "*") && len(a.Servers) != 1 {
 		return []error{fmt.Errorf("access for %s: %q must be the only servers entry", entryLabel(a), "*")}
@@ -487,12 +529,7 @@ func (c *Config) entryShape(a Access, servers map[string]bool) []error {
 	if len(a.Servers) == 0 {
 		return []error{fmt.Errorf("access for %s: servers is empty (grants no servers)", entryLabel(a))}
 	}
-	var errs []error
-	for _, item := range a.Servers {
-		if isTagSelector(item) && !c.tagInUse(item) {
-			errs = append(errs, fmt.Errorf("access for %s: unknown tag %q", entryLabel(a), item))
-		}
-	}
+	errs := c.itemErrors(a)
 	for _, e := range a.Except { // duplicates are tolerated, like grants unioning
 		switch {
 		case isTagSelector(e):
@@ -501,14 +538,43 @@ func (c *Config) entryShape(a Access, servers map[string]bool) []error {
 			errs = append(errs, fmt.Errorf("access for %s: unknown except server %q", entryLabel(a), e))
 		case slices.Contains(a.Servers, e):
 			errs = append(errs, fmt.Errorf("access for %s: %q is in both servers and except", entryLabel(a), e))
+		case c.jumpOnly(e):
+			errs = append(errs, jumpOnlyNamed(a, e))
 		}
 	}
 	return errs
 }
 
-// tagInUse reports whether any server carries selector's tag.
-func (c *Config) tagInUse(selector string) bool {
-	return slices.ContainsFunc(c.Servers, func(s Server) bool { return SelectorMatches(selector, s) })
+// itemErrors checks an entry's servers: items: a @tag must be carried by a
+// server, and by one that is not jump_only; a name must not be a jump_only
+// server (spec S5, OP8).
+func (c *Config) itemErrors(a Access) []error {
+	var errs []error
+	for _, item := range a.Servers {
+		switch {
+		case isTagSelector(item) && !c.tagCarried(item, true):
+			errs = append(errs, fmt.Errorf("access for %s: unknown tag %q", entryLabel(a), item))
+		case isTagSelector(item) && !c.tagCarried(item, false):
+			errs = append(errs, fmt.Errorf("access for %s: %q matches only jump_only servers", entryLabel(a), item))
+		case !IsSelector(item) && c.jumpOnly(item):
+			errs = append(errs, jumpOnlyNamed(a, item))
+		}
+	}
+	return errs
+}
+
+// jumpOnlyNamed is the refusal of an access entry naming a jump_only server.
+func jumpOnlyNamed(a Access, server string) error {
+	return fmt.Errorf("access for %s: server %q is jump_only; access cannot name it", entryLabel(a), server)
+}
+
+// tagCarried reports whether any server carries selector's tag; with
+// withJumpOnly false, only a server a grant can reach counts.
+func (c *Config) tagCarried(selector string, withJumpOnly bool) bool {
+	tag := strings.TrimPrefix(selector, tagSelectorPrefix)
+	return slices.ContainsFunc(c.Servers, func(s Server) bool {
+		return slices.Contains(s.Tags, tag) && (withJumpOnly || !s.JumpOnly)
+	})
 }
 
 // warnWildcardRoot records D20a: a non-operator servers: ["*"] entry that
@@ -544,11 +610,14 @@ func (c *Config) warnWildcardRoot(a Access, targets []string) {
 // only where granted), then the keys of every other granted user (access
 // order). Deterministic; a user is never emitted twice. An operator's own
 // servers: ["*"] entry replaces the implicit grant, so its except: applies.
+// A jump_only server renders nothing: no access entry reaches it, and the
+// implicit operator grant skips it.
 func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 	var keys []authkeys.Key
+	jumpOnly := c.jumpOnly(serverName)
 	first := make(map[string]bool, len(c.protected))
 	for _, name := range c.protected {
-		if c.fleetWide[name] || slices.Contains(c.grants[serverName], name) {
+		if (c.fleetWide[name] && !jumpOnly) || slices.Contains(c.grants[serverName], name) {
 			first[name] = true
 			keys = append(keys, c.keysByUser[name]...)
 		}
@@ -597,8 +666,10 @@ func (c *Config) OwnerOf(fingerprint string) (User, bool) {
 // FleetWide first. Reading Covers(op, srv) == false as "no access" would
 // contradict DesiredFor, which grants such an operator every server. An
 // operator with its own "*" entry is an ordinary grantee here.
+//
+// A jump_only server is covered by nothing (spec S5).
 func (c *Config) Covers(user, server string) bool {
-	if c.blocked[grantPair{user, server}] {
+	if c.blocked[grantPair{user, server}] || c.jumpOnly(server) {
 		return false
 	}
 	if slices.Contains(c.grants[server], user) {
