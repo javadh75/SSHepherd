@@ -7,6 +7,7 @@ import (
 
 	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
+	"github.com/javadh75/SSHepherd/internal/reconcile"
 )
 
 // settingLoss is one kind of manifest-only setting a fresh import cannot
@@ -62,23 +63,27 @@ var settingLosses = []settingLoss{
 		}},
 }
 
-// warnSettingsLost: a fresh import -o FILE --force drops whatever its ssh
+// settingsLost: a fresh import -o FILE --force drops whatever its ssh
 // config cannot reproduce. One line per kind of setting, each ending with
 // the paste-ready --merge FILE that keeps it (F1 Q1).
-func warnSettingsLost(w *importWarnings, out string, old, fresh *config.Config) {
+func settingsLost(out string, old, fresh *config.Config) []reconcile.Warning {
+	var ws []reconcile.Warning
 	for _, l := range settingLosses {
 		names := l.lost(old, fresh)
 		if len(names) == 0 {
 			continue
 		}
-		w.addAll(importWarnSettingsDropped, fmt.Sprintf("%s holds %s (%s) that this fresh import %s: %s; %s with --merge %s",
-			out, l.what, strings.Join(names, ", "), l.verb, l.consequence, l.remedy, hintArg(out)))
+		ws = append(ws, reconcile.Warning{Kind: importWarnSettingsDropped, Message: fmt.Sprintf("%s holds %s (%s) that this fresh import %s: %s; %s with --merge %s",
+			out, l.what, strings.Join(names, ", "), l.verb, l.consequence, l.remedy, hintArg(out))})
 	}
+	return ws
 }
 
-// lostUsers names old's users that has marks when no fresh user that has
-// marks holds one of their keys. A fresh import names users after their
-// identity files, so users are matched by key, never by name.
+// lostUsers names old's users that has marks unless every one of their
+// keys is held by a fresh user that has marks: one key left unmarked loses
+// what the mark gave it (an operator key, its fleet-wide grant). A fresh
+// import names users after their identity files, so users are matched by
+// key, never by name, and each key may come back under its own name.
 func lostUsers(old, fresh *config.Config, has func(config.User) bool) []string {
 	var names []string
 	for _, u := range old.Users {
@@ -89,16 +94,23 @@ func lostUsers(old, fresh *config.Config, has func(config.User) bool) []string {
 	return names
 }
 
-// markedByKey reports whether a fresh user that has marks owns one of keys.
+// markedByKey reports whether keys is not empty and a fresh user that has
+// marks owns every one of them. A user with no keys has nothing the fresh
+// output could mark, so its mark is lost.
 func markedByKey(fresh *config.Config, keys []string, has func(config.User) bool) bool {
+	if len(keys) == 0 {
+		return false
+	}
 	for _, line := range keys {
-		if k, err := authkeys.ParseLine(line); err == nil && k != nil {
-			if owner, ok := fresh.OwnerOf(k.Fingerprint); ok && has(owner) {
-				return true
-			}
+		k, err := authkeys.ParseLine(line)
+		if err != nil || k == nil {
+			return false // never on a loaded manifest; unprovable, so not marked
+		}
+		if owner, ok := fresh.OwnerOf(k.Fingerprint); !ok || !has(owner) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // lostGroups names old's groups the fresh output has no group of that name for.

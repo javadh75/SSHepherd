@@ -31,7 +31,9 @@ func TestPreserveHermetic(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(akf), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(akf, []byte(line(alice)+"\n# gitea public key\n"+gitea+"\n"), 0o600); err != nil {
+	// Managed and converged except for the marker: the first write after
+	// adding preserve: changes nothing else (F1 Q3, the owner's case).
+	if err := os.WriteFile(akf, []byte(authkeys.ManagedHeader+"\n"+line(alice)+" alice\n# gitea public key\n"+gitea+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	host := sshtest.Signer(t, sshtest.Key(40))
@@ -53,10 +55,12 @@ access:
 	}
 
 	// F1 Q3: the first apply after adding preserve: shows the marker as its
-	// own row, never as a formatting drift (exit 1: a pending change).
+	// own row, never as a formatting drift (exit 1: a pending change). The
+	// marker is the only difference, so no other row explains the bytes.
 	if code, out, _ := cli("apply", "--dry-run"); code != 1 || !strings.Contains(out, "(preserve:)") ||
-		!strings.Contains(out, "add the externally-managed section marker") || strings.Contains(out, "(formatting)") {
-		t.Errorf("first apply --dry-run exit = %d, want 1 with the marker row and no formatting row:\n%s", code, out)
+		!strings.Contains(out, "add the externally-managed section marker") || strings.Contains(out, "(formatting)") ||
+		!strings.Contains(out, "→ 1 key desired · 0 add · 0 remove · 0 rewrite") {
+		t.Errorf("first apply --dry-run exit = %d, want 1 with only the marker row (no formatting or rewrite row):\n%s", code, out)
 	}
 	if code, out, stderr := cli("apply", "--yes"); code != 0 {
 		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, out, stderr)

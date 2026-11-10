@@ -823,10 +823,13 @@ S6 follow-up: `TestExternalWeakKey` pins the `WEAK` note on an externally manage
 **Owner follow-ups F1** (decided 2026-11-10; planned in
 `docs/superpowers/plans/2026-11-10-p10-f1-owner-followups.md`): a fresh `import -o FILE --force`
 also warns (kind `manifest_settings_dropped`, one line per kind, each ending with `--merge FILE`)
-when FILE holds `operator:`/`protected:` marks the fresh output does not carry (matched by key),
+when FILE holds `operator:`/`protected:` marks the fresh output does not carry (matched by key;
+a user stays marked only when every one of its keys has a marked fresh owner),
 `groups:`, server `authorized_keys_file:` overrides (owner-approved gap 4), `tags:`, `via:` routes it
 does not reproduce, `jump_only:` or `preserve:` rules (`cmd/sshepherd/import_settings.go`,
-`warnFreshDrops`).
+`freshDrops`). The drop warnings, the revocation-memory line included, are logged only after the
+manifest is written (text) or placed (`--json`), so a refused write (no `--force`, a symlinked
+`-o`) prints none of them (F1 repair).
 apply's plan shows a write that adds the `preserve:` marker as its own row, `(preserve:) add the
 externally-managed section marker` (`Normalize.ExternalSection`, JSON
 `normalize.external_section`, additive), instead of `(formatting) normalize: whitespace/format`.

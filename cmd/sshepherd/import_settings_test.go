@@ -116,6 +116,39 @@ func TestSettingLossesCompare(t *testing.T) {
 	}
 }
 
+// TestSettingLossesMultiKeyUser (F1 Q1 repair): a marked user keeps its
+// mark only when every one of its keys is held by a fresh user with the
+// mark; one key re-marked is not enough, because the other key loses its
+// fleet-wide grant. Each key may be re-marked under a different fresh name.
+func TestSettingLossesMultiKeyUser(t *testing.T) {
+	old := parseManifest(t, "users:\n  - {name: ops, operator: true, keys: ["+qk(t, 1)+", "+qk(t, 4)+"]}\nservers: []\naccess: []\n")
+	for _, tt := range []struct {
+		name  string
+		fresh string
+		want  []string
+	}{
+		{"both keys re-marked under new names",
+			"users:\n  - {name: laptop, operator: true, keys: [" + qk(t, 1) + "]}\n  - {name: ci, operator: true, keys: [" + qk(t, 4) + "]}\nservers: []\naccess: []\n", nil},
+		{"one key re-marked, the other imported plain",
+			"users:\n  - {name: laptop, operator: true, keys: [" + qk(t, 1) + "]}\n  - {name: ci, keys: [" + qk(t, 4) + "]}\nservers: []\naccess: []\n", []string{"ops"}},
+		{"one key re-marked, the other not imported",
+			"users:\n  - {name: laptop, operator: true, keys: [" + qk(t, 1) + "]}\nservers: []\naccess: []\n", []string{"ops"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lossesOf(old, parseManifest(t, tt.fresh))["operator: true users"]
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("operator: true users = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	// A protected user with no keys (revoke keeps the flag) has nothing a
+	// fresh import could mark: its mark is lost, never vacuously kept.
+	idle := parseManifest(t, "users:\n  - {name: idle, protected: true, keys: []}\nservers: []\naccess: []\n")
+	if got := lossesOf(idle, parseManifest(t, "users: []\nservers: []\naccess: []\n"))["protected: true users"]; !slices.Equal(got, []string{"idle"}) {
+		t.Errorf("a keyless protected user: %v, want [idle]", got)
+	}
+}
+
 // wantSettingLines are the fixture's warnings over FILE m, in order (gap 3).
 func wantSettingLines(m string) []string {
 	h := hintArg(m)
@@ -210,7 +243,7 @@ func TestImportForceWarnsSettingsLost(t *testing.T) {
 		{"--merge keeps every setting", func(m string) []string {
 			return []string{"import", other, "--servers-only", "--merge", m, "-o", m, "--force"}
 		}, settingsFixture(t), 0},
-		// Kills a warnFreshDrops call moved outside `if mergePath == ""`: -o names
+		// Kills a freshDrops call moved outside `if mergePath == ""`: -o names
 		// a different existing FILE holding every setting, which a merge run
 		// replaces with --force but never compares (R1-1).
 		{"--merge into another FILE stays quiet", func(m string) []string {
@@ -237,6 +270,70 @@ func TestImportForceWarnsSettingsLost(t *testing.T) {
 				t.Error("a refused run changed FILE")
 			}
 		})
+	}
+}
+
+// TestImportForceRefusedWriteStaysQuiet (F1 Q1 repair, R0-2): a fresh
+// import -o LINK --force is refused at the write (LINK is a symlink, exit
+// 3, nothing replaced), so no "drops" line — the settings lines or the
+// revocation-memory line — may come before the refusal, as text or --json.
+func TestImportForceRefusedWriteStaysQuiet(t *testing.T) {
+	hermeticHome(t)
+	direct := writeSSHConfig(t, "Host gitea\n  HostName 10.0.0.2\n  User git\nHost db-1\n  HostName 10.0.1.5\n  User deploy\n")
+	file := "serial: 4\n" + settingsFixture(t) + "revoked:\n  - {fingerprint: " + fingerprintOf(t, testkeys.Line(t, 9)) + ", user: old, date: 2026-11-08}\n"
+	for _, tt := range []struct {
+		name  string
+		extra []string
+	}{
+		{"text", nil},
+		{"--json", []string{"--json"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := writeConfig(t, file)
+			link := filepath.Join(filepath.Dir(target), "link.yaml")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			var out, errBuf bytes.Buffer
+			args := append([]string{"import", direct, "--servers-only", "-o", link, "--force"}, tt.extra...)
+			if code := run(args, &out, &errBuf); code != 3 {
+				t.Fatalf("exit %d, want 3\n%s", code, errBuf.String())
+			}
+			stderr := errBuf.String()
+			if strings.Contains(stderr, " that this fresh import ") || !strings.Contains(stderr, "is a symlink; refusing to replace it") {
+				t.Errorf("want only the refusal, no drops line:\n%s", stderr)
+			}
+			if out.Len() != 0 {
+				t.Errorf("a refused run wrote stdout:\n%s", out.String())
+			}
+			if fileString(t, target) != file {
+				t.Error("a refused run changed the link's target")
+			}
+		})
+	}
+}
+
+// TestImportForceOperatorKeyOneOfTwoKeys (F1 Q1 repair): FILE's operator
+// ops holds keys laptop (k1) and ci (k4); a fresh import re-marks only
+// laptop, so ci loses its fleet-wide grant and ops is named.
+func TestImportForceOperatorKeyOneOfTwoKeys(t *testing.T) {
+	home := hermeticHome(t)
+	laptop, ci := filepath.Join(home, "laptop"), filepath.Join(home, "ci")
+	for path, n := range map[string]byte{laptop: 1, ci: 4} {
+		if err := os.WriteFile(path+".pub", []byte(testkeys.Line(t, n)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sshCfg := writeSSHConfig(t, "Host web-1\n  HostName 10.0.0.1\n  User deploy\n  IdentityFile "+laptop+
+		"\nHost web-2\n  HostName 10.0.0.2\n  User deploy\n  IdentityFile "+ci+"\n")
+	m := writeConfig(t, "users:\n  - {name: ops, operator: true, keys: ["+qk(t, 1)+", "+qk(t, 4)+"]}\n"+
+		"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: web-2, host: 10.0.0.2, user: deploy}\naccess: []\n")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"import", sshCfg, "-o", m, "--force", "--operator-key", laptop}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit %d\n%s", code, errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "holds operator: true users (ops) that this fresh import does not mark") {
+		t.Errorf("want the operator line for ops:\n%s", errBuf.String())
 	}
 }
 
@@ -301,3 +398,35 @@ func TestImportJSONSettingsDroppedWarning(t *testing.T) {
 }
 
 func fileString(t *testing.T, path string) string { t.Helper(); return string(fileBytes(t, path)) }
+
+// TestImportForceMemoryWarningFirst (F1 Q1, gap 3): a FILE holding both
+// revocation memory and manifest-only settings prints the memory line
+// first, then the settings lines, in stderr and in --json warnings[].
+func TestImportForceMemoryWarningFirst(t *testing.T) {
+	hermeticHome(t)
+	direct := writeSSHConfig(t, "Host gitea\n  HostName 10.0.0.2\n  User git\nHost db-1\n  HostName 10.0.1.5\n  User deploy\n")
+	file := "serial: 4\n" + settingsFixture(t) + "revoked:\n  - {fingerprint: " + fingerprintOf(t, testkeys.Line(t, 9)) + ", user: old, date: 2026-11-08}\n"
+	t.Run("text", func(t *testing.T) {
+		m := writeConfig(t, file)
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"import", direct, "--servers-only", "-o", m, "--force"}, &out, &errBuf); code != 0 {
+			t.Fatalf("exit %d\n%s", code, errBuf.String())
+		}
+		stderr := errBuf.String()
+		mem := strings.Index(stderr, "holds revocation memory")
+		set := strings.Index(stderr, "holds groups:")
+		if mem < 0 || set < 0 || mem > set {
+			t.Errorf("want the memory line before the settings lines:\n%s", stderr)
+		}
+	})
+	t.Run("--json", func(t *testing.T) {
+		m := writeConfig(t, file)
+		code, doc, stderr := importJSONCLI(t, direct, "--servers-only", "-o", m, "--force")
+		if code != 0 {
+			t.Fatalf("exit = %d (stderr: %s)", code, stderr)
+		}
+		if len(doc.Warnings) < 2 || doc.Warnings[0].Kind != importWarnMemoryDropped || doc.Warnings[1].Kind != importWarnSettingsDropped {
+			t.Errorf("warnings = %+v, want %s first, then %s", doc.Warnings, importWarnMemoryDropped, importWarnSettingsDropped)
+		}
+	})
+}

@@ -1646,8 +1646,9 @@ revocation memory warns
 `FILE holds revocation memory (serial N, M revoked: entries) that this fresh import drops: a revoked key could be re-granted; keep it with --merge FILE`
 and proceeds. It also warns, one line per kind of setting, when FILE holds
 manifest-only settings an ssh config cannot reproduce: `operator: true` and
-`protected: true` users the fresh output does not mark (users are matched by key, so
-`--operator-key` re-marks an operator), `groups:`, server `authorized_keys_file:`
+`protected: true` users the fresh output does not mark (users are matched by key, and a
+user stays marked only when every one of its keys is marked in the fresh output, so
+`--operator-key` re-marks an operator once it names each of the operator's keys), `groups:`, server `authorized_keys_file:`
 overrides, server `tags:`, `via:` routes the fresh output does not reproduce,
 `jump_only: true` servers and `preserve:` rules. Each line names what is lost and ends
 with `--merge FILE`. For example (real output,
@@ -1661,7 +1662,9 @@ warn: sshepherd.yaml holds preserve: rules on servers (gitea) that this fresh im
 A server the fresh output does not list at all is named `NAME [not in this import]`:
 its setting is lost along with the server, and apply does not touch it. The warning
 does not cover hand-written `access:` entries or `except:` carve-outs. The run still
-exits 0. Without `--force` the run is refused as before and prints none of these lines.
+exits 0. These lines, and the revocation-memory line, are printed only after FILE has
+been replaced, so a run whose write is refused (no `--force`, or a symlinked `-o`)
+prints none of them.
 `--force` refuses a symlinked output path
 (`<path> is a symlink; refusing to replace it — pass the link's target path instead`).
 On filesystems without hard links (exFAT, some SMB/FUSE mounts) the no-`--force`

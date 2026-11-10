@@ -19,35 +19,38 @@ import (
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
-// warnFreshDrops: a fresh import replacing an existing manifest with -o
+// freshDrops: a fresh import replacing an existing manifest with -o
 // --force drops what the ssh config cannot reproduce: its revocation memory
 // and its manifest-only settings (F1 Q1). --force names the overwrite, so
-// this warns rather than refuses. Best effort: a missing or invalid file
+// these are warnings, not a refusal. FILE is read here, before the write
+// replaces it, but the caller logs the warnings only once the write has
+// succeeded: a write refused later (an existing FILE without --force, a
+// symlinked -o, an unwritable directory) drops nothing, so no "drops" line
+// may precede its refusal (R0-2). Best effort: a missing or invalid file
 // has nothing to lose. fresh is the generated manifest.
-func warnFreshDrops(w *importWarnings, out string, force bool, fresh *config.Config) {
-	if out == "" || !force {
-		return
+func freshDrops(out string, fresh *config.Config) []reconcile.Warning {
+	if out == "" {
+		return nil
 	}
 	raw, err := os.ReadFile(out) // #nosec G304 -- the path the user passed to -o
 	if err != nil {
-		return
+		return nil
 	}
 	old, err := config.Parse(raw)
 	if err != nil {
-		return
+		return nil
 	}
-	warnMemoryLost(w, out, old)
-	warnSettingsLost(w, out, old, fresh)
+	return append(memoryLost(out, old), settingsLost(out, old, fresh)...)
 }
 
-// warnMemoryLost: FILE's serial: and revoked: entries go with it, so every
+// memoryLost: FILE's serial: and revoked: entries go with it, so every
 // revoked key could be re-granted.
-func warnMemoryLost(w *importWarnings, out string, old *config.Config) {
+func memoryLost(out string, old *config.Config) []reconcile.Warning {
 	if old.Serial() == 0 && len(old.Tombstones) == 0 {
-		return
+		return nil
 	}
-	w.addAll(importWarnMemoryDropped, fmt.Sprintf("%s holds revocation memory (serial %d, %s) that this fresh import drops: a revoked key could be re-granted; keep it with --merge %s",
-		out, old.Serial(), apply.Plural(len(old.Tombstones), "revoked: entry", "revoked: entries"), hintArg(out)))
+	return []reconcile.Warning{{Kind: importWarnMemoryDropped, Message: fmt.Sprintf("%s holds revocation memory (serial %d, %s) that this fresh import drops: a revoked key could be re-granted; keep it with --merge %s",
+		out, old.Serial(), apply.Plural(len(old.Tombstones), "revoked: entry", "revoked: entries"), hintArg(out))}}
 }
 
 // serverWorthy reports whether a resolved host can become a server entry
@@ -461,13 +464,18 @@ func (r *importRun) run(args []string) error {
 	if err := conflictRefusal(formerManifest(m), saved); err != nil {
 		return err
 	}
+	var drops []reconcile.Warning // logged only after the write succeeds
 	if r.opts.mergePath == "" {
-		warnFreshDrops(warns, r.opts.outPath, r.opts.force, saved)
+		drops = freshDrops(r.opts.outPath, saved)
 	}
 	if !r.opts.json {
-		return emitManifest(r.stdout, m, r.opts.outPath, rendered, r.opts.force)
+		if err := emitManifest(r.stdout, m, r.opts.outPath, rendered, r.opts.force); err != nil {
+			return err
+		}
+		warns.addEach(drops...)
+		return nil
 	}
-	return r.finishJSON(m, rendered, saved, plan, importStatsOf(parsed, users), warns.list)
+	return r.finishJSON(m, rendered, saved, plan, importStatsOf(parsed, users), warns, drops)
 }
 
 func newImportCmd(a *app, stdout io.Writer) *cobra.Command {

@@ -38,6 +38,12 @@ func (c *importWarnings) add(w reconcile.Warning) {
 	c.list = append(c.list, w)
 }
 
+func (c *importWarnings) addEach(ws ...reconcile.Warning) {
+	for _, w := range ws {
+		c.add(w)
+	}
+}
+
 func (c *importWarnings) addAll(kind string, msgs ...string) {
 	for _, m := range msgs {
 		c.add(reconcile.Warning{Kind: kind, Message: m})
@@ -206,12 +212,16 @@ func buildImportDoc(mode string, place adopt.Placement, stats importStats, out i
 }
 
 // finishJSON emits the manifest and then the document, so a refused -o
-// (exit 3) leaves stdout empty. A nil plan means a fresh manifest.
-func (r *importRun) finishJSON(m manifestTarget, rendered []byte, saved *config.Config, plan *reconcile.Plan, stats importStats, warnings []reconcile.Warning) error {
+// (exit 3) leaves stdout empty. A nil plan means a fresh manifest. drops
+// (freshDrops) join the warnings only once the manifest is placed, so a
+// refused -o logs none of them.
+func (r *importRun) finishJSON(m manifestTarget, rendered []byte, saved *config.Config, plan *reconcile.Plan, stats importStats, warns *importWarnings, drops []reconcile.Warning) error {
 	place, err := placeManifest(m, r.opts.outPath, rendered, r.opts.force)
 	if err != nil {
 		return err
 	}
+	warns.addEach(drops...)
+	warnings := warns.list
 	mode, outcome := adopt.ModeGenerate, freshOutcome(saved)
 	if plan != nil {
 		mode, outcome = adopt.ModeMerge, planOutcome(*plan)
