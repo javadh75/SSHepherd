@@ -613,7 +613,7 @@ and the call in `run` (`:453-455`):
 	}
 ```
 
-Run: `GOTOOLCHAIN=go1.27.3 go test ./cmd/sshepherd -run 'Settings|OperatorKeyReMarks|MemoryLost|MemoryDropped|TestImportJSON' -count=1`
+Run: `GOTOOLCHAIN=go1.27.3 go test ./cmd/sshepherd -run 'Setting|OperatorKeyReMarks|MemoryLost|MemoryDropped|TestImportJSON' -count=1`
 Expected: PASS (the memory tests, `TestImportForceWarnsMemoryLost` and `TestImportJSONMemoryDroppedWarning`, are byte-identical: their fixtures hold no manifest-only setting).
 
 - [ ] **Step 3: Gates.** `gofmt -w` and `goimports -w` the three files; `make check`.
@@ -621,7 +621,7 @@ Expected: PASS (`deadcode` sees every new function reached from `importRun.run`)
 
 ### Task 3: mutation run; hand back
 
-- [ ] **Step 1: Mutants** (run `GOTOOLCHAIN=go1.27.3 go test ./cmd/sshepherd -run 'Settings|OperatorKeyReMarks|Memory|TestImportJSON' -count=1`; revert each):
+- [ ] **Step 1: Mutants** (run `GOTOOLCHAIN=go1.27.3 go test ./cmd/sshepherd -run 'Setting|OperatorKeyReMarks|Memory|TestImportJSON' -count=1`; revert each):
 
 | # | Mutant | Killed by |
 |---|---|---|
