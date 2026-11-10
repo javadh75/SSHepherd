@@ -246,14 +246,18 @@ func TestConnectHopFailures(t *testing.T) {
 	})
 	t.Run("forward prohibited", func(t *testing.T) {
 		f := newHopFixture(t, sshtest.ServerConfig{Forward: sshtest.ProhibitForward}, sshtest.ServerConfig{})
+		idle := goleak.IgnoreCurrent() // the hop must close before the servers' cleanup would
 		_, err := f.dialer().Connect(ctxTimeout(t, 5*time.Second), f.targetSrv)
 		assertHopErr(t, err, fleet.ErrorKindDial, "bastion", ForwardHint)
+		goleak.VerifyNone(t, idle)
 	})
 	t.Run("target the bastion cannot reach", func(t *testing.T) {
 		down := func(string, uint32) (net.Conn, ssh.RejectionReason) { return nil, ssh.ConnectionFailed }
 		f := newHopFixture(t, sshtest.ServerConfig{Forward: down}, sshtest.ServerConfig{})
+		idle := goleak.IgnoreCurrent()
 		_, err := f.dialer().Connect(ctxTimeout(t, 5*time.Second), f.targetSrv)
 		assertHopErr(t, err, fleet.ErrorKindDial, "", HopDialHint)
+		goleak.VerifyNone(t, idle)
 	})
 	// A jump_only bastion's host key is still strict (spec S5): unrecorded,
 	// @revoked or of another type, it stops the tunnel before any key is
