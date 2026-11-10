@@ -160,8 +160,8 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
   via `make hooks`): pre-commit runs `gofmt` + `gitleaks --staged`; pre-push runs `go vet`,
   `golangci-lint`, and `go test -race`. The full suite still runs in CI.
 - master's ruleset requires `ci-ok` (it needs `go`, `docker` and `integration`) on the pushed commit, so a
-  commit reaches master only after a green run on that SHA (push it as `preflight/<name>`, dispatch
-  ci.yml, then push master).
+  commit reaches master only after a green run on that SHA (push it as `preflight/<name>`, which runs
+  ci.yml on the push, then push master; a `workflow_dispatch` run does not satisfy the rule).
 - release.yml publishes only a `vX.Y.Z` tag on master after `check`, `integration`, `image` and
   `gate` pass. Dependabot has a 7-day cooldown (security updates are immediate); its docker
   groups are `golang` (red until go.mod and `GO_PIN` are bumped on the same PR) and

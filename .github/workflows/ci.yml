@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # preflight/** runs on the push: master's ruleset requires ci-ok on the
+    # pushed commit, and a workflow_dispatch run does not satisfy it.
+    branches: [master, "preflight/**"]
   pull_request:
   # Daily: catch CVEs disclosed against pinned deps (govulncheck) and let the
   # fuzzer explore new inputs, even when the repo is quiet; Trivy-scan the
