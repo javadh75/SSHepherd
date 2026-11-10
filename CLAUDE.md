@@ -193,6 +193,10 @@ test that fails before the fix and passes after.
   `TestE2EStaleManifestRefused` (an old copy refused on every affected server, including
   a header-only one) and `TestE2EStaleManifestAfterHandEdit` (D4b).
   `TestE2ERevokeRollbackRestoresRevokedKey` drives a refused login check to a rollback that puts a revoked key back (exit 2).
+  `TestE2EGrantRestrictions` applies per-grant restrictions against real sshd (an operator key
+  restricted by its own "*" grant still passes the post-write login check; one key restricted on
+  one server and plain on another), checks the re-apply is a no-op and audit is clean, then adds a
+  clashing grant: audit exits 2 and apply refuses only that server (exit 1).
   `TestE2EPreserve` keeps a Gitea-style `command=` line and its mark through apply against real
   sshd, checks a re-apply is a no-op and audit is clean, that dropping the rule plans its removal,
   and that a key tombstone beats `preserve:` (audit 2, apply removes the line).
@@ -468,7 +472,7 @@ dead-line reason, `--offer-all-keys` on the write dial and a held weak key throu
 `import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
-S1, S2, S8, S3a, S3b, S4, S5 and S6 are built, and S7 is being built (lanes `grants`, `audit` and `write` landed);
+S1, S2, S8, S3a, S3b, S4, S5, S6 and S7 are built;
 the other slices are not, and each gets its own plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
@@ -833,8 +837,8 @@ different sets on one server (`authkeys.SameOptions`: order, repeats and name ca
 D29 policy conflict, kind `restriction_conflict`, one per user and pair of sources with every
 server where they disagree; a blocked grant and a keyless user never clash. A grant's passed
 `expiry-time=` warns (`key_expired`). `FuzzLoad`'s `checkGrantOptions` oracle pins the prefix,
-restrictions-only and sources-equal-render rules. Lane `grants` (round 1) is the fail-closed
-intermediate (plan gap 14): until lane `write` lands, revoke and rotate refuse to save over a
+restrictions-only and sources-equal-render rules. Lane `grants` (round 1) was the fail-closed
+intermediate (plan gap 14): until lane `write` landed, revoke and rotate refused to save over a
 clash, so no release tag may point at its commit (nor at lane `audit`'s).
 Audit fills `ServerResult.Clashed` from `Config.ClashedKeys` and `optionsDrift` skips those keys
 (text, JSON, Compliant); the conflict itself rides the existing `policy_conflicts` path (critical,
@@ -848,6 +852,7 @@ import --merge) refuses only a clash on a (user, server) pair the loaded manifes
 kinds a kept manifest refuses on (revoked-key, revoked-access) and the ones a save may not add (a
 weak key; for adopt and import, a restriction conflict). With lane `write` in, the fail-closed
 intermediate of lanes `grants`/`audit` is over.
+`TestE2EGrantRestrictions` is the E2E (fixture accounts `rsta`, `rstb`).
 **Owner follow-ups F1** (decided 2026-11-10; planned in
 `docs/superpowers/plans/2026-11-10-p10-f1-owner-followups.md`): a fresh `import -o FILE --force`
 also warns (kind `manifest_settings_dropped`, one line per kind, each ending with `--merge FILE`)

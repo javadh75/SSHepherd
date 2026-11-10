@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions), S6 built (plan 2026-11-10-p10-s6-preserve), F1 owner follow-ups built (plan 2026-11-10-p10-f1-owner-followups); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions), S6 built (plan 2026-11-10-p10-s6-preserve), S7 built (plan 2026-11-10-p10-s7-restrictions), F1 owner follow-ups built (plan 2026-11-10-p10-f1-owner-followups); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -170,7 +170,7 @@ shared D28 table:
 
 | Case | Exit |
 |---|---|
-| Unknown tag, group or `via`, a second entry for one address, an `access:` entry naming a `jump_only` server, or a bad `preserve:` rule (load error) | 3 on every command |
+| Unknown tag, group or `via`, a second entry for one address, an `access:` entry naming a `jump_only` server, or a bad `preserve:` rule, or a bad grant `options:` entry (an option sshd rejects, a non-restricting or certificate option, a repeated once-only clause, a name already on a reached key line) (load error) | 3 on every command |
 | Restriction clash (S7, a D29 policy conflict) | `audit` 2; `apply` 1, those servers refused; `validate` 3; a save that would add one 3; `revoke` and `rotate` still save, and their apply phase exits as `apply` does |
 | Blocked grant, or a `jump_only` server nothing goes through | 0, with a warning (1 under `validate --strict`) |
 | External line kept by `preserve:` | 0 |
@@ -1267,21 +1267,33 @@ grants (OP5).
   which ignores case, so `FROM=` clashes with `from=`. The clause would repeat a once-only
   option, or widen a `permitopen=`/`permitlisten=` union.
 - `authkeys.OptionIssue` also runs on the combined key-line and grant options, per key,
-  as a last check.
+  as a last check. The combined-line OptionIssue check cannot fire after the name rule; it
+  stays as defense in depth.
+
+The load-error wordings (`N` is the 0-based `access:` index, as in `tombstone_blocks_grant`
+and the clash message): `access[N]: option "X" <CheckOption issue>`;
+`access[N]: option "X" does not restrict access; a grant can only add restrictions`;
+`access[N]: option "X" makes the key accept certificates only; a grant cannot turn a key into a certificate authority`;
+`access[N]: option "X" repeats from=, which sshd allows once per line` (OptionIssue's own
+text); `access[N]: option "X": user "U" key K already carries "Y"; restrict a key on its key line or on its grants, not both`.
 
 **Two grants, different restrictions: a policy conflict.** For each key on each server,
 every grant reaching it (direct, group, tag, and an operator's implicit grant, which
-counts as no options) must give the same set. Comparison ignores order and the case of
-option names. Same-set grants union as today.
+counts as no options and is the first grant source, before access[0], for naming and
+rendering) must give the same set. Comparison ignores order and the case of
+option names. Same-set grants union as today and render the first source's spelling; sets
+ignore repeats, values compare exactly.
 
 A clash is a **D29 policy conflict**, kind `restriction_conflict` (OP6), not a load
 error. Adding a `tags:` value, or adding an operator to a group with restricted grants,
 can cause a clash at a distance, and a load error would stop both the `revoke` of a
 leaver and the scheduled audit. `computeConflicts` finds it, after tombstone blocking.
 `config.Conflict` is unchanged. All of a user's keys get the same grants, so a clash
-belongs to a user and a pair of entries. There is one conflict per pair: `user` is set,
-`fingerprint` is omitted, and `Servers` lists every server where those two entries
-disagree. With three different sets on a server, the first two in access order are named.
+belongs to a user and a pair of entries. There is one conflict per pair of grant sources (the implicit grant counts as one), users in
+users order, pairs in the order their first server appears; a user with no keys never
+clashes; restriction conflicts come last in `policy_conflicts`. `user` is set,
+`fingerprint` is omitted, and `Servers` lists every server where that pair is the first
+disagreement; a server appears in one conflict per user. With three different sets on a server, the first two in access order are named.
 
 `user "deploy": server "web-1" is granted by access[2] with [from="10.0.0.0/8" no-pty] and by access[5] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user`
 
@@ -1298,10 +1310,13 @@ An implicit grant reads `by its operator grant with no options`.
 
 **Mechanics.** `auditOne` fills a new `ServerResult` set of fingerprints from
 `Config.ClashedKeys(server)`, and `optionsDrift` reports no drift for those keys in text,
-JSON and `Compliant`. `apply`'s refusal already reads `Conflict.Servers`, so it needs no
-code. `conflictRefusal` in `cmd/sshepherd/conflicts.go` gains the manifest the command
-started from: revoke and rotate skip this kind, and adopt and import count only a clash
-that manifest did not have. Other conflict kinds are checked first, with today's wording.
+JSON and `Compliant`. `apply` refuses through `restrictionRefusal` with the save-neutral
+`ServerPlan.ClashRefused`, which `NothingCanLand` skips like `WeakRefused` (without it a
+revoke whose only server is clashed would be withheld, against OP6); a revoked-kind conflict
+on the same server outranks it. `cmd/sshepherd/conflicts.go` splits: `editConflictRefusal`
+(revoke, rotate) never refuses this kind; `conflictRefusal` (adopt, `import --merge`) is
+`editConflictRefusal` plus `addedClashes`, a clash on a (user, server) pair the loaded
+manifest did not have. `adopt.go` and `import.go` need no code. Other conflict kinds are checked first, with today's wording.
 An added clash reads
 `refusing to write the manifest — it would add 1 restriction conflict: MESSAGE`.
 
@@ -1309,28 +1324,32 @@ An added clash reads
 `Options`. Everything downstream already consumes that: audit options drift,
 `apply.Affected`, `Survivors`, `OfferOrder`, the `Loosens` highlight, the guard's
 restrictive-options warning. `OwnerOf` and fingerprint uniqueness do not change. On a
-clashed pair the key still renders, with the options of the first `access:` entry
-reaching it, so `DesiredFor` stays deterministic. Nothing writes that line, because
+clashed pair the key still renders, with the options of the first grant source
+reaching it (the implicit operator grant first), so `DesiredFor` stays deterministic. Nothing writes that line, because
 apply refuses the server.
 
 `rotate` and `rotate --keep-old` touch the key line only, so grant options carry over.
 `adopt` and `import` never write `options:`. Regenerate carries it through the encoder.
-P09's expiry-time warning must also read grant options; whichever of S7 and P09-impl
-lands second adds that.
+P09's passed-expiry warning reads grant options too: one warning per entry,
+`access[N]: expiry-time="…" has passed; sshd no longer accepts the keys this entry grants`
+(kind `key_expired`).
 
 **Tombstones.** A blocked grant takes no part in the clash check.
 
-**Files.** `internal/authkeys/options.go` (`IsRestriction`), `internal/config`
-(`validateAccess`, `DesiredFor`, `computeConflicts`, `ClashedKeys`), `internal/audit`,
-`cmd/sshepherd/{conflicts,editrun,adopt,import}.go`,
-`cmd/sshepherd/schema_roundtrip_test.go`.
+**Files.** `internal/authkeys/options.go` (`IsRestriction`, `SameOptions`),
+`internal/config/{config,restrict,revoked,policy,clashed}.go`, `internal/audit/audit.go`,
+`internal/apply/{plan,serial,predicates}.go`, `cmd/sshepherd/{conflicts,editrun,run}.go`,
+`cmd/sshepherd/schema_roundtrip_test.go`, `scripts/integration.sh` (fixtures `rsta`, `rstb`).
 
 **README.** **The manifest**: new "Per-grant restrictions" subsection; **Validation
 rules** (a clash is a policy conflict, not a shape error); **`sshepherd audit`** (options
 drift per server, the conflict block, the skipped comparison and JSON `policy_conflicts`);
 **`sshepherd apply`** (the refusal); **`sshepherd validate`**; **`sshepherd adopt`** and
 **`sshepherd import`** (the save refusal); **`sshepherd revoke`** and **`sshepherd rotate`**
-(they still save; grant options unaffected); **Exit codes**.
+(they still save; grant options unaffected); **Exit codes**; the `apply`, `revoke`, `rotate`,
+`adopt` and `import --help` footers name the conflict kinds a kept manifest refuses on
+(revoked-key, revoked-access) instead of any policy conflict, and the `adopt` and `import`
+footers an added restriction conflict.
 
 **Tests.** Validation table: bad option, a widening or cert option, a repeated `from=`
 inside one grant, a name already on the key line (including `FROM=`).
@@ -1341,14 +1360,16 @@ critical, exit 2, also under `--server` for another server; options comparison s
 the clashed keys only, missing and unauthorized keys still reported; JSON shape. Apply
 refuses only the clashed servers, exit 1. Validate exit 3 with `valid: false`. Adopt and
 `import --merge` refuse a save that adds a clash (a new server reached by two `*` entries
-with different `except:`), exit 3 and nothing saved, and save over a clash already there.
+with different `except:`), exit 3 and nothing saved, and save over a clash already there. Adopt cannot add a clash (its
+extensions reach only ungranted servers, and it adds no server); its refusal is pinned by
+`TestRestrictionSaveRule`, and its CLI test is the save over an existing clash.
 Revoke and rotate save over a remaining clash, and their apply phase refuses those servers.
 A revoke that removes a clashing grant clears it. A blocked grant causes no clash. Render
 golden with grant options; existing manifests byte-identical; a clashed pair renders the
 first entry's options. Audit drift and `apply.Affected` follow the per-server options.
 Offer order sees grant options. A `no-port-forwarding` grant reaching a managed bastion is
-refused by S5's guard (whichever of S5 and S7 lands second adds this test). Round-trip
-sample. Fuzz seed.
+refused by S5's guard (S7 landed second: `TestGrantOptionsForwardGuard`). Round-trip
+sample. Fuzz seed. Integration: `TestE2EGrantRestrictions` (fixtures `rsta`, `rstb`).
 
 ---
 
@@ -1369,7 +1390,7 @@ same commit, then an independent verifier, then repair.
 | S5 | A: `internal/config` · B (after A): `internal/fleet`, `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit`, the `DialHint` mirrors in `internal/apply`, `cmd/sshepherd/{fleet,apply,sweep,run}.go`, `scripts/integration.sh` · C (beside B): `internal/sshcfg`, `internal/reconcile`, `import.go`, `import_json.go` · D (after B): `internal/apply`, `internal/authkeys/forward.go`, `internal/workflow`, `adopt.go`, `sweep.go`, `run.go` |
 | S6 | A: `internal/config`, `internal/authkeys/{scan,render}.go`, `internal/audit`, `internal/adopt` (test), `internal/apply/plan.go` (one lane and one commit: the schema alone would let apply delete the lines a rule names, and audit's classification without the render would too) · B (after A): `internal/apply/{report,json}.go` · C (beside B): the hermetic and E2E tests, `scripts/integration.sh` |
 | F1 | A: `import.go`, `import_settings.go`, `import_json.go` · B: `internal/apply/{plan,report,json}.go`, the preserve plan goldens and `TestPreserveHermetic` · C: `internal/sshconn` (`connect.go`, `sshtest`), the sshread session-open test and two sshwrite rows (one round) |
-| S7 | A: `internal/authkeys/options.go`, `internal/config` · B: `internal/audit`, `conflicts.go`, `editrun.go`, `adopt.go`, `import.go` · integrator: tests and README |
+| S7 | round 1 A: `internal/authkeys/options.go`, `internal/config` (schema, render, conflicts) · round 2 B: `internal/audit`, `internal/config/clashed.go` · C (beside B): `internal/apply/{plan,serial,predicates}.go`, `conflicts.go`, `editrun.go`, `run.go` (footers) · D (beside B): the E2E, `scripts/integration.sh` · integrator: README |
 
 ## Risks
 
