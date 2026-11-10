@@ -64,6 +64,13 @@ type Server struct {
 	// access: cannot name it), and audit and apply list it as "jump only"
 	// without reading or writing its authorized_keys.
 	JumpOnly bool `yaml:"jump_only"`
+	// Preserve keeps another tool's lines in this server's managed file
+	// (spec 2026-11-08 S6, D24): a key line whose command="…" value or
+	// comment fully matches a rule survives apply, listed by audit as
+	// externally managed. Compiled at load into Config.preserve, keyed by
+	// server name, never stored here: checkRoundTrip compares Server with
+	// reflect.DeepEqual.
+	Preserve []PreserveRule `yaml:"preserve"`
 }
 
 // Group names a set of users for access: entries (spec 2026-11-08 S3b). An
@@ -121,6 +128,7 @@ type Config struct {
 	members    map[string][]string       // group name -> members, as listed
 	conflicts  []Conflict                // policy conflicts (D29), computed after validation
 	weak       []WeakKey                 // every key failing the strength policy, granted or not
+	preserve   map[string][]preserveRule // server name -> compiled preserve: rules (spec S6)
 }
 
 // Load reads and parses the manifest at path.
@@ -163,6 +171,7 @@ func (c *Config) validate() error {
 	var errs []error
 	errs = append(errs, c.validateUsers()...)
 	errs = append(errs, c.validateServers()...)
+	errs = append(errs, c.validatePreserve()...)
 	errs = append(errs, c.validateVia()...)
 	errs = append(errs, c.validateGroups()...)
 	errs = append(errs, c.validateAccess()...)

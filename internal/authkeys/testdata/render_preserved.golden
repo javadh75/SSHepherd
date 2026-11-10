@@ -1,0 +1,5 @@
+# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c alice
+# Preserved by SSHepherd (externally managed):
+# gitea public key
+command="/usr/local/bin/gitea serv key-7",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs git@laptop

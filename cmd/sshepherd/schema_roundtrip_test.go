@@ -24,7 +24,13 @@ func samples(t *testing.T) map[string]map[string]any {
 		// the sampled authorized_keys_file and with access's except: [web-1].
 		// TestAdoptRegenerateKeepsJumpOnly proves a jump_only server
 		// round-trips. Via names web-2, the roundTripConfig's second server.
-		"Server": {"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}, "Via": "web-2", "JumpOnly": false},
+		// Preserve holds both kinds; TestRegeneratePreserveWritesOneField
+		// proves entryNode writes no empty field beside each (DeepEqual
+		// cannot: comment: "" loads as unset).
+		"Server": {
+			"Name": "web-1", "Description": "d", "Host": "10.0.0.1", "Port": 2222, "User": "deploy", "AuthorizedKeysFile": "/etc/ssh/keys/deploy", "Tags": []string{"prod", "web"}, "Via": "web-2", "JumpOnly": false,
+			"Preserve": []config.PreserveRule{{Command: "/usr/local/bin/gitea --config=/etc/gitea/app.ini serv key-[0-9]+"}, {Comment: "google-ssh .*"}},
+		},
 		// Group is "": fill sets every field, and a user plus a group would
 		// fail exactly-one-of. TestAdoptRegenerateKeepsGroups proves a group
 		// entry round-trips; Append has no groups parameter.

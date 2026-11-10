@@ -56,6 +56,12 @@ type ServerResult struct {
 	// tries each line, so grading whether a key can still log in looks at
 	// all of them; Diff.Actual keeps only the first.
 	Lines map[string][]authkeys.Key
+	// External lists, one entry per line in file order, the lines a
+	// preserve: rule of this server keeps (spec 2026-11-08 S6). Their
+	// fingerprints are in neither Diff.Unauthorized nor Duplicates, so they
+	// are not drift, adopt skips them and apply keeps them; Diff.Actual and
+	// Lines still hold them.
+	External []External
 }
 
 // Duplicate is one fingerprint installed on Count (>= 2) lines; Key is its
@@ -169,6 +175,10 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res.Diff = authkeys.Diff(desired, actual)
 	res.Duplicates = duplicatesOf(actual)
 	res.Lines = authkeys.LinesByFingerprint(actual)
+	if len(srv.Preserve) > 0 { // only servers with rules pay for the scan
+		res.External = externalLines(cfg, srv.Name, authkeys.ScanFile(read.Content))
+		res.Diff.Unauthorized, res.Duplicates = withoutExternal(res.Diff.Unauthorized, res.Duplicates, res.External)
+	}
 	log.Debug("audited", "server", srv.Name, "dur", time.Since(start).Round(time.Millisecond))
 	return res
 }

@@ -144,3 +144,47 @@ func FuzzParseHeader(f *testing.F) {
 		}
 	})
 }
+
+// FuzzScanFile (spec S6): ScanFile sees exactly ParseFile's keys, in order;
+// it never captures the header or the marker, and every captured line is a
+// comment without a trailing CR; and RenderKept of everything it scanned
+// re-scans to the same lines and comments, the one-step fixed point that
+// byte-exact convergence of a kept section rests on.
+func FuzzScanFile(f *testing.F) {
+	if line, err := deterministicKeyLine(); err == nil {
+		f.Add("# gitea public key\ncommand=\"gitea serv key-1\" " + line + " g\n")
+		f.Add(ManagedHeader + "\n" + line + "\n" + PreserveMarker + "\n# c\r\r\n" + line + "\n")
+	}
+	f.Add("# a\n\n# b\nnot a key\n")
+	f.Fuzz(func(t *testing.T, in string) {
+		scanned := ScanFile([]byte(in))
+		keys, _ := ParseFile([]byte(in))
+		if len(keys) != len(scanned) {
+			t.Fatalf("ScanFile found %d keys, ParseFile %d", len(scanned), len(keys))
+		}
+		for i, s := range scanned {
+			if s.Key.Raw != keys[i].Raw || s.Key.Fingerprint != keys[i].Fingerprint {
+				t.Fatalf("key %d: %q, ParseFile %q", i, s.Key.Raw, keys[i].Raw)
+			}
+			for _, c := range s.Above {
+				tr := strings.TrimSpace(c)
+				if _, header := ParseHeader(tr); header || tr == PreserveMarker || !strings.HasPrefix(tr, "#") || strings.HasSuffix(c, "\r") {
+					t.Fatalf("captured %q above line %d", c, s.Line)
+				}
+			}
+		}
+		out, err := RenderKept(nil, 0, scanned)
+		if err != nil {
+			t.Fatalf("RenderKept: %v", err)
+		}
+		again := ScanFile(out)
+		if len(again) != len(scanned) {
+			t.Fatalf("re-scan found %d lines, want %d:\n%q", len(again), len(scanned), out)
+		}
+		for i := range again {
+			if again[i].Key.Raw != scanned[i].Key.Raw || !slices.Equal(again[i].Above, scanned[i].Above) {
+				t.Fatalf("line %d changed on re-scan: %q %q, was %q %q", i, again[i].Key.Raw, again[i].Above, scanned[i].Key.Raw, scanned[i].Above)
+			}
+		}
+	})
+}

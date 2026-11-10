@@ -22,7 +22,8 @@ SSHepherd centralizes and automates this.
 - **Revoke** — remove keys everywhere in one command (e.g. offboarding).
 - **Rotate** — replace/rotate keys on a schedule.
 - **Audit** — check that every managed `authorized_keys` file holds exactly the
-  manifest's keys; other accounts and sshd's other key sources are not seen (a
+  manifest's keys (plus any lines a server's `preserve:` rule keeps, listed as externally
+  managed); other accounts and sshd's other key sources are not seen (a
   deeper opt-in check is a later slice).
 
 ## Design intent
@@ -791,3 +792,21 @@ held key may forward through; `ServerPlan.ProbeForward` feeds the post-write for
 `needsHuman` excludes a bastion's host-key alarm (exit 1). `adopt` reads only non-`jump_only`
 servers; `--sweep` prints `not swept: NAME (jump only)` (`sweep.jump_only`). `TestE2EBastion` is the
 E2E (container C behind A; accounts `jump`, `jumpnl`, `jumpnofwd`, `hope2e`, `hopped`).
+**Co-managed accounts through `preserve:`** (P10 S6, D24, D24a, PRD-8; section S6 of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-10-p10-s6-preserve.md`): servers gain `preserve:` rules
+(`config.PreserveRule`, exactly one of `command:`/`comment:`, an RE2 full match of at most 512
+bytes with a literal prefix of at least 4 bytes that matches none of nine probe strings; refused on a
+`jump_only` server), compiled at load into `Config.preserve`; the round-trip sample carries both kinds.
+`Config.PreserveRuleFor` matches one line (a command rule the dequoted `command="…"` value through
+`authkeys.CommandOf`, a comment rule the comment); `authkeys.ScanFile` returns each key with the
+comment lines directly above it (header and `authkeys.PreserveMarker` never captured, trailing CRs
+trimmed) and `authkeys.RenderKept` writes the kept section; `audit.auditOne` fills
+`ServerResult.External` (a fingerprint is kept only when every line holding it matches, never an
+owned, revoked or cert-only key) and drops those fingerprints from `Diff.Unauthorized` and
+`Duplicates`, so adopt skips them, a no-grant server holding only kept lines converges and P04's
+serial rows never count them as removals; audit lists them (`~ … externally managed (preserve:
+command)`, JSON `keys.external` with `rule`, additive); apply renders them back (`ServerPlan.Kept`,
+`Normalize.EmptyExternalSection`) at both render sites (a §3 row-3 removal-only write keeps them
+too), and the session-key note skips a kept key. A bad rule is a load error, exit 3 on every
+command. `FuzzScanFile` is the 25th `Fuzz*` target.

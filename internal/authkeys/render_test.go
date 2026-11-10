@@ -148,3 +148,31 @@ func TestRenderSerialHeader(t *testing.T) {
 		t.Fatalf("RenderSerial = %q, %v\nwant %q", out, err, want)
 	}
 }
+
+// TestRenderKept (spec S6 "Render"): the desired keys, then the marker and
+// each kept line with its comments above it, verbatim; no marker when
+// nothing is kept; and the output re-scans to the same kept lines, so a
+// re-render is byte-identical (byte-exact convergence).
+func TestRenderKept(t *testing.T) {
+	desired, err := ParseLine(testkeys.Line(t, 1))
+	if err != nil || desired == nil {
+		t.Fatalf("ParseLine: %v", err)
+	}
+	entries := []RenderEntry{{Key: *desired, Comment: "alice"}}
+	file := "# gitea public key\n" + `command="/usr/local/bin/gitea serv key-7",no-pty ` + testkeys.Line(t, 7) + " git@laptop\n"
+	kept := ScanFile([]byte(file))
+	out, err := RenderKept(entries, 7, kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkGolden(t, "render_preserved.golden", out)
+
+	plain, _ := RenderSerial(entries, 7)
+	if none, _ := RenderKept(entries, 7, nil); !bytes.Equal(none, plain) {
+		t.Errorf("nothing kept must render RenderSerial's bytes (no marker):\n%s", none)
+	}
+	again, err := RenderKept(entries, 7, ScanFile(out)[1:]) // [0] is alice's desired line
+	if err != nil || !bytes.Equal(again, out) {
+		t.Errorf("re-render differs (err %v):\n%s\nwant\n%s", err, again, out)
+	}
+}

@@ -144,6 +144,29 @@ servers:
   - {name: edge, host: e, user: jump, jump_only: true}
   - {name: s1, host: h1, user: u, via: edge}
 `,
+		// preserve: rules that load (command and comment) and refused ones:
+		// on a jump_only server, both fields, no literal prefix, a probe
+		// match, an unterminated \Q, an empty rule (spec S6)
+		`
+users:
+  - {name: alice, keys: ["` + k1 + `"]}
+servers:
+  - {name: gitea, host: g, user: git, preserve: [{command: '/usr/local/bin/gitea serv key-[0-9]+'}, {comment: 'google-ssh .*'}]}
+access:
+  - {user: alice, servers: [gitea]}
+`,
+		`
+servers:
+  - {name: edge, host: e, user: jump, jump_only: true, preserve: [{comment: 'google-ssh .*'}]}
+  - {name: s1, host: h1, user: u, via: edge, preserve: [{command: 'a', comment: 'b'}, {command: '.*'}, {comment: 'user@.*'}, {command: '\Qgitea'}, {}]}
+`,
+		// preserve: on a jump_only server alone, so checkPreserve sees the
+		// manifest if the jump_only refusal is ever dropped
+		`
+servers:
+  - {name: edge, host: e, user: jump, jump_only: true, preserve: [{comment: 'google-ssh .*'}]}
+  - {name: s1, host: h1, user: u, via: edge}
+`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -176,6 +199,7 @@ servers:
 				}
 			}
 			checkRenderRoundTrip(t, cfg, s.Name)
+			checkPreserve(t, cfg, s)
 		}
 		for _, s := range cfg.Servers {
 			chain := cfg.Chain(s)
@@ -303,5 +327,22 @@ func checkRenderRoundTrip(t *testing.T, cfg *Config, server string) {
 	out2, err := authkeys.Render(again)
 	if err != nil || !bytes.Equal(out, out2) {
 		t.Fatalf("server %q: re-render differs (err %v):\n%s\n---\n%s", server, err, out, out2)
+	}
+}
+
+// checkPreserve: an accepted server's preserve: rules are all compiled, none
+// sits on a jump_only server, and none matches a probe (spec S6).
+func checkPreserve(t *testing.T, cfg *Config, s Server) {
+	t.Helper()
+	rules := cfg.preserve[s.Name]
+	if len(rules) != len(s.Preserve) || (s.JumpOnly && len(rules) > 0) {
+		t.Fatalf("server %q: %d of %d preserve: rules compiled (jump_only %v)", s.Name, len(rules), len(s.Preserve), s.JumpOnly)
+	}
+	for _, r := range rules {
+		for _, p := range preserveProbes {
+			if r.re.MatchString(p) {
+				t.Fatalf("server %q: accepted preserve: pattern %q, which matches %q", s.Name, r.re.String(), p)
+			}
+		}
 	}
 }

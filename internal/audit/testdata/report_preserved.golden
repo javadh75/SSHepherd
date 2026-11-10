@@ -1,0 +1,11 @@
+gitea (git@10.0.4.1:22)
+  ✓  alice                                                    SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ~  (unknown) "git@laptop"                                   SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE  ssh-ed25519  externally managed (preserve: command) · options: "command=\"/usr/local/bin/gitea serv key-1\",no-port-forwarding,no-pty"
+  ~  (unknown) "google-ssh {\"userName\":\"a@example.com\"}"  SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ  ssh-ed25519  externally managed (preserve: comment)
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized · 2 externally managed
+
+web-1 (deploy@10.0.1.5:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 2/2 servers compliant · 0 with drift (0 critical) · 0 unreachable  → exit 0

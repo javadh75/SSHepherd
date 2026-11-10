@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 2,
+    "compliant": 2,
+    "drift": 0,
+    "critical": 0,
+    "unreachable": 0,
+    "exit_code": 0
+  },
+  "servers": [
+    {
+      "name": "gitea",
+      "host": "10.0.4.1",
+      "port": 22,
+      "user": "git",
+      "status": "compliant",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": [],
+        "external": [
+          {
+            "owner": null,
+            "comment": "git@laptop",
+            "fingerprint": "SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE",
+            "type": "ssh-ed25519",
+            "options": [
+              "command=\"/usr/local/bin/gitea serv key-1\"",
+              "no-port-forwarding",
+              "no-pty"
+            ],
+            "rule": "command"
+          },
+          {
+            "owner": null,
+            "comment": "google-ssh {\"userName\":\"a@example.com\"}",
+            "fingerprint": "SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ",
+            "type": "ssh-ed25519",
+            "rule": "comment"
+          }
+        ]
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-1",
+      "host": "10.0.1.5",
+      "port": 22,
+      "user": "deploy",
+      "status": "compliant",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    }
+  ]
+}

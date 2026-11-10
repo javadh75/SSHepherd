@@ -37,9 +37,11 @@ SSHepherd centralizes and automates this:
 
 - **Central source of truth** — users, keys, and grants live in one manifest.
 - **Audit** — check that every managed `authorized_keys` file holds exactly the
-  manifest's keys, in text or JSON. It does not see other accounts on the host or
+  manifest's keys (plus any lines a server's `preserve:` rule keeps, listed as
+  externally managed), in text or JSON. It does not see other accounts on the host or
   sshd's other key sources (see [Per-server `authorized_keys_file`](#per-server-authorized_keys_file)).
-- **Apply** — make every server match the manifest, atomically and reversibly.
+- **Apply** — make every server match the manifest (plus any lines a server's
+  `preserve:` rule keeps, listed as externally managed), atomically and reversibly.
 - **Revoke / rotate** — `sshepherd revoke alice` or `sshepherd rotate alice --old … --new …`
   edits the manifest (comments kept) and pushes the change to exactly the servers it
   affects, through `apply`'s safety model.
@@ -82,6 +84,8 @@ Groups: `groups:` and `access: - group: X` grant every member, a tombstone block
 Protected users: `protected: true` makes a key critical when missing and writes it first, only where the user is granted, and `revoke`/`rotate` refuse a protected target without `--operator` whether or not it holds a grant; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
 
 Bastions: `via:` reaches a server through up to 3 bastions with strict `known_hosts` on every hop (at most 8 connections per bastion), `jump_only: true` makes a bastion a tunnel that is never read or written, one address is one entry and one route, apply writes dependents before their bastions and refuses a bastion write that would stop forwarding, and `import` maps `ProxyJump` chains onto `via:` (see [Bastions](#bastions-via)).
+
+Co-managed accounts: `preserve:` on a server keeps another tool's lines (a forced `command=` or a comment, full-match RE2 rules), listed by audit as externally managed and written back by apply after the desired keys; owned, revoked and cert-authority keys are never kept (see [Co-managed accounts](#co-managed-accounts-preserve)).
 
 ## Install
 
@@ -494,6 +498,52 @@ bastion that opens the channel but cannot reach the server is the server's own f
 (no `via_failed`), with the hint
 `the bastion could not reach this server; check that it is up and reachable from the bastion`.
 
+### Co-managed accounts (`preserve:`)
+
+Some accounts hold keys another tool writes: Gitea or GitLab add a forced-command line
+per user key, a cloud guest agent adds its own. `preserve:` on a server keeps those
+lines through `apply` instead of deleting them:
+
+```yaml
+servers:
+  - name: gitea
+    host: git.example.com
+    user: git
+    preserve:
+      - command: '/usr/local/bin/gitea --config=/etc/gitea/app.ini serv key-[0-9]+'
+      - comment: 'google-ssh .*'
+```
+
+**What a kept line is.** A key line is kept when its `command="…"` value (for a
+`command:` rule) or its comment (for a `comment:` rule) fully matches a rule, and only
+when **every** line holding that key matches: a matching line next to a plain copy of
+the same key is never kept (the plain copy is duplicate drift as before). A key the
+manifest owns, a revoked key and a `cert-authority` line are never kept. Give the tool's
+account a separate key: a key the manifest owns is collapsed to its managed line, and
+the tool's line for it is removed.
+
+**What apply writes.** The managed header, the desired keys, then
+`# Preserved by SSHepherd (externally managed):` and each kept line in file order, with
+the comment lines directly above it, verbatim:
+
+```
+# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c alice
+# Preserved by SSHepherd (externally managed):
+# gitea public key
+command="/usr/local/bin/gitea serv key-7",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOpKbGPinFIKvvVQexMuxfmVR3auvr57kkIe6mkURtIs git@laptop
+```
+
+A server the manifest grants nothing is still never written: if it holds only kept
+lines it is converged, and any other key on it is refused as before. `preserve:` never
+applies to `authorized_keys2`, and a `jump_only` server cannot have it. Kept keys are
+never held keys: they do not satisfy the lockout guard, the bastion forwarding guard or
+the post-write login check, even when this run holds them, because the tool may delete
+them at any time.
+
+**Comment rules are weaker.** Anyone who can write a key comment can keep a key that
+matches a `comment:` rule. Prefer `command:` rules, which match what the line runs.
+
 ### Validation rules
 
 The loader fails the whole manifest (exit 3) on any of these:
@@ -518,6 +568,16 @@ The loader fails the whole manifest (exit 3) on any of these:
   `permitopen`, `permitlisten` and `environment` may repeat.
 - **Server `name`, `host` and `user`** may not contain whitespace or control, format
   or line-separator characters (U+2028/U+2029 included).
+- **`preserve:`** (on a server, see [Co-managed accounts](#co-managed-accounts-preserve)) is a list of
+  rules, each with exactly one of `command:` or `comment:`: a Go RE2 pattern of at most
+  512 bytes that must match the whole value (the `^…$` anchors are added for you). A
+  pattern needs a literal prefix of at least 4 bytes (`.*`, `.+` and `/.*` are refused;
+  a top-level alternation or `(?i)` usually has none: write two rules), and must not
+  match `user@host`, `alice@laptop.local`, `root@ip-10-0-0-1.ec2.internal`,
+  `ed25519-key-20260101`, 64 `a`s, `/bin/sh` or `/usr/bin/rrsync /srv` (an empty value
+  and `x` are refused by the prefix rule already). A `jump_only` server cannot have one:
+  `server "edge": jump_only has no managed file; remove preserve`. A bad rule is a
+  manifest load error: exit `3` on every command.
 - **Server names starting with `@`** are reserved for tag selectors, like `*` for wildcard
   grants: `servers[N]: name "@x" is reserved for tag selectors`.
 - **Tags** must match `^[a-z0-9][a-z0-9._-]{0,62}$`, and a tag may not repeat on a server:
@@ -884,6 +944,66 @@ Comment drift (`--comments`) stays cosmetic and never affects the exit code.
 A key the manifest does not own shows as `(unknown)` with its on-server comment
 (quoted, sanitized, cut at 40 characters) and, in the status cell, its options
 (`installed but UNAUTHORIZED · options: "from=\"10.0.0.0/8\",no-pty"`).
+
+**Externally managed lines.** A line a server's `preserve:` rule keeps (see
+[Co-managed accounts](#co-managed-accounts-preserve)) is listed as `externally managed`
+with the rule kind that kept it, and the counts line adds ` · N externally managed`
+when N > 0. It is not drift (exit `0`):
+
+```console
+gitea (git@10.0.4.1:22)
+  ✓  alice                                                    SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  ~  (unknown) "git@laptop"                                   SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE  ssh-ed25519  externally managed (preserve: command) · options: "command=\"/usr/local/bin/gitea serv key-1\",no-port-forwarding,no-pty"
+  ~  (unknown) "google-ssh {\"userName\":\"a@example.com\"}"  SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ  ssh-ed25519  externally managed (preserve: comment)
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized · 2 externally managed
+
+web-1 (deploy@10.0.1.5:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 2/2 servers compliant · 0 with drift (0 critical) · 0 unreachable  → exit 0
+```
+
+In JSON, kept keys are listed under `keys.external` (additive; omitted when empty), in
+the unowned-key shape (`owner: null`) plus `rule` (`command` or `comment`). The
+`gitea` server's `keys` from the report above:
+
+```json
+{
+  "keys": {
+    "present": [
+      {
+        "owner": "alice",
+        "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+        "type": "ssh-ed25519"
+      }
+    ],
+    "missing": [],
+    "unauthorized": [],
+    "external": [
+      {
+        "owner": null,
+        "comment": "git@laptop",
+        "fingerprint": "SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE",
+        "type": "ssh-ed25519",
+        "options": [
+          "command=\"/usr/local/bin/gitea serv key-1\"",
+          "no-port-forwarding",
+          "no-pty"
+        ],
+        "rule": "command"
+      },
+      {
+        "owner": null,
+        "comment": "google-ssh {\"userName\":\"a@example.com\"}",
+        "fingerprint": "SHA256:RFGPmv0HqTEFgFwzM49kDpWeoM4LSFeh+oNnj0R89WQ",
+        "type": "ssh-ed25519",
+        "rule": "comment"
+      }
+    ]
+  }
+}
+```
 
 **Revocation memory.** Audit reads the manifest's `revoked:` and `serial:` and the
 serial in each server's managed header:
@@ -2770,7 +2890,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
-| `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
+| `0` | Compliant (a header serial below the manifest's is not drift; lines a `preserve:` rule keeps are not drift) | Converged — nothing to do, including a header-only write applied, a newer-serial server with an equal body (with a note), and a server the manifest grants nothing that holds only kept lines | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
@@ -2778,6 +2898,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
 
 A tag or group problem (an unknown `@tag` or group, a malformed tag or group name, a selector in `except:` or in a tombstone's `servers:`, an entry with both or neither of `user:` and `group:`) is a manifest load error, so it is exit `3` on every command. A blocked grant, the `wildcard_root`, `empty_group` and `operator_grant_redundant` warnings change no exit code, except that `validate --strict` exits `1`.
+
+Likewise a bad `preserve:` rule, or `preserve:` on a `jump_only` server, is a load error: exit `3` on every command.
 
 `--help` shows this summary. `audit --help`:
 
@@ -2861,6 +2983,8 @@ Exit codes:
 `# Managed by SSHepherd (serial 7). Manual edits will be overwritten by 'sshepherd apply'.` once the manifest has a `serial:`),
 protected keys first (operators included), then the granted keys, with the decided comment policy applied.
 Non-key lines — hand-written comments, blank lines — are **deleted** by the rewrite;
+the one exception is a line a server's `preserve:` rule keeps, which is written back verbatim
+after the marker, with the comment lines directly above it;
 the plan shows a `normalize` row with the exact count *before* anything is written.
 Output is deterministic, so a repeated `apply` is a byte-for-byte no-op.
 

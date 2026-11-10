@@ -221,6 +221,7 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 			pal.paint(codeYellow, "⚠"), unauthorizedLabel(cfg, r.Server.Name, k), k.Fingerprint, k.Type,
 			pal.paint(codeYellow, "UNAUTHORIZED"), suffix, weakNote(k))
 	}
+	externalRows(tw, r, pal)
 	_ = tw.Flush()
 
 	for _, pe := range r.ParseErrs {
@@ -242,9 +243,31 @@ func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, 
 		fmt.Fprintln(w, "  note: no users granted access in the manifest")
 	}
 
-	fmt.Fprintf(w, "  → %d authorized · %d present · %d missing · %d unauthorized\n",
+	countsLine(w, r)
+}
+
+// externalRows lists each line a preserve: rule keeps (spec S6): not drift,
+// listed so "who can log in" stays answerable, labelled like any key the
+// manifest does not own. The glyph is painted like every other row's, so
+// columns stay aligned with color on.
+func externalRows(tw io.Writer, r ServerResult, pal palette) {
+	for _, e := range r.External {
+		k := e.Line.Key
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\texternally managed (preserve: %s)%s%s\n",
+			pal.paint(codeGreen, "~"), UnknownLabel(k), k.Fingerprint, k.Type, e.Rule, UnknownOptions(k), weakNote(k))
+	}
+}
+
+// countsLine is a read server's last line: the key counts, then the kept
+// lines when there are any, so a report without them is byte-identical.
+func countsLine(w io.Writer, r ServerResult) {
+	kept := ""
+	if n := len(r.External); n > 0 {
+		kept = fmt.Sprintf(" · %d externally managed", n)
+	}
+	fmt.Fprintf(w, "  → %d authorized · %d present · %d missing · %d unauthorized%s\n",
 		len(r.Diff.OK)+len(r.Diff.Missing), len(r.Diff.OK),
-		len(r.Diff.Missing), len(r.Diff.Unauthorized))
+		len(r.Diff.Missing), len(r.Diff.Unauthorized), kept)
 }
 
 // renderPosture prints one line per posture finding, then the shared note.
@@ -396,9 +419,10 @@ func renderFileNotes(w io.Writer, r ServerResult) {
 
 // emptyFile reports the paradox case: connection fine, file present, zero
 // entries parsed and nothing unparseable — yet our login key got us in.
+// A file holding only kept lines is not empty.
 func emptyFile(r ServerResult) bool {
 	return len(r.Diff.OK) == 0 && len(r.Diff.Unauthorized) == 0 &&
-		len(r.ParseErrs) == 0 && !r.NoUsersGranted
+		len(r.ParseErrs) == 0 && !r.NoUsersGranted && len(r.External) == 0
 }
 
 // quoteOptions renders an options list as it appears on a key line, Go-

@@ -88,6 +88,11 @@ type Normalize struct {
 	Duplicates             int
 	DuplicateOptionsDiffer bool
 	Whitespace             bool // residual byte drift with nothing else to blame
+	// EmptyExternalSection: the file holds the preserve: marker but no line
+	// is kept any more (the tool removed its lines, or the rule was dropped),
+	// so the rewrite drops it (spec S6). Not part of Any: the plan prints it
+	// as its own row.
+	EmptyExternalSection bool
 }
 
 // Any reports whether a normalize row should render.
@@ -129,7 +134,11 @@ type ServerPlan struct {
 	// when this server is another server's via (fleet.WriteRequest
 	// .ProbeForward); "" when nothing goes through it.
 	ProbeForward string
-	FileAbsent   bool // phase-1 diagnostic, carried into the report
+	// Kept counts the lines a preserve: rule keeps here (audit's External,
+	// spec S6); the render writes them after the desired keys. Meaningful
+	// for a converged or change plan.
+	Kept       int
+	FileAbsent bool // phase-1 diagnostic, carried into the report
 	// AuthorizedKeys2 carries the phase-1 finding that an unmanaged,
 	// non-empty ~/.ssh/authorized_keys2 exists: sshd may accept keys from it
 	// whatever apply writes, so a change plan also disables it (see
@@ -259,6 +268,7 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opt
 		p.Class, p.Refusal = ClassRefused, refusal
 		return p, nil
 	}
+	p.Kept = len(r.External)
 
 	entries := desiredEntries(cfg, r.Server.Name)
 	for _, e := range entries {
@@ -300,7 +310,8 @@ func refuseOversize(p ServerPlan) ServerPlan {
 // self-lockout guard, which judges every write alike.
 func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries []authkeys.RenderEntry, held []fleet.HeldKey, opts BuildOptions) (ServerPlan, error) {
 	m := cfg.Serial()
-	rendered, err := authkeys.RenderSerial(entries, m)
+	kept := keptLines(r)
+	rendered, err := authkeys.RenderKept(entries, m, kept)
 	if err != nil {
 		return p, fmt.Errorf("render %s: %w", r.Server.Name, err)
 	}
@@ -319,7 +330,7 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 		return p, nil
 	}
 	if d.sp.Writes != m { // row 3 keeps the server's (higher) serial
-		if p.Rendered, err = authkeys.RenderSerial(entries, d.sp.Writes); err != nil {
+		if p.Rendered, err = authkeys.RenderKept(entries, d.sp.Writes, kept); err != nil {
 			return p, fmt.Errorf("render %s: %w", r.Server.Name, err)
 		}
 		if len(p.Rendered) > maxRender { // S is longer than M, and these are the bytes written
@@ -347,6 +358,17 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 	p.ProbeForward = probeForwardFor(cfg, r.Server.Name)
 	p.Class = ClassChange
 	return p, nil
+}
+
+// keptLines are the lines a preserve: rule keeps on this server, in file
+// order (audit.ServerResult.External): the render appends them, with their
+// comment lines, under authkeys.PreserveMarker (spec S6).
+func keptLines(r audit.ServerResult) []authkeys.ScannedLine {
+	out := make([]authkeys.ScannedLine, 0, len(r.External))
+	for _, e := range r.External {
+		out = append(out, e.Line)
+	}
+	return out
 }
 
 // revokedRemovals returns the fingerprints of remove on the manifest's
@@ -426,48 +448,78 @@ func rewriteRows(r audit.ServerResult, entries []authkeys.RenderEntry) []Rewrite
 // normalize explains byte drift beyond the per-key rows: non-key lines the
 // full-file render removes, repeated key lines it collapses, reordering of
 // matched keys, or (when nothing else accounts for the byte difference)
-// residual whitespace/format drift.
+// residual whitespace/format drift. A marker with nothing under it is
+// EmptyExternalSection (spec S6).
 // Only called for servers whose bytes differ from the render.
 func normalize(r audit.ServerResult, entries []authkeys.RenderEntry, explained bool) Normalize {
 	var n Normalize
+	n.NonKeyLines, n.EmptyExternalSection = nonKeyLines(r)
+	n.Reorder = matchedOrderDiffers(r, entries)
+	// Duplicates: Diff collapses them first-wins, but each is a whole key
+	// line (possibly with its own options) the rewrite deletes — a semantic
+	// change the plan must name, never "whitespace".
+	n.Duplicates, n.DuplicateOptionsDiffer = duplicateLines(r)
+	if !explained && !n.Reorder && n.NonKeyLines == 0 && n.Duplicates == 0 && !n.EmptyExternalSection {
+		n.Whitespace = true
+	}
+	return n
+}
+
+// nonKeyLines counts the comment and blank lines the rewrite removes: not
+// the managed header (re-emitted), not the comment lines kept above a
+// preserved line, and not the one PreserveMarker the render writes back
+// while lines are kept. A marker with nothing left under it is
+// emptySection instead; every further marker is a removed non-key line.
+func nonKeyLines(r audit.ServerResult) (n int, emptySection bool) {
 	lines := strings.Split(string(r.Content), "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1] // a well-formed file's trailing newline, not a blank line
 	}
+	markers := 0
 	for _, line := range lines {
 		t := strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if _, managed := authkeys.ParseHeader(t); managed {
-			continue // re-emitted by the render, not removed
-		}
-		if t == "" || strings.HasPrefix(t, "#") {
-			n.NonKeyLines++
+		_, managed := authkeys.ParseHeader(t)
+		switch {
+		case managed:
+		case t == authkeys.PreserveMarker:
+			markers++
+		case t == "" || strings.HasPrefix(t, "#"):
+			n++
 		}
 	}
+	for _, e := range r.External {
+		n -= len(e.Line.Above)
+	}
+	if markers > 0 {
+		n += markers - 1
+		emptySection = len(r.External) == 0
+	}
+	return n, emptySection
+}
 
-	n.Reorder = matchedOrderDiffers(r, entries)
-
-	// Duplicates: Diff collapses them first-wins, but each is a whole key
-	// line (possibly with its own options) the rewrite deletes — a semantic
-	// change the plan must name, never "whitespace". Content re-parses
-	// cleanly here (parse errors were refused earlier).
+// duplicateLines counts the repeated key lines the rewrite removes (same
+// fingerprint as an earlier line) and whether any carried options other
+// than its first copy's. A kept fingerprint is not counted: every one of
+// its lines stays. Content re-parses cleanly here (parse errors were
+// refused earlier).
+func duplicateLines(r audit.ServerResult) (n int, optionsDiffer bool) {
 	keys, _ := authkeys.ParseFile(r.Content)
 	first := make(map[string]authkeys.Key, len(keys))
 	for _, k := range keys {
+		if r.IsExternal(k.Fingerprint) {
+			continue
+		}
 		f, seen := first[k.Fingerprint]
 		if !seen {
 			first[k.Fingerprint] = k
 			continue
 		}
-		n.Duplicates++
+		n++
 		if !slices.Equal(f.Options, k.Options) {
-			n.DuplicateOptionsDiffer = true
+			optionsDiffer = true
 		}
 	}
-
-	if !explained && !n.Reorder && n.NonKeyLines == 0 && n.Duplicates == 0 {
-		n.Whitespace = true
-	}
-	return n
+	return n, optionsDiffer
 }
 
 // matchedOrderDiffers reports whether the matched keys' relative order on
@@ -541,7 +593,7 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 
 	var v guardVerdict
 	if fp := r.SessionKeyFP; fp != "" && !fpInEntries(entries, fp) {
-		if _, installed := r.Diff.Actual[fp]; installed {
+		if _, installed := r.Diff.Actual[fp]; installed && !r.IsExternal(fp) { // a kept line stays (spec S6)
 			v.Note = fmt.Sprintf("removes the key this session logged in with; %s remains",
 				survivorLabel(cfg, surviving[0]))
 		}

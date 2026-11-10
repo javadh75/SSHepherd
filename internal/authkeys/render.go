@@ -70,3 +70,27 @@ func RenderSerial(entries []RenderEntry, serial uint64) ([]byte, error) {
 	}
 	return b.Bytes(), nil
 }
+
+// RenderKept renders the managed file at serial with the lines a preserve:
+// rule keeps (spec 2026-11-08 S6): RenderSerial's bytes, then, only when
+// kept is not empty, PreserveMarker and each kept line in order, its comment
+// lines first, every line verbatim (Key.Raw). Deterministic, so a file that
+// already holds this section re-renders byte-identically.
+func RenderKept(entries []RenderEntry, serial uint64, kept []ScannedLine) ([]byte, error) {
+	out, err := RenderSerial(entries, serial)
+	if err != nil || len(kept) == 0 {
+		return out, err
+	}
+	b := bytes.NewBuffer(out)
+	b.WriteString(PreserveMarker)
+	b.WriteByte('\n')
+	for _, l := range kept {
+		for _, c := range l.Above {
+			b.WriteString(c)
+			b.WriteByte('\n')
+		}
+		b.WriteString(l.Key.Raw)
+		b.WriteByte('\n')
+	}
+	return b.Bytes(), nil
+}

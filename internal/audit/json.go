@@ -117,6 +117,9 @@ type jsonKeySets struct {
 	Present      []jsonKey `json:"present"`
 	Missing      []jsonKey `json:"missing"`
 	Unauthorized []jsonKey `json:"unauthorized"`
+	// External is additive-optional (schema stays 1): one object per line a
+	// preserve: rule keeps (spec S6), each with its rule. Never drift.
+	External []jsonKey `json:"external,omitempty"`
 }
 
 // jsonKey field presence is deliberately mixed: owner is always emitted
@@ -152,6 +155,10 @@ type jsonKey struct {
 	// additive-optional (schema stays 1).
 	CannotLogIn string   `json:"cannot_log_in,omitempty"`
 	KeyIssues   []string `json:"key_issues,omitempty"`
+	// Rule is additive-optional (schema stays 1): on keys.external entries
+	// only, the kind of preserve: rule that kept the line (command or
+	// comment), so comment-matched keys can be reviewed (D24a).
+	Rule string `json:"rule,omitempty"`
 }
 
 type jsonRevoked struct {
@@ -281,6 +288,9 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		}
 		s.Keys.Unauthorized = append(s.Keys.Unauthorized, jk)
 	}
+	for _, e := range r.External {
+		s.Keys.External = append(s.Keys.External, jsonExternalKey(e))
+	}
 	for _, pe := range r.ParseErrs {
 		// pe.Error() is the control-stripped rendering; the line prefix is
 		// redundant with Line but keeps the string self-contained.
@@ -306,6 +316,18 @@ func jsonPresentKey(cfg *config.Config, r ServerResult, k authkeys.Key, opts JSO
 		}
 	}
 	jk.KeyIssues = keyIssues(k, true)
+	return jk
+}
+
+// jsonExternalKey is one kept line in the unowned-key shape (owner null,
+// sanitized comment and options, key_issues) plus the rule that kept it.
+func jsonExternalKey(e External) jsonKey {
+	k := e.Line.Key
+	jk := jsonKey{Comment: sanitize.Remote(k.Comment), Fingerprint: k.Fingerprint, Type: k.Type, Rule: e.Rule}
+	if len(k.Options) > 0 {
+		jk.Options = sanitizeAll(k.Options)
+	}
+	jk.KeyIssues = keyIssues(k, false)
 	return jk
 }
 
