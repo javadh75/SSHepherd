@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": false,
+  "edit": null,
+  "summary": {
+    "servers": 2,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 0,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 1,
+    "unproven": 1,
+    "lockout_unrestored": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.1.5",
+      "port": 22,
+      "user": "deploy",
+      "via": "bastion-eu",
+      "class": "unreachable",
+      "outcome": null,
+      "error": "via bastion-eu: host key changed",
+      "error_kind": "host_key_changed",
+      "via_failed": "bastion-eu",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.1.6",
+      "port": 22,
+      "user": "deploy",
+      "via": "bastion-eu",
+      "class": "change",
+      "outcome": "unproven",
+      "error": "written and verified, but the login check could not reach the server after 4 attempts (login check: via bastion-eu: connection refused) — kept the new file; run sshepherd audit to confirm",
+      "error_kind": "dial",
+      "via_failed": "bastion-eu",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}

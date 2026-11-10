@@ -81,7 +81,7 @@ Groups: `groups:` and `access: - group: X` grant every member, a tombstone block
 
 Protected users: `protected: true` makes a key critical when missing and writes it first, only where the user is granted, and `revoke`/`rotate` refuse a protected target without `--operator` whether or not it holds a grant; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
 
-Bastions: `via:` reaches a server through up to 3 bastions, each its own strict-`known_hosts` SSH connection, and `jump_only: true` makes a bastion a tunnel that is never read or written (see [Bastions](#bastions-via)); `import` maps `ProxyJump` onto `via:`.
+Bastions: `via:` reaches a server through up to 3 bastions with strict `known_hosts` on every hop (at most 8 connections per bastion), `jump_only: true` makes a bastion a tunnel that is never read or written, one address is one entry and one route, apply writes dependents before their bastions and refuses a bastion write that would stop forwarding, and `import` maps `ProxyJump` chains onto `via:` (see [Bastions](#bastions-via)).
 
 ## Install
 
@@ -1622,6 +1622,9 @@ no manifest to stdout or `-o` (under `--json`, stdout gets a report with
 `"emitted": false`), and exits 3 with
 `read 0 of N servers — nothing could be adopted; fix the errors above`.
 
+`jump_only` servers are not read: they are not part of `read X of N` and are never
+unreadable; the generated manifest keeps them.
+
 An on-server key whose comment has tabs or control/format characters is adopted
 **without** its comment (options + type + key are kept), with the warning
 `key <fp> on <server>: comment contains control or format characters — adopted without its comment`.
@@ -1662,7 +1665,7 @@ rendered desired state.
 | ---- | ------- | ----------- |
 | `--config` | `sshepherd.yaml` | Path to the manifest |
 | `--known-hosts` | `~/.ssh/known_hosts` | `known_hosts` path (strict checking) |
-| `--parallel` | `32` | Max concurrent server connections |
+| `--parallel` | `32` | Max concurrent server connections; at most 4 writes at a time through one bastion (each holds 2 of its 8 connections) |
 | `--offer-all-keys` | off | Offer every loaded key to every server (default: only the keys the manifest grants there). |
 | `--server` | all | Restrict the run to this server (repeatable; canary rollout) |
 | `--dry-run` | off | Plan and report only; never write |
@@ -1681,14 +1684,14 @@ the terminal (see [Authentication](#authentication)).
 the text report; logs stay on stderr. It needs `--dry-run` or `--yes` — a script
 cannot answer the prompt — otherwise the run exits `3` before the manifest is read:
 `--json needs --dry-run or --yes (a script cannot answer the confirmation prompt)`.
-A document is written exactly when the run exits `0`, `1` or `2` (`2`: a lockout not restored, a rollback that put back a key on the `revoked:` list, a changed or `@revoked` host key or a changed host key type at the login check, or a `--sweep` hit) (including an interrupt
+A document is written exactly when the run exits `0`, `1` or `2` (`2`: a lockout not restored, a rollback that put back a key on the `revoked:` list, a changed or `@revoked` host key or a changed host key type of the server itself at the login check (a bastion's is `1`), or a `--sweep` hit) (including an interrupt
 after the plan, where unstarted servers are `pending` with `"error_kind":
 "canceled"`); exit-`3` tool errors print no document. A write that fails after the
 plan carries `error_kind` when the transport classified the failure (for example
 `host_key_changed` when the host key changed between plan and write, `auth`,
 `timeout`); refusals and verify failures carry none. Each server carries its
-`class` (`converged`, `change`, `refused`, `unreachable`), its `outcome` (`applied`,
-`refused`, `failed`, `pending` for a `change` server, `unproven` (written and verified, login not proven; its `error_kind` is the last login failure's, and one of `host_key_changed`, `host_key_revoked`, `host_key_type_changed` means exit 2), `lockout_unrestored`, `null` otherwise — always
+`class` (`converged`, `change`, `refused`, `unreachable`, `jump_only` with `outcome: null`), its `outcome` (`applied`,
+`refused`, `failed`, `pending` for a `change` server, `unproven` (written and verified, login not proven; its `error_kind` is the last login failure's, and one of `host_key_changed`, `host_key_revoked`, `host_key_type_changed` means exit 2, unless `via_failed` names the bastion it came from (exit 1)), `lockout_unrestored`, `null` otherwise — always
 `pending` under `--dry-run`), its `error`, and its `changes` (`add`, `remove`,
 `rewrite` with `loosens` naming dropped restrictive options verbatim and `widens`
 naming the relaxing options it adds (`[]` when none), `normalize`).
@@ -1871,7 +1874,25 @@ Each server may carry a `serial` object (`header`, null for no serial; `manifest
 Optional fields, present only when they apply: `servers[].hint` (the remediation for
 an unreachable or failed server; `error` never contains it) and
 `changes.remove[].options` (on-server options of a key neither the manifest nor the
-pre-edit manifest owns).
+pre-edit manifest owns), `servers[].via` (the server's `via:` bastion),
+`servers[].via_failed` (the bastion a hop failure stopped at, on an `unreachable`
+server or an `unproven` login check) and `summary.jump_only` (the count of `jump_only`
+servers, omitted when none). A server whose login check failed at its bastion, from
+`internal/apply/testdata/json_via_failed.golden.json`:
+
+```
+      "name": "web-2",
+      "host": "10.0.1.6",
+      "port": 22,
+      "user": "deploy",
+      "via": "bastion-eu",
+      "class": "change",
+      "outcome": "unproven",
+      "error": "written and verified, but the login check could not reach the server after 4 attempts (login check: via bastion-eu: connection refused) — kept the new file; run sshepherd audit to confirm",
+      "error_kind": "dial",
+      "via_failed": "bastion-eu",
+```
+
 See `internal/apply/testdata/json_*.golden.json` for every shape.
 
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
@@ -1952,6 +1973,47 @@ sessions and exits `3` without rendering a report or writing a manifest (servers
 short are never passed off as unreachable).
 
 **Weak keys.** A server that grants a weak key (DSA, RSA under 2048 bits) is refused and the rest of the plan proceeds, exit 1, except a write that grants nothing and removes at least one key: it cannot install or widen the weak key, so it proceeds. A server already holding exactly its keys stays refused until the weak key is gone. A refusal for a weak key never stops `revoke` or `rotate` from saving their edit.
+
+**Bastions.** Writes run in levels: a server before the bastions it is reached
+through, deepest bastion last, each level finished before the next, so a bad bastion
+write cannot strand its dependents' writes. A managed bastion must keep forwarding:
+the plan refuses a write that leaves no surviving key you hold allowed to forward to
+every dependent (`no-port-forwarding`, `restrict` without `port-forwarding`, or a
+`permitopen=` that misses one), and the post-write login check on a bastion also
+opens a forward to one dependent; a refused forward restores the file. A `jump_only`
+bastion is listed as `jump only` and never written, guarded or probed. A login check
+that fails at a bastion proves nothing about the server: the file is kept
+(`unproven`, exit 1), never restored. A `jump_only` bastion in the plan:
+
+```console
+bastion-eu (jump@bastion.example.com:22)  jump only (never read or written)
+
+web-1 (deploy@10.0.1.5:22 via bastion-eu)
+  +  op  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  add (authorized, missing)
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
+
+web-2 (deploy@10.0.1.6:22 via bastion-eu)
+  +  op  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  add (authorized, missing)
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
+
+Summary: 0/3 servers converged · 2 pending · 1 jump only  → exit 1
+```
+
+A managed bastion write that would stop forwarding:
+
+```console
+bastion-eu (jump@bastion.example.com:22)  REFUSED: none of the surviving keys you hold may forward through bastion-eu (no-port-forwarding, restrict or permitopen=); this write would cut off web-1 and 1 more
+
+web-1 (deploy@10.0.1.5:22 via bastion-eu)
+  +  op  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  add (authorized, missing)
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
+
+web-2 (deploy@10.0.1.6:22 via bastion-eu)
+  +  op  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  add (authorized, missing)
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
+
+Summary: 0/3 servers converged · 2 pending · 1 refused  → exit 1
+```
 
 **Serial bump.** A confirmed apply that removes a key from a server whose header serial
 is not below the manifest's bumps `serial:` once, saving it under the manifest lock
@@ -2152,7 +2214,10 @@ whose `authorized_keys` has a line the parser refuses cannot prove the removal:
 `cannot prove removal on db-2 (authorized_keys has unparseable lines)`, exit `1`. A
 Ctrl-C reaching the sweep keeps the report: unread servers show
 `cannot prove removal on db-2 (sweep interrupted)`, are not counted in `swept N of M`,
-and the run exits `1` (or `2` if a key was found), never `3`. On a run that contacts no
+and the run exits `1` (or `2` if a key was found), never `3`. `--sweep` does not read a
+`jump_only` server; it prints `not swept: NAME (jump only)` (JSON `sweep.jump_only`)
+and the line does not change the exit code. A leaver's key on a jump-only account is
+outside every check: remove it there by hand. On a run that contacts no
 server for its edit (an unowned `--key`), the sweep's known_hosts and credentials check
 runs before the save, so a failure exits `3` with nothing saved. Under `--json` the
 document gains a `sweep` object (from the golden fixture), and `edit.check_command`
@@ -2381,7 +2446,10 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
   exactly as for `revoke` (no check line under `--keep-old`: nothing is removed).
 - `--sweep` works as in [`revoke`'s post-revoke sweep](#sshepherd-revoke): it looks for
   the rotated-out key on every other server; `--keep-old` revokes nothing, so it has
-  nothing to look for.
+  nothing to look for. `--sweep` does not read a `jump_only` server; it prints
+  `not swept: NAME (jump only)` (JSON `sweep.jump_only`) and the line does not change
+  the exit code. A leaver's key on a jump-only account is outside every check: remove
+  it there by hand.
 - `rotate` refuses, exit `3`, to save a manifest that would keep a policy conflict —
   in particular `--new` of a revoked key
   (`refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`).
@@ -2699,8 +2767,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
@@ -2738,8 +2806,9 @@ Exit codes:
      authorized_keys or authorized_keys2 after a rejected login check failed,
      or the reconnect after the upload started was refused), a rollback that
      put back a key on the revoked: list, a changed or @revoked host key or a
-     changed host key type at the post-write login check, or revoke/rotate
-     --sweep found a revoked key still installed
+     changed host key type at the post-write login check (the server's own; a
+     bastion's is 1), or revoke/rotate --sweep found a revoked key still
+     installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict or add a weak key, a failed serial
      save, or refused before anything was saved or written
@@ -2962,6 +3031,20 @@ then forced `command=` lines, then certificate-only lines (`cert-authority`,
 `principals=`); manifest order (protected keys first, then grant order) within each group.
 A session therefore authenticates with an unrestricted key whenever one is held, so
 a key that gains a forced `command=` cannot capture later runs. Remote commands always run under `/bin/sh`. Audit's posture check mirrors StrictModes.
+
+**Bastions.** A server with `via:` is reached through its bastions (see
+[Bastions](#bastions-via)) with the same strict `known_hosts` on every hop: a missing,
+changed or `@revoked` bastion host key refuses the dial before any key is offered to
+the server behind it. Each target gets its own fresh connection to its bastion, never
+pooled or shared, and timeouts and Ctrl-C reach the hop's socket, so a wedged bastion
+cannot hang a run. At most 8 connections go through one bastion at a time; a write
+holds two. Writes run in levels, dependents first and the deepest bastion last. The
+plan refuses a managed bastion write that leaves no surviving key you hold allowed to
+forward to every dependent, and the post-write login check on a bastion also opens a
+forward to one dependent; a refused forward restores the file. A hop failure in the
+login check is unproven, never a restore: the bastion failed, not the server's new
+file, so the file is kept and the server reports `UNPROVEN` (exit 1, even for a
+bastion host-key alarm).
 
 **Output safety.** Terminal escapes from server-supplied text are stripped and
 newlines collapsed, so a hostile server cannot forge report rows or a summary line.

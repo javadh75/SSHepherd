@@ -7,7 +7,9 @@ package apply
 
 import (
 	"fmt"
+	"net"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/javadh75/SSHepherd/internal/audit"
@@ -31,6 +33,9 @@ const (
 	ClassRefused Class = "refused"
 	// ClassUnreachable — the phase-1 read failed; nothing knowable.
 	ClassUnreachable Class = "unreachable"
+	// ClassJumpOnly — a jump_only bastion (spec S5, OP8): listed, never read
+	// or written; never guarded or probed; never changes the exit code.
+	ClassJumpOnly Class = "jump_only"
 )
 
 // Outcome is the phase-2 result for a ClassChange server.
@@ -120,7 +125,11 @@ type ServerPlan struct {
 	// this run's keys, so a human run would otherwise remove CI's key with
 	// no sign (spec S4). Set only on a server that will be written.
 	ProtectedRemovals []string
-	FileAbsent        bool // phase-1 diagnostic, carried into the report
+	// ProbeForward is the host:port the post-write login check forwards to
+	// when this server is another server's via (fleet.WriteRequest
+	// .ProbeForward); "" when nothing goes through it.
+	ProbeForward string
+	FileAbsent   bool // phase-1 diagnostic, carried into the report
 	// AuthorizedKeys2 carries the phase-1 finding that an unmanaged,
 	// non-empty ~/.ssh/authorized_keys2 exists: sshd may accept keys from it
 	// whatever apply writes, so a change plan also disables it (see
@@ -234,6 +243,10 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opt
 		AuthorizedKeys2: r.AuthorizedKeys2,
 		Expect:          authkeys.ManagedSnapshot(r.FileAbsent, r.Content),
 	}
+	if r.Server.JumpOnly {
+		p.Class = ClassJumpOnly
+		return p, nil
+	}
 	if r.Err != nil {
 		p.Class = ClassUnreachable
 		p.Err = r.Err
@@ -331,6 +344,7 @@ func planWrite(cfg *config.Config, p ServerPlan, r audit.ServerResult, entries [
 	}
 	p.Note, p.Warning, p.AgentOnly = v.Note, v.Warning, v.AgentOnly
 	p.ProtectedRemovals = protectedRemovals(cfg, r.Server.Name, p.Remove)
+	p.ProbeForward = probeForwardFor(cfg, r.Server.Name)
 	p.Class = ClassChange
 	return p, nil
 }
@@ -521,6 +535,9 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 	if len(surviving) == 0 {
 		return guardVerdict{Refusal: lockoutRefusal(r.Server.Name, keys, held, set)}
 	}
+	if refusal := forwardRefusal(cfg, r.Server.Name, surviving); refusal != "" {
+		return guardVerdict{Refusal: refusal}
+	}
 
 	var v guardVerdict
 	if fp := r.SessionKeyFP; fp != "" && !fpInEntries(entries, fp) {
@@ -565,6 +582,51 @@ func lockoutRefusal(server string, keys []authkeys.Key, held []fleet.HeldKey, se
 		refusal += "; rotating an --identity key? pass the new key with another --identity, so the guard and the post-write login probe can use it"
 	}
 	return refusal
+}
+
+// forwardRefusal is the bastion guard (spec S5): a managed server another
+// server's via names must keep forwarding for a key this run holds, so some
+// surviving key's line must allow a direct-tcpip channel to every
+// dependent. "" when one does, or when nothing goes through the server. The
+// post-write forward probe then checks the key that actually logs in (gap
+// item 3).
+func forwardRefusal(cfg *config.Config, server string, surviving []authkeys.Key) string {
+	deps := cfg.Dependents(server)
+	if len(deps) == 0 {
+		return ""
+	}
+	for _, k := range surviving {
+		if forwardsAll(k.Options, deps) {
+			return ""
+		}
+	}
+	more := ""
+	if n := len(deps) - 1; n > 0 {
+		more = fmt.Sprintf(" and %d more", n)
+	}
+	return fmt.Sprintf("none of the surviving keys you hold may forward through %s (no-port-forwarding, restrict or permitopen=); this write would cut off %s%s",
+		server, deps[0].Name, more)
+}
+
+// forwardsAll reports whether a key line may forward to every dependent.
+func forwardsAll(opts []string, deps []config.Server) bool {
+	for _, d := range deps {
+		if !authkeys.Forwards(opts, d.Host, d.Port) {
+			return false
+		}
+	}
+	return true
+}
+
+// probeForwardFor is where the bastion's post-write probe forwards: its
+// first dependent, as the bastion will be asked for it; "" when nothing
+// goes through the server.
+func probeForwardFor(cfg *config.Config, server string) string {
+	deps := cfg.Dependents(server)
+	if len(deps) == 0 {
+		return ""
+	}
+	return net.JoinHostPort(deps[0].Host, strconv.Itoa(deps[0].Port))
 }
 
 // agentOnlyWarning is set when --identity keys were given (some held key
@@ -674,14 +736,15 @@ func hasRestrictiveOption(options []string) bool { return authkeys.BlocksLogin(o
 // audit): 2 when any server needs a human now (needsHuman); 0 when every
 // targeted server is converged — already, or applied and verified this run;
 // 1 otherwise (pending under --dry-run or a declined prompt, refused,
-// failed, unproven, unreachable). Tool errors (3) are the caller's domain.
+// failed, unproven, unreachable). A jump_only server never changes the
+// code. Tool errors (3) are the caller's domain.
 func ExitCode(plans []ServerPlan) int {
 	code := 0
 	for _, p := range plans {
 		switch {
 		case needsHuman(p):
 			return 2
-		case p.Class == ClassConverged || (p.Class == ClassChange && p.Outcome == OutcomeApplied):
+		case p.Class == ClassConverged || p.Class == ClassJumpOnly || (p.Class == ClassChange && p.Outcome == OutcomeApplied):
 		default:
 			code = 1
 		}
@@ -704,7 +767,9 @@ func needsHuman(p ServerPlan) bool {
 	case OutcomeFailed:
 		return p.RolledBack && len(p.RevokedRemovals) > 0
 	case OutcomeUnproven:
-		return fleet.HostKeyAlert(fleet.ErrorKindOf(p.OutcomeErr))
+		// The server's own host-key alarm pages (D10b); a bastion's is exit
+		// 1: it says nothing about this server (spec S5).
+		return fleet.HostKeyAlert(fleet.ErrorKindOf(p.OutcomeErr)) && fleet.FailedHopOf(p.OutcomeErr) == ""
 	}
 	return false
 }

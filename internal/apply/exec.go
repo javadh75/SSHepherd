@@ -32,6 +32,11 @@ type ExecOptions struct {
 	// its surviving keys are what the post-write login probe offers.
 	Held   []fleet.HeldKey
 	Logger *slog.Logger // optional per-server telemetry; nil discards
+	// Chain lists a server's bastions root first (config.Config.Chain over
+	// the whole fleet); nil means no server is behind one. Write levels and
+	// bastion slots come from it, never from the plans, which hold only the
+	// servers this run targets.
+	Chain func(config.Server) []string
 }
 
 func (o ExecOptions) logger() *slog.Logger {
@@ -39,6 +44,13 @@ func (o ExecOptions) logger() *slog.Logger {
 		return o.Logger
 	}
 	return slog.New(slog.DiscardHandler)
+}
+
+func (o ExecOptions) chain() func(config.Server) []string {
+	if o.Chain != nil {
+		return o.Chain
+	}
+	return func(config.Server) []string { return nil }
 }
 
 // errInterrupted marks a plan phase 2 never started because ctx was
@@ -50,44 +62,105 @@ var errInterrupted = errors.New("interrupted before the write started")
 // Servers proceed independently — no global abort: partial application is
 // visible in the report and re-running apply is always safe because the
 // render is idempotent and every write is conditional on its plan's
-// snapshot. Once ctx is canceled no new server starts (those stay pending
-// with OutcomeErr set), while a server whose write already began finishes
-// its write, verify and login probe.
+// snapshot. Writes run in levels (writeLevels): a server before the
+// bastions it is reached through, each level finished before the next, so
+// a bastion's write can never strand its dependents' pending writes. A
+// write behind bastions takes two fleet.HopLimiter slots on each of them
+// first. Once ctx is canceled no new server starts (those stay pending with
+// OutcomeErr set), while a server whose write already began finishes its
+// write, verify and login probe.
 func Execute(ctx context.Context, plans []ServerPlan, w Writer, opts ExecOptions) {
 	if opts.Parallel < 1 {
 		opts.Parallel = 1
 	}
-	log := opts.logger()
-	held := opts.Held
-	sem := make(chan struct{}, opts.Parallel)
-	var inflight atomic.Int32
-	stop := context.AfterFunc(ctx, func() { interruptNotice(log, int(inflight.Load())) })
+	f := &fanout{plans: plans, w: w, opts: opts, log: opts.logger(), chain: opts.chain(), sem: make(chan struct{}, opts.Parallel)}
+	stop := context.AfterFunc(ctx, func() { interruptNotice(f.log, int(f.inflight.Load())) })
 	defer stop()
-	var wg sync.WaitGroup
-	for i := range plans {
-		if plans[i].Class != ClassChange {
+	for _, level := range writeLevels(plans, f.chain) {
+		f.level(ctx, level)
+	}
+}
+
+// writeLevels groups the change plans' indexes for Execute (spec S5 "Apply
+// write order"). A server's level is the most hops any planned server's
+// chain puts between them, so servers nobody goes through come first and
+// the deepest bastion last; A via B via C keeps C after A even when B is
+// converged. With no via: one level, in plans order. Empty levels are kept
+// and cost nothing.
+func writeLevels(plans []ServerPlan, chain func(config.Server) []string) [][]int {
+	depth := make(map[string]int)
+	for _, p := range plans {
+		c := chain(p.Server)
+		for i, hop := range c {
+			depth[hop] = max(depth[hop], len(c)-i)
+		}
+	}
+	var levels [][]int
+	for i, p := range plans {
+		if p.Class != ClassChange {
 			continue
 		}
+		d := depth[p.Server.Name]
+		for len(levels) <= d {
+			levels = append(levels, nil)
+		}
+		levels[d] = append(levels[d], i)
+	}
+	return levels
+}
+
+// fanout is one Execute run's shared state.
+type fanout struct {
+	plans    []ServerPlan
+	w        Writer
+	opts     ExecOptions
+	log      *slog.Logger
+	chain    func(config.Server) []string
+	sem      chan struct{}
+	hops     fleet.HopLimiter
+	inflight atomic.Int32
+}
+
+// level writes one level's plans and returns when every one has finished.
+func (f *fanout) level(ctx context.Context, idx []int) {
+	var wg sync.WaitGroup
+	for _, i := range idx {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				plans[i].OutcomeErr = errInterrupted
-				return
-			}
-			defer func() { <-sem }()
-			if ctx.Err() != nil { // both select cases were ready
-				plans[i].OutcomeErr = errInterrupted
-				return
-			}
-			inflight.Add(1)
-			defer inflight.Add(-1)
-			applyOne(ctx, &plans[i], w, held, opts.PerServerTimeout, log)
+			f.one(ctx, &f.plans[i])
 		}()
 	}
 	wg.Wait()
+}
+
+// one takes the server's bastion slots — two per bastion, since the login
+// probe opens a second hop connection while the write's stays open — then a
+// pool slot, then writes. Both waits come before applyOne starts the
+// per-server budget, and the bastion slots before the pool slot, so a queue
+// behind one bastion neither burns timeouts nor idles the pool. Ctrl-C while
+// waiting leaves the server pending.
+func (f *fanout) one(ctx context.Context, p *ServerPlan) {
+	release, err := f.hops.Acquire(ctx, f.chain(p.Server), 2)
+	if err != nil {
+		p.OutcomeErr = errInterrupted
+		return
+	}
+	defer release()
+	select {
+	case f.sem <- struct{}{}:
+	case <-ctx.Done():
+		p.OutcomeErr = errInterrupted
+		return
+	}
+	defer func() { <-f.sem }()
+	if ctx.Err() != nil { // both select cases were ready
+		p.OutcomeErr = errInterrupted
+		return
+	}
+	f.inflight.Add(1)
+	defer f.inflight.Add(-1)
+	applyOne(ctx, p, f.w, f.opts.Held, f.opts.PerServerTimeout, f.log)
 }
 
 // interruptNotice tells the operator what the first Ctrl-C will not stop.
@@ -143,6 +216,7 @@ func requestFor(p *ServerPlan, surviving []authkeys.Key, held []fleet.HeldKey, l
 	return fleet.WriteRequest{
 		Content: p.Rendered, Expect: p.Expect, Survivors: fps,
 		DisableKeys2: p.DisableKeys2(), SkipWrite: p.KeysUnchanged(), HeadlessProof: proof,
+		ProbeForward: p.ProbeForward,
 		OnWarning: func(cause string) {
 			text := headlessWarning(paths, collapse(cause))
 			p.Warnings = append(p.Warnings, text)

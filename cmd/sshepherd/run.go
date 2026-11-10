@@ -225,8 +225,9 @@ const exitCodesWrite = `Exit codes:
      authorized_keys or authorized_keys2 after a rejected login check failed,
      or the reconnect after the upload started was refused), a rollback that
      put back a key on the revoked: list, a changed or @revoked host key or a
-     changed host key type at the post-write login check, or revoke/rotate
-     --sweep found a revoked key still installed
+     changed host key type at the post-write login check (the server's own; a
+     bastion's is 1), or revoke/rotate --sweep found a revoked key still
+     installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
      that would keep a policy conflict or add a weak key, a failed serial
      save, or refused before anything was saved or written`

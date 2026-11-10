@@ -1,7 +1,7 @@
 # Design: access model and fleet reach
 
 - **Date:** 2026-11-08
-- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
+- **Status:** Approved (owner, 2026-11-08). S1 built (plan 2026-11-09-p10-s1-validate-audit-server), S2 built (plan 2026-11-09-p10-s2-flag-renames), S8 built (plan 2026-11-09-p10-s8-import-adopt-json), S3a built (plan 2026-11-09-p10-s3a-server-tags), S3b built (plan 2026-11-09-p10-s3b-user-groups), S4 built (plan 2026-11-09-p10-s4-protected), S5 built (plan 2026-11-10-p10-s5-bastions); the other slices are not built: each slice gets its own plan and the owner's go-ahead.
 - **Implementation:** W5+, one slice at a time. Nothing here is built before approval.
 - **Findings:** PRD-3, PRD-4, PRD-7, PRD-8 (MEDIUM) and PRD-5, PRD-6, PRD-11, UX-7 (LOW)
   from the 2026-11-07 whole-repo review.
@@ -864,6 +864,8 @@ overlap today.
   when `Client` is nil. Every failure exit in `ConnectWith` after `dialTarget` closes the
   hop, and `goleak` proves it.
 
+`ConnectOptions.SessionTimeout` moves the hop's socket deadline along with the target's (`Conn.setDeadline`): a tunnel ignores `SetDeadline`, and without it the login probe's exec would die at the dial bound and read as a rejection.
+
 The hop offers keys under D17: those granted on the bastion plus operator keys, falling
 back to all loaded keys with a warning. Until P09-impl lands it uses today's order
 through `Dialer.PreferKeys(hopSrv)`: granted keys first, then every other held key. A
@@ -923,10 +925,11 @@ The post-write probe on a bastion also opens `direct-tcpip` to one dependent and
 it at once (`fleet.WriteRequest.ProbeForward`). Only an `ssh.Prohibited` rejection fails
 the probe and restores the file. A connection failure to the dependent is the
 dependent's problem and does not.
+The static rule checks that some survivor may forward; the forward probe runs on the login check's connection, which offers the survivors in the hop's own order, so a first key that logs in but may not forward is caught there (restore). The guard is not re-run after the prompt; the probe covers a key that vanished meanwhile.
 
 **Errors.** One unreachable bastion makes each dependent `unreachable`, with the root
 cause `via bastion-eu: …`. The error keeps its `fleet.ErrorKind`. `sshconn.Error` gains
-`HopStage` (the hop's name), set on any failure reaching the hop or opening the forward;
+`HopStage` (the hop's name), set on any failure connecting to the hop and on a `Prohibited` forward; a forward the bastion opens but cannot complete (`ConnectionFailed`) is the server's own `dial` failure with no `via_failed` and the hint `HopDialHint`: `the bastion could not reach this server; check that it is up and reachable from the bastion` (`DialHint`'s `needs via:` advice would be wrong for a server that has one);
 domain code reads it through a new `fleet` interface, because P14 forbids it the
 transport import. JSON adds `via_failed: "bastion-eu"` on each dependent, omitted when
 empty.
@@ -936,6 +939,7 @@ A changed or `@revoked` host key on the hop is **exit 2 for audit only**. `apply
 server today. One changed bastion key would otherwise read as N impersonations, so
 `host_key_alerts` counts one alert per distinct failing hop: a server with `via_failed`
 adds none of its own.
+At the post-write login check, too, only the server's own changed key is exit 2; a bastion's is UNPROVEN, exit 1 (needsHuman reads fleet.FailedHopOf). The write commands' exit footer says so.
 
 A probe failure at the hop stage means "could not check". There is no restore, the
 outcome is `failed`, exit 1, and it is never `lockout_unrestored`: restoring a good file
@@ -952,6 +956,7 @@ and its mirrored goldens change.
 would run from the operator's machine. It prints the scan through the hop and labels it:
 `ssh -p 22 jump@bastion.example.com ssh-keyscan -t ed25519 -p 22 10.0.5.5 | ssh-keygen -lf -`
 (as seen by the bastion; still compare with the console).
+A word that is not plain ([A-Za-z0-9._:@,-]) is quoted for the local shell and, on the bastion's side, quoted twice; outer bastions of a deeper chain go in one -J user@host:port,…. The direct form is unchanged.
 
 **Import.** `Host.Proxy` of `ProxyJump a,b` means target `via: b` and `b` `via: a`. The
 chain maps when every hop resolves to an imported or manifest server, by alias or by
@@ -972,11 +977,26 @@ treated the same way. A user left with no servers gets no access entry. A hop th
 a host dropped this way is not mapped (`proxy_not_mapped`). `ServerAdd` gains `Via`, and
 both `config.Server{...}` builders (`generateManifest`, `renderMergedImport`) carry it.
 
+One route per address binds `import` too: a later host at the same `host:port` as a kept
+one, over a different route and with any user, is dropped the same way, its access not
+moved:
+`server "app" in the ssh config is at the same address as "web" but takes a different route — skipped, and its access is not moved; every entry at one address must use the same route`.
+The route model: a host's own route counts (a direct host has parent `""`, an unmapped
+proxy `?`, a manifest server its manifest `via`); a chain `a,b` needs `b`'s parent to be
+`a` and the target's to be `b`, and its first hop keeps its own route (OpenSSH connects a
+`-J` hop with that hop's own config). A hop resolves by alias, or by host and port (22
+when unset) and user (any when unset) to exactly one server; an explicit `user@` or
+`:port` must match. `ssh://` URIs and `ProxyCommand` are not mapped. Under `--merge`, a
+grant on a `jump_only` server is not added; an info-level note says so once per server.
+`import --json`'s `new_servers[]` carry `via`. A new server whose bastion was not
+appended loses its `via` with a `proxy_not_mapped` warning.
+
 **JSON.** `via` is additive on audit's per-server object, omitted when empty. A
 `jump_only` server has `status: "jump_only"` in audit and `class: "jump_only"` with
 `outcome: null` in apply, with empty key lists. `summary.jump_only` (additive, omitted
 when 0) counts them in both, and `summary.servers` includes them. No manifest has the
 flag today, so existing goldens hold.
+`sweep.jump_only` (additive, omitted when empty) lists the servers `--sweep` did not read. Text: audit's row `NAME (USER@HOST:PORT)  jump only (not audited: nothing reads its authorized_keys)`, apply's `… jump only (never read or written)`, a ` · N jump only` summary segment when N > 0, and ` via NAME` inside a via server's head parentheses.
 
 **Tombstones.** No new rule. `via` is reachability, not access, so a tombstone on a
 bastion only affects that bastion's own `authorized_keys`. The hop offers keys under
@@ -989,8 +1009,10 @@ interface, `WriteRequest.ProbeForward`),
 `internal/sshconn/{connect.go,hostkey.go,errors.go,sshtest/sshtest.go}`,
 `internal/sshread`, `internal/sshwrite` (hop-stage probe, forward probe),
 `internal/audit/{audit,report,json}.go`, `internal/apply/{exec,plan,report,json}.go`,
-`internal/manifest/edit.go`, `internal/sshcfg`, `internal/reconcile`,
-`cmd/sshepherd/{import,fleet,adopt,sweep}.go`, `cmd/sshepherd/schema_roundtrip_test.go`,
+`internal/manifest/edit.go` (test only: `selectorReach` asks `config.SelectorMatches`),
+`internal/authkeys/forward.go`, `internal/workflow/workflow.go`, `internal/sshcfg`,
+`internal/reconcile`, `cmd/sshepherd/{import,import_json,fleet,adopt,sweep,apply,run}.go`,
+`cmd/sshepherd/schema_roundtrip_test.go`,
 `scripts/integration.sh`, README.
 
 **README.** **Requirements** ("Direct reachability" rewritten, including how to record a
@@ -1304,7 +1326,7 @@ same commit, then an independent verifier, then repair.
 | S3a | A: `internal/config` and the consumer tests · B: `internal/manifest`, `revoke.go` · C: `import.go` (B and C after A: the runner compiles each lane on earlier rounds) |
 | S3b | A: `internal/config` and the consumer tests · B (after A): `internal/manifest`, `group_reach.go`, `internal/apply/{edit,json}.go`, `revoke.go`, `adopt.go` (a group manifest needs both editor and schema, so one lane) |
 | S4 | A: `internal/config` · B (after A): `internal/audit` · C (after B, whose critical tier its E2E asserts): `internal/apply`, `internal/reconcile`, `editrun.go`, `revoke.go`, `rotate.go`, `run.go` |
-| S5 | A: `internal/config`, `internal/fleet`, `internal/manifest/edit.go` · B: `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit/{audit,report,json}.go` · C: `internal/sshcfg`, `internal/reconcile`, `import.go` · D: `internal/apply/{exec,plan,report,json}.go`, `adopt.go`, `sweep.go` · integrator: `scripts/integration.sh` |
+| S5 | A: `internal/config` · B (after A): `internal/fleet`, `internal/sshconn`, `sshtest`, `internal/sshread`, `internal/sshwrite`, `internal/audit`, the `DialHint` mirrors in `internal/apply`, `cmd/sshepherd/{fleet,apply,sweep,run}.go`, `scripts/integration.sh` · C (beside B): `internal/sshcfg`, `internal/reconcile`, `import.go`, `import_json.go` · D (after B): `internal/apply`, `internal/authkeys/forward.go`, `internal/workflow`, `adopt.go`, `sweep.go`, `run.go` |
 | S6 | A: `internal/config` · B: `internal/authkeys/render.go`, `internal/apply` · C: `internal/audit`, `internal/adopt` |
 | S7 | A: `internal/authkeys/options.go`, `internal/config` · B: `internal/audit`, `conflicts.go`, `editrun.go`, `adopt.go`, `import.go` · integrator: tests and README |
 

@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": true,
+  "edit": null,
+  "summary": {
+    "servers": 3,
+    "skipped": 0,
+    "converged": 0,
+    "applied": 0,
+    "pending": 2,
+    "failed": 0,
+    "refused": 0,
+    "unreachable": 0,
+    "unproven": 0,
+    "lockout_unrestored": 0,
+    "jump_only": 1,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "bastion-eu",
+      "host": "bastion.example.com",
+      "port": 22,
+      "user": "jump",
+      "class": "jump_only",
+      "outcome": null,
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-1",
+      "host": "10.0.1.5",
+      "port": 22,
+      "user": "deploy",
+      "via": "bastion-eu",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "comment": "op",
+            "operator": true
+          }
+        ],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.1.6",
+      "port": 22,
+      "user": "deploy",
+      "via": "bastion-eu",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [
+          {
+            "owner": "op",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "comment": "op",
+            "operator": true
+          }
+        ],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    }
+  ]
+}

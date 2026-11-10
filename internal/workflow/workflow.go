@@ -203,6 +203,7 @@ func confirmAndWrite(ctx context.Context, req Request, out Outcome, toWrite int)
 	if toWrite > 0 {
 		apply.Execute(ctx, out.Plans, req.Writer, apply.ExecOptions{
 			Parallel: req.Parallel, PerServerTimeout: req.PerServerTimeout, Held: fresh, Logger: req.Log,
+			Chain: req.Cfg.Chain,
 		})
 		if n := apply.Interrupted(out.Plans); n > 0 {
 			req.Log.Error("interrupted: " + apply.Plural(n, "server", "servers") + " not started (nothing written there); started writes finished")

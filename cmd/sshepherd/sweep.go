@@ -102,6 +102,10 @@ func classifySweep(results []audit.ServerResult, tombs []config.Tombstone) apply
 	}
 	var rep apply.SweepReport
 	for _, r := range results {
+		if r.Server.JumpOnly {
+			rep.JumpOnly = append(rep.JumpOnly, r.Server.Name) // audit.Run listed it without a read
+			continue
+		}
 		if r.Err != nil && fleet.ErrorKindOf(r.Err) == fleet.ErrorKindCanceled {
 			rep.Unprovable = append(rep.Unprovable, apply.SweepUnprovable{Server: r.Server.Name, Reason: sweepInterrupted})
 			continue
@@ -194,6 +198,9 @@ func renderSweep(w io.Writer, rep apply.SweepReport, cfg *config.Config, h follo
 	}
 	for _, u := range rep.Unprovable {
 		fmt.Fprintf(w, "cannot prove removal on %s (%s)\n", u.Server, u.Reason)
+	}
+	for _, s := range rep.JumpOnly {
+		fmt.Fprintf(w, "not swept: %s (jump only)\n", s)
 	}
 	holding := map[string]bool{}
 	for _, hit := range rep.StillInstalled {

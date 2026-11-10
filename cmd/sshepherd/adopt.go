@@ -266,6 +266,13 @@ type adoptRun struct {
 	opts   adoptOpts
 }
 
+// managedServers is every server adopt reads: a jump_only server is a
+// tunnel that is never read, so it is not part of "read X of N" and never
+// unreadable (spec S5). The emitted manifest still carries it.
+func managedServers(servers []config.Server) []config.Server {
+	return slices.DeleteFunc(slices.Clone(servers), func(s config.Server) bool { return s.JumpOnly })
+}
+
 func (r *adoptRun) run(ctx context.Context) error {
 	ids, err := r.cf.validate()
 	if err != nil {
@@ -276,14 +283,15 @@ func (r *adoptRun) run(ctx context.Context) error {
 		return err
 	}
 	logManifest(r.log, cfg)
-	results, err := readFleet(ctx, r.log, cfg, cfg.Servers, r.cf, ids, "reading")
+	targets := managedServers(cfg.Servers)
+	results, err := readFleet(ctx, r.log, cfg, targets, r.cf, ids, "reading")
 	if err != nil {
 		return err
 	}
 	plan := adopt.Build(cfg, results)
 	unreadable := plan.UnreadableServers()
 	partly := partlyRead(unreadable, results)
-	rep := adopt.Report{Mode: adopt.ModeGenerate, Servers: len(cfg.Servers), Read: fleetReadCount(results), PartlyRead: len(partly)}
+	rep := adopt.Report{Mode: adopt.ModeGenerate, Servers: len(targets), Read: fleetReadCount(results), PartlyRead: len(partly)}
 	if r.opts.merge {
 		rep.Mode = adopt.ModeMerge
 	}

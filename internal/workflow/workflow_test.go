@@ -33,6 +33,47 @@ func (r *rec) add(e string) {
 	r.events = append(r.events, e)
 }
 
+// slowFirstWriter records writes; a's write is slow, so without levels b
+// would be recorded first.
+type slowFirstWriter struct{ r *rec }
+
+func (w slowFirstWriter) Apply(_ context.Context, s config.Server, _ fleet.WriteRequest) error {
+	if s.Name == "a" {
+		time.Sleep(100 * time.Millisecond)
+	}
+	w.r.add("write:" + s.Name)
+	return nil
+}
+
+// TestApplyWritesDependentsFirst: the workflow hands Execute the fleet's
+// chains, so a server's bastion is written after it.
+func TestApplyWritesDependentsFirst(t *testing.T) {
+	r := &rec{}
+	req := fixture(t, r)
+	line := testkeys.Line(t, 1)
+	cfg, err := config.Parse([]byte("users:\n  - {name: alice, keys: [\"" + line + "\"]}\n" +
+		"servers:\n  - {name: b, host: 10.0.0.2, user: jump}\n  - {name: a, host: 10.0.0.1, user: deploy, via: b}\n" +
+		"access:\n  - {user: alice, servers: [a, b]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Cfg, req.Servers = cfg, cfg.Servers
+	req.Reader = fakeReader{content: map[string]string{"a": "", "b": ""}}
+	req.Writer = slowFirstWriter{r}
+	if _, err := Apply(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var writes []string
+	for _, e := range r.events {
+		if strings.HasPrefix(e, "write:") {
+			writes = append(writes, e)
+		}
+	}
+	if !slices.Equal(writes, []string{"write:a", "write:b"}) {
+		t.Errorf("writes = %v, want a before its bastion b", writes)
+	}
+}
+
 // fakeReader serves each server's file by name; a missing name is an
 // unreachable server. onRead, when set, runs before every read.
 type fakeReader struct {

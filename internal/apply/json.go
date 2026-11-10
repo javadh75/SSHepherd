@@ -76,7 +76,10 @@ type jsonSummary struct {
 	// Unproven and LockoutUnrestored are additive (schema stays 1).
 	Unproven          int `json:"unproven"`
 	LockoutUnrestored int `json:"lockout_unrestored"`
-	ExitCode          int `json:"exit_code"`
+	// JumpOnly is additive (schema stays 1): jump_only servers, listed and
+	// never written (spec S5). Omitted when zero.
+	JumpOnly int `json:"jump_only,omitempty"`
+	ExitCode int `json:"exit_code"`
 }
 
 type jsonEdit struct {
@@ -137,15 +140,22 @@ type jsonEmptied struct {
 }
 
 type jsonServer struct {
-	Name               string  `json:"name"`
-	Host               string  `json:"host"`
-	Port               int     `json:"port"`
-	User               string  `json:"user"`
-	AuthorizedKeysFile string  `json:"authorized_keys_file,omitempty"`
-	Class              string  `json:"class"`
-	Outcome            *string `json:"outcome"`
-	Error              *string `json:"error"`
-	ErrorKind          string  `json:"error_kind,omitempty"`
+	Name               string `json:"name"`
+	Host               string `json:"host"`
+	Port               int    `json:"port"`
+	User               string `json:"user"`
+	AuthorizedKeysFile string `json:"authorized_keys_file,omitempty"`
+	// Via is additive-optional (schema stays 1): the bastion the manifest
+	// reaches this server through. Omitted for a direct server.
+	Via       string  `json:"via,omitempty"`
+	Class     string  `json:"class"`
+	Outcome   *string `json:"outcome"`
+	Error     *string `json:"error"`
+	ErrorKind string  `json:"error_kind,omitempty"`
+	// ViaFailed is additive-optional (schema stays 1): the bastion where
+	// this server's connection failed (phase-1 read or the write). Omitted
+	// when no bastion was at fault.
+	ViaFailed string `json:"via_failed,omitempty"`
 	// Hint is additive-optional (schema stays 1): operator remediation for
 	// error (unreachable or phase-2 failure), sanitized; never part of error.
 	Hint                    string      `json:"hint,omitempty"`
@@ -268,7 +278,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, plans []ServerPlan, opts JSONOp
 			Servers: len(plans), Skipped: opts.Skipped,
 			Converged: c.converged, Applied: c.applied, Pending: c.pending,
 			Failed: c.failed, Refused: c.refused, Unreachable: c.unreachable,
-			Unproven: c.unproven, LockoutUnrestored: c.lockout,
+			Unproven: c.unproven, LockoutUnrestored: c.lockout, JumpOnly: c.jumpOnly,
 			ExitCode: max(ExitCode(plans), opts.Sweep.ExitCode()),
 		},
 		Servers: make([]jsonServer, 0, len(plans)),
@@ -381,6 +391,18 @@ func jsonEditFor(s EditSummary, saved bool) *jsonEdit {
 	return e
 }
 
+// viaFailedOf is the bastion where the server's connection failed: the
+// phase-1 read's for an unreachable server, the write's for a change.
+func viaFailedOf(p ServerPlan) string {
+	switch p.Class {
+	case ClassUnreachable:
+		return fleet.FailedHopOf(p.Err)
+	case ClassChange:
+		return fleet.FailedHopOf(p.OutcomeErr)
+	}
+	return ""
+}
+
 // jsonServerFor maps one plan. changes is always fully present (arrays [],
 // never null) so consumers read the same shape on every class.
 func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServer {
@@ -390,6 +412,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 		Port:               p.Server.Port,
 		User:               p.Server.User,
 		AuthorizedKeysFile: p.Server.AuthorizedKeysFile,
+		Via:                p.Server.Via,
 		Class:              string(p.Class),
 		Changes: jsonChanges{
 			Add:     []jsonKey{},
@@ -424,6 +447,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 		s.Outcome = &outcome
 	}
 	s.Error, s.ErrorKind, s.Hint = jsonErrorFor(cfg, opts, p)
+	s.ViaFailed = viaFailedOf(p)
 	for _, k := range p.Add {
 		jk := jsonKeyFor(cfg, opts.Former, k)
 		if u, ok := cfg.OwnerOf(k.Fingerprint); ok {

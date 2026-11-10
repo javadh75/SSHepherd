@@ -9,6 +9,10 @@ type SweepReport struct {
 	StillInstalled []SweepHit        `json:"still_installed"`
 	Unreachable    []string          `json:"unreachable"`
 	Unprovable     []SweepUnprovable `json:"unprovable"`
+	// JumpOnly lists the jump_only servers the sweep did not read (spec S5):
+	// printed as "not swept", never an exit change. Additive (schema stays
+	// 1), omitted when empty.
+	JumpOnly []string `json:"jump_only,omitempty"`
 }
 
 // SweepHit is a revoked key still installed on Server, in File

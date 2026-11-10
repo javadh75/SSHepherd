@@ -1,0 +1,11 @@
+bastion-eu (jump@bastion.example.com:22)  jump only (never read or written)
+
+web-1 (deploy@10.0.1.5:22 via bastion-eu)
+  +  op  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  add (authorized, missing)
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
+
+web-2 (deploy@10.0.1.6:22 via bastion-eu)
+  +  op  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  add (authorized, missing)
+  → 1 key desired · 1 add · 0 remove · 0 rewrite
+
+Summary: 0/3 servers converged · 2 pending · 1 jump only  → exit 1

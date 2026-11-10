@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,6 +18,25 @@ import (
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// TestSweepSkipsJumpOnly: a jump_only server is not read, not counted as
+// checked, and printed as not swept; the exit is unchanged (spec S5).
+func TestSweepSkipsJumpOnly(t *testing.T) {
+	tomb := config.Tombstone{Fingerprint: mustKey(t, 2).Fingerprint, User: "bob", Date: "2026-11-10"}
+	rep := classifySweep([]audit.ServerResult{{Server: config.Server{Name: "bastion-eu", JumpOnly: true}}}, []config.Tombstone{tomb})
+	if rep.Checked != 0 || !slices.Equal(rep.JumpOnly, []string{"bastion-eu"}) || rep.ExitCode() != 0 {
+		t.Fatalf("rep = %+v (exit %d), want bastion-eu not swept and exit 0", rep, rep.ExitCode())
+	}
+	cfg, err := config.Parse([]byte("users: []\nservers:\n  - {name: bastion-eu, host: b, user: jump, jump_only: true}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	renderSweep(&b, rep, cfg, followUp{}, 1)
+	if want := "not swept: bastion-eu (jump only)\nswept 0 of 1 server: 0 still have a revoked key, 0 unreachable\n"; b.String() != want {
+		t.Errorf("got:\n%s\nwant:\n%s", b.String(), want)
+	}
+}
 
 func mustKey(t *testing.T, seed byte) authkeys.Key {
 	t.Helper()

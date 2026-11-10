@@ -192,6 +192,7 @@ test that fails before the fix and passes after.
   `TestE2EStaleManifestRefused` (an old copy refused on every affected server, including
   a header-only one) and `TestE2EStaleManifestAfterHandEdit` (D4b).
   `TestE2ERevokeRollbackRestoresRevokedKey` drives a refused login check to a rollback that puts a revoked key back (exit 2).
+  `TestE2EBastion` drives apply and audit through A as a bastion to C, a `jump_only` bastion with a nologin shell, a changed bastion key (audit 2, apply 1), a refused forward and the forwarding guard.
 - **Fuzz** — native `go test -fuzz` on all parsers (`authorized_keys`, SSH public keys); keep a
   seed corpus in the repo and run fuzzing in CI on a schedule (prime crash/injection surface).
   `make fuzz` discovers every `Fuzz*` target (`make fuzz-list`, via `go test -list '^Fuzz'`),
@@ -577,7 +578,7 @@ scanner images are pinned in Dependabot-visible `ci/images/*.Dockerfile`; the sm
 runs hardened; an informational `bench` job reports benchstat deltas; and tagged
 releases attach signed `linux`/`darwin` `amd64`/`arm64` binaries with `SHA256SUMS`
 (D7 = 1).
-Fuzz oracles and corpus (P13, round 2): every one of the 23 `Fuzz*` targets has a
+Fuzz oracles and corpus (P13, round 2): every one of the 24 `Fuzz*` targets has a
 committed seed corpus, and `FuzzWriteCmds` proves the target path cannot change its
 write script outside the `PathAssign` token.
 Distro matrix (P13, round 2): integration and E2E run against two sshd containers on
@@ -775,3 +776,12 @@ config name for different machines; anything else warns `proxy_not_mapped`). `Co
 ways drops the later host without moving its grants (OP7). Merge adds no grant on a `jump_only`
 server (a note), and the fleet set behind `*` compaction leaves it out; `import --json`'s
 `new_servers` gain `via`. `FuzzParseJump` is the 24th `Fuzz*` target.
+`apply.Execute` writes in levels (`writeLevels` from `ExecOptions.Chain` = `cfg.Chain`, wired in
+`workflow`): dependents first, deepest bastion last; a write takes two `fleet.HopLimiter` slots per
+bastion before its pool slot and budget. `ClassJumpOnly` is listed, never written, guarded or probed,
+and never changes an exit code; `forwardRefusal` (`authkeys.Forwards`: `no-port-forwarding`,
+`restrict` without `port-forwarding`, `permitopen=`) refuses a managed bastion write no surviving
+held key may forward through; `ServerPlan.ProbeForward` feeds the post-write forward probe.
+`needsHuman` excludes a bastion's host-key alarm (exit 1). `adopt` reads only non-`jump_only`
+servers; `--sweep` prints `not swept: NAME (jump only)` (`sweep.jump_only`). `TestE2EBastion` is the
+E2E (container C behind A; accounts `jump`, `jumpnl`, `jumpnofwd`, `hope2e`, `hopped`).

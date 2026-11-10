@@ -117,8 +117,11 @@ func Render(w io.Writer, cfg *config.Config, plans []ServerPlan, opts RenderOpti
 	pal := palette{on: opts.Color}
 	var hints audit.Hints
 	for _, p := range plans {
-		head := fmt.Sprintf("%s (%s@%s:%d)", p.Server.Name, p.Server.User, p.Server.Host, p.Server.Port)
+		head := audit.ServerHead(p.Server)
 		switch p.Class {
+		case ClassJumpOnly:
+			fmt.Fprintf(w, "%s  jump only (never read or written)\n", head)
+			fmt.Fprintln(w)
 		case ClassUnreachable:
 			tag, alert := audit.ErrorTag(p.Err)
 			code := codeRed
@@ -330,7 +333,7 @@ func normalizeDetail(n Normalize) string {
 // converged includes servers applied this run; refused counts plan
 // refusals and write refusals alike.
 type summaryCounts struct {
-	converged, applied, pending, refused, failed, unreachable, unproven, lockout int
+	converged, applied, pending, refused, failed, unreachable, unproven, lockout, jumpOnly int
 }
 
 func countSummary(plans []ServerPlan) summaryCounts {
@@ -343,6 +346,8 @@ func countSummary(plans []ServerPlan) summaryCounts {
 			c.refused++
 		case ClassUnreachable:
 			c.unreachable++
+		case ClassJumpOnly:
+			c.jumpOnly++
 		case ClassChange:
 			switch p.Outcome {
 			case OutcomeApplied:
@@ -389,7 +394,7 @@ func RenderSummary(w io.Writer, cfg *config.Config, plans []ServerPlan, opts Ren
 	for _, seg := range []struct {
 		n     int
 		label string
-	}{{c.pending, "pending"}, {c.failed, "failed"}, {c.refused, "refused"}, {c.unreachable, "unreachable"}, {c.unproven, "unproven"}, {c.lockout, "lockout not restored"}} {
+	}{{c.pending, "pending"}, {c.failed, "failed"}, {c.refused, "refused"}, {c.unreachable, "unreachable"}, {c.unproven, "unproven"}, {c.lockout, "lockout not restored"}, {c.jumpOnly, "jump only"}} {
 		if seg.n > 0 {
 			line += fmt.Sprintf(" · %d %s", seg.n, seg.label)
 		}
