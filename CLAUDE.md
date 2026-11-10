@@ -820,3 +820,10 @@ Apply prints `note: N externally managed lines kept` on a write and on a converg
 from the written file); `TestE2EPreserve` is the E2E (fixture account `presv`).
 S6 follow-up: `TestExternalWeakKey` pins the `WEAK` note on an externally managed row (after the
 ` · options:` suffix) and `key_issues` on JSON `keys.external` (mutants U11/U15), and `TestExternalKeyJSONIsSanitized` the sanitized comment and options there (U13/U14).
+**Owner follow-ups F1** (decided 2026-11-10; planned in
+`docs/superpowers/plans/2026-11-10-p10-f1-owner-followups.md`): a fresh `import -o FILE --force`
+also warns (kind `manifest_settings_dropped`, one line per kind, each ending with `--merge FILE`)
+when FILE holds `operator:`/`protected:` marks the fresh output does not carry (matched by key),
+`groups:`, server `authorized_keys_file:` overrides (owner-approved gap 4), `tags:`, `via:` routes it
+does not reproduce, `jump_only:` or `preserve:` rules (`cmd/sshepherd/import_settings.go`,
+`warnFreshDrops`).

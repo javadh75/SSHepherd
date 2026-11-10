@@ -87,6 +87,8 @@ Bastions: `via:` reaches a server through up to 3 bastions with strict `known_ho
 
 Co-managed accounts: `preserve:` on a server keeps another tool's lines (a forced `command=` or a comment, full-match RE2 rules), listed by audit as externally managed and written back by apply after the desired keys; owned, revoked and cert-authority keys are never kept (see [Co-managed accounts](#co-managed-accounts-preserve)).
 
+Owner follow-ups: a fresh `import -o FILE --force` warns, one line per kind, about the manifest-only settings it drops (`operator:`/`protected:` marks, `groups:`, `authorized_keys_file:`, `tags:`, `via:`, `jump_only:`, `preserve:`; kind `manifest_settings_dropped`).
+
 ## Install
 
 **From source** (Go 1.27.3+):
@@ -412,7 +414,7 @@ access:
     servers: ["@web"]
 ```
 
-A group names a set of users. An `access:` entry with `group:` grants every member, exactly as one entry per member would; `servers:` and `except:` work as they do for a user entry. A group name follows the tag rules, `^[a-z0-9][a-z0-9._-]{0,62}$`. Every member must be a user in the manifest, listed once. A group with no members is valid and warns, kind `empty_group`: `group "web-team" has no members; its grants add nothing`, so revoking the last member never breaks the manifest. A warning never changes an exit code, except that `validate --strict` exits `1`. `adopt` and `import` never create a group. `adopt` keeps them; `adopt --merge` and `import --merge` leave them as they are; a fresh `import -o FILE --force` replaces the file without them.
+A group names a set of users. An `access:` entry with `group:` grants every member, exactly as one entry per member would; `servers:` and `except:` work as they do for a user entry. A group name follows the tag rules, `^[a-z0-9][a-z0-9._-]{0,62}$`. Every member must be a user in the manifest, listed once. A group with no members is valid and warns, kind `empty_group`: `group "web-team" has no members; its grants add nothing`, so revoking the last member never breaks the manifest. A warning never changes an exit code, except that `validate --strict` exits `1`. `adopt` and `import` never create a group. `adopt` keeps them; `adopt --merge` and `import --merge` leave them as they are; a fresh `import -o FILE --force` replaces the file without them and warns.
 
 ### Per-server `authorized_keys_file`
 
@@ -1458,7 +1460,7 @@ are never read. Run it where you actually `ssh` from.
 | `--merge FILE` | — | Merge into `FILE`: preserve its text and append what is new |
 | `--json` | off | Machine-readable report on stdout (schema 1); the manifest goes to `-o`, or into the report's `manifest` field |
 
-`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. A manifest that is not UTF-8 (a `--merge` with nothing to add returns a UTF-16 file's bytes unchanged) cannot go into a JSON string, so without `-o` the run exits `3` and writes no report; with `-o` the file gets the bytes unchanged. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds (`new_servers[].via` names the bastion a mapped `ProxyJump` puts the server behind; omitted when empty, additive, schema 1), and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped`; ignore kinds you do not know.
+`--json` replaces the manifest on stdout with one report (schema 1), and changes nothing else: logs stay on stderr and the manifest bytes match a plain run exactly. With `-o` the manifest goes to the file and the report has `output`; without it the report has `manifest`, so `sshepherd import --json | jq -j .manifest` prints what a plain run prints. A manifest that is not UTF-8 (a `--merge` with nothing to add returns a UTF-16 file's bytes unchanged) cannot go into a JSON string, so without `-o` the run exits `3` and writes no report; with `-o` the file gets the bytes unchanged. Exit `0` writes a report; exit `3` writes none, only a message on stderr. `new_servers`, `new_users` and `extensions` list what the output adds (`new_servers[].via` names the bastion a mapped `ProxyJump` puts the server behind; omitted when empty, additive, schema 1), and `summary` counts what the ssh config yielded. `notes` are steady-state findings and are not counted in `summary.warnings`. `warnings` has the kinds `revoked_pub_skipped`, `revoked_access_skipped`, `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`, `merge_conflict`, `wildcard_grant`, `revocation_memory_dropped` and `manifest_settings_dropped`; ignore kinds you do not know.
 
 ```json
 {
@@ -1642,7 +1644,24 @@ different existing file overwritten with `--force` is still a new file (mode
 `0600`). A fresh `import -o FILE --force` without `--merge` over a manifest holding
 revocation memory warns
 `FILE holds revocation memory (serial N, M revoked: entries) that this fresh import drops: a revoked key could be re-granted; keep it with --merge FILE`
-and proceeds.
+and proceeds. It also warns, one line per kind of setting, when FILE holds
+manifest-only settings an ssh config cannot reproduce: `operator: true` and
+`protected: true` users the fresh output does not mark (users are matched by key, so
+`--operator-key` re-marks an operator), `groups:`, server `authorized_keys_file:`
+overrides, server `tags:`, `via:` routes the fresh output does not reproduce,
+`jump_only: true` servers and `preserve:` rules. Each line names what is lost and ends
+with `--merge FILE`. For example (real output,
+`import ssh_config --servers-only -o sshepherd.yaml --force`):
+
+```console
+warn: sshepherd.yaml holds authorized_keys_file: overrides on servers (gitea) that this fresh import drops: where they stay, apply and audit would use ~/.ssh/authorized_keys; keep them with --merge sshepherd.yaml
+warn: sshepherd.yaml holds preserve: rules on servers (gitea) that this fresh import drops: where they stay, apply would remove the lines they keep; keep them with --merge sshepherd.yaml
+```
+
+A server the fresh output does not list at all is named `NAME [not in this import]`:
+its setting is lost along with the server, and apply does not touch it. The warning
+does not cover hand-written `access:` entries or `except:` carve-outs. The run still
+exits 0. Without `--force` the run is refused as before and prints none of these lines.
 `--force` refuses a symlinked output path
 (`<path> is a symlink; refusing to replace it — pass the link's target path instead`).
 On filesystems without hard links (exFAT, some SMB/FUSE mounts) the no-`--force`

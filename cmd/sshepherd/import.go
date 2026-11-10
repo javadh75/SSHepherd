@@ -19,11 +19,12 @@ import (
 	"github.com/javadh75/SSHepherd/internal/sshcfg"
 )
 
-// warnMemoryLost: a fresh import replacing an existing manifest with -o
-// --force drops its serial: and revoked: entries, so every revoked key
-// could be re-granted. --force names the overwrite, so this warns rather
-// than refuses. Best effort: a missing or invalid file has nothing to lose.
-func warnMemoryLost(w *importWarnings, out string, force bool) {
+// warnFreshDrops: a fresh import replacing an existing manifest with -o
+// --force drops what the ssh config cannot reproduce: its revocation memory
+// and its manifest-only settings (F1 Q1). --force names the overwrite, so
+// this warns rather than refuses. Best effort: a missing or invalid file
+// has nothing to lose. fresh is the generated manifest.
+func warnFreshDrops(w *importWarnings, out string, force bool, fresh *config.Config) {
 	if out == "" || !force {
 		return
 	}
@@ -31,12 +32,22 @@ func warnMemoryLost(w *importWarnings, out string, force bool) {
 	if err != nil {
 		return
 	}
-	cfg, err := config.Parse(raw)
-	if err != nil || (cfg.Serial() == 0 && len(cfg.Tombstones) == 0) {
+	old, err := config.Parse(raw)
+	if err != nil {
+		return
+	}
+	warnMemoryLost(w, out, old)
+	warnSettingsLost(w, out, old, fresh)
+}
+
+// warnMemoryLost: FILE's serial: and revoked: entries go with it, so every
+// revoked key could be re-granted.
+func warnMemoryLost(w *importWarnings, out string, old *config.Config) {
+	if old.Serial() == 0 && len(old.Tombstones) == 0 {
 		return
 	}
 	w.addAll(importWarnMemoryDropped, fmt.Sprintf("%s holds revocation memory (serial %d, %s) that this fresh import drops: a revoked key could be re-granted; keep it with --merge %s",
-		out, cfg.Serial(), apply.Plural(len(cfg.Tombstones), "revoked: entry", "revoked: entries"), hintArg(out)))
+		out, old.Serial(), apply.Plural(len(old.Tombstones), "revoked: entry", "revoked: entries"), hintArg(out)))
 }
 
 // serverWorthy reports whether a resolved host can become a server entry
@@ -451,7 +462,7 @@ func (r *importRun) run(args []string) error {
 		return err
 	}
 	if r.opts.mergePath == "" {
-		warnMemoryLost(warns, r.opts.outPath, r.opts.force)
+		warnFreshDrops(warns, r.opts.outPath, r.opts.force, saved)
 	}
 	if !r.opts.json {
 		return emitManifest(r.stdout, m, r.opts.outPath, rendered, r.opts.force)

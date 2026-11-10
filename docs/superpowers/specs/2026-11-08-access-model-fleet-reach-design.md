@@ -449,7 +449,7 @@ kinds they do not know.
   `except_skipped`, `key_differs`, `comment_dropped`, `weak_key_skipped` (P09, added by the S8 plan).
 - import: `revoked_pub_skipped`, `revoked_access_skipped` (shapes from P04),
   `ssh_config`, `identity`, `unsafe_host`, `collapsed_target`, `proxy_not_mapped`,
-  `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped` (warnings that exist today, added by the S8 plan); a host with no `User` is `ssh_config`.
+  `merge_conflict`, `wildcard_grant` and `revocation_memory_dropped` (warnings that exist today, added by the S8 plan), and `manifest_settings_dropped` (F1 Q1, owner 2026-11-10); a host with no `User` is `ssh_config`.
 
 **Mechanics.** `adopt.Plan.Warnings` and `reconcile.Plan.Warnings` become structured
 (`Warning{Kind, Server, Fingerprint, User, Date, Message}` (`reconcile.Warning` also has P04's `Identity`)); stderr still prints

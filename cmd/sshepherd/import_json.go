@@ -17,12 +17,13 @@ import (
 // The warning kinds import assigns itself; reconcile assigns the rest.
 // Consumers ignore kinds they do not know.
 const (
-	importWarnSSHConfig     = "ssh_config"
-	importWarnIdentity      = "identity"
-	importWarnUnsafeHost    = "unsafe_host"
-	importWarnCollapsed     = "collapsed_target"
-	importWarnProxy         = "proxy_not_mapped"
-	importWarnMemoryDropped = "revocation_memory_dropped"
+	importWarnSSHConfig       = "ssh_config"
+	importWarnIdentity        = "identity"
+	importWarnUnsafeHost      = "unsafe_host"
+	importWarnCollapsed       = "collapsed_target"
+	importWarnProxy           = "proxy_not_mapped"
+	importWarnMemoryDropped   = "revocation_memory_dropped"
+	importWarnSettingsDropped = "manifest_settings_dropped"
 )
 
 // importWarnings is the one collector for import's warnings: each is logged
