@@ -464,8 +464,8 @@ dead-line reason, `--offer-all-keys` on the write dial and a held weak key throu
 `import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
-S1, S2, S8 and S3a are built; the other slices are not, and each gets its own plan and the
-owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
+S1, S2, S8, S3a, S3b, S4 and S5 are built; the other slices are not, and each gets its own
+plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0, 1 or 2 (specced in
@@ -776,6 +776,12 @@ config name for different machines; anything else warns `proxy_not_mapped`). `Co
 ways drops the later host without moving its grants (OP7). Merge adds no grant on a `jump_only`
 server (a note), and the fleet set behind `*` compaction leaves it out; `import --json`'s
 `new_servers` gain `via`. `FuzzParseJump` is the 24th `Fuzz*` target.
+The bastion forwarding guard follows sshd's option order (`authkeys.Forwards`: the last of
+`restrict`/`no-port-forwarding`/`port-forwarding` wins); a write's one reconnect that fails at a
+bastion (`fleet.FailedHopOf`) is an unknown state, never `lockout_unrestored`; the through-bastion
+keyscan hint falls back to `on bastion "NAME": ssh-keyscan …` when a hop user or host is not a
+plain word, and puts `--` before a target host with a leading `-`; `TestConnectThroughTwoBastions`
+covers a two-bastion chain.
 `apply.Execute` writes in levels (`writeLevels` from `ExecOptions.Chain` = `cfg.Chain`, wired in
 `workflow`): dependents first, deepest bastion last; a write takes two `fleet.HopLimiter` slots per
 bastion before its pool slot and budget. `ClassJumpOnly` is listed, never written, guarded or probed,

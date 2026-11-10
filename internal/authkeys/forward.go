@@ -7,28 +7,28 @@ import (
 
 // Forwards reports whether a key line with these options lets its session
 // open a direct-tcpip channel to host:port, the ssh -J that a via: server
-// relies on (spec S5): no no-port-forwarding, no restrict unless
-// port-forwarding re-enables it, and, when the line carries permitopen=
-// clauses, one names that host (or "*") and that port (or "*"). Hosts
-// compare as sshd compares them: literally, with no patterns and no name
-// lookup.
+// relies on (spec S5): forwarding still on after the line's options and,
+// when the line carries permitopen= clauses, one names that host (or "*")
+// and that port (or "*"). sshd applies the options in order, so the last
+// of restrict and no-port-forwarding (off) and port-forwarding (on) wins:
+// "port-forwarding,restrict" cannot forward, "restrict,port-forwarding"
+// can. Hosts compare as sshd compares them: literally, with no patterns
+// and no name lookup.
 func Forwards(opts []string, host string, port int) bool {
-	restricted, reenabled := false, false
+	forwarding := true
 	var permits []string
 	for _, o := range opts {
 		switch nameOf(o) {
-		case "no-port-forwarding":
-			return false
-		case "restrict":
-			restricted = true
+		case "no-port-forwarding", "restrict":
+			forwarding = false
 		case "port-forwarding":
-			reenabled = true
+			forwarding = true
 		case "permitopen":
 			_, v, _ := strings.Cut(o, "=")
 			permits = append(permits, strings.Trim(v, `"`))
 		}
 	}
-	if restricted && !reenabled {
+	if !forwarding {
 		return false
 	}
 	if len(permits) == 0 {

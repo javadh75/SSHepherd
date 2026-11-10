@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -106,16 +107,25 @@ func consoleFingerprintCmd(presented ssh.PublicKey) string {
 // keys go to ssh-keygen -lf - for display, never into the trust store. For
 // a server behind bastions (route, root first) the scan runs on its own
 // bastion, since the operator's machine cannot reach it, and is labelled as
-// that bastion's view; outer bastions go in one -J.
+// that bastion's view; outer bastions go in one -J. The hint is pasted into
+// the operator's shell, so a manifest value never stands where a command
+// reads options: a target host with a leading '-' follows "--", and a
+// route with a bastion user or host that is not a hopWord gets no local
+// ssh command at all, only the scan to run on the named bastion.
 func keyscanCompareCmd(presented ssh.PublicKey, srv config.Server, route []config.Server) string {
 	typ := ""
 	if presented != nil {
 		typ = "-t " + keyscanType(presented.Type()) + " " // x/crypto-parsed type: a fixed algorithm name
 	}
+	scan := "ssh-keyscan " + typ + "-p " + strconv.Itoa(srv.Port) + " " + endOfOptions(srv.Host)
 	if len(route) == 0 {
-		return "ssh-keyscan " + typ + "-p " + strconv.Itoa(srv.Port) + " " + ShQuote(srv.Host) + " | ssh-keygen -lf -"
+		return scan + ShQuote(srv.Host) + " | ssh-keygen -lf -"
 	}
+	const seen = " | ssh-keygen -lf - (as seen by the bastion; still compare with the console)"
 	hop := route[len(route)-1]
+	if slices.ContainsFunc(route, unsafeHop) {
+		return fmt.Sprintf("on bastion %q: %s%s%s", hop.Name, scan, localWord(srv.Host), seen)
+	}
 	jump := ""
 	if outer := route[:len(route)-1]; len(outer) > 0 {
 		hops := make([]string, 0, len(outer))
@@ -125,8 +135,25 @@ func keyscanCompareCmd(presented ssh.PublicKey, srv config.Server, route []confi
 		jump = "-J " + localWord(strings.Join(hops, ",")) + " "
 	}
 	return "ssh " + jump + "-p " + strconv.Itoa(hop.Port) + " " + localWord(hop.User+"@"+hop.Host) +
-		" ssh-keyscan " + typ + "-p " + strconv.Itoa(srv.Port) + " " + remoteWord(srv.Host) +
-		" | ssh-keygen -lf - (as seen by the bastion; still compare with the console)"
+		" " + scan + remoteWord(srv.Host) + seen
+}
+
+// hopWord is a bastion user or host the through-bastion command may carry
+// bare: no leading '-' (ssh would read it as an option), nothing a shell or
+// a ProxyJump spec (user@host:port,…) gives meaning to.
+var hopWord = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._:-]*$`)
+
+// unsafeHop reports whether a bastion's user or host is not a hopWord.
+func unsafeHop(h config.Server) bool {
+	return !hopWord.MatchString(h.User) || !hopWord.MatchString(h.Host)
+}
+
+// endOfOptions is "-- " before a host ssh-keyscan would read as an option.
+func endOfOptions(host string) string {
+	if strings.HasPrefix(host, "-") {
+		return "-- "
+	}
+	return ""
 }
 
 // plainWord is what every shell reads as one literal word: no globs, no

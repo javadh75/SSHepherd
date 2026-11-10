@@ -33,6 +33,30 @@ func TestKeyscanCompareCmdThroughBastion(t *testing.T) {
 			"ssh -J ops@edge.example.com:2200 -p 22 jump@bastion.example.com ssh-keyscan -t ed25519 -p 22 10.0.5.5" + label},
 		{"a host that is not a plain word", config.Server{Host: "db$(x)", Port: 22}, []config.Server{bastion},
 			`ssh -p 22 jump@bastion.example.com ssh-keyscan -t ed25519 -p 22 ''\''db$(x)'\'''` + label},
+		{"an IPv6 bastion", target, []config.Server{{Name: "b6", Host: "2001:db8::1", Port: 22, User: "jump"}},
+			"ssh -p 22 jump@2001:db8::1 ssh-keyscan -t ed25519 -p 22 10.0.5.5" + label},
+		// A bastion word that could be read as an ssh option (or that needs
+		// quoting ssh might undo in a ProxyJump command) is never pasted
+		// into a local ssh command: the scan is named, run on the bastion.
+		{"a bastion user that reads as an option", target,
+			[]config.Server{{Name: "bastion-eu", Host: "bastion.example.com", Port: 22, User: "-oProxyCommand=touch${IFS}/tmp/pwned"}},
+			`on bastion "bastion-eu": ssh-keyscan -t ed25519 -p 22 10.0.5.5` + label},
+		{"a plain bastion user with a leading dash", target,
+			[]config.Server{{Name: "bastion-eu", Host: "bastion.example.com", Port: 22, User: "-v"}},
+			`on bastion "bastion-eu": ssh-keyscan -t ed25519 -p 22 10.0.5.5` + label},
+		{"a bastion host with a leading dash", target,
+			[]config.Server{{Name: "bastion-eu", Host: "-oProxyCommand=x", Port: 22, User: "jump"}},
+			`on bastion "bastion-eu": ssh-keyscan -t ed25519 -p 22 10.0.5.5` + label},
+		{"an outer bastion that reads as an option", target,
+			[]config.Server{{Name: "edge", Host: "-edge", Port: 2200, User: "ops"}, bastion},
+			`on bastion "bastion-eu": ssh-keyscan -t ed25519 -p 22 10.0.5.5` + label},
+		{"an outer bastion user that needs quoting", target,
+			[]config.Server{{Name: "edge", Host: "edge.example.com", Port: 2200, User: "o$(x)"}, bastion},
+			`on bastion "bastion-eu": ssh-keyscan -t ed25519 -p 22 10.0.5.5` + label},
+		{"a target host with a leading dash", config.Server{Host: "-v.example.com", Port: 22}, []config.Server{bastion},
+			"ssh -p 22 jump@bastion.example.com ssh-keyscan -t ed25519 -p 22 -- -v.example.com" + label},
+		{"direct: a host with a leading dash", config.Server{Host: "-f/etc/hosts", Port: 22}, nil,
+			"ssh-keyscan -t ed25519 -p 22 -- '-f/etc/hosts' | ssh-keygen -lf -"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := keyscanCompareCmd(key, tt.srv, tt.route); got != tt.want {

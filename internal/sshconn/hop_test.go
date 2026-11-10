@@ -94,6 +94,95 @@ func TestConnectThroughHop(t *testing.T) {
 	}
 }
 
+// chainFixture puts an outer bastion "edge" in front of the hopFixture's
+// bastion (bastion via: edge), so web-1 is two bastions deep.
+type chainFixture struct {
+	hopFixture
+	edge    *sshtest.Server
+	edgeSrv config.Server
+	edgeKey ssh.Signer
+}
+
+func newChainFixture(t *testing.T, edgeCfg sshtest.ServerConfig) chainFixture {
+	t.Helper()
+	c := chainFixture{hopFixture: newHopFixture(t, sshtest.ServerConfig{}, sshtest.ServerConfig{Handle: sshtest.ShellHandler(t.TempDir())}),
+		edgeKey: sshtest.Signer(t, sshtest.Key(43))}
+	if edgeCfg.HostKeys == nil {
+		edgeCfg.HostKeys = []ssh.Signer{c.edgeKey}
+	}
+	edgeCfg.Authorized = []ssh.PublicKey{sshtest.Signer(t, sshtest.Key(1)).PublicKey()}
+	edgeCfg.Forward = sshtest.DialForward
+	c.edge = sshtest.NewServer(t, edgeCfg)
+	c.edgeSrv = config.Server{Name: "edge", Host: c.edge.Host, Port: c.edge.Port, User: "ops"}
+	c.hopSrv.Via = "edge"
+	c.kh = sshtest.KnownHostsFile(t, c.edge.KnownHostsLine(c.edgeKey.PublicKey()),
+		c.hop.KnownHostsLine(c.hopKey.PublicKey()), c.target.KnownHostsLine(c.targetKey.PublicKey()))
+	return c
+}
+
+func (c chainFixture) dialer() *Dialer {
+	d := c.hopFixture.dialer()
+	d.Server = func(name string) (config.Server, bool) {
+		switch name {
+		case c.hopSrv.Name:
+			return c.hopSrv, true
+		case c.edgeSrv.Name:
+			return c.edgeSrv, true
+		}
+		return config.Server{}, false
+	}
+	return d
+}
+
+// TestConnectThroughTwoBastions: a chain is walked hop by hop: the outer
+// bastion forwards only to the inner one, the inner one only to the target,
+// and neither runs anything.
+func TestConnectThroughTwoBastions(t *testing.T) {
+	c := newChainFixture(t, sshtest.ServerConfig{})
+	conn, err := c.dialer().Connect(ctxTimeout(t, 10*time.Second), c.targetSrv)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	code, stdout, _, err := Exec(context.Background(), conn.Client, `echo deep`, nil)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if code != 0 || stdout.String() != "deep\n" {
+		t.Fatalf("Exec = (%d, %q)", code, stdout.String())
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if got := c.edge.Forwards(); !slices.Equal(got, []string{c.hop.Addr()}) {
+		t.Errorf("edge forwards = %v, want only the inner bastion [%s]", got, c.hop.Addr())
+	}
+	if got := c.hop.Forwards(); !slices.Equal(got, []string{c.target.Addr()}) {
+		t.Errorf("bastion forwards = %v, want [%s]", got, c.target.Addr())
+	}
+	if cmds := append(c.edge.Commands(), c.hop.Commands()...); len(cmds) != 0 {
+		t.Errorf("a bastion ran %q; a hop runs nothing", cmds)
+	}
+}
+
+// TestConnectChainOuterFailure: a failure at the outer bastion names it as
+// the failed hop, keeps its kind, and reaches neither the inner bastion nor
+// the target.
+func TestConnectChainOuterFailure(t *testing.T) {
+	c := newChainFixture(t, sshtest.ServerConfig{})
+	c.kh = sshtest.KnownHostsFile(t, c.edge.KnownHostsLine(sshtest.Signer(t, sshtest.Key(42)).PublicKey()),
+		c.hop.KnownHostsLine(c.hopKey.PublicKey()), c.target.KnownHostsLine(c.targetKey.PublicKey()))
+	_, err := c.dialer().Connect(ctxTimeout(t, 5*time.Second), c.targetSrv)
+	if kindOf(t, err) != fleet.ErrorKindHostKeyChanged || fleet.FailedHopOf(err) != "edge" {
+		t.Fatalf("err = %v (kind %q, hop %q), want host_key_changed at edge", err, kindOf(t, err), fleet.FailedHopOf(err))
+	}
+	if !strings.HasPrefix(err.Error(), "via bastion: via edge: ") {
+		t.Errorf("error = %q, want both hops named outermost last", err)
+	}
+	if len(c.hop.Attempts())+len(c.target.Attempts()) != 0 {
+		t.Error("the chain went past a failed outer bastion")
+	}
+}
+
 // TestConnectThroughHopPassesHostnameToBastion: DNS for the target is the
 // bastion's: the client sends the hostname unresolved (spec S5, fact 3).
 func TestConnectThroughHopPassesHostnameToBastion(t *testing.T) {

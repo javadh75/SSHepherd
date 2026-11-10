@@ -71,6 +71,7 @@ func TestForwardGuard(t *testing.T) {
 		{"no-port-forwarding", "no-port-forwarding ", true},
 		{"restrict", "restrict ", true},
 		{"restrict with port-forwarding", "restrict,port-forwarding ", false},
+		{"port-forwarding before restrict", "port-forwarding,restrict ", true}, // sshd applies options in order
 		{"permitopen for one dependent only", `permitopen="10.0.1.5:22" `, true},
 		{"permitopen for both", `permitopen="10.0.1.5:22",permitopen="10.0.1.6:22" `, false},
 	} {
@@ -87,6 +88,19 @@ func TestForwardGuard(t *testing.T) {
 				t.Errorf("web-1 = %s %q: a dependent has no forwarding guard", w.Class, w.Refusal)
 			}
 		})
+	}
+}
+
+// TestForwardGuardJudgesOnlyHeldKeys: a forwarding key this run does not
+// hold cannot carry its writes through the bastion, so it does not satisfy
+// the guard next to a held key that cannot forward.
+func TestForwardGuardJudgesOnlyHeldKeys(t *testing.T) {
+	const refusal = "none of the surviving keys you hold may forward through bastion-eu (no-port-forwarding, restrict or permitopen=); this write would cut off web-1 and 1 more"
+	y := strings.Replace(bastionYAML(t, "restrict "), "users:\n",
+		"users:\n  - {name: ci, operator: true, keys: ['"+testkeys.Line(t, 2)+"']}\n", 1)
+	_, plans := bastionPlans(t, y) // holds key 1 only
+	if p := planNamed(t, plans, "bastion-eu"); p.Class != ClassRefused || p.Refusal != refusal {
+		t.Errorf("bastion plan = %s %q, want refused with %q", p.Class, p.Refusal, refusal)
 	}
 }
 

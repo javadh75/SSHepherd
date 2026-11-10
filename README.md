@@ -157,6 +157,9 @@ SSHepherd deliberately has a narrow, strict connection posture:
   the manifest uses (`10.0.1.5`, not the bastion's view of a hostname), verified out of
   band: on its console, or with the scan the `host_key_unknown` hint prints, which runs
   on the bastion (`ssh -p 22 jump@bastion.example.com ssh-keyscan … | ssh-keygen -lf -`).
+  If a bastion's user or host could be read as an ssh option or needs quoting (for
+  example a leading `-`), the hint gives no local ssh command. It names the scan to run
+  on that bastion instead (`on bastion "bastion-eu": ssh-keyscan … | ssh-keygen -lf -`).
 - **For `apply`, a POSIX userland on each server:** `/bin/sh` plus `id`, `ls`,
   `mkdir`, `dirname`, `cat`, `head`, `wc`, `mv`, `rm` and `cksum` (all present in
   busybox, coreutils and BSD userlands). Every remote command runs as
@@ -1978,7 +1981,8 @@ short are never passed off as unreachable).
 through, deepest bastion last, each level finished before the next, so a bad bastion
 write cannot strand its dependents' writes. A managed bastion must keep forwarding:
 the plan refuses a write that leaves no surviving key you hold allowed to forward to
-every dependent (`no-port-forwarding`, `restrict` without `port-forwarding`, or a
+every dependent (`no-port-forwarding` or `restrict` not followed by a later
+`port-forwarding` on the same line, since sshd applies a line's options in order, or a
 `permitopen=` that misses one), and the post-write login check on a bastion also
 opens a forward to one dependent; a refused forward restores the file. A `jump_only`
 bastion is listed as `jump only` and never written, guarded or probed. A login check

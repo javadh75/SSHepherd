@@ -235,6 +235,21 @@ func TestApplyReconnectAfterDrop(t *testing.T) {
 					t.Errorf("err = %q", err)
 				}
 			})
+			t.Run("a bastion refusing the reconnect is an unknown state, never a lockout", func(t *testing.T) {
+				// The hop's failure proves nothing about this server's file
+				// (spec S5): the bastion's auth kind is kept, never read as
+				// this server refusing the keys you hold.
+				hop := &sshconn.Error{Kind: fleet.ErrorKindAuth, HopStage: "bastion-eu", Err: errors.New("via bastion-eu: unable to authenticate")}
+				c := &seamedConnect{fullErrs: []error{hop}}
+				err := seamedWriter(script(), c).Apply(ctx, srv, req(content))
+				var lo *LockoutError
+				if errors.As(err, &lo) || err == nil || !strings.Contains(err.Error(), "unknown state") {
+					t.Fatalf("err = %v, want an unknown state, never a lockout", err)
+				}
+				if fleet.ErrorKindOf(err) != fleet.ErrorKindAuth || fleet.FailedHopOf(err) != "bastion-eu" {
+					t.Errorf("kind = %q, failed hop = %q; want auth at bastion-eu", fleet.ErrorKindOf(err), fleet.FailedHopOf(err))
+				}
+			})
 			t.Run("a reconnect that fails otherwise keeps its kind", func(t *testing.T) {
 				c := &seamedConnect{fullErrs: []error{kinded(fleet.ErrorKindHostKeyChanged, "host key changed")}}
 				err := seamedWriter(script(), c).Apply(ctx, srv, req(content))

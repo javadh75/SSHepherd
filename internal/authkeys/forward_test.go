@@ -15,6 +15,13 @@ func TestForwards(t *testing.T) {
 		{"no-port-forwarding", []string{"no-port-forwarding"}, "10.0.1.5", false},
 		{"restrict", []string{"restrict"}, "10.0.1.5", false},
 		{"restrict re-enabled", []string{"restrict", "port-forwarding"}, "10.0.1.5", true},
+		// sshd applies a line's options in order and the last word on port
+		// forwarding wins (checked against OpenSSH 10.5 sshd with ssh -W).
+		{"restrict after port-forwarding", []string{"port-forwarding", "restrict"}, "10.0.1.5", false},
+		{"no-port-forwarding after port-forwarding", []string{"port-forwarding", "no-port-forwarding"}, "10.0.1.5", false},
+		{"port-forwarding after no-port-forwarding", []string{"no-port-forwarding", "port-forwarding"}, "10.0.1.5", true},
+		{"restrict, no-port-forwarding, port-forwarding", []string{"restrict", "no-port-forwarding", "port-forwarding"}, "10.0.1.5", true},
+		{"re-enabled forwarding keeps permitopen", []string{"restrict", "port-forwarding", `permitopen="10.0.1.6:22"`}, "10.0.1.5", false},
 		{"permitopen names the dependent", []string{`permitopen="10.0.1.5:22"`}, "10.0.1.5", true},
 		{"permitopen names another host", []string{`permitopen="10.0.1.6:22"`}, "10.0.1.5", false},
 		{"permitopen names another port", []string{`permitopen="10.0.1.5:2222"`}, "10.0.1.5", false},

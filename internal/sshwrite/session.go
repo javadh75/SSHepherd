@@ -289,10 +289,12 @@ func (s *writeSession) recheckAfterDrop(cause error, started bool) error {
 
 // reconnectFailed maps a failed reconnect: a login refused after the upload
 // started may mean the new file locked the operator out; anything else
-// leaves the file's state unknown.
+// leaves the file's state unknown. A bastion that refused the login (a
+// failed hop) proves nothing about this server's file (spec S5): never a
+// lockout, as in classifyProbe.
 func (s *writeSession) reconnectFailed(err error, started bool) error {
 	clean := sshconn.SanitizedError{Err: err}
-	if started && fleet.ErrorKindOf(err) == fleet.ErrorKindAuth {
+	if started && fleet.ErrorKindOf(err) == fleet.ErrorKindAuth && fleet.FailedHopOf(err) == "" {
 		return &LockoutError{Path: s.path, Probe: clean, Restore: fleet.ErrNoSession}
 	}
 	return &unknownStateError{path: s.path, cause: clean}
