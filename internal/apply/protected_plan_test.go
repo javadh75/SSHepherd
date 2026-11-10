@@ -115,3 +115,18 @@ func TestRenderJSONMarksProtectedKeys(t *testing.T) {
 		t.Errorf("JSON:\n%s", got)
 	}
 }
+
+// TestRenderJSONOperatorAndProtectedIsOperatorOnly: a user with both
+// operator: true and protected: true is an operator in add and rewrite rows,
+// never also protected (the two are never both set on one key).
+func TestRenderJSONOperatorAndProtectedIsOperatorOnly(t *testing.T) {
+	cfg := exceptFleet(t, `  - {name: both, operator: true, protected: true, comment: "both@new", keys: ["`+testkeys.Line(t, 2)+`"]}`+"\n", "", "")
+	r := &fakeReader{byName: map[string]fleet.ReadResult{
+		"web-1": {FileAbsent: true},
+		"web-2": {Content: []byte(testkeys.Line(t, 1) + "\n" + testkeys.Line(t, 2) + " both@old\n")},
+	}}
+	got := string(renderJSONCfg(t, cfg, buildPlansHeld(t, cfg, r, agentHeld(fp(t, 1))), JSONOptions{Command: "apply", DryRun: true}))
+	if strings.Count(got, `"operator": true`) != 2 || strings.Contains(got, `"protected": true`) {
+		t.Errorf("JSON:\n%s", got)
+	}
+}
