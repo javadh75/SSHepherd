@@ -400,6 +400,12 @@ func TestExecMarksASessionThatNeverOpened(t *testing.T) {
 		}
 	})
 	t.Run("a dead connection never opens a session", func(t *testing.T) {
+		// Wait for the client to be fully dead first. x/crypto's mux drops
+		// its channels before the transport records its write error, so a
+		// NewSession started in that gap sends into the closed socket
+		// without error and waits forever for a reply. Wait returns only
+		// after the transport's Close, which records the error.
+		_ = conn.Client.Wait()
 		_, _, _, err := Exec(context.Background(), conn.Client, "x", nil)
 		if !errors.Is(err, ErrSessionNotOpened) || !strings.HasPrefix(err.Error(), "open session: ") || kindOf(t, err) != fleet.ErrorKindRemote {
 			t.Fatalf("err = %v, want the marker and today's message", err)
