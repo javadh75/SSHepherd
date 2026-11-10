@@ -827,3 +827,6 @@ when FILE holds `operator:`/`protected:` marks the fresh output does not carry (
 `groups:`, server `authorized_keys_file:` overrides (owner-approved gap 4), `tags:`, `via:` routes it
 does not reproduce, `jump_only:` or `preserve:` rules (`cmd/sshepherd/import_settings.go`,
 `warnFreshDrops`).
+apply's plan shows a write that adds the `preserve:` marker as its own row, `(preserve:) add the
+externally-managed section marker` (`Normalize.ExternalSection`, JSON
+`normalize.external_section`, additive), instead of `(formatting) normalize: whitespace/format`.

@@ -247,3 +247,30 @@ func TestGuardSessionNoteSkipsPreserved(t *testing.T) {
 		t.Errorf("Class = %s, Note = %q; want change and no note", p.Class, p.Note)
 	}
 }
+
+// TestPlanExternalSection (F1 Q3): a write that adds the preserve: marker
+// the file lacks is its own normalize finding (never whitespace, never a
+// non-key line); it is not set when the marker is already there, when
+// nothing is kept, or for a marker with nothing under it.
+func TestPlanExternalSection(t *testing.T) {
+	cfg := preserveCfg(t, 0)
+	head := authkeys.ManagedHeader + "\n" + opLine(t) + "\n"
+	for _, tt := range []struct {
+		name, content            string
+		section, empty, residual bool
+	}{
+		{"kept line, no marker", head + giteaLine(t, 7, 1) + "\n", true, false, false},
+		{"kept line and its comment, no marker", head + "# gitea public key\n" + giteaLine(t, 7, 1) + "\n", true, false, false},
+		{"marker there, a stray removed", head + testkeys.Line(t, 9) + " stray@laptop\n" + authkeys.PreserveMarker + "\n" + giteaLine(t, 7, 1) + "\n", false, false, false},
+		{"nothing kept, no marker", authkeys.ManagedHeader + "\n  " + opLine(t) + "\n", false, false, true},
+		{"marker with nothing under it", head + authkeys.PreserveMarker + "\n", false, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := giteaPlan(t, cfg, fleet.ReadResult{Content: []byte(tt.content)})
+			n := p.Normalize
+			if p.Class != ClassChange || n.ExternalSection != tt.section || n.EmptyExternalSection != tt.empty || n.Whitespace != tt.residual || n.NonKeyLines != 0 {
+				t.Errorf("Class = %s, normalize %+v; want section %v, empty %v, whitespace %v, no non-key lines", p.Class, n, tt.section, tt.empty, tt.residual)
+			}
+		})
+	}
+}

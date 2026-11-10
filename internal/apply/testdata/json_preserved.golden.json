@@ -118,7 +118,8 @@
           "non_key_lines": 0,
           "duplicates": 0,
           "duplicate_options_differ": false,
-          "whitespace": false
+          "whitespace": false,
+          "external_section": true
         }
       },
       "file_absent": false,
@@ -170,7 +171,8 @@
           "non_key_lines": 0,
           "duplicates": 0,
           "duplicate_options_differ": false,
-          "whitespace": true
+          "whitespace": false,
+          "external_section": true
         }
       },
       "file_absent": false,
@@ -203,7 +205,8 @@
           "non_key_lines": 0,
           "duplicates": 0,
           "duplicate_options_differ": false,
-          "whitespace": false
+          "whitespace": false,
+          "external_section": true
         }
       },
       "file_absent": false,
@@ -240,7 +243,8 @@
           "non_key_lines": 0,
           "duplicates": 0,
           "duplicate_options_differ": false,
-          "whitespace": false
+          "whitespace": false,
+          "external_section": true
         }
       },
       "file_absent": false,

@@ -1159,10 +1159,10 @@ The empty-section text is its own plan row,
 `~ (preserve:) remove the empty externally-managed section`; JSON
 `normalize.empty_external_section`.
 
-The first write after `preserve:` is added to a server whose tool lines are already
-present only inserts the marker; the plan shows it as
-`(formatting) normalize: whitespace/format`, the wording for any byte drift no row
-explains.
+A write that adds the marker the file lacks has its own plan row,
+`~ (preserve:) add the externally-managed section marker`; JSON
+`normalize.external_section` (owner, 2026-11-10, F1 Q3). On the first write after
+`preserve:` is added to a server whose tool lines are already present it is the only row.
 
 **Empty-server rule stays.** A server with no desired keys is **never written**.
 Preserved lines are not unauthorized, so such a server becomes `converged` instead of

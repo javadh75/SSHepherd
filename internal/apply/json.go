@@ -260,6 +260,9 @@ type jsonNormalize struct {
 	// EmptyExternalSection is additive-optional (schema stays 1): the write
 	// drops a preserve: marker with nothing left under it (spec S6).
 	EmptyExternalSection bool `json:"empty_external_section,omitempty"`
+	// ExternalSection is additive-optional (schema stays 1): the write adds
+	// the preserve: marker the file lacks (F1 Q3).
+	ExternalSection bool `json:"external_section,omitempty"`
 }
 
 type jsonNotes struct {
@@ -442,6 +445,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 				DuplicateOptionsDiffer: p.Normalize.DuplicateOptionsDiffer,
 				Whitespace:             p.Normalize.Whitespace,
 				EmptyExternalSection:   p.Normalize.EmptyExternalSection,
+				ExternalSection:        p.Normalize.ExternalSection,
 			},
 		},
 		FileAbsent:              p.FileAbsent,

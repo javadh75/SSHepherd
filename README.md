@@ -87,7 +87,7 @@ Bastions: `via:` reaches a server through up to 3 bastions with strict `known_ho
 
 Co-managed accounts: `preserve:` on a server keeps another tool's lines (a forced `command=` or a comment, full-match RE2 rules), listed by audit as externally managed and written back by apply after the desired keys; owned, revoked and cert-authority keys are never kept (see [Co-managed accounts](#co-managed-accounts-preserve)).
 
-Owner follow-ups: a fresh `import -o FILE --force` warns, one line per kind, about the manifest-only settings it drops (`operator:`/`protected:` marks, `groups:`, `authorized_keys_file:`, `tags:`, `via:`, `jump_only:`, `preserve:`; kind `manifest_settings_dropped`).
+Owner follow-ups: a fresh `import -o FILE --force` warns, one line per kind, about the manifest-only settings it drops (`operator:`/`protected:` marks, `groups:`, `authorized_keys_file:`, `tags:`, `via:`, `jump_only:`, `preserve:`; kind `manifest_settings_dropped`). Apply shows a write that adds the `preserve:` marker as its own row, `(preserve:) add the externally-managed section marker`.
 
 ## Install
 
@@ -2196,9 +2196,10 @@ rules, the plan never lists a kept line as a removal; it adds
 is removed as its own row, `(preserve:) remove the empty externally-managed section`. A
 server the manifest grants nothing that holds only kept lines is converged, never
 written; with any other unauthorized key, an unparseable line or a non-empty
-`authorized_keys2` it is still refused. The first apply after adding `preserve:` to a
-server whose tool lines are already there writes only the marker, which the plan shows
-as `(formatting) normalize: whitespace/format` (`gitea-3` below). From
+`authorized_keys2` it is still refused. A write that adds the marker the file lacks shows
+it as its own row, `(preserve:) add the externally-managed section marker`; on the first
+apply after adding `preserve:` to a server whose tool lines are already there it is the
+only row (`gitea-3` below). From
 `internal/apply/testdata/plan_preserved.golden`:
 
 ```console
@@ -2211,18 +2212,21 @@ empty (git@10.0.4.3:22)
 
 gitea (git@10.0.4.1:22)
   -  (unknown) "stray@laptop"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  ~  (preserve:)                                                                                add the externally-managed section marker
   note: 1 externally managed line kept
   → 1 key desired · 0 add · 1 remove · 0 rewrite
 
 gitea-3 (git@10.0.4.6:22)
-  ~  (formatting)      normalize: whitespace/format
+  ~  (preserve:)      add the externally-managed section marker
   note: 1 externally managed line kept
   → 1 key desired · 0 add · 0 remove · 0 rewrite
 ```
 
-`--json` carries the count as `external_kept` (on `converged` and `change` servers only)
-and the empty section as `changes.normalize.empty_external_section`; both are additive
-and omitted when empty. From `internal/apply/testdata/json_preserved.golden.json`:
+`--json` carries the count as `external_kept` (on `converged` and `change` servers only),
+the empty section as `changes.normalize.empty_external_section`, and a marker the write
+adds as `changes.normalize.external_section` (like the other `changes`, also on a server
+the guard refuses); all are additive and omitted when empty. From
+`internal/apply/testdata/json_preserved.golden.json`:
 
 ```
       "notes": {},
@@ -2237,6 +2241,19 @@ and omitted when empty. From `internal/apply/testdata/json_preserved.golden.json
           "duplicate_options_differ": false,
           "whitespace": false,
           "empty_external_section": true
+        }
+```
+
+`gitea-3`:
+
+```
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false,
+          "external_section": true
         }
 ```
 

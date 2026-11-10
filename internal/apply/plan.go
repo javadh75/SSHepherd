@@ -93,6 +93,11 @@ type Normalize struct {
 	// so the rewrite drops it (spec S6). Not part of Any: the plan prints it
 	// as its own row.
 	EmptyExternalSection bool
+	// ExternalSection: the write adds the preserve: marker the file lacks
+	// (kept lines sit in the file with no marker above them yet, most often
+	// the first apply after preserve: is added). Not part of Any: the plan
+	// prints it as its own row (F1 Q3).
+	ExternalSection bool
 }
 
 // Any reports whether a normalize row should render.
@@ -449,17 +454,18 @@ func rewriteRows(r audit.ServerResult, entries []authkeys.RenderEntry) []Rewrite
 // full-file render removes, repeated key lines it collapses, reordering of
 // matched keys, or (when nothing else accounts for the byte difference)
 // residual whitespace/format drift. A marker with nothing under it is
-// EmptyExternalSection (spec S6).
+// EmptyExternalSection, and a marker the render adds is ExternalSection
+// (spec S6, F1 Q3).
 // Only called for servers whose bytes differ from the render.
 func normalize(r audit.ServerResult, entries []authkeys.RenderEntry, explained bool) Normalize {
 	var n Normalize
-	n.NonKeyLines, n.EmptyExternalSection = nonKeyLines(r)
+	n.NonKeyLines, n.EmptyExternalSection, n.ExternalSection = nonKeyLines(r)
 	n.Reorder = matchedOrderDiffers(r, entries)
 	// Duplicates: Diff collapses them first-wins, but each is a whole key
 	// line (possibly with its own options) the rewrite deletes — a semantic
 	// change the plan must name, never "whitespace".
 	n.Duplicates, n.DuplicateOptionsDiffer = duplicateLines(r)
-	if !explained && !n.Reorder && n.NonKeyLines == 0 && n.Duplicates == 0 && !n.EmptyExternalSection {
+	if !explained && !n.Reorder && n.NonKeyLines == 0 && n.Duplicates == 0 && !n.EmptyExternalSection && !n.ExternalSection {
 		n.Whitespace = true
 	}
 	return n
@@ -470,7 +476,9 @@ func normalize(r audit.ServerResult, entries []authkeys.RenderEntry, explained b
 // preserved line, and not the one PreserveMarker the render writes back
 // while lines are kept. A marker with nothing left under it is
 // emptySection instead; every further marker is a removed non-key line.
-func nonKeyLines(r audit.ServerResult) (n int, emptySection bool) {
+// newSection: lines are kept and the file has no marker, so the render
+// adds one (authkeys.RenderKept writes it exactly when something is kept).
+func nonKeyLines(r audit.ServerResult) (n int, emptySection, newSection bool) {
 	lines := strings.Split(string(r.Content), "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1] // a well-formed file's trailing newline, not a blank line
@@ -494,7 +502,8 @@ func nonKeyLines(r audit.ServerResult) (n int, emptySection bool) {
 		n += markers - 1
 		emptySection = len(r.External) == 0
 	}
-	return n, emptySection
+	newSection = markers == 0 && len(r.External) > 0
+	return n, emptySection, newSection
 }
 
 // duplicateLines counts the repeated key lines the rewrite removes (same

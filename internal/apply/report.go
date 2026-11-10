@@ -180,6 +180,7 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 			pal.paint(codeRed, "-"), Keys2DisabledSuffix)
 	}
 	headerOnlyRow(tw, p, pal)
+	newSectionRow(tw, p, pal)
 	emptySectionRow(tw, p, pal)
 	_ = tw.Flush()
 	keptNote(w, p)
@@ -216,6 +217,15 @@ func headerOnlyRow(tw io.Writer, p ServerPlan, pal palette) {
 	if p.HeaderOnly {
 		fmt.Fprintf(tw, "  %s\t(header)\t\t\tupdate header: %s → %d (keys unchanged)\n",
 			pal.paint(codeYellow, "~"), headerFrom(p.Serial), p.Serial.Writes)
+	}
+}
+
+// newSectionRow is the row of a write that adds the preserve: marker the
+// file lacks (F1 Q3): on the first apply after preserve: is added to a
+// server whose tool lines are already there, it is the only row.
+func newSectionRow(tw io.Writer, p ServerPlan, pal palette) {
+	if p.Normalize.ExternalSection {
+		fmt.Fprintf(tw, "  %s\t(preserve:)\t\t\tadd the externally-managed section marker\n", pal.paint(codeYellow, "~"))
 	}
 }
 

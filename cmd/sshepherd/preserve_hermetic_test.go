@@ -52,6 +52,12 @@ access:
 		return code, out.String(), errBuf.String()
 	}
 
+	// F1 Q3: the first apply after adding preserve: shows the marker as its
+	// own row, never as a formatting drift (exit 1: a pending change).
+	if code, out, _ := cli("apply", "--dry-run"); code != 1 || !strings.Contains(out, "(preserve:)") ||
+		!strings.Contains(out, "add the externally-managed section marker") || strings.Contains(out, "(formatting)") {
+		t.Errorf("first apply --dry-run exit = %d, want 1 with the marker row and no formatting row:\n%s", code, out)
+	}
 	if code, out, stderr := cli("apply", "--yes"); code != 0 {
 		t.Fatalf("apply exit = %d\nstdout: %s\nstderr: %s", code, out, stderr)
 	}

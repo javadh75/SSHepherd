@@ -10,6 +10,7 @@ empty (git@10.0.4.3:22)
 
 gitea (git@10.0.4.1:22)
   -  (unknown) "stray@laptop"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  ~  (preserve:)                                                                                add the externally-managed section marker
   note: 1 externally managed line kept
   → 1 key desired · 0 add · 1 remove · 0 rewrite
 
@@ -17,7 +18,7 @@ gitea-2 (git@10.0.4.2:22)  converged (no changes)
   note: 1 externally managed line kept
 
 gitea-3 (git@10.0.4.6:22)
-  ~  (formatting)      normalize: whitespace/format
+  ~  (preserve:)      add the externally-managed section marker
   note: 1 externally managed line kept
   → 1 key desired · 0 add · 0 remove · 0 rewrite
 
@@ -25,6 +26,7 @@ locked (git@10.0.4.7:22)  REFUSED: none of the 2 keys you hold (identity files +
 
 session (git@10.0.4.8:22)
   ~  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite comment: "" → "alice@work"
+  ~  (preserve:)                                                                          add the externally-managed section marker
   note: 1 externally managed line kept
   → 1 key desired · 0 add · 0 remove · 1 rewrite
 

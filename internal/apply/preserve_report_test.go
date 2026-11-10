@@ -17,7 +17,7 @@ import (
 // nothing. The run holds k2 and k7 (k7 is the gitea key). gitea: a write
 // that keeps a gitea line and removes a stray; gitea-2: already converged
 // with a kept line; gitea-3: a managed file whose kept line has no marker
-// yet (the first write after adding preserve:, gap 17); bare: only a kept
+// yet (the first write after adding preserve:, F1 Q3: its own row); bare: only a kept
 // line (converged); bare-k2: the same with authorized_keys2 (refused);
 // empty: a marker with nothing under it; locked: the only held key on the
 // server sits on a kept line, so the guard refuses (spec S6 Guard);
@@ -69,12 +69,13 @@ access:
 // "Guard", Tests "plan goldens"): the kept-lines note on a write and on a
 // converged server, the empty section's row, a refused no-grant server with
 // authorized_keys2 (no note), the guard ignoring a kept key, the session-key
-// note skipped, the first write that only adds the marker, and JSON
-// external_kept on exactly the converged and change servers.
+// note skipped, the marker row on the first write that only adds it, and
+// beside other rows, and JSON external_kept on exactly the converged and
+// change servers.
 func TestRenderPreservedGoldens(t *testing.T) {
 	cfg, plans := preservedPlans(t)
-	if p := planFor(t, plans, "gitea-3"); p.Class != ClassChange || !p.Normalize.Whitespace || p.Kept != 1 || len(p.Remove) != 0 {
-		t.Errorf("gitea-3: Class = %s, normalize %+v, Kept = %d, Remove = %d; want change, whitespace, 1, 0 (gap 17)", p.Class, p.Normalize, p.Kept, len(p.Remove))
+	if p := planFor(t, plans, "gitea-3"); p.Class != ClassChange || !p.Normalize.ExternalSection || p.Normalize.Whitespace || p.Kept != 1 || len(p.Remove) != 0 {
+		t.Errorf("gitea-3: Class = %s, normalize %+v, Kept = %d, Remove = %d; want change, the marker row (not whitespace), 1, 0 (F1 Q3)", p.Class, p.Normalize, p.Kept, len(p.Remove))
 	}
 	if p := planFor(t, plans, "locked"); p.Class != ClassRefused || !strings.Contains(p.Refusal, "would lock this session out") {
 		t.Errorf("locked: Class = %s, Refusal = %q; want the lockout refusal", p.Class, p.Refusal)
@@ -110,6 +111,13 @@ func TestRenderPreservedGoldens(t *testing.T) {
 		}
 		if _, ok := s.Changes.Normalize["empty_external_section"]; ok != (s.Name == "empty") {
 			t.Errorf("%s: empty_external_section present = %v", s.Name, ok)
+		}
+		// gitea and session add the marker beside other rows; locked is
+		// refused by the guard but, like its add, still shows what the
+		// write would have done (gap 8).
+		wantSection := s.Name == "gitea" || s.Name == "gitea-3" || s.Name == "session" || s.Name == "locked"
+		if _, ok := s.Changes.Normalize["external_section"]; ok != wantSection {
+			t.Errorf("%s: external_section present = %v, want %v", s.Name, ok, wantSection)
 		}
 	}
 }
