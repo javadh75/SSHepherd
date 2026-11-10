@@ -143,7 +143,7 @@
       "outcome": null,
       "error": "dial tcp 10.0.0.3:22: connect: connection refused",
       "error_kind": "dial",
-      "hint": "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet",
+      "hint": "check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest",
       "changes": {
         "add": [],
         "remove": [],

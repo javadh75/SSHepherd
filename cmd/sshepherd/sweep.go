@@ -58,7 +58,7 @@ func runSweep(ctx context.Context, sess *fleetSession, cfg *config.Config, offer
 	if len(targets) == 0 {
 		return classifySweep(nil, tombs) // audit.Run would read the whole fleet
 	}
-	reader := sess.reader(offer)
+	reader := sess.reader(cfg, offer)
 	reader.ReadKeys2 = true
 	sess.log.Info(fmt.Sprintf("sweeping %s for revoked keys (parallelism %d)…", apply.Plural(len(targets), "server", "servers"), sess.parallel))
 	results := audit.Run(ctx, cfg, reader, audit.Options{Parallel: sess.parallel, PerServerTimeout: perServerTimeout, Servers: targets, Logger: sess.log})

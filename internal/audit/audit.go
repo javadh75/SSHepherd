@@ -194,7 +194,9 @@ func (o Options) logger() *slog.Logger {
 
 // Run audits every server concurrently through a bounded worker pool and
 // returns results sorted by server name, so output is deterministic no matter
-// the completion order.
+// the completion order. A jump_only server is listed without a read. A
+// server behind bastions takes one fleet.HopLimiter slot per bastion first
+// (at most fleet.HopCap in flight through each).
 func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options) []ServerResult {
 	if opts.Parallel < 1 {
 		opts.Parallel = 1
@@ -206,11 +208,26 @@ func Run(ctx context.Context, cfg *config.Config, reader KeyReader, opts Options
 	}
 	results := make([]ServerResult, len(servers))
 	sem := make(chan struct{}, opts.Parallel)
+	var hops fleet.HopLimiter
 	var wg sync.WaitGroup
 	for i, srv := range servers {
+		if srv.JumpOnly {
+			// A tunnel only (OP8): listed, never read, no slot taken.
+			results[i] = ServerResult{Server: srv}
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// The bastion slots come first and the per-server budget only
+			// starts in auditOne, so a queue behind one bastion neither burns
+			// a server's timeout nor holds a --parallel slot idle (spec S5).
+			release, err := hops.Acquire(ctx, cfg.Chain(srv), 1)
+			if err != nil {
+				results[i] = canceledResult(ctx, cfg, srv)
+				return
+			}
+			defer release()
 			// Ctrl-C stops the queue: a server still waiting for a slot is
 			// never dialed (the same select apply.Execute uses).
 			select {

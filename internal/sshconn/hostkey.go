@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -30,7 +31,7 @@ import (
 // from a signer no matching @cert-authority line vouches for on a CA-vouched
 // host: negotiation offers the recorded types and the CA's certificates
 // first, so a genuine server reaches either case only by dropping them all.
-func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, kh *KnownHosts) error {
+func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, route []config.Server, kh *KnownHosts) error {
 	if presented != nil {
 		err = fmt.Errorf("presented %s key %s: %w", presented.Type(), ssh.FingerprintSHA256(presented), err)
 	}
@@ -57,19 +58,19 @@ func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, kh *Know
 	if len(ke.Want) == 0 {
 		return classifyHint(fleet.ErrorKindHostKeyUnknown, fmt.Sprintf(
 			"host is not in %s; verify the presented fingerprint out of band (on the server console: %s, or the cloud provider's console output), then compare before recording: %s — append only a line whose fingerprint matches",
-			kh.Path, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
+			kh.Path, consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv, route)), err)
 	}
 	if presented != nil && !typeRecorded(ke, presented.Type()) {
 		if anyVerifiableType(ke) {
 			return classifyHint(fleet.ErrorKindHostKeyTypeChanged, fmt.Sprintf(
 				"HOST KEY TYPE CHANGED for %s:%d — the server no longer presents any recorded key type (recorded: %s); possible impersonation; verify the presented fingerprint out of band (console: %s; compare with: %s) before touching known_hosts",
 				srv.Host, srv.Port, strings.Join(recordedTypes(ke, kh), ", "),
-				consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
+				consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv, route)), err)
 		}
 		return classifyHint(fleet.ErrorKindHostKeyTypeUnrecorded, fmt.Sprintf(
 			"host key type %s is not recorded in known_hosts for this host (recorded: %s) — unverified, not proof of a change; verify the presented fingerprint out of band (%s on the console), compare with: %s — and append only a matching line",
 			presented.Type(), strings.Join(recordedTypes(ke, kh), ", "),
-			consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv)), err)
+			consoleFingerprintCmd(presented), keyscanCompareCmd(presented, srv, route)), err)
 	}
 	return classifyHint(fleet.ErrorKindHostKeyChanged, fmt.Sprintf(
 		"HOST KEY CHANGED for %s:%d — possible impersonation; investigate and verify the new fingerprint out of band before touching %s",
@@ -102,13 +103,52 @@ func consoleFingerprintCmd(presented ssh.PublicKey) string {
 }
 
 // keyscanCompareCmd builds the fingerprint-comparison pipeline: scanned
-// keys go to ssh-keygen -lf - for display, never into the trust store.
-func keyscanCompareCmd(presented ssh.PublicKey, srv config.Server) string {
+// keys go to ssh-keygen -lf - for display, never into the trust store. For
+// a server behind bastions (route, root first) the scan runs on its own
+// bastion, since the operator's machine cannot reach it, and is labelled as
+// that bastion's view; outer bastions go in one -J.
+func keyscanCompareCmd(presented ssh.PublicKey, srv config.Server, route []config.Server) string {
 	typ := ""
 	if presented != nil {
 		typ = "-t " + keyscanType(presented.Type()) + " " // x/crypto-parsed type: a fixed algorithm name
 	}
-	return "ssh-keyscan " + typ + "-p " + strconv.Itoa(srv.Port) + " " + ShQuote(srv.Host) + " | ssh-keygen -lf -"
+	if len(route) == 0 {
+		return "ssh-keyscan " + typ + "-p " + strconv.Itoa(srv.Port) + " " + ShQuote(srv.Host) + " | ssh-keygen -lf -"
+	}
+	hop := route[len(route)-1]
+	jump := ""
+	if outer := route[:len(route)-1]; len(outer) > 0 {
+		hops := make([]string, 0, len(outer))
+		for _, h := range outer {
+			hops = append(hops, h.User+"@"+net.JoinHostPort(h.Host, strconv.Itoa(h.Port)))
+		}
+		jump = "-J " + localWord(strings.Join(hops, ",")) + " "
+	}
+	return "ssh " + jump + "-p " + strconv.Itoa(hop.Port) + " " + localWord(hop.User+"@"+hop.Host) +
+		" ssh-keyscan " + typ + "-p " + strconv.Itoa(srv.Port) + " " + remoteWord(srv.Host) +
+		" | ssh-keygen -lf - (as seen by the bastion; still compare with the console)"
+}
+
+// plainWord is what every shell reads as one literal word: no globs, no
+// quotes, no expansions.
+var plainWord = regexp.MustCompile(`^[A-Za-z0-9._:@,-]+$`)
+
+// localWord is s as one word for the operator's shell.
+func localWord(s string) string {
+	if plainWord.MatchString(s) {
+		return s
+	}
+	return ShQuote(s)
+}
+
+// remoteWord is s as one word for the bastion's shell too: ssh joins its
+// arguments into one command line the far side parses again, so a word
+// that is not plain is quoted twice.
+func remoteWord(s string) string {
+	if plainWord.MatchString(s) {
+		return s
+	}
+	return ShQuote(ShQuote(s))
 }
 
 // keyscanType maps a key type to ssh-keyscan's -t vocabulary.

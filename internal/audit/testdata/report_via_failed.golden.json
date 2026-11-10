@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "summary": {
+    "servers": 4,
+    "compliant": 1,
+    "drift": 0,
+    "critical": 0,
+    "unreachable": 2,
+    "jump_only": 1,
+    "host_key_alerts": 1,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "db-1",
+      "host": "10.0.2.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "compliant",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "edge",
+      "host": "edge.example.com",
+      "port": 22,
+      "user": "jump",
+      "status": "jump_only",
+      "error": null,
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-01",
+      "host": "10.0.1.1",
+      "port": 22,
+      "user": "deploy",
+      "via": "edge",
+      "status": "unreachable",
+      "error": "via edge: presented key changed",
+      "error_kind": "host_key_changed",
+      "via_failed": "edge",
+      "hint": "HOST KEY CHANGED for edge.example.com:22 — possible impersonation",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    },
+    {
+      "name": "web-02",
+      "host": "10.0.1.2",
+      "port": 22,
+      "user": "deploy",
+      "via": "edge",
+      "status": "unreachable",
+      "error": "via edge: presented key changed",
+      "error_kind": "host_key_changed",
+      "via_failed": "edge",
+      "hint": "HOST KEY CHANGED for edge.example.com:22 — possible impersonation",
+      "keys": {
+        "present": [],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    }
+  ]
+}

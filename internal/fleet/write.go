@@ -61,6 +61,11 @@ type WriteRequest struct {
 	// HeadlessProof lists key-file fingerprints for one more login after a
 	// passing probe (D9b: warn-only; it never restores); empty skips it.
 	HeadlessProof []string
+	// ProbeForward is set on a bastion another server's via names (spec S5):
+	// a dependent's host:port. After the login probe runs its command, the
+	// writer opens a direct-tcpip channel there and closes it at once; a
+	// prohibited channel is a rejected login check (restore). "" skips it.
+	ProbeForward string
 	// OnWarning receives the sanitized cause when the headless proof fails.
 	OnWarning func(cause string)
 }

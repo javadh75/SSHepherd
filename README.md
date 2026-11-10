@@ -21,7 +21,7 @@ web-1 (deploy@10.0.0.1:22)
   → 2 authorized · 1 present · 1 missing · 1 unauthorized
 
 web-2 (deploy@10.0.0.2:22)  ERROR [dial]: dial tcp 10.0.0.2:22: connect: connection refused
-  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+  hint: check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest
 
 Summary: 0/2 servers compliant · 1 with drift (0 critical) · 1 unreachable  → exit 1
 ```
@@ -80,6 +80,8 @@ Tags: `tags:` on a server and `@tag` selectors in `access:` mix with names, `exc
 Groups: `groups:` and `access: - group: X` grant every member, a tombstone blocks a group grant for one member only, and `revoke USER --from-server` is refused where a group grant reaches the pair.
 
 Protected users: `protected: true` makes a key critical when missing and writes it first, only where the user is granted, and `revoke`/`rotate` refuse a protected target without `--operator` whether or not it holds a grant; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
+
+Bastions: `via:` reaches a server through up to 3 bastions, each its own strict-`known_hosts` SSH connection, and `jump_only: true` makes a bastion a tunnel that is never read or written (see [Bastions](#bastions-via)).
 
 ## Install
 
@@ -148,9 +150,13 @@ SSHepherd deliberately has a narrow, strict connection posture:
   see [Authentication](#authentication).
 - **A populated `known_hosts`** (default `~/.ssh/known_hosts`). Host-key checking is
   **strict, with no TOFU**: an unknown host is an error, not a prompt.
-- **Direct reachability.** Every server is dialed directly. Hosts reachable only
-  through a bastion (`ProxyJump`/`ProxyCommand`) are not supported yet; `import`
-  warns about them, and a failed dial says so.
+- **Reachability.** Each server is dialed directly, or through the bastions its `via:`
+  names (at most 3 deep, see [Bastions](#bastions-via)). Each hop is its own SSH
+  connection with strict `known_hosts`, so every bastion and every server behind one
+  needs its own recorded key. A private host's key must be recorded under the address
+  the manifest uses (`10.0.1.5`, not the bastion's view of a hostname), verified out of
+  band: on its console, or with the scan the `host_key_unknown` hint prints, which runs
+  on the bastion (`ssh -p 22 jump@bastion.example.com ssh-keyscan … | ssh-keygen -lf -`).
 - **For `apply`, a POSIX userland on each server:** `/bin/sh` plus `id`, `ls`,
   `mkdir`, `dirname`, `cat`, `head`, `wc`, `mv`, `rm` and `cksum` (all present in
   busybox, coreutils and BSD userlands). Every remote command runs as
@@ -223,7 +229,7 @@ web-1 (deploy@10.0.0.1:22)
 web-2 (deploy@10.0.0.2:22)  converged (no changes)
 
 web-3 (deploy@10.0.0.3:22)  ERROR [dial]: dial tcp 10.0.0.3:22: connect: connection refused
-  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+  hint: check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest
 
 apply 1 of 4 servers? [y/N]
 ```
@@ -427,6 +433,63 @@ actually reads.
 
 Audit's permission check walks an override path outside `$HOME` up to `/`. A symlinked managed file is drift (exit 1), and a root-owned override audits clean although `apply` refuses to write it.
 
+### Bastions (`via:`)
+
+A server reachable only through a bastion names it with `via:`; the bastion is another
+entry in `servers:`.
+
+```yaml
+servers:
+  - name: bastion-eu
+    host: bastion.example.com
+    user: jump
+    jump_only: true      # optional: tunnel through it, never manage it
+  - name: web-1
+    host: 10.0.1.5
+    user: deploy
+    via: bastion-eu
+```
+
+`via:` must name another server, never the server itself, with no loop; a chain is at
+most 3 bastions deep. Each hop is its own SSH connection with strict `known_hosts`, and
+the bastion resolves and connects to the server's `host` and `port`, so `10.0.1.5` is
+the address as the bastion sees it.
+
+**A bastion without `jump_only` is a normal managed server:** apply rewrites its whole
+file like any other server's, a `servers: ["*"]` entry or an operator's implicit grant
+puts those users on it, a bastion no grant reaches is refused (exit 1) while its file
+holds keys, and its account becomes part of every dependent's reach.
+
+**`jump_only: true`** makes it a tunnel and nothing else: `*`, `@tag` and the operator's
+implicit grant skip it, `access:` cannot name it, `audit`/`apply` list it as `jump only`
+without reading or writing it, `adopt` and `--sweep` do not read it, and its host key is
+still checked strictly whenever a run tunnels through it. Nothing reads its
+`authorized_keys`, so a leaver's key there survives `revoke`; the flag on a real server
+hides it from audit. `jump_only_unused` warns when no server names it.
+
+**Key offering:** a managed bastion is offered the keys granted on it (falling back to
+every loaded key with a warning); a `jump_only` bastion every loaded key, with no
+warning.
+
+**One address, one entry, one route.** `known_hosts` is keyed by address, so two
+entries for one target, or two entries at one `host:port` behind different hops, are
+refused. **Known limitation:** two different machines that share a private address
+behind different bastions (say `10.0.0.5` in two networks) cannot both be in one
+manifest by address. Give each a hostname its own bastion resolves; a future
+`host_key_alias:` field (OpenSSH's `HostKeyAlias`) would lift this.
+
+**Concurrency:** at most 8 connections through one bastion at a time (a fixed cap,
+below sshd's default `MaxStartups`); a write holds two (its session and its login
+check). A three-hop chain can use most of the 30-second per-server timeout.
+
+**Failures.** A server behind an unreachable bastion is `unreachable` with
+`via BASTION: …` and JSON `via_failed`. A bastion that refuses the forward
+(`AllowTcpForwarding no`, or a `no-port-forwarding`/`restrict`/`permitopen=` line) gives
+the hint `the bastion refused the forward; allow TCP forwarding for this account`. A
+bastion that opens the channel but cannot reach the server is the server's own failure
+(no `via_failed`), with the hint
+`the bastion could not reach this server; check that it is up and reachable from the bastion`.
+
 ### Validation rules
 
 The loader fails the whole manifest (exit 3) on any of these:
@@ -473,6 +536,21 @@ The loader fails the whole manifest (exit 3) on any of these:
   spellings of one machine (an IP vs. a hostname) cannot be detected. Manifests from
   older `import` runs that emitted one server per alias of a `Host a a.example.com`
   line now fail this check; merge those entries.
+- **One route per address** (see [Bastions](#bastions-via)). One target reached
+  through different hops:
+  `servers "a" and "b" both target deploy@10.0.0.5:22 ~/.ssh/authorized_keys through different hops; a manifest holds one entry per address, so remove one`.
+  Two entries at one `host:port` (any user) behind different hops:
+  `servers "a" and "b" reach 10.0.0.5:22 through different hops; every entry at one address must use the same route; if these are different machines, give each a hostname its own hop can resolve`.
+- **`via:`** must name a known server: `server "web-1": unknown via "nope"`;
+  `server "web-1": via names the server itself`; `server "a": via chain loops (a → b → a)`;
+  `server "a": via chain is 4 hops deep (e → d → c → b); at most 3`.
+- **`jump_only:`** servers cannot be named by `access:` (in `servers:` or `except:`):
+  `access for "alice": server "edge" is jump_only; access cannot name it`; a tag only
+  they carry is refused: `access for "alice": "@edge" matches only jump_only servers`;
+  and they have no managed file:
+  `server "edge": jump_only has no managed file; remove authorized_keys_file`.
+  A `jump_only` server no `via:` names is a warning, kind `jump_only_unused`:
+  `server "bastion-eu": jump_only but no server has via: bastion-eu; nothing connects through it and nothing checks it`.
 - **Access entries** must grant something: a non-wildcard entry with `servers: []` or
   no `servers:` key fails with `servers is empty (grants no servers)`.
 - **Names and comments** (user names, `comment:`, inline key comments) may not
@@ -683,6 +761,8 @@ Report drift between the manifest and each server's `authorized_keys`. Read-only
 | `--identity-passphrase-file FILE` | none | Default passphrase file for any encrypted `--identity` key |
 | `--identity-passphrase PATH=FILE` | none | Passphrase file for one `--identity` key (repeatable); split at the **first** `=` — a key path containing `=` is unsupported |
 
+`--parallel` caps the whole run; at most 8 reads at a time go through one bastion.
+
 When `--server` leaves servers out, the report ends with `(N servers skipped by --server)`
 and the JSON summary gains `skipped`; a run that names every server gets neither. The
 manifest's policy conflicts are about the manifest, not one server, so they are still
@@ -756,6 +836,43 @@ web-1 (deploy@10.0.0.1:22)
   → 2 authorized · 2 present · 0 missing · 2 unauthorized
 
 Summary: 0/1 servers compliant · 1 with drift (1 critical) · 0 unreachable  → exit 2
+```
+
+**Bastions.** A `jump_only` server is listed as `jump only` and never read; the summary
+adds ` · N jump only` when N > 0, and the denominator counts it. A server with `via:`
+names its bastion in its head (` via NAME`):
+
+```console
+db-1 (deploy@10.0.2.1:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+edge (jump@edge.example.com:22)  jump only (not audited: nothing reads its authorized_keys)
+
+web-01 (deploy@10.0.1.1:22 via edge)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 2/3 servers compliant · 0 with drift (0 critical) · 0 unreachable · 1 jump only  → exit 0
+```
+
+A changed, changed-type or `@revoked` host key on a bastion fails every server behind
+it (`via edge: …`, JSON `via_failed`), and counts one `host_key_alerts`, however many
+servers sit behind it:
+
+```console
+db-1 (deploy@10.0.2.1:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+edge (jump@edge.example.com:22)  jump only (not audited: nothing reads its authorized_keys)
+
+web-01 (deploy@10.0.1.1:22 via edge)  ERROR [host_key_changed]: via edge: presented key changed
+  hint: HOST KEY CHANGED for edge.example.com:22 — possible impersonation
+
+web-02 (deploy@10.0.1.2:22 via edge)  ERROR [host_key_changed]: via edge: presented key changed
+
+Summary: 1/4 servers compliant · 0 with drift (0 critical) · 2 unreachable (1 HOST KEY ALERT) · 1 jump only  → exit 2
 ```
 
 Comment drift (`--comments`) stays cosmetic and never affects the exit code.
@@ -1062,8 +1179,8 @@ remote text:
 ```
 
 `manifest_warnings` carries every load warning, in the `audit` document and in the `apply`
-document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear on `tombstone_unknown_server` and `tombstone_blocks_grant`; `user` also on `operator_grant_redundant`; `server` also on validate's `host_key_not_recorded`. The kinds are `tombstone_unknown_server`,
-`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root`, `tombstone_blocks_grant`, `empty_group` and `operator_grant_redundant`; ignore kinds you do not know.
+document. Each object has `kind` and `message`. `revoked_index`, `user` and `server` appear on `tombstone_unknown_server` and `tombstone_blocks_grant`; `user` also on `operator_grant_redundant`; `server` also on validate's `host_key_not_recorded` and on `jump_only_unused`. The kinds are `tombstone_unknown_server`,
+`comment_on_multi_key`, `weak_key_ungranted`, `key_expired`, `wildcard_root`, `tombstone_blocks_grant`, `empty_group`, `operator_grant_redundant` and `jump_only_unused`; ignore kinds you do not know.
 
 Optional fields, present only when they apply: `servers[].error_kind` (exactly when
 `error` is non-null; `"unknown"` for unclassified errors), `summary.host_key_alerts`
@@ -1072,8 +1189,10 @@ Optional fields, present only when they apply: `servers[].error_kind` (exactly w
 `keys.present[].comment_drift` (with `--comments`), `servers[].duplicates`
 (`[{"owner", "fingerprint", "count"}]`), `servers[].authorized_keys2_present`,
 `servers[].hint` (remediation text, present only when the failure has one; `error`
-never contains it) and `keys.unauthorized[].options` (on-server options of a key the
-manifest does not own).
+never contains it), `keys.unauthorized[].options` (on-server options of a key the
+manifest does not own), `servers[].via` (the server's bastion), `servers[].via_failed`
+(the bastion whose connection or forward failed) and `summary.jump_only` (omitted
+when 0). A `jump_only` server has `status: "jump_only"`.
 
 The trust posture adds these, also present only when they apply:
 
@@ -1672,7 +1791,7 @@ A dry run over a mixed fleet:
       "outcome": null,
       "error": "dial tcp 10.0.0.3:22: connect: connection refused",
       "error_kind": "dial",
-      "hint": "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet",
+      "hint": "check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest",
       "changes": {
         "add": [],
         "remove": [],
@@ -1765,7 +1884,7 @@ A write whose login check never got past authentication is kept and reported `UN
 ```console
 web-1: applied · verified
 web-2: UNPROVEN: written and verified, but the login check could not reach the server after 4 attempts (dial tcp 10.0.0.2:22: i/o timeout) — kept the new file; run sshepherd audit to confirm
-  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+  hint: check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest
 Summary: 1/2 servers converged (1 applied) · 1 unproven  → exit 1
 ```
 
@@ -2544,8 +2663,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift) | Converged — nothing to do, including a header-only write applied and a newer-serial server with an equal body (with a note) | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`) | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2` | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** (`unproven`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
@@ -2823,7 +2942,7 @@ Everything below runs the same commands CI runs.
 $ make check        # the full gate: tidy, fmt, vet, lint, layering, deadcode, security, licenses, coverage (≥93%, production packages; test helpers excluded)
 $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 93% line coverage (production packages; test helpers excluded)
-$ make integration  # two dockerized alpine sshd containers + build-tagged integration/E2E tests
+$ make integration  # three dockerized alpine sshd containers (one behind a bastion) + build-tagged integration/E2E tests
 $ make integration IT_DISTRO=debian  # or alpine | rocky
 $ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each); fails if a package's tests do not build
 $ make fuzz-list    # every Fuzz* target as 'importpath Target'
@@ -2928,11 +3047,14 @@ Every release tag must point at a commit at or after `ca50409`, the commit that 
 the gated release workflow; older commits run an ungated release workflow or one whose
 publish step always fails.
 
-Integration and E2E tests run against two throwaway sshd containers built from
+Integration and E2E tests run against three throwaway sshd containers built from
 `ci/images/sshd-<distro>.Dockerfile` (alpine: busybox; debian: dash, GNU coreutils,
-PAM; rocky: bash as /bin/sh, RHEL sshd, PAM). Container A holds every fixture user.
-Container B's sshd reads `~/.ssh/fleet_keys`, so the two-host E2E proves real
-parallel fan-out, the `authorized_keys_file` override and per-host `known_hosts`.
+PAM; rocky: bash as /bin/sh, RHEL sshd, PAM). Container A holds every fixture user
+and is also the bastion (`AllowTcpForwarding yes`). Container B's sshd reads
+`~/.ssh/fleet_keys`, so the two-host E2E proves real parallel fan-out, the
+`authorized_keys_file` override and per-host `known_hosts`. Container C sits on an
+`--internal` Docker network that only A also joins, so it is reachable only through A
+as a `via:` bastion.
 Host keys are generated when each container starts. Each run uses unique container
 names and ports that Docker picks, so parallel runs never collide.
 `SSHEPHERD_IT_PORT` pins container A's port, and `SSHEPHERD_IT_NAME` sets the
@@ -2956,9 +3078,9 @@ internal/authkeys/   authorized_keys parser and renderer, managed header grammar
 internal/audit/      fan-out, diffing, text/JSON reports, exit codes
 internal/adopt/      pure fleet-discovery plan
 internal/apply/      plan computation (serial rows, D4b bump, sweep report), self-lockout guard, phase-2 fan-out behind the Writer seam, plan/JSON reports — no transport imports
-internal/fleet/      shared leaf vocabulary: error kinds, read result, held keys, write request — stdlib only
+internal/fleet/      shared leaf vocabulary: error kinds, read result, held keys, write request, per-bastion hop limiter — stdlib only
 internal/workflow/   the write workflow for apply/revoke/rotate: plan → confirm → commit manifest → write, behind seams
-internal/sshconn/    shared connection glue (dial, credentials: key files + agent, host keys)
+internal/sshconn/    shared connection glue (dial, bastion hops, credentials: key files + agent, host keys)
 internal/sshconn/sshtest/  in-process SSH server + agent + key-file helpers for hermetic tests
 internal/keyfile/    --identity key files: permission rule, format checks, passphrases, /dev/tty prompt
 internal/sshread/    remote read protocol

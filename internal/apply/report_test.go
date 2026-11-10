@@ -86,7 +86,7 @@ func mixedPlans(t *testing.T) (*config.Config, []ServerPlan) {
 // testDialHint mirrors sshconn.DialHint (apply cannot import sshconn,
 // ARC-8); internal/sshconn's TestAuditGoldenCarriesDialHint pins the two
 // equal through summary_failed_hint.golden.
-const testDialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+const testDialHint = "check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest"
 
 // hintedErr is a classified transport error with its remediation kept out
 // of the message (the fleet.KindedError and fleet.Hinted pair that

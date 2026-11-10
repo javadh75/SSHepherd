@@ -23,6 +23,12 @@ type Error struct {
 	// stays ErrorKindHandshake, so audit's error_kind does not change;
 	// apply's login check reads this flag.
 	AuthExhausted bool
+	// HopStage names the bastion where the connection failed: any stage of
+	// the connect to it (dial, host key, auth, handshake, timeout), or its
+	// refusal to forward. Empty when the failure is the server's own, which
+	// includes a target the bastion could not reach. Domain code reads it
+	// through fleet.FailedHopOf (it may not import this package, ARC-8).
+	HopStage string
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
@@ -35,9 +41,13 @@ func (e *Error) ErrorKind() fleet.ErrorKind { return e.Kind }
 // once per distinct hint, and JSON carries it as a separate `hint` field.
 func (e *Error) ErrorHint() string { return e.Hint }
 
+// FailedHop implements fleet.HopFailure: the JSON reports' via_failed.
+func (e *Error) FailedHop() string { return e.HopStage }
+
 var (
 	_ fleet.KindedError = (*Error)(nil)
 	_ fleet.Hinted      = (*Error)(nil)
+	_ fleet.HopFailure  = (*Error)(nil)
 )
 
 // classify wraps err with kind; nil stays nil.

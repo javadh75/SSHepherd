@@ -40,6 +40,9 @@ type jsonSummary struct {
 	Drift       int `json:"drift"`
 	Critical    int `json:"critical"`
 	Unreachable int `json:"unreachable"`
+	// JumpOnly is additive-optional (schema stays 1): jump_only servers,
+	// listed and never read (spec S5). Omitted when zero.
+	JumpOnly int `json:"jump_only,omitempty"`
 	// HostKeyAlerts is additive-optional (schema stays 1): unreachable
 	// servers whose host key changed or is @revoked — the reason exit_code
 	// can be 2 with critical 0. Omitted when zero.
@@ -60,12 +63,19 @@ type jsonServer struct {
 	// AuthorizedKeysFile is additive-optional (schema stays 1): present
 	// exactly when the manifest sets the per-server override; omitempty
 	// keeps override-free reports byte-identical to earlier releases.
-	AuthorizedKeysFile string  `json:"authorized_keys_file,omitempty"`
-	Status             string  `json:"status"`
-	Error              *string `json:"error"`
+	AuthorizedKeysFile string `json:"authorized_keys_file,omitempty"`
+	// Via is additive-optional (schema stays 1): the bastion the manifest
+	// reaches this server through (via:). Omitted for a direct server.
+	Via    string  `json:"via,omitempty"`
+	Status string  `json:"status"`
+	Error  *string `json:"error"`
 	// ErrorKind is additive-optional (schema stays 1): present exactly when
 	// error is non-null; one of the fleet.ErrorKind values.
 	ErrorKind string `json:"error_kind,omitempty"`
+	// ViaFailed is additive-optional (schema stays 1): the bastion where an
+	// unreachable server's connection failed (fleet.FailedHopOf). Omitted
+	// when the failure is the server's own.
+	ViaFailed string `json:"via_failed,omitempty"`
 	// Hint is additive-optional (schema stays 1): operator remediation for
 	// error, sanitized; never part of error.
 	Hint           string           `json:"hint,omitempty"`
@@ -196,6 +206,7 @@ func RenderJSON(w io.Writer, cfg *config.Config, results []ServerResult, opts JS
 		Drift:           c.drift,
 		Critical:        c.critical,
 		Unreachable:     c.unreachable,
+		JumpOnly:        c.jumpOnly,
 		HostKeyAlerts:   c.hostKeyAlerts,
 		RevokedKeys:     c.revokedKeys,
 		PolicyConflicts: len(rep.PolicyConflicts),
@@ -216,6 +227,7 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		Port:               r.Server.Port,
 		User:               r.Server.User,
 		AuthorizedKeysFile: r.Server.AuthorizedKeysFile,
+		Via:                r.Server.Via,
 		Status:             string(statusOf(cfg, r)),
 		Keys: jsonKeySets{
 			Present:      []jsonKey{},
@@ -235,7 +247,11 @@ func jsonServerFor(cfg *config.Config, r ServerResult, opts JSONOptions) jsonSer
 		s.ErrorKind = string(fleet.ErrorKindOf(r.Err))
 		// Not deduplicated: each server object stays self-contained.
 		s.Hint = CleanHint(r.Err)
+		s.ViaFailed = fleet.FailedHopOf(r.Err)
 		return s
+	}
+	if r.Server.JumpOnly {
+		return s // status jump_only, empty key lists: nothing was read
 	}
 	s.AuthorizedKeys2 = r.AuthorizedKeys2
 	s.Posture, s.CriticalReasons = postureJSON(r), criticalReasons(cfg, r)

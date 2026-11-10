@@ -107,6 +107,9 @@ type Client struct {
 	// PreferKeys optionally names the keys to offer first per server (see
 	// sshconn.Dialer.PreferKeys) — typically audit.GrantedFingerprints.
 	PreferKeys func(srv config.Server) []string
+	// Server resolves a via: name (see sshconn.Dialer.Server); without it a
+	// server behind a bastion fails closed.
+	Server func(name string) (config.Server, bool)
 	// OfferAll and QuietFallback: see sshconn.Dialer.
 	OfferAll      bool
 	QuietFallback bool
@@ -150,6 +153,7 @@ func (c *Client) getDialer() *sshconn.Dialer {
 			Creds:          c.Creds,
 			DialTimeout:    c.DialTimeout,
 			PreferKeys:     c.PreferKeys,
+			Server:         c.Server,
 			OfferAll:       c.OfferAll,
 			QuietFallback:  c.QuietFallback,
 			Log:            c.Log,

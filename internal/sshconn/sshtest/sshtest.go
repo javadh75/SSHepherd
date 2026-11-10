@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -239,6 +240,12 @@ type ServerConfig struct {
 	// (comma-separated globs, "!" negates). restrict and every other option
 	// are accepted and ignored.
 	AuthorizedKeysFile string
+
+	// Forward, when set, handles a direct-tcpip channel (a client tunnelling
+	// through this server, ssh -J): it returns the connection to splice the
+	// channel to, or nil and the rejection reason. Nil keeps the "session
+	// only" rejection.
+	Forward func(host string, port uint32) (net.Conn, ssh.RejectionReason)
 }
 
 // Server is a running in-process SSH server.
@@ -246,9 +253,12 @@ type Server struct {
 	Host string
 	Port int
 
+	forward func(string, uint32) (net.Conn, ssh.RejectionReason)
+
 	mu       sync.Mutex
 	attempts []string
 	commands []string
+	forwards []string
 }
 
 // Addr is the host:port the server listens on.
@@ -269,6 +279,14 @@ func (s *Server) Commands() []string {
 	return append([]string(nil), s.commands...)
 }
 
+// Forwards lists the host:port of every direct-tcpip channel clients asked
+// for, in order, as they sent it (unresolved).
+func (s *Server) Forwards() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.forwards...)
+}
+
 // NewServer starts a server on 127.0.0.1:0 and stops it at tb.Cleanup.
 func NewServer(tb testing.TB, cfg ServerConfig) *Server {
 	tb.Helper()
@@ -276,7 +294,7 @@ func NewServer(tb testing.TB, cfg ServerConfig) *Server {
 	if err != nil {
 		tb.Fatalf("sshtest: listen: %v", err)
 	}
-	s := &Server{Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port}
+	s := &Server{Host: "127.0.0.1", Port: l.Addr().(*net.TCPAddr).Port, forward: cfg.Forward}
 	tr := &tracker{l: l}
 	tb.Cleanup(tr.close)
 
@@ -388,7 +406,11 @@ func (s *Server) serveConn(c net.Conn, sc *ssh.ServerConfig, h Handler, wg *sync
 		ssh.DiscardRequests(reqs)
 	}()
 	for nc := range chans {
-		if nc.ChannelType() != "session" {
+		switch {
+		case nc.ChannelType() == "direct-tcpip" && s.forward != nil:
+			s.serveForward(nc, wg)
+			continue
+		case nc.ChannelType() != "session":
 			_ = nc.Reject(ssh.UnknownChannelType, "session only")
 			continue
 		}
@@ -402,6 +424,58 @@ func (s *Server) serveConn(c net.Conn, sc *ssh.ServerConfig, h Handler, wg *sync
 			s.serveSession(ch, creqs, h, forced, wg)
 		}()
 	}
+}
+
+// forwardMsg is the direct-tcpip open payload (RFC 4254 7.2).
+type forwardMsg struct {
+	Host     string
+	Port     uint32
+	OrigHost string
+	OrigPort uint32
+}
+
+// serveForward records the requested address, asks Forward, and splices
+// the channel to the connection it returns until either side ends.
+func (s *Server) serveForward(nc ssh.NewChannel, wg *sync.WaitGroup) {
+	var m forwardMsg
+	if err := ssh.Unmarshal(nc.ExtraData(), &m); err != nil {
+		_ = nc.Reject(ssh.ConnectionFailed, "sshtest: bad direct-tcpip payload")
+		return
+	}
+	s.mu.Lock()
+	s.forwards = append(s.forwards, net.JoinHostPort(m.Host, strconv.FormatUint(uint64(m.Port), 10)))
+	s.mu.Unlock()
+	conn, reason := s.forward(m.Host, m.Port)
+	if conn == nil {
+		_ = nc.Reject(reason, "sshtest: forward refused")
+		return
+	}
+	ch, reqs, err := nc.Accept()
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ssh.DiscardRequests(reqs)
+	}()
+	go func() {
+		defer wg.Done()
+		splice(ch, conn)
+	}()
+}
+
+// splice copies both ways until either side ends, then closes both and
+// waits for the other copy.
+func splice(ch ssh.Channel, conn net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(ch, conn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(conn, ch); done <- struct{}{} }()
+	<-done
+	_ = ch.Close()
+	_ = conn.Close()
+	<-done
 }
 
 func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request, h Handler, forced string, wg *sync.WaitGroup) {
@@ -443,6 +517,22 @@ func (s *Server) serveSession(ch ssh.Channel, reqs <-chan *ssh.Request, h Handle
 	// reqs closes when the client closes the channel; the deferred cancel
 	// then releases a handler still blocked on ctx.
 }
+
+// DialForward is a Forward that dials host:port from the test process: a
+// bastion that reaches every other test server. The host is resolved here,
+// on the "bastion", never by the client.
+func DialForward(host string, port uint32) (net.Conn, ssh.RejectionReason) {
+	d := net.Dialer{Timeout: 5 * time.Second}
+	c, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(host, strconv.FormatUint(uint64(port), 10)))
+	if err != nil {
+		return nil, ssh.ConnectionFailed
+	}
+	return c, 0
+}
+
+// ProhibitForward is a Forward that refuses every channel, as sshd does
+// with AllowTcpForwarding no or a no-port-forwarding key line.
+func ProhibitForward(string, uint32) (net.Conn, ssh.RejectionReason) { return nil, ssh.Prohibited }
 
 // KnownHostsFile writes lines into a fresh known_hosts file and returns its
 // path.

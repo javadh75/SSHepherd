@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Spins up two throwaway sshd containers from ci/images/sshd-<distro>.Dockerfile
-# (A: the full fixture on the default AuthorizedKeysFile; B: one user whose
-# sshd reads ~/.ssh/fleet_keys), seeds keys, starts a dedicated ssh-agent, and
-# runs the build-tagged integration tests against them.
+# Spins up three throwaway sshd containers from ci/images/sshd-<distro>.Dockerfile
+# (A: the full fixture on the default AuthorizedKeysFile, and the bastion;
+# B: one user whose sshd reads ~/.ssh/fleet_keys; C: on an --internal network
+# only, so reachable only through A), seeds keys, starts a dedicated
+# ssh-agent, and runs the build-tagged integration tests against them.
 #
 # Usage: scripts/integration.sh [alpine|debian|rocky]   (default: alpine, or
 # $IT_DISTRO, which `make integration IT_DISTRO=…` exports)
@@ -27,10 +28,13 @@ IMAGE="sshepherd-it-sshd:$DISTRO"
 RUN_ID="${SSHEPHERD_IT_NAME:-sshepherd-it-$$}"
 CA="$RUN_ID-a"
 CB="$RUN_ID-b"
+CC="$RUN_ID-c"
+NET="$RUN_ID-int"
 WORKDIR="$(mktemp -d)"
 
 cleanup() {
-  docker rm -f "$CA" "$CB" >/dev/null 2>&1 || true
+  docker rm -f "$CA" "$CB" "$CC" >/dev/null 2>&1 || true
+  docker network rm "$NET" >/dev/null 2>&1 || true
   # Kill only the agent WE started — never an agent inherited from the shell.
   [ -n "${OUR_AGENT_PID:-}" ] && kill "$OUR_AGENT_PID" >/dev/null 2>&1 || true
   rm -rf "$WORKDIR"
@@ -61,6 +65,8 @@ PRELUDE='
     set -e
     mkuser() { if command -v useradd >/dev/null 2>&1; then useradd -m -s /bin/sh "$1"; else adduser -D -s /bin/sh "$1"; fi; unlock "$1"; }
     unlock() { sed -i "s|^$1:[^:]*:|$1:*:|" /etc/shadow; }   # !, !! and * all become * (pubkey login allowed)
+    mkuser_shell() { if command -v useradd >/dev/null 2>&1; then useradd -m -s "$2" "$1"; else adduser -D -s "$2" "$1"; fi; unlock "$1"; }
+    NOLOGIN=$(for p in /usr/sbin/nologin /sbin/nologin /bin/false; do [ -x "$p" ] && { echo "$p"; break; }; done)
     # Effective-config edit: OpenSSH keeps the FIRST occurrence and Debian/Rocky
     # Include sshd_config.d/*.conf at the top, so prepend, then prove with sshd -T.
     sshd_set() { { printf "%s\n" "$@"; cat /etc/ssh/sshd_config; } > /tmp/c && cat /tmp/c > /etc/ssh/sshd_config && rm -f /tmp/c; }
@@ -150,20 +156,35 @@ FIXTURE_A='
     unlock root
     cp /seed/stale.pub /home/rootvictim/.ssh/authorized_keys
     chown rootvictim:rootvictim /home/rootvictim/.ssh/authorized_keys && chmod 600 /home/rootvictim/.ssh/authorized_keys
+    # Bastion accounts (P10 S5): jump forwards for the read and E2E tests,
+    # jumpw is the forward-probe write target, jumpnl has a nologin shell
+    # (forwarding only, never a session), jumpnofwd may not forward.
+    for u in jump jumpw jumpnofwd; do mkuser "$u"; done
+    mkuser_shell jumpnl "$NOLOGIN"
+    for u in jump jumpw jumpnofwd jumpnl; do
+      mkdir -p "/home/$u/.ssh" && cp /seed/key.pub "/home/$u/.ssh/authorized_keys"
+      chown -R "$u:$u" "/home/$u/.ssh" && chmod 700 "/home/$u/.ssh" && chmod 600 "/home/$u/.ssh/authorized_keys"
+    done
     # Both key files (virgin and absent log in via authorized_keys2); root
     # login for the ownership fixture only. OpenSSH 9.8+ penalizes a source
     # address after failed logins and then drops its handshakes. The lockout
     # and from= probe tests fail logins on purpose (twice each, shuffled), so
-    # the penalty would refuse later tests.
-    sshd_set "AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2" "PermitRootLogin prohibit-password" "PerSourcePenalties no"
+    # the penalty would refuse later tests. A is the bastion: the stock alpine
+    # sshd_config says AllowTcpForwarding no, so turn it on for every account.
+    sshd_set "AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2" "PermitRootLogin prohibit-password" "PerSourcePenalties no" "AllowTcpForwarding yes"
     sshd_expect "authorizedkeysfile .ssh/authorized_keys .ssh/authorized_keys2"
     sshd_expect "permitrootlogin (prohibit-password|without-password)"
     sshd_expect "persourcepenalties no"
+    sshd_expect "allowtcpforwarding yes"
     # maxauth: refuses after two failed keys, for the MaxAuthTries login-check
     # test. A Match block must end the file, so it is appended (sshd_set
     # prepends).
     printf "Match User maxauth\n  MaxAuthTries 2\n" >> /etc/ssh/sshd_config
     sshd -T -C user=maxauth,host=x,addr=127.0.0.1 | grep -Eqix "maxauthtries 2" || { echo "sshd -T lacks MaxAuthTries 2 for maxauth" >&2; exit 1; }
+    # jumpnofwd: the bastion account that may not forward (a Match block
+    # overrides the global AllowTcpForwarding yes).
+    printf "Match User jumpnofwd\n  AllowTcpForwarding no\n" >> /etc/ssh/sshd_config
+    sshd -T -C user=jumpnofwd,host=x,addr=127.0.0.1 | grep -Eqix "allowtcpforwarding no" || { echo "sshd -T lacks AllowTcpForwarding no for jumpnofwd" >&2; exit 1; }
     exec /usr/sbin/sshd -D -e
 '
 
@@ -180,7 +201,21 @@ FIXTURE_B='
     exec /usr/sbin/sshd -D -e
 '
 
-docker rm -f "$CA" "$CB" >/dev/null 2>&1 || true
+# Container C: reachable only on the internal network, so only through A
+# (the bastion). hopped: reads; hopw: sshwrite's write; hope2e: the E2E's
+# drifted seed (agent key + stale key).
+FIXTURE_C='
+    for u in hopped hopw hope2e; do mkuser "$u"; mkdir -p "/home/$u/.ssh"; done
+    cp /seed/key.pub /home/hopped/.ssh/authorized_keys
+    cp /seed/key.pub /home/hopw/.ssh/authorized_keys
+    cat /seed/key.pub /seed/stale.pub > /home/hope2e/.ssh/authorized_keys
+    for u in hopped hopw hope2e; do chown -R "$u:$u" "/home/$u/.ssh"; chmod 700 "/home/$u/.ssh"; chmod 600 "/home/$u/.ssh/authorized_keys"; done
+    sshd_set "PerSourcePenalties no"
+    sshd_expect "persourcepenalties no"
+    exec /usr/sbin/sshd -D -e
+'
+
+docker rm -f "$CA" "$CB" "$CC" >/dev/null 2>&1 || true
 docker run -d --name "$CA" --label sshepherd-it=1 \
   -p "127.0.0.1:${SSHEPHERD_IT_PORT:-}:22" \
   -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
@@ -193,13 +228,20 @@ docker run -d --name "$CB" --label sshepherd-it=1 \
   -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
   -v "$WORKDIR/stale.pub:/seed/stale.pub:ro" \
   "$IMAGE" sh -c "$PRELUDE$FIXTURE_B" >/dev/null
+docker network create --internal "$NET" >/dev/null
+docker run -d --name "$CC" --label sshepherd-it=1 --network "$NET" \
+  -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
+  -v "$WORKDIR/stale.pub:/seed/stale.pub:ro" \
+  "$IMAGE" sh -c "$PRELUDE$FIXTURE_C" >/dev/null
+docker network connect "$NET" "$CA"
+IP_C="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CC")"
 
 port_of() { docker port "$1" 22/tcp | sed -n 's/^127\.0\.0\.1://p' | head -n1; }
 PORT_A="$(port_of "$CA")"
 PORT_B="$(port_of "$CB")"
 running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
 dump_logs() {
-  for c in "$CA" "$CB"; do
+  for c in "$CA" "$CB" "$CC"; do
     echo "--- docker logs $c ---" >&2
     docker logs "$c" >&2 || true
   done
@@ -222,6 +264,20 @@ if ! { [ "$(grep -c "^\[127.0.0.1\]:$PORT_A " "$KH")" -gt 0 ] && [ "$(grep -c "^
   dump_logs
   exit 1
 fi
+# C is not reachable from here: wait for its sshd in the logs, then record
+# its key as seen from inside the container (the out-of-band check a real
+# operator does on the console).
+for _ in $(seq 1 120); do
+  docker logs "$CC" 2>&1 | grep -q 'Server listening' && break
+  running "$CC" || break
+  sleep 1
+done
+if ! docker logs "$CC" 2>&1 | grep -q 'Server listening'; then
+  echo "sshd never came up on the internal container; container logs:" >&2
+  dump_logs
+  exit 1
+fi
+docker exec "$CC" cat /etc/ssh/ssh_host_ed25519_key.pub | awk -v h="$IP_C" '{print h" "$1" "$2}' >>"$KH"
 
 eval "$(ssh-agent -s)" >/dev/null
 OUR_AGENT_PID="$SSH_AGENT_PID"
@@ -230,6 +286,8 @@ ssh-add "$WORKDIR/id_ed25519"
 export SSHEPHERD_IT_HOST=127.0.0.1 \
   SSHEPHERD_IT_PORT="$PORT_A" \
   SSHEPHERD_IT_PORT_B="$PORT_B" \
+  SSHEPHERD_IT_TARGET_HOST="$IP_C" \
+  SSHEPHERD_IT_TARGET_PORT=22 \
   SSHEPHERD_IT_DISTRO="$DISTRO" \
   SSHEPHERD_IT_KNOWN_HOSTS="$KH" \
   SSHEPHERD_IT_PUB="$WORKDIR/id_ed25519.pub" \

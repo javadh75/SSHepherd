@@ -177,8 +177,8 @@ test that fails before the fix and passes after.
   throwaway container); guard behind a build tag (e.g. `//go:build integration`) so the unit
   path stays fast.
   `scripts/integration.sh [alpine|debian|rocky]` (`make integration IT_DISTRO=…`) builds
-  `ci/images/sshd-<distro>.Dockerfile` and starts two sshd containers (A: every fixture user;
-  B: a custom `AuthorizedKeysFile`) on dynamic ports with unique names. The CI and release
+  `ci/images/sshd-<distro>.Dockerfile` and starts three sshd containers (A: every fixture user, and the bastion;
+  B: a custom `AuthorizedKeysFile`; C: reachable only through A on an `--internal` network) on dynamic ports with unique names. The CI and release
   `integration` jobs are an alpine/debian/rocky matrix.
 - **End-to-end (E2E)** — drive the actual CLI binary through full flows
   (distribute → audit → revoke → rotate) against a small fleet of test containers.
@@ -752,3 +752,19 @@ server, never itself, no loop, at most `config.MaxViaDepth` = 3 bastions; `Confi
 `authorized_keys_file`; `jump_only_unused` warns when no `via` names it). One address is one entry
 and one route (OP7, `claimAddress`): a repeated target through different hops and two routes to one
 `host:port` are load errors until a future `host_key_alias:`.
+`sshconn.ConnectWith` stays the one choke point: `dialTarget` reaches a via server over a
+`direct-tcpip` channel through a fresh connection to its bastion (`Dialer.Server` =
+`cfg.ServerNamed`; no lookup fails closed), one hop per target, never pooled; `Conn` keeps its hop
+and raw transport, `Close` always closes the hop, cancellation closes tunnel and hop, and
+`setDeadline` moves the hop's socket with `SessionTimeout`. A hop failure is
+`sshconn.Error.HopStage` (`fleet.FailedHopOf`, JSON `via_failed`); a `Prohibited` forward is kind
+`dial` with `ForwardHint`; a target the bastion cannot reach is the target's own `dial` with
+`HopDialHint`. A
+`jump_only` hop is offered every held key with no warning. The via host-key hint scans on the bastion.
+`fleet.HopLimiter` (`HopCap` 8) is taken in `audit.Run` before the per-server budget; a
+`jump_only` row is never read; `host_key_alerts` counts one per failing bastion. The login probe
+treats a hop failure as "could not check" (UNPROVEN, never a restore) and, on a bastion, opens
+`fleet.WriteRequest.ProbeForward` (a `Prohibited` forward restores). `scripts/integration.sh` adds an
+`--internal` network, container C (`hopped`, `hopw`, `hope2e`) and bastion accounts `jump`, `jumpnl`
+(nologin), `jumpw`, `jumpnofwd` (AllowTcpForwarding no) on A, which sets `AllowTcpForwarding yes`
+globally (alpine's stock config says no).

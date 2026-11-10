@@ -10,5 +10,5 @@ web-1 (deploy@10.0.0.1:22)
 web-2 (deploy@10.0.0.2:22)  converged (no changes)
 
 web-3 (deploy@10.0.0.3:22)  ERROR [dial]: dial tcp 10.0.0.3:22: connect: connection refused
-  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+  hint: check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest
 

@@ -185,7 +185,7 @@ func openFleet(ctx context.Context, log *slog.Logger, f *connFlags, ids identiti
 func (s *fleetSession) Read(ctx context.Context, verb string, cfg *config.Config, servers []config.Server,
 	preferKeys func(config.Server) []string,
 ) ([]audit.ServerResult, error) {
-	reader := s.reader(preferKeys)
+	reader := s.reader(cfg, preferKeys)
 	s.log.Info(fmt.Sprintf("%s %s (parallelism %d)…", verb, apply.Plural(len(servers), "server", "servers"), s.parallel))
 	start := time.Now()
 	results := audit.Run(ctx, cfg, reader, audit.Options{Parallel: s.parallel, PerServerTimeout: perServerTimeout,
@@ -198,16 +198,18 @@ func (s *fleetSession) Read(ctx context.Context, verb string, cfg *config.Config
 }
 
 // reader is phase 1's reader: the run's known_hosts snapshot and
-// credentials, offering preferKeys on each dial.
-func (s *fleetSession) reader(preferKeys func(config.Server) []string) *sshread.Client {
-	return &sshread.Client{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds,
-		DialTimeout: dialTimeout, PreferKeys: preferKeys, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
+// credentials, offering preferKeys on each dial, resolving via: through
+// cfg.
+func (s *fleetSession) reader(cfg *config.Config, preferKeys func(config.Server) []string) *sshread.Client {
+	return &sshread.Client{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds, DialTimeout: dialTimeout,
+		PreferKeys: preferKeys, Server: cfg.ServerNamed, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
 }
 
-// dialer is phase 2's dialer: the same known_hosts snapshot and credentials.
-func (s *fleetSession) dialer(preferKeys func(config.Server) []string) *sshconn.Dialer {
-	return &sshconn.Dialer{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds,
-		DialTimeout: dialTimeout, PreferKeys: preferKeys, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
+// dialer is phase 2's dialer: the same known_hosts snapshot and
+// credentials, resolving via: through cfg.
+func (s *fleetSession) dialer(cfg *config.Config, preferKeys func(config.Server) []string) *sshconn.Dialer {
+	return &sshconn.Dialer{KnownHostsPath: s.khPath, KnownHosts: s.kh, Creds: s.creds, DialTimeout: dialTimeout,
+		PreferKeys: preferKeys, Server: cfg.ServerNamed, OfferAll: s.offerAll, QuietFallback: s.quietFallback, Log: s.log}
 }
 
 // readFleet is audit's and adopt's whole read over targets: an empty list

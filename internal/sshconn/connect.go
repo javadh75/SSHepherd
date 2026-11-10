@@ -47,7 +47,12 @@ type Dialer struct {
 	// QuietFallback drops the per-server fallback warning to debug level,
 	// after a preflight that already warned once for the whole run.
 	QuietFallback bool
-	Log           *slog.Logger // optional stage-level telemetry; nil discards
+	// Server resolves a via: name to its server entry (config.Config's
+	// ServerNamed). A server with via: on a Dialer without it fails closed:
+	// the connect returns an error and never dials the host directly. The
+	// CLI always sets it.
+	Server func(name string) (config.Server, bool)
+	Log    *slog.Logger // optional stage-level telemetry; nil discards
 
 	khOnce sync.Once
 	kh     *KnownHosts
@@ -114,6 +119,13 @@ func (d *Dialer) knownHosts() (*KnownHosts, error) {
 type Conn struct {
 	Client  *ssh.Client
 	session *sessionKey
+	// hop is the bastion connection this one is tunnelled through (via:);
+	// nil for a direct connection. Close closes it after the target.
+	hop *Conn
+	// raw is the transport under Client: the TCP socket, or for a tunnelled
+	// connection the direct-tcpip channel, whose SetDeadline does nothing;
+	// setDeadline moves the hop's socket along with it.
+	raw net.Conn
 }
 
 // SessionKeyFP returns the SHA256 fingerprint of the key (file or agent)
@@ -126,15 +138,35 @@ func (c *Conn) SessionKeyFP() string {
 	return c.session.get()
 }
 
-// Close is nil-safe so test fakes can hand out a bare Conn.
+// Close closes the connection and then, always, its hop, even when Client
+// is nil. A bare Conn (a test fake) closes to nil.
 func (c *Conn) Close() error {
-	if c.Client == nil {
-		return nil
+	var err error
+	if c.Client != nil {
+		if cerr := c.Client.Close(); cerr != nil {
+			err = fmt.Errorf("close ssh connection: %w", cerr)
+		}
 	}
-	if err := c.Client.Close(); err != nil {
-		return fmt.Errorf("close ssh connection: %w", err)
+	c.hop.closeQuiet()
+	return err
+}
+
+// closeQuiet closes c when it is not nil and drops the error: a hop is the
+// tunnel's carrier, and its close error is never the caller's concern.
+func (c *Conn) closeQuiet() {
+	if c != nil {
+		_ = c.Close()
 	}
-	return nil
+}
+
+// setDeadline moves the socket deadline of c and of every hop under it.
+func (c *Conn) setDeadline(t time.Time) {
+	if c.raw != nil {
+		_ = c.raw.SetDeadline(t)
+	}
+	if c.hop != nil {
+		c.hop.setDeadline(t)
+	}
 }
 
 // Connect is ConnectWith with default options (Dialer.PreferKeys ordering).
@@ -154,7 +186,10 @@ func (d *Dialer) Connect(ctx context.Context, srv config.Server) (*Conn, error) 
 // cancellation aborts the handshake. Callers without a ctx deadline get a hard floor:
 // 3×DialTimeout (30s when DialTimeout is zero). The agent connection lives
 // only until ConnectWith returns — signing happens during auth, never
-// after. Every error is an *Error carrying its fleet.ErrorKind.
+// after. Every error is an *Error carrying its fleet.ErrorKind. A via
+// server is reached through a fresh connection to its bastion (dialTarget):
+// the hop gets the same ctx, offers keys as any connection to that bastion
+// would, and is closed with the target and on every failure.
 func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts ConnectOptions) (*Conn, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		fallback := 3 * d.DialTimeout
@@ -188,7 +223,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	cb := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := kh.callback(hostname, remote, key)
 		if err != nil {
-			err = hostKeyHint(err, key, srv, kh)
+			err = hostKeyHint(err, key, srv, d.route(srv), kh)
 		} else {
 			log.Debug("host key verified", "server", srv.Name)
 		}
@@ -205,19 +240,20 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	offered := wrapSigners(offer.signers, rec)
 	auth := ssh.PublicKeysCallback(func() ([]ssh.Signer, error) { return offered, nil })
 
-	dialer := net.Dialer{Timeout: d.DialTimeout}
-	log.Debug("dialing", "server", srv.Name, "addr", addr)
+	log.Debug("dialing", "server", srv.Name, "addr", addr, "via", srv.Via)
 	dialStart := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, hop, err := d.dialTarget(ctx, srv, addr)
 	if err != nil {
-		return nil, dialFailure(ctx, addr, err)
+		return nil, err
 	}
 	log.Debug("dial ok", "server", srv.Name, "addr", addr,
 		"dur", time.Since(dialStart).Round(time.Millisecond))
-	_ = conn.SetDeadline(dl) // bounds handshake + all later session I/O, not just dial
+	_ = conn.SetDeadline(dl) // bounds handshake + all later session I/O; a no-op on a tunnel, whose hop socket carries dl
 	// Cancellation (Ctrl-C) must abort a handshake in flight, not wait for
-	// the deadline: closing the socket unblocks every read.
-	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	// the deadline: closing the socket unblocks every read. Closing a tunnel
+	// only sends a close and waits for the peer's reply, so the hop is
+	// closed too (spec S5, fact 4).
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close(); hop.closeQuiet() })
 	defer stopCancel()
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
@@ -228,18 +264,21 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	})
 	if err != nil {
 		_ = conn.Close()
+		hop.closeQuiet()
 		return nil, dialFacts{user: srv.User, addr: addr, hk: hk, rec: rec, asked: len(opts.Only), missing: missing, offer: offer}.failure(ctx, err)
 	}
 	if !stopCancel() {
 		// ctx ended exactly as the handshake completed: the socket is closed.
 		_ = sshConn.Close()
+		hop.closeQuiet()
 		return nil, classify(ctxKind(ctx), fmt.Errorf("ssh %s@%s: %w", srv.User, addr, ctx.Err()))
 	}
+	c := &Conn{Client: ssh.NewClient(sshConn, chans, reqs), session: rec, hop: hop, raw: conn}
 	if opts.SessionTimeout > 0 {
-		_ = conn.SetDeadline(time.Now().Add(opts.SessionTimeout))
+		c.setDeadline(time.Now().Add(opts.SessionTimeout))
 	}
 	log.Debug("auth ok", "server", srv.Name, "user", srv.User)
-	return &Conn{Client: ssh.NewClient(sshConn, chans, reqs), session: rec}, nil
+	return c, nil
 }
 
 // hostKeyState is what the host-key callback saw during one dial: its
@@ -307,7 +346,18 @@ func (e remoteText) Unwrap() error { return e.err }
 // DialHint is the operator remediation for a TCP connect that failed. It is
 // carried in Error.Hint, never in the message, so reports print it once per
 // run and JSON keeps it in a separate `hint` field.
-const DialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+const DialHint = "check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest"
+
+// ForwardHint is the remediation when a bastion refused to open the
+// direct-tcpip channel (sshd's AllowTcpForwarding no, or a no-port-forwarding,
+// restrict or permitopen= key line).
+const ForwardHint = "the bastion refused the forward; allow TCP forwarding for this account"
+
+// HopDialHint is the remediation when the bastion opened the channel but
+// could not reach the server behind it: the server's own failure, so it
+// carries no HopStage, and DialHint's "needs via:" advice would be wrong for
+// a server that already has one.
+const HopDialHint = "the bastion could not reach this server; check that it is up and reachable from the bastion"
 
 // dialFailure classifies a TCP connect that failed.
 func dialFailure(ctx context.Context, addr string, err error) error {
@@ -331,6 +381,92 @@ func dialErr(addr string, err error) error {
 	return fmt.Errorf("dial %s: %w", addr, err)
 }
 
+// dialTarget opens srv's transport: a TCP dial, or for a via server a
+// direct-tcpip channel through a fresh connection to its bastion (one hop
+// connection per target, never pooled: the hop's socket carries this
+// target's deadline). hop is nil for a direct dial. A via the Dialer cannot
+// resolve fails closed: srv is never dialed directly.
+func (d *Dialer) dialTarget(ctx context.Context, srv config.Server, addr string) (net.Conn, *Conn, error) {
+	if srv.Via == "" {
+		dialer := net.Dialer{Timeout: d.DialTimeout}
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return nil, nil, dialFailure(ctx, addr, err)
+		}
+		return conn, nil, nil
+	}
+	hopSrv, ok := d.lookup(srv.Via)
+	if !ok {
+		return nil, nil, classify(fleet.ErrorKindDial, fmt.Errorf("%s: via %q is not a server this run knows — refusing to dial %s directly", srv.Name, srv.Via, addr))
+	}
+	hop, err := d.ConnectWith(ctx, hopSrv, ConnectOptions{}) // never Only or Prefer: the hop offers as any connection to it does
+	if err != nil {
+		return nil, nil, viaFailure(hopSrv.Name, err)
+	}
+	conn, err := hop.Client.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		_ = hop.Close()
+		return nil, nil, forwardFailure(ctx, hopSrv.Name, addr, err)
+	}
+	return conn, hop, nil
+}
+
+// lookup resolves a via name through Dialer.Server; false without one.
+func (d *Dialer) lookup(name string) (config.Server, bool) {
+	if d.Server == nil {
+		return config.Server{}, false
+	}
+	return d.Server(name)
+}
+
+// route lists the bastions srv is reached through, root first, as far as
+// the Dialer resolves them; nil for a direct server.
+func (d *Dialer) route(srv config.Server) []config.Server {
+	var out []config.Server
+	for v := srv.Via; v != "" && len(out) <= config.MaxViaDepth; {
+		hop, ok := d.lookup(v)
+		if !ok {
+			break
+		}
+		out = append(out, hop)
+		v = hop.Via
+	}
+	slices.Reverse(out)
+	return out
+}
+
+// viaFailure is a dependent's error when its bastion could not be reached:
+// the hop's kind and hint, "via NAME: " before the hop's own text, and the
+// failing bastion as HopStage — the innermost one of a longer chain. The
+// MaxAuthTries signal is not carried: it is the bastion's, not the
+// server's.
+func viaFailure(hop string, err error) error {
+	stage := hop
+	var e *Error
+	if errors.As(err, &e) && e.HopStage != "" {
+		stage = e.HopStage
+	}
+	return &Error{Kind: fleet.ErrorKindOf(err), Err: fmt.Errorf("via %s: %w", hop, err), Hint: fleet.HintOf(err), HopStage: stage}
+}
+
+// forwardFailure classifies a direct-tcpip channel the bastion did not open.
+// Prohibited (AllowTcpForwarding no, no-port-forwarding, restrict,
+// permitopen=) is the bastion's doing: kind dial, ForwardHint, HopStage
+// set. Any other rejection means the bastion could not reach the server:
+// the server's own dial failure, with HopDialHint (DialHint's "needs via:"
+// would be wrong advice here). Server text is bounded (remoteText).
+func forwardFailure(ctx context.Context, hop, addr string, err error) error {
+	if ctx.Err() != nil {
+		return classify(ctxKind(ctx), fmt.Errorf("via %s: open %s: %w", hop, addr, ctx.Err()))
+	}
+	var oce *ssh.OpenChannelError
+	if errors.As(err, &oce) && oce.Reason == ssh.Prohibited {
+		return &Error{Kind: fleet.ErrorKindDial, Hint: ForwardHint, HopStage: hop,
+			Err: fmt.Errorf("via %s: forward to %s refused: %w", hop, addr, remoteText{err})}
+	}
+	return classifyHint(fleet.ErrorKindDial, HopDialHint, fmt.Errorf("via %s: %w", hop, dialErr(addr, remoteText{err})))
+}
+
 // offering is one connection's key offer.
 type offering struct {
 	signers  []ssh.Signer
@@ -340,6 +476,11 @@ type offering struct {
 
 // offerFor resolves the keys this connection offers and logs a fallback.
 func (d *Dialer) offerFor(srv config.Server, signers []ssh.Signer, opts ConnectOptions) offering {
+	if srv.JumpOnly && len(opts.Only) == 0 {
+		// A jump_only bastion has no grants to filter by (spec S5): every
+		// held key, in Signers order, with no fallback warning.
+		return offering{signers: signers}
+	}
 	prefer := opts.Prefer
 	if prefer == nil && d.PreferKeys != nil {
 		prefer = d.PreferKeys(srv)

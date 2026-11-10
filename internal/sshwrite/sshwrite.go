@@ -359,6 +359,7 @@ type FleetWriter struct {
 	// Test seams; nil selects the real implementations.
 	connect func(ctx context.Context, srv config.Server, opts sshconn.ConnectOptions) (*sshconn.Conn, error)
 	exec    func(ctx context.Context, client *ssh.Client, cmd string, stdin io.Reader) (int, *sshconn.CappedBuffer, *sshconn.CappedBuffer, error)
+	forward func(ctx context.Context, client *ssh.Client, addr string) error
 	now     func() time.Time
 	sleep   func(ctx context.Context, d time.Duration) error
 }
@@ -421,6 +422,14 @@ func (w *FleetWriter) execFn() func(context.Context, *ssh.Client, string, io.Rea
 		return w.exec
 	}
 	return sshconn.Exec
+}
+
+// forwardFn resolves the forward-probe seam to probeForward.
+func (w *FleetWriter) forwardFn() func(context.Context, *ssh.Client, string) error {
+	if w.forward != nil {
+		return w.forward
+	}
+	return probeForward
 }
 
 // clock and sleepFn resolve the time seams to the real implementations.

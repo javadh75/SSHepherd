@@ -190,3 +190,55 @@ func TestIntegrationPostureClean(t *testing.T) {
 		t.Errorf("posture = %+v, want clean", res.Posture)
 	}
 }
+
+// itBastion is container A's account user as a bastion, and the target on
+// container C, which only A can reach.
+func itBastion(t *testing.T, c *Client, host string, port int, user string, jumpOnly bool) config.Server {
+	t.Helper()
+	target := os.Getenv("SSHEPHERD_IT_TARGET_HOST")
+	if target == "" {
+		t.Fatal("SSHEPHERD_IT_TARGET_HOST not set: scripts/integration.sh must start the internal container")
+	}
+	bastion := config.Server{Name: "bastion-it", Host: host, Port: port, User: user, JumpOnly: jumpOnly}
+	c.Server = func(name string) (config.Server, bool) { return bastion, name == bastion.Name }
+	tp, err := strconv.Atoi(os.Getenv("SSHEPHERD_IT_TARGET_PORT"))
+	if err != nil {
+		t.Fatalf("SSHEPHERD_IT_TARGET_PORT: %v", err)
+	}
+	return config.Server{Name: "hopped-it", Host: target, Port: tp, User: "hopped", Via: bastion.Name}
+}
+
+func TestIntegrationReadThroughBastion(t *testing.T) {
+	for _, tt := range []struct {
+		name, user string
+		jumpOnly   bool
+	}{
+		{"managed bastion", "jump", false},
+		{"jump_only bastion with a nologin shell", "jumpnl", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, host, port := itClient(t)
+			srv := itBastion(t, c, host, port, tt.user, tt.jumpOnly)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			res, err := c.ReadAuthorizedKeys(ctx, srv)
+			if err != nil {
+				t.Fatalf("ReadAuthorizedKeys through %s: %v", tt.user, err)
+			}
+			if !strings.Contains(string(res.Content), "ssh-ed25519") {
+				t.Errorf("content = %q, want the seeded key", res.Content)
+			}
+		})
+	}
+}
+
+func TestIntegrationBastionRefusesForward(t *testing.T) {
+	c, host, port := itClient(t)
+	srv := itBastion(t, c, host, port, "jumpnofwd", true)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := c.ReadAuthorizedKeys(ctx, srv)
+	if fleet.ErrorKindOf(err) != fleet.ErrorKindDial || fleet.FailedHopOf(err) != "bastion-it" || fleet.HintOf(err) != sshconn.ForwardHint {
+		t.Fatalf("err = %v, want a refused forward at the bastion", err)
+	}
+}

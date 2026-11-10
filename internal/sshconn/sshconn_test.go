@@ -220,7 +220,7 @@ func TestHostKeyHint(t *testing.T) {
 	srv := config.Server{Name: "web-1", Host: "10.0.0.1", Port: 22, User: "deploy"}
 
 	t.Run("unknown host gets a compare-first keyscan hint", func(t *testing.T) {
-		_, hint := splitHint(t, hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), srv, kh))
+		_, hint := splitHint(t, hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), srv, nil, kh))
 		if !strings.Contains(hint, "ssh-keyscan -t ed25519 -p 22 '10.0.0.1' | ssh-keygen -lf -") {
 			t.Errorf("hint = %q, want the quoted exact-host keyscan | ssh-keygen -lf - pipeline", hint)
 		}
@@ -234,7 +234,7 @@ func TestHostKeyHint(t *testing.T) {
 	t.Run("hostile host is quoted in the suggested command", func(t *testing.T) {
 		evil := srv
 		evil.Host = "h; rm -rf ~"
-		_, hint := splitHint(t, hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), evil, kh))
+		_, hint := splitHint(t, hostKeyHint(&knownhosts.KeyError{}, ed25519Key(t, 1), evil, nil, kh))
 		if !strings.Contains(hint, "'h; rm -rf ~'") {
 			t.Errorf("hint = %q, want the host ShQuote-d", hint)
 		}
@@ -243,7 +243,7 @@ func TestHostKeyHint(t *testing.T) {
 		// known_hosts records one ed25519 key; the host presents a different
 		// ed25519 key — that is a genuine changed-key alarm.
 		ke := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: ed25519Key(t, 2)}}}
-		msg, hint := splitHint(t, hostKeyHint(ke, ed25519Key(t, 1), srv, kh))
+		msg, hint := splitHint(t, hostKeyHint(ke, ed25519Key(t, 1), srv, nil, kh))
 		if !strings.Contains(hint, "HOST KEY CHANGED") {
 			t.Errorf("hint = %q, want changed-key warning", hint)
 		}
@@ -256,14 +256,14 @@ func TestHostKeyHint(t *testing.T) {
 		// ECDSA key — negotiation offers the recorded type first, so a genuine
 		// server reaches this only by no longer serving it.
 		ke := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: ed25519Key(t, 2)}}}
-		_, hint := splitHint(t, hostKeyHint(ke, ecdsaKey(t), srv, kh))
+		_, hint := splitHint(t, hostKeyHint(ke, ecdsaKey(t), srv, nil, kh))
 		if !strings.Contains(hint, "HOST KEY TYPE CHANGED") || !strings.Contains(hint, "recorded: ssh-ed25519") {
 			t.Errorf("hint = %q", hint)
 		}
 	})
 	t.Run("only unsupported types recorded stays unrecorded, not alarmed", func(t *testing.T) {
 		ke := &knownhosts.KeyError{Want: []knownhosts.KnownKey{{Key: dsaKey(t)}}}
-		msg, hint := splitHint(t, hostKeyHint(ke, ecdsaKey(t), srv, kh))
+		msg, hint := splitHint(t, hostKeyHint(ke, ecdsaKey(t), srv, nil, kh))
 		if strings.Contains(msg+hint, "CHANGED") {
 			t.Errorf("hint = %q, must not raise an alarm", hint)
 		}
@@ -272,18 +272,18 @@ func TestHostKeyHint(t *testing.T) {
 		}
 	})
 	t.Run("revoked and uncertified hosts carry their hint separately", func(t *testing.T) {
-		_, hint := splitHint(t, hostKeyHint(&knownhosts.RevokedError{}, ed25519Key(t, 1), srv, kh))
+		_, hint := splitHint(t, hostKeyHint(&knownhosts.RevokedError{}, ed25519Key(t, 1), srv, nil, kh))
 		if !strings.Contains(hint, "marked @revoked in /kh") {
 			t.Errorf("revoked hint = %q", hint)
 		}
-		_, hint = splitHint(t, hostKeyHint(errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), srv, kh))
+		_, hint = splitHint(t, hostKeyHint(errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), srv, nil, kh))
 		if !strings.Contains(hint, "no @cert-authority line in /kh") {
 			t.Errorf("cert hint = %q", hint)
 		}
 	})
 	t.Run("unrelated error keeps its chain", func(t *testing.T) {
 		orig := net.ErrClosed
-		if got := hostKeyHint(orig, ed25519Key(t, 1), srv, kh); !errors.Is(got, orig) {
+		if got := hostKeyHint(orig, ed25519Key(t, 1), srv, nil, kh); !errors.Is(got, orig) {
 			t.Errorf("unrelated error lost its chain: %v", got)
 		}
 	})
@@ -302,7 +302,7 @@ func TestHostKeyHint(t *testing.T) {
 			{"revoked", &knownhosts.RevokedError{}, ed25519Key(t, 1), fleet.ErrorKindHostKeyRevoked},
 			{"other", errors.New("ssh: no authorities for hostname: x:22"), ed25519Key(t, 1), fleet.ErrorKindHostKey},
 		} {
-			if got := fleet.ErrorKindOf(hostKeyHint(tt.err, tt.presented, srv, kh)); got != tt.want {
+			if got := fleet.ErrorKindOf(hostKeyHint(tt.err, tt.presented, srv, nil, kh)); got != tt.want {
 				t.Errorf("%s: kind = %q, want %q", tt.name, got, tt.want)
 			}
 		}

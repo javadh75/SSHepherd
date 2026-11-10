@@ -1,0 +1,11 @@
+db-1 (deploy@10.0.2.1:22)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+edge (jump@edge.example.com:22)  jump only (not audited: nothing reads its authorized_keys)
+
+web-01 (deploy@10.0.1.1:22 via edge)
+  ✓  alice  SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8  ssh-ed25519  present & authorized
+  → 1 authorized · 1 present · 0 missing · 0 unauthorized
+
+Summary: 2/3 servers compliant · 0 with drift (0 critical) · 0 unreachable · 1 jump only  → exit 0

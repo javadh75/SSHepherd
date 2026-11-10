@@ -1,4 +1,4 @@
 a: FAILED: dial tcp 10.0.0.1:22: connect: connection refused
-  hint: check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet
+  hint: check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest
 b: FAILED: dial tcp 10.0.0.2:22: connect: connection refused
 Summary: 0/2 servers converged · 2 failed  → exit 1

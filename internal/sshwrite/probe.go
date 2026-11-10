@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/sshconn"
@@ -56,6 +58,14 @@ func (v verdict) maxAttempts() int {
 // successful login is waved through as a blip: a key that logs in but
 // cannot run SSHepherd's command captures every later session.
 func classifyProbe(stage probeStage, err error) verdict {
+	if fleet.FailedHopOf(err) != "" {
+		// The bastion failed, not this server: nothing about this file's keys
+		// is known (spec S5), so it is never a rejection or a restore.
+		if strings.HasPrefix(string(fleet.ErrorKindOf(err)), "host_key") {
+			return verdictHostKey
+		}
+		return verdictTransient
+	}
 	if stage == stageAuthed || sshconn.AuthExhausted(err) {
 		return verdictRejected
 	}
@@ -108,9 +118,11 @@ func (w *FleetWriter) dialBound() time.Duration {
 // probeOnce logs in offering only the given keys and runs probeCmd: a key
 // that authenticates but whose line forces a command would leave sshepherd
 // unable to manage the server, so the command must run and print
-// probeOutput, not just a handshake. The dial is bounded by bound, the
-// exec by probeExecDeadline (which starts when the connect returns).
-func (w *FleetWriter) probeOnce(ctx context.Context, srv config.Server, only []string, bound time.Duration) (probeStage, error) {
+// probeOutput, not just a handshake. On a bastion (forward set) the same
+// session then opens a direct-tcpip channel to one dependent (spec S5). The
+// dial is bounded by bound, the exec and the forward by probeExecDeadline
+// (which starts when the connect returns).
+func (w *FleetWriter) probeOnce(ctx context.Context, srv config.Server, only []string, forward string, bound time.Duration) (probeStage, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	probe, err := w.connectFn()(dialCtx, srv, sshconn.ConnectOptions{Only: only, SessionTimeout: probeExecDeadline})
@@ -126,8 +138,28 @@ func (w *FleetWriter) probeOnce(ctx context.Context, srv config.Server, only []s
 		return stageAuthed, fmt.Errorf("probe command: %w", err)
 	case code != 0 || stdout.String() != probeOutput:
 		return stageAuthed, fmt.Errorf("probe command did not run as sent (exit %d) — a forced command= on the surviving key?", code)
+	case forward != "":
+		return stageAuthed, w.forwardFn()(execCtx, probe.Client, forward)
 	}
 	return stageAuthed, nil
+}
+
+// probeForward opens a direct-tcpip channel to addr over the probe's
+// connection and closes it at once: a bastion's surviving keys must still
+// forward to its dependents. Only a prohibited channel fails the check (it
+// follows a successful login, so it restores); a dependent that is down or
+// unreachable from the bastion is the dependent's own problem.
+func probeForward(ctx context.Context, client *ssh.Client, addr string) error {
+	conn, err := client.DialContext(ctx, "tcp", addr)
+	if err == nil {
+		_ = conn.Close()
+		return nil
+	}
+	var oce *ssh.OpenChannelError
+	if errors.As(err, &oce) && oce.Reason == ssh.Prohibited {
+		return fmt.Errorf("forward probe: the surviving key may not forward to %s (%w) — the servers behind this bastion would be cut off", addr, sshconn.SanitizedError{Err: err})
+	}
+	return nil
 }
 
 // probeResult is a finished login check: err nil means proven.
@@ -160,7 +192,7 @@ func (s *writeSession) probeWithRetries() probeResult {
 				break
 			}
 		}
-		stage, err := s.w.probeOnce(s.ctx, s.srv, s.req.Survivors, min(s.w.dialBound(), s.avail()))
+		stage, err := s.w.probeOnce(s.ctx, s.srv, s.req.Survivors, s.req.ProbeForward, min(s.w.dialBound(), s.avail()))
 		res.attempts, res.err = attempt+1, err
 		if err == nil {
 			return res
@@ -205,7 +237,7 @@ func (s *writeSession) headlessProof() {
 		s.w.log().Debug("headless proof skipped: session budget too low", "server", s.srv.Name)
 		return
 	}
-	_, err := s.w.probeOnce(s.ctx, s.srv, s.req.HeadlessProof, min(s.w.dialBound(), room))
+	_, err := s.w.probeOnce(s.ctx, s.srv, s.req.HeadlessProof, "", min(s.w.dialBound(), room))
 	if err != nil && s.req.OnWarning != nil {
 		s.req.OnWarning(sshconn.SanitizedError{Err: err}.Error())
 	}

@@ -100,14 +100,21 @@ func logFleetReadDone(log *slog.Logger, cfg *config.Config, results []audit.Serv
 	if len(cfg.Servers) == 0 {
 		return
 	}
-	var unreachable int
+	var unreachable, jumpOnly int
 	for _, r := range results {
-		if r.Err != nil {
+		switch {
+		case r.Server.JumpOnly:
+			jumpOnly++
+		case r.Err != nil:
 			unreachable++
 		}
 	}
-	log.Info(fmt.Sprintf("done in %s — %d read, %d unreachable",
-		fmtDur(time.Since(start)), len(results)-unreachable, unreachable))
+	line := fmt.Sprintf("done in %s — %d read, %d unreachable",
+		fmtDur(time.Since(start)), len(results)-unreachable-jumpOnly, unreachable)
+	if jumpOnly > 0 {
+		line += fmt.Sprintf(", %d jump only", jumpOnly)
+	}
+	log.Info(line)
 }
 
 // run is the process entrypoint: SIGINT/SIGTERM cancel the command's

@@ -88,6 +88,17 @@ func oneLine(err error) string {
 	return strings.Join(strings.Fields(err.Error()), " ")
 }
 
+// ServerHead is a server's report head, shared with apply's report:
+// "name (user@host:port)", with " via BASTION" inside the parentheses for a
+// server behind one, so a report with no via: is byte-identical.
+func ServerHead(s config.Server) string {
+	via := ""
+	if s.Via != "" {
+		via = " via " + s.Via
+	}
+	return fmt.Sprintf("%s (%s@%s:%d%s)", s.Name, s.User, s.Host, s.Port, via)
+}
+
 // Render writes the human-readable audit report. The report is the command's
 // stdout product; diagnostics beyond the report belong on stderr (caller's
 // concern).
@@ -158,7 +169,11 @@ func (h *Hints) Write(w io.Writer, err error) {
 }
 
 func renderServer(w io.Writer, cfg *config.Config, r ServerResult, pal palette, comments bool, hints *Hints) {
-	head := fmt.Sprintf("%s (%s@%s:%d)", r.Server.Name, r.Server.User, r.Server.Host, r.Server.Port)
+	head := ServerHead(r.Server)
+	if r.Server.JumpOnly {
+		fmt.Fprintf(w, "%s  jump only (not audited: nothing reads its authorized_keys)\n", head)
+		return
+	}
 	if r.Err != nil {
 		tag, alert := ErrorTag(r.Err)
 		code := codeRed
@@ -603,6 +618,7 @@ const (
 	statusCompliant   serverStatus = "compliant"
 	statusCritical    serverStatus = "critical"
 	statusDrift       serverStatus = "drift"
+	statusJumpOnly    serverStatus = "jump_only"
 )
 
 // statusOf is the single classifier behind the JSON status field, the
@@ -612,6 +628,8 @@ const (
 // policy conflict names, is never reported compliant.
 func statusOf(cfg *config.Config, r ServerResult) serverStatus {
 	switch {
+	case r.Server.JumpOnly:
+		return statusJumpOnly // never drift, critical or unreachable (OP8)
 	case r.Err != nil:
 		return statusUnreachable
 	case criticalDrift(cfg, r):
@@ -627,12 +645,14 @@ func statusOf(cfg *config.Config, r ServerResult) serverStatus {
 // report. A critical server counts in both drift and critical.
 type tallyCounts struct {
 	compliant, drift, critical, unreachable int
-	hostKeyAlerts                           int // unreachable servers whose host key changed or is revoked
+	hostKeyAlerts                           int // distinct host keys that changed or are revoked (alertSource)
 	revokedKeys                             int // tombstoned keys installed, across reachable servers
+	jumpOnly                                int // jump_only servers, listed and never read
 }
 
 func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 	var c tallyCounts
+	alerted := map[string]bool{}
 	for _, r := range results {
 		for _, k := range r.Diff.Unauthorized {
 			if _, revoked := cfg.Revoked(k.Fingerprint); revoked && r.Err == nil {
@@ -642,9 +662,12 @@ func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 		switch statusOf(cfg, r) {
 		case statusUnreachable:
 			c.unreachable++
-			if hostKeyAlert(fleet.ErrorKindOf(r.Err)) {
+			if who := alertSource(r); who != "" && !alerted[who] {
+				alerted[who] = true
 				c.hostKeyAlerts++
 			}
+		case statusJumpOnly:
+			c.jumpOnly++
 		case statusCompliant:
 			c.compliant++
 		case statusCritical:
@@ -657,6 +680,20 @@ func tallyResults(cfg *config.Config, results []ServerResult) tallyCounts {
 	return c
 }
 
+// alertSource names whose host key alarmed for an unreachable server: its
+// bastion's when the hop failed, so one changed bastion key counts once
+// however many servers sit behind it, and once with the bastion's own row
+// (spec S5); else the server's own. "" when nothing alarmed.
+func alertSource(r ServerResult) string {
+	if !hostKeyAlert(fleet.ErrorKindOf(r.Err)) {
+		return ""
+	}
+	if hop := fleet.FailedHopOf(r.Err); hop != "" {
+		return hop
+	}
+	return r.Server.Name
+}
+
 func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
 	c := tallyResults(cfg, results)
 	// The alert count appears only when nonzero, keeping the common summary
@@ -665,6 +702,10 @@ func renderSummary(w io.Writer, cfg *config.Config, results []ServerResult) {
 	if c.hostKeyAlerts > 0 {
 		alerts = fmt.Sprintf(" (%d HOST KEY ALERT)", c.hostKeyAlerts)
 	}
-	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable%s  → exit %d\n",
-		c.compliant, len(results), c.drift, c.critical, c.unreachable, alerts, ExitCode(cfg, results))
+	jump := ""
+	if c.jumpOnly > 0 {
+		jump = fmt.Sprintf(" · %d jump only", c.jumpOnly)
+	}
+	fmt.Fprintf(w, "Summary: %d/%d servers compliant · %d with drift (%d critical) · %d unreachable%s%s  → exit %d\n",
+		c.compliant, len(results), c.drift, c.critical, c.unreachable, alerts, jump, ExitCode(cfg, results))
 }

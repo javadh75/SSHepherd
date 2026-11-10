@@ -1053,3 +1053,60 @@ func TestIntegrationProbeMaxAuthTriesRestores(t *testing.T) {
 		t.Errorf("file = %q, want the previous version restored", got)
 	}
 }
+
+// TestIntegrationWriteThroughBastion: apply's whole write protocol, the
+// login probe included, through container A to container C.
+func TestIntegrationWriteThroughBastion(t *testing.T) {
+	d, host, port := itDialer(t)
+	bastion := config.Server{Name: "bastion-it", Host: host, Port: port, User: "jump", JumpOnly: true}
+	d.Server = func(name string) (config.Server, bool) { return bastion, name == bastion.Name }
+	tp, err := strconv.Atoi(os.Getenv("SSHEPHERD_IT_TARGET_PORT"))
+	if err != nil {
+		t.Fatalf("SSHEPHERD_IT_TARGET_PORT: %v", err)
+	}
+	srv := config.Server{Name: "hopw-it", Host: os.Getenv("SSHEPHERD_IT_TARGET_HOST"), Port: tp, User: "hopw", Via: bastion.Name}
+	reseed(t, d, srv, fixture{keys: strp(itDrifted(t))})
+	w := &FleetWriter{Dialer: d}
+	if err := w.Apply(itCtx(t), srv, itRequest(t, d, srv, itRendered(t))); err != nil {
+		t.Fatalf("Apply through the bastion: %v", err)
+	}
+	if got := remoteOut(t, d, srv, `cat "$HOME/.ssh/authorized_keys"`); got != string(itRendered(t)) {
+		t.Errorf("file = %q, want the render", got)
+	}
+}
+
+// TestIntegrationForwardProbeOnBastion: writing a bastion probes a forward
+// to a dependent: allowed keeps the write, AllowTcpForwarding no restores.
+func TestIntegrationForwardProbeOnBastion(t *testing.T) {
+	forward := net.JoinHostPort(os.Getenv("SSHEPHERD_IT_TARGET_HOST"), os.Getenv("SSHEPHERD_IT_TARGET_PORT"))
+	for _, tt := range []struct {
+		user     string
+		restored bool
+	}{
+		{"jumpw", false},
+		{"jumpnofwd", true},
+	} {
+		t.Run(tt.user, func(t *testing.T) {
+			d, host, port := itDialer(t)
+			srv := config.Server{Name: tt.user + "-it", Host: host, Port: port, User: tt.user}
+			reseed(t, d, srv, fixture{keys: strp(itDrifted(t))})
+			req := itRequest(t, d, srv, itRendered(t))
+			req.ProbeForward = forward
+			err := (&FleetWriter{Dialer: d}).Apply(itCtx(t), srv, req)
+			var lockout *fleet.LockoutError
+			switch {
+			case tt.restored && (!errors.As(err, &lockout) || lockout.Restore != nil):
+				t.Fatalf("Apply = %v, want a restored lockout", err)
+			case !tt.restored && err != nil:
+				t.Fatalf("Apply = %v, want success", err)
+			}
+			want := string(itRendered(t))
+			if tt.restored {
+				want = itDrifted(t)
+			}
+			if got := remoteOut(t, d, srv, `cat "$HOME/.ssh/authorized_keys"`); got != want {
+				t.Errorf("file = %q, want %q", got, want)
+			}
+		})
+	}
+}

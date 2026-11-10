@@ -79,7 +79,7 @@ func driftResults(t *testing.T, cfg *config.Config) []ServerResult {
 
 // testDialHint mirrors sshconn.DialHint (audit cannot import sshconn);
 // internal/sshconn's TestAuditGoldenCarriesDialHint pins the two equal.
-const testDialHint = "check the host, port, and firewall; hosts reachable only through a bastion (ProxyJump/ProxyCommand) are dialed directly — jump hosts are not supported yet"
+const testDialHint = "check the host, port, and firewall; a host reachable only through a bastion needs via: in the manifest"
 
 // dialRefused is the error sshconn returns for a refused TCP connect.
 func dialRefused(ip string) error {
