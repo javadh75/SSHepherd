@@ -171,6 +171,24 @@ func TestRevokeProtectedPrompt(t *testing.T) {
 	}
 }
 
+// TestRevokeProtectedNoApplyPrompt: the save-only path (--no-apply) names the
+// protected target in its prompt just as the write path does.
+func TestRevokeProtectedNoApplyPrompt(t *testing.T) {
+	_, _, cfg := protectedFleetManifest(t, "", ciByName, "")
+	var prompt bytes.Buffer
+	usePromptStreams(t, strings.NewReader("y\n"), &prompt)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"revoke", "ci", "--operator", "--no-apply", "--config", cfg}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit = %d\n%s\n%s", code, out.String(), errBuf.String())
+	}
+	if !strings.Contains(prompt.String(), "PROTECTED ci: save manifest edit? [y/N]") {
+		t.Errorf("prompt = %q", prompt.String())
+	}
+	if _, ok := readCfg(t, cfg).Revoked(fpOf(t, 2)); !ok {
+		t.Error("the key was not tombstoned")
+	}
+}
+
 // TestRevokeKeyProtectedKeepsFlag: a protected non-operator losing its last
 // key keeps protected: true, is not told an operator flag was cleared, and is
 // told a command that works: without --operator the hint would exit 3.

@@ -79,7 +79,7 @@ Tags: `tags:` on a server and `@tag` selectors in `access:` mix with names, `exc
 
 Groups: `groups:` and `access: - group: X` grant every member, a tombstone blocks a group grant for one member only, and `revoke USER --from-server` is refused where a group grant reaches the pair.
 
-Protected users: `protected: true` makes a key critical when missing, requires `--operator` to touch and is written first, only where the user is granted; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
+Protected users: `protected: true` makes a key critical when missing and writes it first, only where the user is granted, and `revoke`/`rotate` refuse a protected target without `--operator` whether or not it holds a grant; `operator: true` adds every server, and an operator's own `servers: ["*"]` entry replaces the implicit grant so `except:` works.
 
 ## Install
 
