@@ -810,3 +810,6 @@ command)`, JSON `keys.external` with `rule`, additive); apply renders them back 
 `Normalize.EmptyExternalSection`) at both render sites (a §3 row-3 removal-only write keeps them
 too), and the session-key note skips a kept key. A bad rule is a load error, exit 3 on every
 command. `FuzzScanFile` is the 25th `Fuzz*` target.
+Apply prints `note: N externally managed lines kept` on a write and on a converged server
+(`keptNote`) and `remove the empty externally-managed section` as its own row; JSON gains
+`external_kept` (converged and change only) and `normalize.empty_external_section`, both additive.

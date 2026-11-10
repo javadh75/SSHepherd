@@ -2139,6 +2139,57 @@ web-2 (deploy@10.0.1.6:22 via bastion-eu)
 Summary: 0/3 servers converged · 2 pending · 1 refused  → exit 1
 ```
 
+**Co-managed accounts.** On a server with [`preserve:`](#co-managed-accounts-preserve)
+rules, the plan never lists a kept line as a removal; it adds
+`note: N externally managed lines kept` on a write and on a converged server. A
+`# Preserved by SSHepherd (externally managed):` marker left with no kept line under it
+is removed as its own row, `(preserve:) remove the empty externally-managed section`. A
+server the manifest grants nothing that holds only kept lines is converged, never
+written; with any other unauthorized key, an unparseable line or a non-empty
+`authorized_keys2` it is still refused. The first apply after adding `preserve:` to a
+server whose tool lines are already there writes only the marker, which the plan shows
+as `(formatting) normalize: whitespace/format` (`gitea-3` below). From
+`internal/apply/testdata/plan_preserved.golden`:
+
+```console
+bare (git@10.0.4.4:22)  converged (no changes)
+  note: 1 externally managed line kept
+
+empty (git@10.0.4.3:22)
+  ~  (preserve:)      remove the empty externally-managed section
+  → 1 key desired · 0 add · 0 remove · 0 rewrite
+
+gitea (git@10.0.4.1:22)
+  -  (unknown) "stray@laptop"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  note: 1 externally managed line kept
+  → 1 key desired · 0 add · 1 remove · 0 rewrite
+
+gitea-3 (git@10.0.4.6:22)
+  ~  (formatting)      normalize: whitespace/format
+  note: 1 externally managed line kept
+  → 1 key desired · 0 add · 0 remove · 0 rewrite
+```
+
+`--json` carries the count as `external_kept` (on `converged` and `change` servers only)
+and the empty section as `changes.normalize.empty_external_section`; both are additive
+and omitted when empty. From `internal/apply/testdata/json_preserved.golden.json`:
+
+```
+      "notes": {},
+      "external_kept": 1
+```
+
+```
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false,
+          "empty_external_section": true
+        }
+```
+
 **Serial bump.** A confirmed apply that removes a key from a server whose header serial
 is not below the manifest's bumps `serial:` once, saving it under the manifest lock
 after the prompt and before the first write:

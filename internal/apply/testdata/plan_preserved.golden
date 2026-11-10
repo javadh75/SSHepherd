@@ -1,0 +1,30 @@
+bare (git@10.0.4.4:22)  converged (no changes)
+  note: 1 externally managed line kept
+
+bare-k2 (git@10.0.4.5:22)  REFUSED: authorized_keys2 holds keys but the manifest grants none — refusing to wipe; remove it by hand
+  warning: ~/.ssh/authorized_keys2 exists and is non-empty — sshd may accept keys from it; apply disables it only on a server it writes (review and remove it by hand)
+
+empty (git@10.0.4.3:22)
+  ~  (preserve:)      remove the empty externally-managed section
+  → 1 key desired · 0 add · 0 remove · 0 rewrite
+
+gitea (git@10.0.4.1:22)
+  -  (unknown) "stray@laptop"  SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo  ssh-ed25519  remove (unauthorized)
+  note: 1 externally managed line kept
+  → 1 key desired · 0 add · 1 remove · 0 rewrite
+
+gitea-2 (git@10.0.4.2:22)  converged (no changes)
+  note: 1 externally managed line kept
+
+gitea-3 (git@10.0.4.6:22)
+  ~  (formatting)      normalize: whitespace/format
+  note: 1 externally managed line kept
+  → 1 key desired · 0 add · 0 remove · 0 rewrite
+
+locked (git@10.0.4.7:22)  REFUSED: none of the 2 keys you hold (identity files + agent) would remain in locked's authorized_keys — applying would lock this session out (held: SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent), SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (agent)). Add one of your keys to the manifest (or grant its user this server)
+
+session (git@10.0.4.8:22)
+  ~  alice (alice@work)  SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4  ssh-ed25519  rewrite comment: "" → "alice@work"
+  note: 1 externally managed line kept
+  → 1 key desired · 0 add · 0 remove · 1 rewrite
+

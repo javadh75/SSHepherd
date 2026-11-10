@@ -136,6 +136,7 @@ func Render(w io.Writer, cfg *config.Config, plans []ServerPlan, opts RenderOpti
 			if p.SerialNote != "" {
 				fmt.Fprintf(w, "  note: %s\n", p.SerialNote)
 			}
+			keptNote(w, p)
 			renderKeys2Warning(w, p, pal)
 			fmt.Fprintln(w)
 		case ClassRefused:
@@ -179,7 +180,9 @@ func renderChange(w io.Writer, cfg *config.Config, p ServerPlan, pal palette, op
 			pal.paint(codeRed, "-"), Keys2DisabledSuffix)
 	}
 	headerOnlyRow(tw, p, pal)
+	emptySectionRow(tw, p, pal)
 	_ = tw.Flush()
+	keptNote(w, p)
 
 	if p.FileAbsent {
 		// The audit diagnostic, carried into the plan: creating the audited
@@ -213,6 +216,24 @@ func headerOnlyRow(tw io.Writer, p ServerPlan, pal palette) {
 	if p.HeaderOnly {
 		fmt.Fprintf(tw, "  %s\t(header)\t\t\tupdate header: %s → %d (keys unchanged)\n",
 			pal.paint(codeYellow, "~"), headerFrom(p.Serial), p.Serial.Writes)
+	}
+}
+
+// emptySectionRow is the row of a write that drops a preserve: marker with
+// nothing left under it: the tool removed its lines, or the rule was dropped
+// (spec S6).
+func emptySectionRow(tw io.Writer, p ServerPlan, pal palette) {
+	if p.Normalize.EmptyExternalSection {
+		fmt.Fprintf(tw, "  %s\t(preserve:)\t\t\tremove the empty externally-managed section\n", pal.paint(codeYellow, "~"))
+	}
+}
+
+// keptNote says how many lines a preserve: rule keeps here (spec S6); it is
+// printed on a write and on a converged server, so a no-grant server holding
+// only kept lines explains why it is converged.
+func keptNote(w io.Writer, p ServerPlan) {
+	if p.Kept > 0 {
+		fmt.Fprintf(w, "  note: %s kept\n", Plural(p.Kept, "externally managed line", "externally managed lines"))
 	}
 }
 

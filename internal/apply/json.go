@@ -170,6 +170,10 @@ type jsonServer struct {
 	// the D9c headless-proof warning; each omitted when empty.
 	RestoredRevokedKeys []string `json:"restored_revoked_keys,omitempty"`
 	Warnings            []string `json:"warnings,omitempty"`
+	// ExternalKept is additive-optional (schema stays 1): lines a preserve:
+	// rule keeps on a converged server or one this run writes (spec S6).
+	// Omitted when zero.
+	ExternalKept int `json:"external_kept,omitempty"`
 }
 
 // jsonSerial is the §3 verdict: header is null for no serial, writes null
@@ -253,6 +257,9 @@ type jsonNormalize struct {
 	Duplicates             int  `json:"duplicates"`
 	DuplicateOptionsDiffer bool `json:"duplicate_options_differ"`
 	Whitespace             bool `json:"whitespace"`
+	// EmptyExternalSection is additive-optional (schema stays 1): the write
+	// drops a preserve: marker with nothing left under it (spec S6).
+	EmptyExternalSection bool `json:"empty_external_section,omitempty"`
 }
 
 type jsonNotes struct {
@@ -403,6 +410,16 @@ func viaFailedOf(p ServerPlan) string {
 	return ""
 }
 
+// keptFor is external_kept: the kept lines of a converged server or one
+// this run writes, 0 (omitted) for every other class, where nothing is
+// written and the text prints no note.
+func keptFor(p ServerPlan) int {
+	if p.Class == ClassConverged || p.Class == ClassChange {
+		return p.Kept
+	}
+	return 0
+}
+
 // jsonServerFor maps one plan. changes is always fully present (arrays [],
 // never null) so consumers read the same shape on every class.
 func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServer {
@@ -424,6 +441,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 				Duplicates:             p.Normalize.Duplicates,
 				DuplicateOptionsDiffer: p.Normalize.DuplicateOptionsDiffer,
 				Whitespace:             p.Normalize.Whitespace,
+				EmptyExternalSection:   p.Normalize.EmptyExternalSection,
 			},
 		},
 		FileAbsent:              p.FileAbsent,
@@ -439,6 +457,7 @@ func jsonServerFor(cfg *config.Config, p ServerPlan, opts JSONOptions) jsonServe
 		Serial:              jsonSerialFor(p),
 		RestoredRevokedKeys: cleanAll(rolledBackRevoked(p)),
 		Warnings:            cleanAll(p.Warnings),
+		ExternalKept:        keptFor(p),
 	}
 	if p.Class == ClassChange {
 		// Mapped explicitly: planOne sets Pending on every plan, but an

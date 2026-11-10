@@ -1,0 +1,253 @@
+{
+  "schema": 1,
+  "command": "apply",
+  "dry_run": true,
+  "edit": null,
+  "summary": {
+    "servers": 8,
+    "skipped": 0,
+    "converged": 2,
+    "applied": 0,
+    "pending": 4,
+    "failed": 0,
+    "refused": 2,
+    "unreachable": 0,
+    "unproven": 0,
+    "lockout_unrestored": 0,
+    "exit_code": 1
+  },
+  "servers": [
+    {
+      "name": "bare",
+      "host": "10.0.4.4",
+      "port": 22,
+      "user": "git",
+      "class": "converged",
+      "outcome": null,
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "external_kept": 1
+    },
+    {
+      "name": "bare-k2",
+      "host": "10.0.4.5",
+      "port": 22,
+      "user": "git",
+      "class": "refused",
+      "outcome": null,
+      "error": "authorized_keys2 holds keys but the manifest grants none — refusing to wipe; remove it by hand",
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": true,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "empty",
+      "host": "10.0.4.3",
+      "port": 22,
+      "user": "git",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false,
+          "empty_external_section": true
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "gitea",
+      "host": "10.0.4.1",
+      "port": 22,
+      "user": "git",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519",
+            "comment": "stray@laptop"
+          }
+        ],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "external_kept": 1
+    },
+    {
+      "name": "gitea-2",
+      "host": "10.0.4.2",
+      "port": 22,
+      "user": "git",
+      "class": "converged",
+      "outcome": null,
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "external_kept": 1
+    },
+    {
+      "name": "gitea-3",
+      "host": "10.0.4.6",
+      "port": 22,
+      "user": "git",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": true
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "external_kept": 1
+    },
+    {
+      "name": "locked",
+      "host": "10.0.4.7",
+      "port": 22,
+      "user": "git",
+      "class": "refused",
+      "outcome": null,
+      "error": "none of the 2 keys you hold (identity files + agent) would remain in locked's authorized_keys — applying would lock this session out (held: SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 (agent), SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE (agent)). Add one of your keys to the manifest (or grant its user this server)",
+      "changes": {
+        "add": [
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519",
+            "comment": "bob@work"
+          }
+        ],
+        "remove": [],
+        "rewrite": [],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {}
+    },
+    {
+      "name": "session",
+      "host": "10.0.4.8",
+      "port": 22,
+      "user": "git",
+      "class": "change",
+      "outcome": "pending",
+      "error": null,
+      "changes": {
+        "add": [],
+        "remove": [],
+        "rewrite": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "comment_change": {
+              "from": "",
+              "to": "alice@work"
+            },
+            "loosens": [],
+            "widens": []
+          }
+        ],
+        "normalize": {
+          "reorder": false,
+          "non_key_lines": 0,
+          "duplicates": 0,
+          "duplicate_options_differ": false,
+          "whitespace": false
+        }
+      },
+      "file_absent": false,
+      "authorized_keys2_present": false,
+      "disables_authorized_keys2": false,
+      "notes": {},
+      "external_kept": 1
+    }
+  ]
+}
