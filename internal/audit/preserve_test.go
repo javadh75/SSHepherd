@@ -3,11 +3,13 @@ package audit
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/authkeys"
 	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/fleet"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
@@ -171,5 +173,44 @@ func TestReportPreservedGoldens(t *testing.T) {
 	checkGolden(t, "report_preserved.golden.json", renderJSON(t, cfg, results))
 	if got := ExitCode(cfg, results); got != 0 {
 		t.Errorf("ExitCode = %d, want 0 (a kept line is not drift)", got)
+	}
+}
+
+// TestExternalWeakKey (spec S6 "Audit"): a kept line is shown in the
+// unowned-key shape, so a weak kept key carries the WEAK note on its text
+// row, after the options suffix, and its key_issues in JSON keys.external.
+func TestExternalWeakKey(t *testing.T) {
+	cfg := preserveConfig(t)
+	rsa := fmt.Sprintf(`command="/usr/local/bin/gitea serv key-1" %s git@laptop`, testkeys.RSALine(t, 8, 1024))
+	dsa := testkeys.DSALine(t, 7) + ` google-ssh {"userName":"a@example.com"}`
+	res := preserveResult(t, cfg, "gitea", testkeys.Line(t, 1)+"\n"+rsa+"\n"+dsa+"\n")
+	if len(res.External) != 2 {
+		t.Fatalf("External = %+v, want the rsa and dsa lines kept", res.External)
+	}
+	var b bytes.Buffer
+	Render(&b, cfg, []ServerResult{res}, RenderOptions{})
+	for _, want := range []string{
+		`externally managed (preserve: command) · options: "command=\"/usr/local/bin/gitea serv key-1\"" · WEAK (rsa 1024)` + "\n",
+		"externally managed (preserve: comment) · WEAK (dsa)\n",
+	} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("report lacks %q:\n%s", want, b.String())
+		}
+	}
+	var rep jsonReport
+	if err := json.Unmarshal(renderJSON(t, cfg, []ServerResult{res}), &rep); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rep.Servers) != 1 || len(rep.Servers[0].Keys.External) != 2 {
+		t.Fatalf("servers = %+v, want one server with two external keys", rep.Servers)
+	}
+	ext := rep.Servers[0].Keys.External
+	for i, want := range []string{authkeys.WeakRSAUnder2K, authkeys.WeakDSA} {
+		if !slices.Equal(ext[i].KeyIssues, []string{want}) || ext[i].Rule == "" || ext[i].Owner != nil {
+			t.Errorf("external[%d] = %+v, want key_issues [%s], a rule and owner null", i, ext[i], want)
+		}
+	}
+	if got := ExitCode(cfg, []ServerResult{res}); got != 0 {
+		t.Errorf("ExitCode = %d, want 0 (a kept weak key is not drift)", got)
 	}
 }

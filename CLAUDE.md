@@ -818,3 +818,5 @@ Apply prints `note: N externally managed lines kept` on a write and on a converg
 `external_kept` (converged and change only) and `normalize.empty_external_section`, both additive.
 `TestPreserveHermetic` drives apply, audit and adopt in-process against `sshtest` (authorizing
 from the written file); `TestE2EPreserve` is the E2E (fixture account `presv`).
+S6 follow-up: `TestExternalWeakKey` pins the `WEAK` note on an externally managed row (after the
+` · options:` suffix) and `key_issues` on JSON `keys.external` (mutants U11/U15).
