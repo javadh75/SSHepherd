@@ -15,7 +15,8 @@ Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
      existing --output without --force, an in-place save refused, a --merge
-     manifest that would keep a policy conflict or add a weak key
+     manifest that would keep a revoked-key or revoked-access conflict, or
+     add a weak key or a restriction conflict
 
 Usage:
   sshepherd import [ssh-config-path] [flags]

@@ -15,8 +15,8 @@ Exit codes:
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
      --output without --force, an in-place save refused, a manifest that
-     would keep a policy conflict or add a weak key, --partial with no server
-     read, interrupted
+     would keep a revoked-key or revoked-access conflict, or add a weak key
+     or a restriction conflict, --partial with no server read, interrupted
 
 Usage:
   sshepherd adopt [flags]

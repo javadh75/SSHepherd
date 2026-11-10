@@ -22,6 +22,8 @@ func TestNothingCanLand(t *testing.T) {
 		{"one converged lands", []ServerPlan{p(ClassRefused), p(ClassConverged)}, false},
 		{"only weak-key refusals do not withhold the save", []ServerPlan{{Class: ClassRefused, WeakRefused: true}, {Class: ClassRefused, WeakRefused: true}}, false},
 		{"a weak-key refusal beside another refusal still withholds", []ServerPlan{{Class: ClassRefused, WeakRefused: true}, p(ClassRefused)}, true},
+		{"only clash refusals do not withhold the save (OP6)", []ServerPlan{{Class: ClassRefused, ClashRefused: true}, {Class: ClassRefused, ClashRefused: true}}, false},
+		{"a clash refusal beside another refusal still withholds", []ServerPlan{{Class: ClassRefused, ClashRefused: true}, p(ClassRefused)}, true},
 	} {
 		if got := NothingCanLand(tt.plans); got != tt.want {
 			t.Errorf("%s: NothingCanLand = %v, want %v", tt.name, got, tt.want)

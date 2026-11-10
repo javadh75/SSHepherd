@@ -468,7 +468,7 @@ dead-line reason, `--offer-all-keys` on the write dial and a held weak key throu
 `import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
-S1, S2, S8, S3a, S3b, S4, S5 and S6 are built, and S7 is being built (lanes `grants` and `audit` landed);
+S1, S2, S8, S3a, S3b, S4, S5 and S6 are built, and S7 is being built (lanes `grants`, `audit` and `write` landed);
 the other slices are not, and each gets its own plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
@@ -839,6 +839,15 @@ clash, so no release tag may point at its commit (nor at lane `audit`'s).
 Audit fills `ServerResult.Clashed` from `Config.ClashedKeys` and `optionsDrift` skips those keys
 (text, JSON, Compliant); the conflict itself rides the existing `policy_conflicts` path (critical,
 exit 2, OP4 under `--server`).
+Apply refuses a clashed server through `restrictionRefusal` with the save-neutral
+`ServerPlan.ClashRefused` (`NothingCanLand` skips it like `WeakRefused`, so revoke and rotate still
+save, OP6; a revoked-kind conflict on the same server outranks it). cmd's save rule splits:
+`editConflictRefusal` (revoke, rotate) never refuses a clash; `conflictRefusal` (adopt,
+import --merge) refuses only a clash on a (user, server) pair the loaded manifest did not have
+(`addedClashes`). The apply, revoke, rotate, adopt and import `--help` footers name the conflict
+kinds a kept manifest refuses on (revoked-key, revoked-access) and the ones a save may not add (a
+weak key; for adopt and import, a restriction conflict). With lane `write` in, the fail-closed
+intermediate of lanes `grants`/`audit` is over.
 **Owner follow-ups F1** (decided 2026-11-10; planned in
 `docs/superpowers/plans/2026-11-10-p10-f1-owner-followups.md`): a fresh `import -o FILE --force`
 also warns (kind `manifest_settings_dropped`, one line per kind, each ending with `--merge FILE`)

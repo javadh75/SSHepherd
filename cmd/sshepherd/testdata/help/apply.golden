@@ -36,8 +36,9 @@ Exit codes:
      bastion's is 1), or revoke/rotate --sweep found a revoked key still
      installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
-     that would keep a policy conflict or add a weak key, a failed serial
-     save, or refused before anything was saved or written
+     that would keep a revoked-key or revoked-access conflict or add a weak
+     key, a failed serial save, or refused before anything was saved or
+     written
 
 Usage:
   sshepherd apply [flags]

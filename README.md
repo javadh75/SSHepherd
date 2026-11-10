@@ -1642,8 +1642,11 @@ existing manifest wins every conflict (with a loud warning), and re-running with
 new input is a byte-identical no-op. A `.pub` whose key is revoked is skipped, and a
 revoked (user, server) pair is never re-extended:
 `key SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo from ~/.ssh/id_old.pub is REVOKED (2026-11-08, alice) — not imported`.
-A `--merge` manifest that would keep a policy conflict is refused (exit 3; see
-[Validation rules](#validation-rules)).
+A `--merge` manifest that would keep a revoked-key or revoked-access conflict is refused
+(exit 3; see [Validation rules](#validation-rules)); a restriction conflict does not stop the
+save unless the merge adds it (see [Per-grant restrictions](#per-grant-restrictions)):
+`refusing to write the manifest — it would add 1 restriction conflict: user "deploy": server "web-3" is granted by access[0] with [no-pty] and by access[1] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user`.
+`import` never writes grant `options:` itself; a merge carries the existing ones.
 
 A weak `.pub` identity (DSA, RSA under 2048 bits) is skipped with a warning, in plain `import` and under `--merge`. `--operator-key` naming a weak key is an error (exit 3).
 
@@ -1774,8 +1777,14 @@ remembers is skipped with a warning
 (`key SHA256:z/fSv0Z0RZS+Lccbc6ZoOWwt/fbj1VFJGSBKQbo4icE on web-2 is REVOKED (2026-11-08, alice) — not adopted; run 'sshepherd apply --server web-2' to remove it`),
 and so is a known key on a server whose access was revoked; adopt's exit code is
 unchanged. Adopt keeps `serial:` and `revoked:` in both modes (regenerate and
-`--merge`), and refuses (exit 3) to write a manifest that would keep a policy
-conflict (see [Validation rules](#validation-rules)).
+`--merge`), and refuses (exit 3) to write a manifest that would keep a revoked-key or
+revoked-access conflict (see [Validation rules](#validation-rules)). A restriction conflict
+already in the manifest does not stop the save; one the save would add, on a (user, server)
+pair the manifest did not have (for example a newly found server that two grants with
+different `options:` both reach), is refused with
+`refusing to write the manifest — it would add 1 restriction conflict: …` (see
+[Per-grant restrictions](#per-grant-restrictions)). Adopt never writes grant `options:` itself;
+a regenerate or `--merge` carries the existing ones.
 
 A weak on-server key (DSA, RSA under 2048 bits) is skipped with a warning in both modes and never granted to more servers; audit keeps showing it as `UNAUTHORIZED`.
 
@@ -2238,6 +2247,30 @@ short are never passed off as unreachable).
 
 **Weak keys.** A server that grants a weak key (DSA, RSA under 2048 bits) is refused and the rest of the plan proceeds, exit 1, except a write that grants nothing and removes at least one key: it cannot install or widen the weak key, so it proceeds. A server already holding exactly its keys stays refused until the weak key is gone. A refusal for a weak key never stops `revoke` or `rotate` from saving their edit.
 
+**Per-grant restrictions.** A grant's `options:` are rendered after the key line's options on
+that grant's servers only (see [Per-grant restrictions](#per-grant-restrictions)). For example,
+`alice`'s key line carries `no-agent-forwarding` and her grant on `web-1` adds
+`from="10.0.0.0/8"` and `no-pty`:
+
+```text
+# Managed by SSHepherd. Manual edits will be overwritten by 'sshepherd apply'.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqI4910CfGV/VLbLTy6XXLKZwm/HZQSG/N0iAG0D29c op
+no-agent-forwarding,from="10.0.0.0/8",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOU alice
+from="10.0.0.0/8",no-pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO1JKMYo0cLG6ukDOJBZlWEpWSc6XGP5NjbBRhSshzfR bob
+```
+
+The loosening highlight, the lockout guard's restrictive-options warning, the forwarding guard
+on a managed bastion and the key offer order all see the rendered options. Lines a `preserve:`
+rule keeps are never restricted. A server a restriction conflict names is refused with the
+conflict text and the rest of the plan proceeds, exit `1`:
+
+```console
+web-1 (deploy@10.0.0.1:22)  REFUSED: user "alice": server "web-1" is granted by access[0] with [no-pty] and by access[1] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user
+```
+
+A refusal for a restriction conflict never stops `revoke` or `rotate` from saving their edit;
+their apply phase refuses those servers (exit `1`).
+
 **Bastions.** Writes run in levels: a server before the bastions it is reached
 through, deepest bastion last, each level finished before the next, so a bad bastion
 write cannot strand its dependents' writes. A managed bastion must keep forwarding:
@@ -2433,8 +2466,9 @@ instead of failing; repeating it prints
 **Revocation memory.** Every revoke that saves records what it removed in `revoked:` —
 `revoke USER` one key entry per key, `revoke --key` one per key (labelled with its
 owner), `revoke USER --from-server NAME` one access entry naming the servers none of that user's own `except:` lists remembers (a selector's new `except:` already remembers its server; a group's `except:` does not count, because it stops applying when the member leaves the group) — and bumps
-`serial:` once. `revoke` refuses to save a manifest that would keep a policy conflict,
-exit `3`, nothing saved —
+`serial:` once. `revoke` refuses to save a manifest that would keep a revoked-key or
+revoked-access conflict (a restriction conflict does not stop the save; see
+[Per-grant restrictions](#per-grant-restrictions)), exit `3`, nothing saved —
 `refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`;
 `revoke --key` of the conflicting key is the fix.
 
@@ -2451,7 +2485,12 @@ unknown server, and any user × server pair the user has no access to — every 
 is listed in one message. A protected non-operator can be trimmed with `--operator`, following the same rules: a literal server gets a tombstone, a selector grant gets `except:`. Only the trimmed servers are contacted, and there is no
 `check every server:` line (no key is removed). The edit
 header says how many other servers each user keeps; `revoke USER` without `--from-server`
-removes every grant.
+removes every grant. A trimmed entry keeps its grant `options:` on what remains (an added
+`except:` goes right after `servers:`).
+
+**Restriction conflicts.** `revoke` still saves over a restriction conflict (see
+[Per-grant restrictions](#per-grant-restrictions)); its apply phase refuses the servers the
+conflict names (exit `1`).
 
 The third way out blocks that one member and leaves the group alone. If the user also holds a direct grant of the server, that tombstone is a policy conflict until you remove the direct grant too. A pair a tombstone already blocks reads as already revoked, exit `0`.
 
@@ -2783,8 +2822,9 @@ $ sshepherd rotate deploy --old SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb
   `not swept: NAME (jump only)` (JSON `sweep.jump_only`) and the line does not change
   the exit code. A leaver's key on a jump-only account is outside every check: remove
   it there by hand.
-- `rotate` refuses, exit `3`, to save a manifest that would keep a policy conflict —
-  in particular `--new` of a revoked key
+- `rotate` refuses, exit `3`, to save a manifest that would keep a revoked-key or
+  revoked-access conflict (a restriction conflict does not stop the save; see
+  [Per-grant restrictions](#per-grant-restrictions)) — in particular `--new` of a revoked key
   (`refusing to write the manifest — it would keep 1 policy conflict: key SHA256:n6ApDjw082BN1aZBgDkRXVuzv6lUdwKcxFRTkT4l+XU of user "dave" is revoked (2026-11-08, dave): remove it from users, or delete the revoked: entry to un-revoke it deliberately`).
 - A save that would **add** a weak key (DSA, or RSA under 2048 bits) is refused, exit `3`, with nothing saved or written. Any other save goes through while the manifest still holds a weak key: an unrelated edit is never blocked, and a weak key's own `rotate` or `revoke --key` always saves. A server that still grants a weak key after the edit is refused in the push (exit `1`), and the edit is saved anyway.
 - Under `--json` the document carries the same `edit` section as `revoke`'s, with a
@@ -2825,6 +2865,12 @@ command that finishes the overlap once every client uses the new key —
 `new key recorded — USER has no grants yet …` when no server is affected.
 `--keep-old` again on the same old key adds another key; a plain `--old OLD` during
 an overlap replaces the old key.
+
+**Grant options and restriction conflicts.** Grant `options:` are not part of the key line, so
+`rotate` and `rotate --keep-old` leave them untouched: the new key is restricted on each server
+exactly as the old one was. `rotate` still saves over a restriction conflict (see
+[Per-grant restrictions](#per-grant-restrictions)); its apply phase refuses the servers the
+conflict names (exit `1`).
 
 ```console
 manifest edit: rotate bob key SHA256:vxu9sT7+WkqIPG3kOwohja2DmYBjKw903FLEcS+Xb6o → SHA256:LA4QoSmstGCy/UHfdU3jKjnPz56pQzud9OmslMh3g8w (keeps the old key; keeps expiry-time="20270101") — 3 servers affected
@@ -3100,9 +3146,11 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift; lines a `preserve:` rule keeps are not drift) | Converged — nothing to do, including a header-only write applied, a newer-serial server with an equal body (with a note), and a server the manifest grants nothing that holds only kept lines | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`; `timeout` when its session never opens); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`; `timeout` when its session never opens); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a restriction conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
 | `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key or a restriction conflict), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
-| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
+| `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a revoked-key or revoked-access conflict (a restriction conflict never stops a revoke or rotate save; its servers are refused in the apply phase, exit `1`), a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
+
+`adopt` and `import --merge` also exit `3` when the save would add a restriction conflict on a (user, server) pair the manifest did not have; a clash already there does not stop the save.
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.
 
@@ -3147,8 +3195,9 @@ Exit codes:
      bastion's is 1), or revoke/rotate --sweep found a revoked key still
      installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
-     that would keep a policy conflict or add a weak key, a failed serial
-     save, or refused before anything was saved or written
+     that would keep a revoked-key or revoked-access conflict or add a weak
+     key, a failed serial save, or refused before anything was saved or
+     written
 ```
 
 `adopt --help`:
@@ -3161,8 +3210,8 @@ Exit codes:
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
      --output without --force, an in-place save refused, a manifest that
-     would keep a policy conflict or add a weak key, --partial with no server
-     read, interrupted
+     would keep a revoked-key or revoked-access conflict, or add a weak key
+     or a restriction conflict, --partial with no server read, interrupted
 ```
 
 `import --help`:
@@ -3172,7 +3221,8 @@ Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
      existing --output without --force, an in-place save refused, a --merge
-     manifest that would keep a policy conflict or add a weak key
+     manifest that would keep a revoked-key or revoked-access conflict, or
+     add a weak key or a restriction conflict
 ```
 
 `validate --help`:

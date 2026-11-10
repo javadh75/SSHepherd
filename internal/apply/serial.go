@@ -135,9 +135,19 @@ func removalOnly(r audit.ServerResult, entries []authkeys.RenderEntry) bool {
 
 // conflictRefusal is the refusal text for a server a revoked-kind policy
 // conflict names (D29): each conflict's message, joined; "" when none names
-// it. Weak-key conflicts have their own rule, weakRefusal.
+// it. Weak-key conflicts have their own rule, weakRefusal; restriction
+// conflicts theirs, restrictionRefusal.
 func conflictRefusal(cfg *config.Config, server string) string {
-	return conflictMessages(cfg, server, func(kind string) bool { return kind != config.ConflictWeakKey })
+	return conflictMessages(cfg, server, func(kind string) bool {
+		return kind != config.ConflictWeakKey && kind != config.ConflictRestriction
+	})
+}
+
+// restrictionRefusal is the refusal text for a server a restriction conflict
+// names (spec S7, OP6), "" when none does. planOne marks it ClashRefused, so
+// it never withholds a revoke's or rotate's save.
+func restrictionRefusal(cfg *config.Config, server string) string {
+	return conflictMessages(cfg, server, func(kind string) bool { return kind == config.ConflictRestriction })
 }
 
 // weakRefusal is the refusal text for a server a weak-key conflict names, ""

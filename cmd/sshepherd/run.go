@@ -229,8 +229,9 @@ const exitCodesWrite = `Exit codes:
      bastion's is 1), or revoke/rotate --sweep found a revoked key still
      installed
   3  tool error: bad flags, unloadable manifest, failed preflight, a manifest
-     that would keep a policy conflict or add a weak key, a failed serial
-     save, or refused before anything was saved or written`
+     that would keep a revoked-key or revoked-access conflict or add a weak
+     key, a failed serial save, or refused before anything was saved or
+     written`
 
 const exitCodesAdopt = `Exit codes:
   0  manifest emitted
@@ -239,14 +240,15 @@ const exitCodesAdopt = `Exit codes:
      is emitted)
   3  tool error: bad flags, unloadable manifest, failed preflight, an existing
      --output without --force, an in-place save refused, a manifest that
-     would keep a policy conflict or add a weak key, --partial with no server
-     read, interrupted`
+     would keep a revoked-key or revoked-access conflict, or add a weak key
+     or a restriction conflict, --partial with no server read, interrupted`
 
 const exitCodesImport = `Exit codes:
   0  manifest emitted
   3  tool error: bad flags, unreadable ssh config or --merge manifest, an
      existing --output without --force, an in-place save refused, a --merge
-     manifest that would keep a policy conflict or add a weak key`
+     manifest that would keep a revoked-key or revoked-access conflict, or
+     add a weak key or a restriction conflict`
 
 const exitCodesValidate = `Exit codes:
   0  valid (warnings may be present)

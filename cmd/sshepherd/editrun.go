@@ -421,13 +421,14 @@ func exitFor(code int) error {
 
 // editPrelude settles what runEdit decides before any apply phase: a run
 // whose every target was already revoked (D1b/D1c: the notes, exit 0, no
-// save), and the D29 save refusal (exit 3); otherwise it prints a mixed
-// run's already-revoked notes. done: runEdit returns err as is.
+// save), and the D29 save refusal (exit 3; a restriction conflict never
+// refuses an edit, OP6); otherwise it prints a mixed run's already-revoked
+// notes. done: runEdit returns err as is.
 func editPrelude(cmd *cobra.Command, log *slog.Logger, stdout io.Writer, f *editFlags, ids identities, ep editPlan, h followUp) (done bool, err error) {
 	if ep.noop {
 		return true, finishNoop(cmd, log, stdout, f, ids, ep, h)
 	}
-	if err := conflictRefusal(ep.former, ep.edited); err != nil {
+	if err := editConflictRefusal(ep.former, ep.edited); err != nil {
 		return true, err
 	}
 	if !f.run.json {

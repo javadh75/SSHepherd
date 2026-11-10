@@ -115,6 +115,12 @@ type ServerPlan struct {
 	// withholds an edit's save (OP4): an unrelated edit and the weak key's
 	// own remediation save, and the push is refused at this server.
 	WeakRefused bool
+	// ClashRefused marks a refusal by a restriction conflict alone (spec
+	// 2026-11-08 S7, OP6). Like WeakRefused it never withholds an edit's
+	// save: revoke and rotate never add a grant, and a leaver's revoke must
+	// save while a clash holds the server. Unlike a weak-key refusal it has
+	// no removal-only exception: the server is held even for a revoke.
+	ClashRefused bool
 
 	Desired  []authkeys.Key // rendered key set, DesiredFor order
 	Rendered []byte         // the exact bytes a write installs
@@ -271,6 +277,10 @@ func planOne(cfg *config.Config, r audit.ServerResult, held []fleet.HeldKey, opt
 	// restored. The weak-key kind is checked below, once entries exist.
 	if refusal := conflictRefusal(cfg, r.Server.Name); refusal != "" {
 		p.Class, p.Refusal = ClassRefused, refusal
+		return p, nil
+	}
+	if refusal := restrictionRefusal(cfg, r.Server.Name); refusal != "" {
+		p.Class, p.Refusal, p.ClashRefused = ClassRefused, refusal, true
 		return p, nil
 	}
 	p.Kept = len(r.External)
