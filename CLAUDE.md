@@ -468,7 +468,7 @@ dead-line reason, `--offer-all-keys` on the write dial and a held weak key throu
 `import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
-S1, S2, S8, S3a, S3b, S4, S5 and S6 are built, and S7 is being built (lane `grants` landed);
+S1, S2, S8, S3a, S3b, S4, S5 and S6 are built, and S7 is being built (lanes `grants` and `audit` landed);
 the other slices are not, and each gets its own plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
@@ -836,6 +836,9 @@ server where they disagree; a blocked grant and a keyless user never clash. A gr
 restrictions-only and sources-equal-render rules. Lane `grants` (round 1) is the fail-closed
 intermediate (plan gap 14): until lane `write` lands, revoke and rotate refuse to save over a
 clash, so no release tag may point at its commit (nor at lane `audit`'s).
+Audit fills `ServerResult.Clashed` from `Config.ClashedKeys` and `optionsDrift` skips those keys
+(text, JSON, Compliant); the conflict itself rides the existing `policy_conflicts` path (critical,
+exit 2, OP4 under `--server`).
 **Owner follow-ups F1** (decided 2026-11-10; planned in
 `docs/superpowers/plans/2026-11-10-p10-f1-owner-followups.md`): a fresh `import -o FILE --force`
 also warns (kind `manifest_settings_dropped`, one line per kind, each ending with `--merge FILE`)

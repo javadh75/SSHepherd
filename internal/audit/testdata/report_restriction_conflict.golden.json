@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "policy_conflicts": [
+    {
+      "kind": "restriction_conflict",
+      "message": "user \"alice\": server \"web-1\" is granted by access[0] with [no-pty] and by access[1] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user",
+      "user": "alice",
+      "servers": [
+        "web-1"
+      ]
+    }
+  ],
+  "summary": {
+    "servers": 2,
+    "compliant": 0,
+    "drift": 2,
+    "critical": 1,
+    "unreachable": 0,
+    "policy_conflicts": 1,
+    "exit_code": 2
+  },
+  "servers": [
+    {
+      "name": "web-1",
+      "host": "10.0.0.1",
+      "port": 22,
+      "user": "deploy",
+      "status": "critical",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519"
+          },
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519",
+            "options_drift": {
+              "actual": [
+                "no-pty"
+              ],
+              "desired": []
+            }
+          }
+        ],
+        "missing": [
+          {
+            "owner": "carol",
+            "fingerprint": "SHA256:zbv/nU7iZdO0fB0DalMI70dP6/yFD8sctXvvW4+OokY",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "unauthorized": [
+          {
+            "owner": null,
+            "fingerprint": "SHA256:doxiASlJnKSD9j+JpVoWpfEFHjUrsF9ZYr+cir4FYjo",
+            "type": "ssh-ed25519"
+          }
+        ]
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false,
+      "critical_reasons": [
+        "policy_conflict"
+      ]
+    },
+    {
+      "name": "web-2",
+      "host": "10.0.0.2",
+      "port": 22,
+      "user": "deploy",
+      "status": "drift",
+      "error": null,
+      "keys": {
+        "present": [
+          {
+            "owner": "alice",
+            "fingerprint": "SHA256:fe85JkIjo8VPe+XqXJGH5Mau1EMFdK1OdKvJUFicyA8",
+            "type": "ssh-ed25519",
+            "options_drift": {
+              "actual": [],
+              "desired": [
+                "no-pty"
+              ]
+            }
+          },
+          {
+            "owner": "bob",
+            "fingerprint": "SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4",
+            "type": "ssh-ed25519"
+          }
+        ],
+        "missing": [],
+        "unauthorized": []
+      },
+      "parse_errors": [],
+      "file_absent": false,
+      "no_users_granted": false
+    }
+  ]
+}

@@ -460,6 +460,13 @@ With several servers it reads `user "alice": servers "web-1" and 1 more are gran
 an operator's implicit grant reads `by its operator grant with no options`. A grant a
 tombstone blocks, and a user with no keys, never clash.
 
+`audit` prints the conflict in the manifest block as critical (see
+[`sshepherd audit`](#sshepherd-audit)):
+
+```console
+‼ manifest: user "alice": server "web-1" is granted by access[0] with [no-pty] and by access[1] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user (CRITICAL: policy conflict)
+```
+
 ### Per-server `authorized_keys_file`
 
 For servers whose sshd reads keys from somewhere other than the default
@@ -925,12 +932,33 @@ and the JSON summary gains `skipped`; a run that names every server gets neither
 manifest's policy conflicts are about the manifest, not one server, so they are still
 printed and still exit `2`.
 
+A **restriction conflict** (two grants giving one key different options on one server; see
+[Per-grant restrictions](#per-grant-restrictions)) prints in the manifest block as critical and
+marks every server it names critical (exit `2`, also under `--server` when it names only other
+servers). On those servers audit skips the options comparison for that user's keys, since the
+manifest gives them no one set of options; presence, missing and unauthorized keys are still
+reported. In `--json` the conflict is a `policy_conflicts` object with kind
+`restriction_conflict`, `user` and `servers` and no `fingerprint`, and `critical_reasons` on
+those servers carries `policy_conflict`:
+
+```json
+{
+  "kind": "restriction_conflict",
+  "message": "user \"alice\": server \"web-1\" is granted by access[0] with [no-pty] and by access[1] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user",
+  "user": "alice",
+  "servers": [
+    "web-1"
+  ]
+}
+```
+
 **Drift classes.** Besides missing, unauthorized and unparseable entries, these
 security-relevant classes make a server non-compliant, always on (exit 1 unless the
 entry says otherwise):
 
 - a matched key whose **options differ** from the manifest's (e.g. the server lost a
-  `from=` or `command=` restriction);
+  `from=` or `command=` restriction), judged per server against the options that server's
+  grant renders (see [Per-grant restrictions](#per-grant-restrictions));
 - a **duplicate entry** — one key on several lines, where sshd tries each line and
   the least restricted copy wins;
 - a non-empty, unmanaged **`~/.ssh/authorized_keys2`** (checked when the audited
@@ -3073,7 +3101,7 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift; lines a `preserve:` rule keeps are not drift) | Converged — nothing to do, including a header-only write applied, a newer-serial server with an equal body (with a note), and a server the manifest grants nothing that holds only kept lines | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
 | `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`; `timeout` when its session never opens); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
+| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key or a restriction conflict), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a policy conflict, a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their report as their own sections say. `adopt` writes one on exit `0` and `1`, with `emitted` saying whether a manifest was produced, and on exit `3` only for `--partial` with no server read. `import` writes one only on exit `0`.

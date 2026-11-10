@@ -62,6 +62,11 @@ type ServerResult struct {
 	// are not drift, adopt skips them and apply keeps them; Diff.Actual and
 	// Lines still hold them.
 	External []External
+	// Clashed holds the fingerprints a restriction conflict names on this
+	// server (config.ClashedKeys, spec 2026-11-08 S7): their options are not
+	// compared, in text, JSON or Compliant, because the grants disagree on
+	// what they should be. Presence is still compared.
+	Clashed map[string]bool
 }
 
 // Duplicate is one fingerprint installed on Count (>= 2) lines; Key is its
@@ -93,8 +98,12 @@ func (r ServerResult) Compliant() bool {
 // with the manifest's (the OK entry carries the desired form) — the same
 // comparison apply's rewrite rows make. Options are security-relevant
 // (from=, command=, restrict), so unlike comment drift this is real drift.
+// A key a restriction conflict names here (Clashed) never drifts.
 func (r ServerResult) optionsDrift(k authkeys.Key) (actual, desired []string, drifted bool) {
 	actual = r.Diff.Actual[k.Fingerprint].Options
+	if r.Clashed[k.Fingerprint] {
+		return actual, k.Options, false // no one desired set (spec S7)
+	}
 	return actual, k.Options, !slices.Equal(actual, k.Options)
 }
 
@@ -139,6 +148,7 @@ func auditOne(ctx context.Context, cfg *config.Config, reader KeyReader, srv con
 	res := ServerResult{Server: srv}
 	desired := cfg.DesiredFor(srv.Name)
 	res.NoUsersGranted = len(desired) == 0
+	res.Clashed = cfg.ClashedKeys(srv.Name)
 
 	if timeout > 0 {
 		var cancel context.CancelFunc
