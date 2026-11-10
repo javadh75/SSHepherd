@@ -214,3 +214,36 @@ func TestExternalWeakKey(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 0 (a kept weak key is not drift)", got)
 	}
 }
+
+// TestExternalKeyJSONIsSanitized: a kept line's comment and options are
+// text another tool wrote (anyone who can set the comment controls a
+// comment: rule's line), so JSON keys.external strips control and format
+// runes from both, like every other remote string in the report.
+func TestExternalKeyJSONIsSanitized(t *testing.T) {
+	cfg := preserveConfig(t)
+	cmd := "command=\"/usr/local/bin/gitea serv key-1\",environment=\"X=\x1b[31m\u202e\" " + testkeys.Line(t, 6) + " git@laptop"
+	cmt := testkeys.Line(t, 7) + " google-ssh \x1b[31mred\u202e"
+	res := preserveResult(t, cfg, "gitea", testkeys.Line(t, 1)+"\n"+cmd+"\n"+cmt+"\n")
+	if len(res.External) != 2 {
+		t.Fatalf("External = %+v, want both lines kept", res.External)
+	}
+	raw := renderJSON(t, cfg, []ServerResult{res})
+	var rep jsonReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	ext := rep.Servers[0].Keys.External
+	for _, k := range ext {
+		for _, s := range append([]string{k.Comment}, k.Options...) {
+			if strings.ContainsAny(s, "\x1b\u202e") {
+				t.Errorf("keys.external carries a raw control or format rune: %q", s)
+			}
+		}
+	}
+	if got := ext[1].Comment; got != "google-ssh [31mred" {
+		t.Errorf("comment = %q, want the sanitized text", got)
+	}
+	if !slices.Contains(ext[0].Options, `environment="X=[31m"`) {
+		t.Errorf("options = %q, want the sanitized environment option", ext[0].Options)
+	}
+}

@@ -468,7 +468,7 @@ dead-line reason, `--offer-all-keys` on the write dial and a held weak key throu
 `import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
-S1, S2, S8, S3a, S3b, S4 and S5 are built; the other slices are not, and each gets its own
+S1, S2, S8, S3a, S3b, S4, S5 and S6 are built; the other slices are not, and each gets its own
 plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
@@ -819,4 +819,4 @@ Apply prints `note: N externally managed lines kept` on a write and on a converg
 `TestPreserveHermetic` drives apply, audit and adopt in-process against `sshtest` (authorizing
 from the written file); `TestE2EPreserve` is the E2E (fixture account `presv`).
 S6 follow-up: `TestExternalWeakKey` pins the `WEAK` note on an externally managed row (after the
-` · options:` suffix) and `key_issues` on JSON `keys.external` (mutants U11/U15).
+` · options:` suffix) and `key_issues` on JSON `keys.external` (mutants U11/U15), and `TestExternalKeyJSONIsSanitized` the sanitized comment and options there (U13/U14).
