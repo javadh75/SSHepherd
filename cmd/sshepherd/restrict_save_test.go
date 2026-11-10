@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/javadh75/SSHepherd/internal/config"
 	"github.com/javadh75/SSHepherd/internal/sshconn/sshtest"
 	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
@@ -353,5 +354,27 @@ func TestValidateRestrictionConflict(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &doc); err != nil || code != 3 || doc.Valid || len(doc.PolicyConflicts) != 1 ||
 		doc.PolicyConflicts[0]["kind"] != "restriction_conflict" || doc.PolicyConflicts[0]["fingerprint"] != nil {
 		t.Errorf("--json exit = %d (err %v):\n%s", code, err, out)
+	}
+}
+
+// TestAddedClashesIgnoresOtherConflictKinds: a former conflict of another
+// kind (here revoked_access) on the same (user, server) pair does not hide
+// a restriction conflict the save adds there (verifier mutant W13).
+func TestAddedClashesIgnoresOtherConflictKinds(t *testing.T) {
+	former := parseManifest(t, "users:\n  - {name: deploy, keys: [\""+testkeys.Line(t, 2)+"\"]}\nservers:\n"+
+		"  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: db-1, host: 10.0.0.9, user: deploy}\n"+
+		"  - {name: web-3, host: 10.0.0.3, user: deploy}\n"+
+		"access:\n  - {user: deploy, servers: [\"*\"]}\n"+
+		"revoked:\n  - {user: deploy, servers: [web-3], date: 2026-11-10}\n")
+	kinds := map[string]bool{}
+	for _, c := range former.Conflicts() {
+		kinds[c.Kind] = slices.Contains(c.Servers, "web-3")
+	}
+	if !kinds[config.ConflictRevokedAccess] || len(kinds) != 1 {
+		t.Fatalf("former conflicts = %v, want only revoked_access on web-3", former.Conflicts())
+	}
+	saved := parseManifest(t, wildcardPair(t, "  - {name: web-3, host: 10.0.0.3, user: deploy}\n"))
+	if got := addedClashes(former, saved); len(got) != 1 || !strings.Contains(got[0], `server "web-3"`) {
+		t.Errorf("addedClashes = %q, want the web-3 restriction conflict", got)
 	}
 }
