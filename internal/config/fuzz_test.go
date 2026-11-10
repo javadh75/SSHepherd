@@ -200,6 +200,11 @@ access:
 revoked:
   - {user: op, servers: [s1], date: 2026-11-10}
 `,
+		// one grant option smuggling clauses, then a second key, past an
+		// early closing quote (PRD-6 repair): refused, so checkRenderRoundTrip
+		// never sees a rendered line that parses back as something else
+		"users:\n  - {name: a, keys: ['restrict " + k1 + "']}\nservers:\n  - {name: s, host: h, user: u}\naccess:\n  - {user: a, servers: [s], options: ['from=\"10.0.0.0/8\",pty,port-forwarding']}\n",
+		"users:\n  - {name: a, keys: ['" + k1 + "']}\nservers:\n  - {name: s, host: h, user: u}\naccess:\n  - {user: a, servers: [s], options: ['from=\"10.0.0.0/8\" " + k2 + " \"']}\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

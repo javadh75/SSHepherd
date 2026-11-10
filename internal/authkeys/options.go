@@ -98,20 +98,52 @@ func CheckOption(opt string) string {
 // sshdIssue reports why one option makes sshd reject the line; "" means sshd
 // accepts it. Unsafe runes are not sshd's concern: a quoted value may carry
 // any byte, and an unknown name is caught by the table lookup.
+//
+// An accepted option is exactly one clause: its quoted value ends at its last
+// byte, read as sshd's opt_dequote reads it. A value that closes earlier
+// would carry further clauses, or a space and a whole second key, into a
+// rendered line verbatim. The line parser never yields such a token for a
+// line sshd honors (sshd rejects what follows an early close), but a raw
+// grant option (spec S7) reaches here unsplit.
 func sshdIssue(opt string) string {
 	_, value, hasValue := strings.Cut(opt, "=")
 	s, known := lookup(opt)
 	switch {
 	case !known:
 		return "is not a recognized authorized_keys option"
-	case s.takesValue && (!hasValue || len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"'):
-		return `requires a quoted value (name="...")`
 	case !s.takesValue && hasValue:
 		return "does not take a value"
-	case s.value != nil && s.value(value[1:len(value)-1]) != nil:
+	case !s.takesValue:
+		return ""
+	}
+	end := quotedEnd(value)
+	switch {
+	case !hasValue || end < 0:
+		return `requires a quoted value (name="...")`
+	case end != len(value)-1:
+		return `has an unescaped '"' inside its quoted value; sshd ends the value there (write \" for a literal quote)`
+	case s.value != nil && s.value(value[1:end]) != nil:
 		return "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])" // only expiry-time has a validator today
 	}
 	return ""
+}
+
+// quotedEnd returns the index of the '"' that closes value's leading quoted
+// string, scanned like OpenSSH's opt_dequote (a backslash right before a '"'
+// escapes it), or -1 when value does not start with '"' or never closes.
+func quotedEnd(value string) int {
+	if !strings.HasPrefix(value, `"`) {
+		return -1
+	}
+	for i := 1; i < len(value); i++ {
+		switch {
+		case value[i] == '\\' && i+1 < len(value) && value[i+1] == '"':
+			i++
+		case value[i] == '"':
+			return i
+		}
+	}
+	return -1
 }
 
 // OptionIssue returns the first reason a line with these options is unfit

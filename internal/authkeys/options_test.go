@@ -4,7 +4,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/javadh75/SSHepherd/internal/testkeys"
 )
+
+// quoteIssue is CheckOption's reason for an option that is more than one
+// clause.
+const quoteIssue = `has an unescaped '"' inside its quoted value; sshd ends the value there (write \" for a literal quote)`
 
 func TestCheckOption(t *testing.T) {
 	tests := []struct{ opt, want string }{
@@ -30,6 +36,21 @@ func TestCheckOption(t *testing.T) {
 		{`expiry-time="UTC"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
 		{`expiry-time="2027"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
 		{`expiry-time="2027xx01"`, "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])"},
+		// One option is one clause: sshd's opt_dequote ends a value at its
+		// first unescaped '"', so anything after it is another clause or,
+		// past a space, the key itself. A raw grant option (spec S7) is the
+		// first string that reaches here without the line parser's split.
+		{`command="\"x\""`, ""},
+		{`command="a\\b"`, ""},
+		{`command="a,b c"`, ""},
+		{`from="10.0.0.0/8",pty,port-forwarding,command="x"`, quoteIssue},
+		{`from="10.0.0.0/8",cert-authority,principals="root"`, quoteIssue},
+		{`from="10.0.0.0/8" ssh-ed25519 AAAA "`, quoteIssue},
+		{`from="10.0.0.0/8" x="y"`, quoteIssue},
+		{`from="a""b"`, quoteIssue},
+		{`from="a\"`, `requires a quoted value (name="...")`},  // the last quote is escaped: no end quote
+		{`from="a\\"`, `requires a quoted value (name="...")`}, // \ then \" (sshd's rule): no end quote
+		{`from="`, `requires a quoted value (name="...")`},
 	}
 	for _, tt := range tests {
 		if got := CheckOption(tt.opt); got != tt.want {
@@ -92,7 +113,7 @@ func TestIgnoredBySSHD(t *testing.T) {
 	if err := OptionIssue(tab); err == nil || !strings.Contains(err.Error(), "control or format characters") {
 		t.Errorf("OptionIssue(%q) = %v, want the control-character refusal", tab, err)
 	}
-	for _, opts := range [][]string{{"zzz"}, {"no-ptty"}, {"from=1.2.3.4"}, {`no-pty="x"`}, {`expiry-time="2027"`}, {"no-pty\x1b"}} {
+	for _, opts := range [][]string{{"zzz"}, {"no-ptty"}, {"from=1.2.3.4"}, {`no-pty="x"`}, {`expiry-time="2027"`}, {"no-pty\x1b"}, {`from="a"b"c"`}} {
 		if err := IgnoredBySSHD(opts); err == nil {
 			t.Errorf("IgnoredBySSHD(%q) = nil, want an error", opts)
 		}
@@ -192,7 +213,9 @@ func TestExpiryTime(t *testing.T) {
 }
 
 func FuzzCheckOption(f *testing.F) {
-	for _, s := range []string{"no-pty", `from="x"`, "zzz", `expiry-time="2027"`, "a=b=c", `command="\"x\""`} {
+	key := testkeys.Line(f, 1)
+	for _, s := range []string{"no-pty", `from="x"`, "zzz", `expiry-time="2027"`, "a=b=c", `command="\"x\""`,
+		`from="x",pty`, `from="x" ` + testkeys.Line(f, 2) + ` "`} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, opt string) {
@@ -200,6 +223,14 @@ func FuzzCheckOption(f *testing.F) {
 			name, _, _ := strings.Cut(opt, "=")
 			if _, ok := options[strings.ToLower(name)]; !ok {
 				t.Errorf("accepted unknown option %q", opt)
+			}
+			// An accepted option is exactly one clause: written in front of
+			// a key, it parses back as itself and nothing else, and the key
+			// stays the same (spec S7: a raw grant option reaches the file
+			// verbatim).
+			k, err := ParseLine(opt + " " + key)
+			if err != nil || len(k.Options) != 1 || k.Options[0] != opt || k.Raw != opt+" "+key {
+				t.Errorf("accepted option %q does not render as one clause: %+v, %v", opt, k, err)
 			}
 		}
 		d, w := Loosening([]string{opt}, []string{opt})

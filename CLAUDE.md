@@ -834,8 +834,14 @@ entries in order; none for a blocked pair or a `jump_only` server), so `DesiredF
 per-server copies and audit drift, `apply.Affected`, `Survivors`, `OfferOrder`, the `Loosens`
 highlight and S5's forwarding guard follow with no code. Two grant sources giving one key
 different sets on one server (`authkeys.SameOptions`: order, repeats and name case ignored) are a
-D29 policy conflict, kind `restriction_conflict`, one per user and pair of sources with every
-server where they disagree; a blocked grant and a keyless user never clash. A grant's passed
+D29 policy conflict, kind `restriction_conflict`, one per user and pair of sources naming every
+server where that pair is the first disagreement (a server appears in one conflict per user); a
+blocked grant and a keyless user never clash. Each grant option is one clause: `authkeys.CheckOption`
+reads a quoted value as sshd's opt_dequote does, so a value that closes before the option's last
+byte is refused (`has an unescaped '"' inside its quoted value`). Otherwise one YAML item could
+add re-enablers, `cert-authority` or a second key to the rendered line. IgnoredBySSHD applies the
+same rule, and FuzzCheckOption checks that an accepted option parses back as one clause on the
+same key (W16 repair). A grant's passed
 `expiry-time=` warns (`key_expired`). `FuzzLoad`'s `checkGrantOptions` oracle pins the prefix,
 restrictions-only and sources-equal-render rules. Lane `grants` (round 1) was the fail-closed
 intermediate (plan gap 14): until lane `write` landed, revoke and rotate refused to save over a

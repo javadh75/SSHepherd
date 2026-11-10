@@ -24,7 +24,9 @@ type RenderEntry struct {
 
 // RenderLine renders one authorized_keys line: options comma-joined
 // verbatim (the parser preserves quoted values, so the join is faithful —
-// pinned by FuzzRenderRoundTrip), key material re-marshaled to the one
+// pinned by FuzzRenderRoundTrip; a grant option appended by the manifest
+// passed CheckOption, which accepts exactly one clause — pinned by
+// FuzzCheckOption), key material re-marshaled to the one
 // canonical base64 form regardless of odd whitespace in the source line,
 // then the comment. Re-parsing Key.Raw is cheap and keeps Key small; a
 // failure means the Key was not produced by ParseLine — a caller bug,

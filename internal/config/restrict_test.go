@@ -74,6 +74,21 @@ func TestGrantOptionValidation(t *testing.T) {
 			`access[0]: option "NO-PTY": user "alice" key 1 already carries "no-pty"`},
 		{"the entry's own index", "", "", "  - {user: bob, servers: [web-1]}\n  - {user: carol, servers: [web-2], options: [pty]}\n",
 			`access[1]: option "pty" does not restrict access`},
+		// One list item is one clause (PRD-6 repair): a quote that ends the
+		// value early would smuggle further clauses, or a second key, into
+		// the rendered line verbatim.
+		{"re-enablers after the restrict on the key line", "restrict ", "",
+			`  - {user: alice, servers: [web-1], options: ['from="10.0.0.0/8",pty,port-forwarding,agent-forwarding,command="x"']}` + "\n",
+			`access[0]: option "from=\"10.0.0.0/8\",pty,port-forwarding,agent-forwarding,command=\"x\"" has an unescaped '"' inside its quoted value`},
+		{"a smuggled cert-authority", "", "",
+			`  - {user: alice, servers: [web-1], options: ['from="10.0.0.0/8",cert-authority,principals="root"']}` + "\n",
+			`access[0]: option "from=\"10.0.0.0/8\",cert-authority,principals=\"root\"" has an unescaped '"' inside its quoted value`},
+		{"a smuggled second key", "", "",
+			`  - {user: alice, servers: [web-1], options: ['from="10.0.0.0/8" ` + testkeys.Line(t, 9) + ` "']}` + "\n",
+			`has an unescaped '"' inside its quoted value`},
+		{"a clause sshd cannot parse", "", "",
+			`  - {user: alice, servers: [web-1], options: ['from="10.0.0.0/8" x="y"']}` + "\n",
+			`access[0]: option "from=\"10.0.0.0/8\" x=\"y\"" has an unescaped '"' inside its quoted value`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(grantFleet(t, tc.aliceOpts, tc.groups, tc.access)))

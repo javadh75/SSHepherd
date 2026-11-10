@@ -441,7 +441,8 @@ An empty list means no options.
   `no-pty`, `no-user-rc`, `no-x11-forwarding`, `permitlisten=`, `permitopen=`, `restrict`,
   `verify-required`. `cert-authority` and `principals=` are refused: a grant cannot turn a key
   into a certificate authority. An option name already on a key line the entry reaches is
-  refused too (see [Validation rules](#validation-rules)).
+  refused too (see [Validation rules](#validation-rules)). Each list item is exactly one
+  option; a value with a stray quote is refused.
 - A group entry's options reach every member, exactly as one `user:` entry per member would.
 - A fleet-wide operator's implicit grant adds none. To restrict an operator's key per grant,
   give it its own `servers: ["*"]` entry with `options:`, which replaces the implicit grant.
@@ -706,6 +707,8 @@ The loader fails the whole manifest (exit 3) on any of these:
   line (`access[N]: option "no-ptty" is not a recognized authorized_keys option`,
   `access[N]: option "from=10.0.0.1" requires a quoted value (name="...")`,
   `access[N]: option "expiry-time=\"2027\"" has an invalid value (want YYYYMMDD[HHMM[SS]][Z])`);
+  each list item is one option, whose quoted value ends at its last character (write `\"` for a quote inside it)
+  (`access[N]: option "from=\"10.0.0.0/8\",pty" has an unescaped '"' inside its quoted value; sshd ends the value there (write \" for a literal quote)`);
   it must restrict access
   (`access[N]: option "pty" does not restrict access; a grant can only add restrictions`);
   `cert-authority` and `principals=` are refused
@@ -1779,10 +1782,8 @@ and so is a known key on a server whose access was revoked; adopt's exit code is
 unchanged. Adopt keeps `serial:` and `revoked:` in both modes (regenerate and
 `--merge`), and refuses (exit 3) to write a manifest that would keep a revoked-key or
 revoked-access conflict (see [Validation rules](#validation-rules)). A restriction conflict
-already in the manifest does not stop the save; one the save would add, on a (user, server)
-pair the manifest did not have (for example a newly found server that two grants with
-different `options:` both reach), is refused with
-`refusing to write the manifest — it would add 1 restriction conflict: …` (see
+already in the manifest does not stop the save, and adopt cannot add one: it adds no server,
+and the access it extends reaches only servers where the user had no grant (see
 [Per-grant restrictions](#per-grant-restrictions)). Adopt never writes grant `options:` itself;
 a regenerate or `--merge` carries the existing ones.
 
