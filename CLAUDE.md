@@ -283,7 +283,9 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   `--version` check, `govulncheck -mode=binary` on linux) and `binaries-arm64-run` (native arm64
   execution) feed `release-binaries` (after publish, tag push only; the only job with
   `contents: write`), which writes `SHA256SUMS`, runs cosign `sign-blob` keyless and
-  `verify-blob`, then `gh release create`. Exactly two jobs hold `id-token: write`: `publish`
+  `verify-blob`, then `gh release create` (`docs/release-notes/vX.Y.Z.md`, if present, above the
+  generated notes). Upgrade notes wait in `docs/release-notes/next.md`; the release commit renames it
+  to the version, and `verify-ref` refuses a tag push whose commit still has `next.md`. Exactly two jobs hold `id-token: write`: `publish`
   and `release-binaries`.
 
 ## License

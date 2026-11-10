@@ -3515,7 +3515,10 @@ and verify that signature with the command below. A manual `workflow_dispatch` r
 a dry run: every job except the two publishing ones (`publish` and `release-binaries`),
 even one dispatched on a tag. On a tag push, after the image is published,
 `release-binaries` attaches the signed `linux`/`darwin` `amd64`/`arm64` binaries,
-`SHA256SUMS` and `SHA256SUMS.sigstore.json` to a GitHub release (see Install). Verify an image before you run it
+`SHA256SUMS` and `SHA256SUMS.sigstore.json` to a GitHub release (see Install). The release text is
+`docs/release-notes/vX.Y.Z.md`, when that file exists, above GitHub's generated notes. Upgrade notes wait
+in `docs/release-notes/next.md`; the release commit renames it to the tag's version, and a tag push
+whose commit still has `next.md` is refused. Verify an image before you run it
 (requires cosign v3.1.4 or newer, the `COSIGN_VERSION` in release.yml; older cosign v2
 may report "no signatures found"):
 
