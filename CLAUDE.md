@@ -468,8 +468,8 @@ dead-line reason, `--offer-all-keys` on the write dial and a held weak key throu
 `import --merge`.
 The access-model roadmap spec
 (P10, `docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`) is approved.
-S1, S2, S8, S3a, S3b, S4, S5 and S6 are built; the other slices are not, and each gets its own
-plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
+S1, S2, S8, S3a, S3b, S4, S5 and S6 are built, and S7 is being built (lane `grants` landed);
+the other slices are not, and each gets its own plan and the owner's go-ahead. Audit's claim is narrowed to the managed `authorized_keys` files (D18).
 `apply`, `revoke` and `rotate` take `--json` (needs `--dry-run` or `--yes`): one
 schema-1 document with plan, per-server outcome and the manifest edit, written
 exactly when the run exits 0, 1 or 2 (specced in
@@ -820,6 +820,22 @@ Apply prints `note: N externally managed lines kept` on a write and on a converg
 from the written file); `TestE2EPreserve` is the E2E (fixture account `presv`).
 S6 follow-up: `TestExternalWeakKey` pins the `WEAK` note on an externally managed row (after the
 ` · options:` suffix) and `key_issues` on JSON `keys.external` (mutants U11/U15), and `TestExternalKeyJSONIsSanitized` the sanitized comment and options there (U13/U14).
+**Per-grant restrictions** (P10 S7, D22 = B, OP5, OP6, PRD-6; section S7 of
+`docs/superpowers/specs/2026-11-08-access-model-fleet-reach-design.md`, planned in
+`docs/superpowers/plans/2026-11-10-p10-s7-restrictions.md`): `access:` entries take `options:`
+(restricting options only, `authkeys.IsRestriction`; no name already on a reached key line,
+compared through `FindOption`), appended after the key line's options on the servers the entry
+grants (`config.keysOn` over `grantSources`: a fleet-wide operator's implicit grant first, then
+entries in order; none for a blocked pair or a `jump_only` server), so `DesiredFor` returns
+per-server copies and audit drift, `apply.Affected`, `Survivors`, `OfferOrder`, the `Loosens`
+highlight and S5's forwarding guard follow with no code. Two grant sources giving one key
+different sets on one server (`authkeys.SameOptions`: order, repeats and name case ignored) are a
+D29 policy conflict, kind `restriction_conflict`, one per user and pair of sources with every
+server where they disagree; a blocked grant and a keyless user never clash. A grant's passed
+`expiry-time=` warns (`key_expired`). `FuzzLoad`'s `checkGrantOptions` oracle pins the prefix,
+restrictions-only and sources-equal-render rules. Lane `grants` (round 1) is the fail-closed
+intermediate (plan gap 14): until lane `write` lands, revoke and rotate refuse to save over a
+clash, so no release tag may point at its commit (nor at lane `audit`'s).
 **Owner follow-ups F1** (decided 2026-11-10; planned in
 `docs/superpowers/plans/2026-11-10-p10-f1-owner-followups.md`): a fresh `import -o FILE --force`
 also warns (kind `manifest_settings_dropped`, one line per kind, each ending with `--merge FILE`)

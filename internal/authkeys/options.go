@@ -230,6 +230,37 @@ func FindOption(opts []string, name string) (string, bool) {
 	return "", false
 }
 
+// IsRestriction reports whether opt only narrows what a key line allows, so
+// a per-grant restriction may add it (spec 2026-11-08 S7, OP5): an option the
+// table marks restricts that does not make the line accept certificates only
+// (cert-authority, principals=). The name matches case-insensitively;
+// CheckOption judges the value.
+func IsRestriction(opt string) bool {
+	s, ok := lookup(opt)
+	return ok && s.effect == restricts && !s.certOnly
+}
+
+// SameOptions reports whether a and b hold the same clauses, ignoring order,
+// repeats and the case of option names (sshd matches names
+// case-insensitively); values compare exactly. Every grant of one key on one
+// server must agree by this test (spec S7).
+func SameOptions(a, b []string) bool { return slices.Equal(optionSet(a), optionSet(b)) }
+
+// optionSet is opts with each name lower-cased, sorted, repeats removed.
+func optionSet(opts []string) []string {
+	out := make([]string, 0, len(opts))
+	for _, o := range opts {
+		name, value, hasValue := strings.Cut(o, "=")
+		clause := strings.ToLower(name)
+		if hasValue {
+			clause += "=" + value
+		}
+		out = append(out, clause)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 var errExpiry = errors.New("want YYYYMMDD[HHMM[SS]][Z]")
 
 // ExpiryTime parses an expiry-time="…" option: sshd's YYYYMMDD[HHMM[SS]],

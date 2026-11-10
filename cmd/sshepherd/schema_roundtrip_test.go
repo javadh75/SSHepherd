@@ -34,7 +34,9 @@ func samples(t *testing.T) map[string]map[string]any {
 		// Group is "": fill sets every field, and a user plus a group would
 		// fail exactly-one-of. TestAdoptRegenerateKeepsGroups proves a group
 		// entry round-trips; Append has no groups parameter.
-		"Access": {"User": "bob", "Group": "", "Servers": []string{"*"}, "Except": []string{"web-1"}},
+		// Options restricts bob's "*" grant (spec S7); bob's key line has no
+		// options, and no other entry reaches bob, so nothing clashes.
+		"Access": {"User": "bob", "Group": "", "Servers": []string{"*"}, "Except": []string{"web-1"}, "Options": []string{`from="10.0.0.0/8"`, "no-pty"}},
 	}
 }
 

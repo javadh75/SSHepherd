@@ -87,11 +87,19 @@ type Group struct {
 // a selector: "*" (every server, including ones added later; it must be the
 // only item) or "@tag" (every server carrying the tag now). Names and tags
 // mix as a union; except: removes names from what the selectors reach.
+// options: adds restrictions to the key lines on the servers the entry
+// grants (spec S7).
 type Access struct {
 	User    string   `yaml:"user"`
 	Group   string   `yaml:"group"`
 	Servers []string `yaml:"servers"`
 	Except  []string `yaml:"except"` // only valid with a selector in Servers
+	// Options are restrictions this entry adds to its keys' lines on the
+	// servers it grants (spec 2026-11-08 S7, OP5): the key line's options,
+	// then these. Only restricting options (authkeys.IsRestriction), none
+	// already named on a key line the entry reaches. Two grants that give one
+	// key different options on one server are a restriction_conflict.
+	Options []string `yaml:"options"`
 }
 
 // Config is the parsed, validated manifest.
@@ -129,6 +137,7 @@ type Config struct {
 	conflicts  []Conflict                // policy conflicts (D29), computed after validation
 	weak       []WeakKey                 // every key failing the strength policy, granted or not
 	preserve   map[string][]preserveRule // server name -> compiled preserve: rules (spec S6)
+	optioned   bool                      // some access: entry has options: (spec S7); keysOn's fast path when false
 }
 
 // Load reads and parses the manifest at path.
@@ -460,12 +469,14 @@ func (c *Config) validateAccess() []error {
 	}
 	c.grants = make(map[string][]string)
 	c.fleetWide = c.fleetWideOperators()
+	c.optioned = slices.ContainsFunc(c.Access, func(a Access) bool { return len(a.Options) > 0 })
 	granted := make(map[string]map[string]bool) // server -> user -> already granted
 	for i, a := range c.Access {
 		if err := c.entrySubjectError(i, a, users); err != nil {
 			errs = append(errs, err)
 			continue
 		}
+		errs = append(errs, c.grantOptionErrors(i, a)...)
 		targets, tErrs := c.expandServers(a, servers)
 		if len(tErrs) > 0 {
 			errs = append(errs, tErrs...)
@@ -620,20 +631,24 @@ func (c *Config) warnWildcardRoot(a Access, targets []string) {
 // order). Deterministic; a user is never emitted twice. An operator's own
 // servers: ["*"] entry replaces the implicit grant, so its except: applies.
 // A jump_only server renders nothing: no access entry reaches it, and the
-// implicit operator grant skips it.
+// implicit operator grant skips it. Each key carries its grant's options
+// after its own (keysOn, spec S7).
 func (c *Config) DesiredFor(serverName string) []authkeys.Key {
 	var keys []authkeys.Key
-	jumpOnly := c.jumpOnly(serverName)
+	srv, known := c.ServerNamed(serverName)
+	if !known {
+		srv = Server{Name: serverName}
+	}
 	first := make(map[string]bool, len(c.protected))
 	for _, name := range c.protected {
-		if (c.fleetWide[name] && !jumpOnly) || slices.Contains(c.grants[serverName], name) {
+		if (c.fleetWide[name] && !srv.JumpOnly) || slices.Contains(c.grants[serverName], name) {
 			first[name] = true
-			keys = append(keys, c.keysByUser[name]...)
+			keys = append(keys, c.keysOn(name, srv)...)
 		}
 	}
 	for _, userName := range c.grants[serverName] {
 		if !first[userName] { // redundant grant for a protected user: already emitted
-			keys = append(keys, c.keysByUser[userName]...)
+			keys = append(keys, c.keysOn(userName, srv)...)
 		}
 	}
 	return keys

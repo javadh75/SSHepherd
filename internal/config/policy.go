@@ -62,8 +62,9 @@ func weakMessage(user string, index int, k authkeys.Key) string {
 		user, index, k.Fingerprint, what)
 }
 
-// warnExpired adds one load warning per desired key whose expiry-time has
-// passed: sshd no longer accepts that line, but the manifest stays valid.
+// warnExpired adds one load warning per desired key line, and per access:
+// entry, whose expiry-time has passed: sshd no longer accepts that line, but
+// the manifest stays valid.
 func (c *Config) warnExpired() {
 	for _, u := range c.Users {
 		for i, k := range c.keysByUser[u.Name] {
@@ -71,6 +72,12 @@ func (c *Config) warnExpired() {
 				opt, _, _ := authkeys.EarliestExpiry(k.Options, time.Local)
 				c.warn(ManifestWarning{Kind: WarnKeyExpired, Message: fmt.Sprintf("user %q key %d: %s has passed; sshd no longer accepts this key", u.Name, i+1, opt)})
 			}
+		}
+	}
+	for i, a := range c.Access {
+		if authkeys.Expired(a.Options, now(), time.Local) {
+			opt, _, _ := authkeys.EarliestExpiry(a.Options, time.Local)
+			c.warn(ManifestWarning{Kind: WarnKeyExpired, Message: fmt.Sprintf("access[%d]: %s has passed; sshd no longer accepts the keys this entry grants", i, opt)})
 		}
 	}
 }

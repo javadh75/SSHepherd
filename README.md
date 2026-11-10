@@ -87,6 +87,8 @@ Bastions: `via:` reaches a server through up to 3 bastions with strict `known_ho
 
 Co-managed accounts: `preserve:` on a server keeps another tool's lines (a forced `command=` or a comment, full-match RE2 rules), listed by audit as externally managed and written back by apply after the desired keys; owned, revoked and cert-authority keys are never kept (see [Co-managed accounts](#co-managed-accounts-preserve)).
 
+Per-grant restrictions: an `access:` entry's `options:` (restricting options only) are added after the key line's options on the servers that entry grants, so one key can be restricted differently per server; two grants giving one key different options on one server are a policy conflict, kind `restriction_conflict`, which `validate` refuses (see [Per-grant restrictions](#per-grant-restrictions)).
+
 Owner follow-ups: a fresh `import -o FILE --force` warns, one line per kind, about the manifest-only settings it drops (`operator:`/`protected:` marks, `groups:`, `authorized_keys_file:`, `tags:`, `via:`, `jump_only:`, `preserve:`; kind `manifest_settings_dropped`). Apply shows a write that adds the `preserve:` marker as its own row, `(preserve:) add the externally-managed section marker`. A session the server accepts but never opens fails after 10 s as `timeout` instead of hanging the run.
 
 ## Install
@@ -416,6 +418,48 @@ access:
 
 A group names a set of users. An `access:` entry with `group:` grants every member, exactly as one entry per member would; `servers:` and `except:` work as they do for a user entry. A group name follows the tag rules, `^[a-z0-9][a-z0-9._-]{0,62}$`. Every member must be a user in the manifest, listed once. A group with no members is valid and warns, kind `empty_group`: `group "web-team" has no members; its grants add nothing`, so revoking the last member never breaks the manifest. A warning never changes an exit code, except that `validate --strict` exits `1`. `adopt` and `import` never create a group. `adopt` keeps them; `adopt --merge` and `import --merge` leave them as they are; a fresh `import -o FILE --force` replaces the file without them and warns.
 
+### Per-grant restrictions
+
+```yaml
+users:
+  - name: deploy
+    keys: ["ssh-ed25519 AAAA… deploy"]
+access:
+  - user: deploy
+    servers: ["@prod"]
+    options: ['from="10.0.0.0/8"', no-pty]
+  - user: deploy
+    servers: [staging-1]      # no options: the key line alone
+```
+
+An `access:` entry may carry `options:`. They are added to the key line on the servers that entry
+grants: the key line's own options come first, then the grant's. A grant can only **narrow**
+access, so to vary a restriction per server, leave it off the key line and put it on the grants.
+An empty list means no options.
+
+- Allowed: `command=`, `expiry-time=`, `from=`, `no-agent-forwarding`, `no-port-forwarding`,
+  `no-pty`, `no-user-rc`, `no-x11-forwarding`, `permitlisten=`, `permitopen=`, `restrict`,
+  `verify-required`. `cert-authority` and `principals=` are refused: a grant cannot turn a key
+  into a certificate authority. An option name already on a key line the entry reaches is
+  refused too (see [Validation rules](#validation-rules)).
+- A group entry's options reach every member, exactly as one `user:` entry per member would.
+- A fleet-wide operator's implicit grant adds none. To restrict an operator's key per grant,
+  give it its own `servers: ["*"]` entry with `options:`, which replaces the implicit grant.
+- Lines a `preserve:` rule keeps are never restricted.
+- A grant whose `expiry-time=` has passed warns, kind `key_expired`:
+  `access[1]: expiry-time="20200101" has passed; sshd no longer accepts the keys this entry grants`.
+
+Two grants that give one key different options on one server (order, repeats and the case of
+option names do not count) are a **policy conflict**, kind `restriction_conflict`, not a load
+error: the manifest loads and every command reports it. There is one conflict per user and pair
+of grants, naming every server where that pair is the first disagreement:
+
+`user "alice": server "web-1" is granted by access[0] with [from="10.0.0.0/8" no-pty] and by access[1] with no options; a key gets one set of restrictions on a server: make them match, or move one grant to a separate user`
+
+With several servers it reads `user "alice": servers "web-1" and 1 more are granted by …`, and
+an operator's implicit grant reads `by its operator grant with no options`. A grant a
+tombstone blocks, and a user with no keys, never clash.
+
 ### Per-server `authorized_keys_file`
 
 For servers whose sshd reads keys from somewhere other than the default
@@ -650,6 +694,22 @@ The loader fails the whole manifest (exit 3) on any of these:
   `server "bastion-eu": jump_only but no server has via: bastion-eu; nothing connects through it and nothing checks it`.
 - **Access entries** must grant something: a non-wildcard entry with `servers: []` or
   no `servers:` key fails with `servers is empty (grants no servers)`.
+- **Grant `options:`** (see [Per-grant restrictions](#per-grant-restrictions); `N` is the
+  zero-based index in `access:`): each option must be a real OpenSSH option, written as on a key
+  line (`access[N]: option "no-ptty" is not a recognized authorized_keys option`,
+  `access[N]: option "from=10.0.0.1" requires a quoted value (name="...")`,
+  `access[N]: option "expiry-time=\"2027\"" has an invalid value (want YYYYMMDD[HHMM[SS]][Z])`);
+  it must restrict access
+  (`access[N]: option "pty" does not restrict access; a grant can only add restrictions`);
+  `cert-authority` and `principals=` are refused
+  (`access[N]: option "cert-authority" makes the key accept certificates only; a grant cannot turn a key into a certificate authority`);
+  a once-only clause may not repeat in one grant
+  (`access[N]: option "from=\"10.1.0.0/16\"" repeats from=, which sshd allows once per line`);
+  and no option name (case-insensitive) may already be on a key line the entry reaches, each
+  member's keys for a group entry:
+  `access[N]: option "from=\"10.1.0.0/16\"": user "alice" key 1 already carries "from=\"10.0.0.0/8\""; restrict a key on its key line or on its grants, not both`.
+  A clash between two grants is not a load error but a policy conflict
+  (`restriction_conflict`): the manifest loads and every command reports it.
 - **Names and comments** (user names, `comment:`, inline key comments) may not
   contain control or format characters, the Unicode line/paragraph separators
   U+2028/U+2029, or leading/trailing whitespace; option values may not contain the
@@ -794,7 +854,7 @@ Check the manifest offline. It never opens a socket and never reads a key. It pa
 | `--strict` | off | Exit `1` when the manifest is valid but has warnings |
 | `--json` | off | Machine-readable result on stdout (schema 1) |
 
-A valid manifest prints one line on stdout, e.g. `manifest OK: 1 user, 1 server, 1 grant (0 warnings)`. A policy conflict prints `manifest has 1 policy conflict: MESSAGE` on stderr and exits `3`. A weak key granted on a server is a policy conflict; an ungranted one is a warning.
+A valid manifest prints one line on stdout, e.g. `manifest OK: 1 user, 1 server, 1 grant (0 warnings)`. A policy conflict prints `manifest has 1 policy conflict: MESSAGE` on stderr and exits `3`. A weak key granted on a server is a policy conflict; an ungranted one is a warning. A [restriction conflict](#per-grant-restrictions) between two grants is a policy conflict too: exit `3`, `valid: false`, listed in `policy_conflicts` with kind `restriction_conflict`, `user` and `servers` (no `fingerprint`).
 
 `--json` writes one document. It is written on exit `3` too, when the manifest is invalid or has a policy conflict, with `valid: false`, and when the default known_hosts exists but cannot be loaded (`valid: true`, the reason in `errors`). An unreadable manifest, a bad flag or a bad `--known-hosts` file given explicitly writes no document. `import` and `adopt` are the opposite: they write a document on almost no exit `3`, only `adopt --partial` with no server read does. A run that fails only under `--strict` has `valid: true` and exit `1`. `manifest_warnings` adds the kinds `manifest_not_editable`, `known_hosts_missing` and `host_key_not_recorded`; ignore kinds you do not know. `host_keys_checked` is `false` when no known_hosts file loaded.
 
@@ -3021,6 +3081,8 @@ With `--json`, `audit`, `apply`, `revoke`, `rotate` and `validate` write their r
 A tag or group problem (an unknown `@tag` or group, a malformed tag or group name, a selector in `except:` or in a tombstone's `servers:`, an entry with both or neither of `user:` and `group:`) is a manifest load error, so it is exit `3` on every command. A blocked grant, the `wildcard_root`, `empty_group` and `operator_grant_redundant` warnings change no exit code, except that `validate --strict` exits `1`.
 
 Likewise a bad `preserve:` rule, or `preserve:` on a `jump_only` server, is a load error: exit `3` on every command.
+
+A bad grant `options:` entry (an option sshd rejects, one that widens access, `cert-authority` or `principals=`, a repeated once-only clause, or a name already on a key line the entry reaches) is a load error: exit `3` on every command.
 
 `--help` shows this summary. `audit --help`:
 

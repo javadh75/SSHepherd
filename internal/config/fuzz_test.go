@@ -167,6 +167,39 @@ servers:
   - {name: edge, host: e, user: jump, jump_only: true, preserve: [{comment: 'google-ssh .*'}]}
   - {name: s1, host: h1, user: u, via: edge}
 `,
+		// per-grant restrictions (spec S7): a group, a tag and an operator's
+		// implicit grant clashing on s1; refused ones: a widening option, a
+		// cert option, a key-line clash in another case, a repeated from=
+		`
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+  - {name: bob, keys: ['no-pty ` + k2 + `']}
+groups:
+  - {name: team, members: [op, bob]}
+servers:
+  - {name: s1, host: h1, user: u, tags: [prod]}
+  - {name: s2, host: h2, user: u}
+access:
+  - {group: team, servers: ["@prod"], options: ['from="10.0.0.0/8"', restrict]}
+  - {user: bob, servers: [s1, s2], options: [no-x11-forwarding]}
+`,
+		"users:\n  - {name: a, keys: ['FROM=\"1.2.3.4\" " + k1 + "']}\nservers:\n  - {name: s, host: h, user: u}\naccess:\n  - {user: a, servers: [s], options: [pty, cert-authority, 'from=\"a\"', 'from=\"b\"']}\n",
+		// a tombstone blocks a fleet-wide operator's restricted group grant
+		// on s1: the implicit grant still renders it there (checkGrantOptions'
+		// sources-equal-render rule; mutant G10b)
+		`
+users:
+  - {name: op, operator: true, keys: ["` + k1 + `"]}
+groups:
+  - {name: ops, members: [op]}
+servers:
+  - {name: s1, host: h1, user: u}
+  - {name: s2, host: h2, user: u}
+access:
+  - {group: ops, servers: ["*"], options: [restrict]}
+revoked:
+  - {user: op, servers: [s1], date: 2026-11-10}
+`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -200,6 +233,7 @@ servers:
 			}
 			checkRenderRoundTrip(t, cfg, s.Name)
 			checkPreserve(t, cfg, s)
+			checkGrantOptions(t, cfg, s)
 		}
 		for _, s := range cfg.Servers {
 			chain := cfg.Chain(s)
@@ -343,6 +377,41 @@ func checkPreserve(t *testing.T, cfg *Config, s Server) {
 			if r.re.MatchString(p) {
 				t.Fatalf("server %q: accepted preserve: pattern %q, which matches %q", s.Name, r.re.String(), p)
 			}
+		}
+	}
+}
+
+// checkGrantOptions (spec S7): on an accepted server each desired key keeps
+// its key line's options as a prefix and adds only restrictions, the whole
+// line passes OptionIssue, and a user with keys renders there exactly when a
+// grant source reaches it.
+func checkGrantOptions(t *testing.T, cfg *Config, s Server) {
+	t.Helper()
+	desired := cfg.DesiredFor(s.Name)
+	for _, k := range desired {
+		u, _ := cfg.OwnerOf(k.Fingerprint) // checkRenderRoundTrip already proved an owner
+		i := slices.IndexFunc(cfg.keysByUser[u.Name], func(l authkeys.Key) bool { return l.Fingerprint == k.Fingerprint })
+		line := cfg.keysByUser[u.Name][i].Options
+		if len(k.Options) < len(line) || !slices.Equal(k.Options[:len(line)], line) {
+			t.Fatalf("server %q: %s renders %q, which does not start with its key line's %q", s.Name, k.Fingerprint, k.Options, line)
+		}
+		for _, o := range k.Options[len(line):] {
+			if !authkeys.IsRestriction(o) {
+				t.Fatalf("server %q: a grant added %q, which is not a restriction", s.Name, o)
+			}
+		}
+		if err := authkeys.OptionIssue(k.Options); err != nil {
+			t.Fatalf("server %q: rendered options %q: %v", s.Name, k.Options, err)
+		}
+	}
+	for _, u := range cfg.Users {
+		keys := cfg.keysByUser[u.Name]
+		if len(keys) == 0 {
+			continue
+		}
+		rendered := slices.ContainsFunc(desired, func(k authkeys.Key) bool { return k.Fingerprint == keys[0].Fingerprint })
+		if reached := len(cfg.grantSources(u.Name, s)) > 0; reached != rendered {
+			t.Fatalf("server %q: user %q reached by a grant source = %v, rendered = %v", s.Name, u.Name, reached, rendered)
 		}
 	}
 }

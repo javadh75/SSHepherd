@@ -92,11 +92,16 @@ const (
 	ConflictRevokedKey    = "revoked_key"
 	ConflictRevokedAccess = "revoked_access"
 	ConflictWeakKey       = "weak_key"
+	// ConflictRestriction: two grants give one user's keys different
+	// restrictions on one server (spec S7, OP6). User is set, Fingerprint
+	// omitted, Servers the servers where that pair of grants is the first
+	// disagreement (plan gap 4).
+	ConflictRestriction = "restriction_conflict"
 )
 
 // Conflict is a manifest that breaks its own policy: a tombstoned key still
-// listed, a grant over an access tombstone, or a weak key granted on a
-// server. It is not a load error (D29): audit reports it critical, apply
+// listed, a grant over an access tombstone, a weak key granted on a server,
+// or two grants that restrict one key differently on one server. It is not a load error (D29): audit reports it critical, apply
 // refuses Servers, and a saving command refuses per conflictRefusal in
 // cmd/sshepherd. The json tags are the wire shape of policy_conflicts.
 type Conflict struct {
@@ -273,7 +278,8 @@ func (c *Config) computeConflicts() []Conflict {
 		}
 		out = append(out, c.accessConflicts(m, t)...)
 	}
-	return append(out, c.weakConflicts()...)
+	out = append(out, c.weakConflicts()...)
+	return append(out, c.restrictionConflicts()...)
 }
 
 // accessConflicts: an access: entry for t's user that renders on one of
