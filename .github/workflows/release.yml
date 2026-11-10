@@ -294,6 +294,8 @@ jobs:
     name: Tag, sign and verify
     needs: [verify-ref, check, integration, image, gate]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Waits for the owner's approval; the environment admits only v* tags.
+    environment: release
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -480,6 +482,8 @@ jobs:
     name: Sign and attach binaries
     needs: [verify-ref, check, integration, binaries, binaries-arm64-run, publish]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Waits for the owner's approval; the environment admits only v* tags.
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

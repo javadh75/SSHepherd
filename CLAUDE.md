@@ -159,7 +159,9 @@ run the exact same commands. Target **Go 1.27.3** (go.mod). Listed cheapest-to-r
 - Local hooks run the fast subset before code leaves the machine (see `lefthook.yml`, installed
   via `make hooks`): pre-commit runs `gofmt` + `gitleaks --staged`; pre-push runs `go vet`,
   `golangci-lint`, and `go test -race`. The full suite still runs in CI.
-- Required checks, if ever added, name only `ci-ok` (it needs `go`, `docker` and `integration`).
+- master's ruleset requires `ci-ok` (it needs `go`, `docker` and `integration`) on the pushed commit, so a
+  commit reaches master only after a green run on that SHA (push it as `preflight/<name>`, dispatch
+  ci.yml, then push master).
 - release.yml publishes only a `vX.Y.Z` tag on master after `check`, `integration`, `image` and
   `gate` pass. Dependabot has a 7-day cooldown (security updates are immediate); its docker
   groups are `golang` (red until go.mod and `GO_PIN` are bumped on the same PR) and
@@ -286,7 +288,8 @@ the earlier Alpine + openssh-client + tini image was replaced.)
   `verify-blob`, then `gh release create` (`docs/release-notes/vX.Y.Z.md`, if present, above the
   generated notes). Upgrade notes wait in `docs/release-notes/next.md`; the release commit renames it
   to the version, and `verify-ref` refuses a tag push whose commit still has `next.md`. Exactly two jobs hold `id-token: write`: `publish`
-  and `release-binaries`.
+  and `release-binaries`, and both run in the `release` environment
+  (the owner approves each release; only `v*` tags may deploy).
 
 ## License
 

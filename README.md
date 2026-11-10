@@ -3509,7 +3509,8 @@ debian and rocky. It builds the
 digest only. It lints the Dockerfile with hadolint and Trivy config before the build.
 Then it gates that exact digest on native amd64 and arm64 runners with Trivy (fails on
 HIGH/CRITICAL), dockle and `scripts/docker-gates.sh`. Only
-when every job passes does it tag the digest with semver tags (`latest` last, and only
+when every job passes, and the owner approves the `release` environment (it admits only `v*` tags),
+does it tag the digest with semver tags (`latest` last, and only
 for the newest release), sign it keyless with cosign, attach signed build provenance,
 and verify that signature with the command below. A manual `workflow_dispatch` run is
 a dry run: every job except the two publishing ones (`publish` and `release-binaries`),
