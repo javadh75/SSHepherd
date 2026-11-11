@@ -88,6 +88,10 @@ func TestRouteCmd(t *testing.T) {
 			`ssh -J jump@bastion.example.com:2222 -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
 		{"two bastions, root first", []config.Server{edge, bastion}, target,
 			`ssh -J ops@edge.example.com:22,jump@bastion.example.com:2222 -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
+		// An IPv6 bastion's -J spec carries brackets, which zsh reads as a
+		// glob: the spec is quoted for the operator's shell.
+		{"an IPv6 bastion", []config.Server{{Name: "v6", Host: "fe80::1", Port: 22, User: "jump"}}, target,
+			`ssh -J 'jump@[fe80::1]:22' -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
 		{"a bastion user that reads as an option", []config.Server{edge, {Name: "bastion", Host: "bastion.example.com", Port: 22, User: "-oProxyCommand=x"}}, target,
 			`on bastion "bastion": ssh -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
 		{"a dest host that is not a plain word", []config.Server{bastion}, config.Server{Name: "x", Host: "db$(x)", Port: 22, User: "deploy"},

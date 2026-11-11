@@ -760,8 +760,15 @@ func Exec(ctx context.Context, client *ssh.Client, script string, stdin io.Reade
 	sess.Stderr = stderr
 
 	if runErr := sess.Run(remoteCommand(script)); runErr != nil {
-		if ctx.Err() != nil {
-			return 0, nil, nil, classify(ctxKind(ctx), fmt.Errorf("run remote command: %w", ctx.Err()))
+		// Past the deadline counts even before ctx.Err is set: a read
+		// connection's socket carries ctx's deadline, and its read timeout
+		// can end the session a moment before ctx's timer fires (F012).
+		if ctx.Err() != nil || pastDeadline(ctx) {
+			cause := ctx.Err()
+			if cause == nil {
+				cause = context.DeadlineExceeded
+			}
+			return 0, nil, nil, classify(ctxKind(ctx), fmt.Errorf("run remote command: %w", cause))
 		}
 		var exitErr *ssh.ExitError
 		if !errors.As(runErr, &exitErr) {

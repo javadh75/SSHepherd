@@ -194,6 +194,18 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			want: []string{"@revoked", "key inside this host certificate"},
 		},
 		{
+			// The CA's revocation is the wider one (every host it signed),
+			// so it is the one named when both are revoked.
+			name:     "a certificate whose CA and certified key are both revoked names the CA",
+			hostKeys: []ssh.Signer{hostCert(t, host, ca, ssh.CertTimeInfinity)},
+			khLines: func(f fixture) []string {
+				return []string{caLine(f, ca.PublicKey()), revokedLine(host.PublicKey()), revokedLine(ca.PublicKey())}
+			},
+			kind:    fleet.ErrorKindHostKeyRevoked,
+			want:    []string{"@revoked", "signing CA"},
+			notWant: []string{"key inside this host certificate"},
+		},
+		{
 			name:     "a certificate from a revoked CA with no @cert-authority line left is still revoked",
 			hostKeys: []ssh.Signer{hostCert(t, host, ca, ssh.CertTimeInfinity)},
 			khLines: func(fixture) []string {

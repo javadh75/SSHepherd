@@ -955,3 +955,8 @@ opens them concurrently under the one `probeExecDeadline`, so a hung dependent c
 prohibited one (`TestForwardGuardJudgesFirstOfferedKey`, `TestForwardProbeChecksEveryDependent`,
 `TestProbeForwardsAHungDependentHidesNothing`). F004 apply side: `TestApplyKeys2UnknownStateExit2`
 pins an unrecovered keys2 move as `lockout_unrestored`, exit 2, through `workflow.Apply`.
+W1 repair (transport): `sshconn.Exec` counts a Run failure past ctx's deadline as `timeout` even
+before ctx.Err is set (`TestExecRunFailurePastDeadlineIsTimeout`; a read that timed out mid-session
+was `remote` about 15% of the time); a certificate whose CA and certified key are both `@revoked`
+names the CA; an IPv6 bastion's `-J` spec is quoted in `RouteCmd`; the pre-banner RST row reads the
+client's version line first, so it no longer races connect() into a `dial` error.

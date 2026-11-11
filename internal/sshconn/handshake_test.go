@@ -454,3 +454,57 @@ func TestAuthExhausted(t *testing.T) {
 		t.Error("AuthExhausted is true without the flag")
 	}
 }
+
+// flipDeadlineCtx has no deadline until past is set, then one that has
+// passed while Err stays nil: the instant between the socket deadline
+// (set to ctx's deadline on a read connection) firing and ctx noticing.
+type flipDeadlineCtx struct {
+	context.Context
+	past *atomic.Bool
+}
+
+func (c flipDeadlineCtx) Deadline() (time.Time, bool) {
+	if c.past.Load() {
+		return time.Now().Add(-time.Millisecond), true
+	}
+	return time.Time{}, false
+}
+
+// TestExecRunFailurePastDeadlineIsTimeout: a command whose connection dies
+// once ctx's deadline has passed, before ctx.Err is set, failed with the
+// deadline, so it is a timeout, not remote with x/crypto's text (the F012
+// race, on Exec's Run).
+func TestExecRunFailurePastDeadlineIsTimeout(t *testing.T) {
+	key := sshtest.Key(1)
+	host := sshtest.Signer(t, sshtest.Key(40))
+	past := &atomic.Bool{}
+	var conn *Conn
+	connected := make(chan struct{})
+	s := sshtest.NewServer(t, sshtest.ServerConfig{
+		HostKeys:   []ssh.Signer{host},
+		Authorized: []ssh.PublicKey{sshtest.Signer(t, key).PublicKey()},
+		Handle: func(ctx context.Context, _ string, _ io.Reader, _, _ io.Writer) int {
+			<-connected
+			past.Store(true)
+			_ = conn.Close() // the socket deadline fires
+			<-ctx.Done()
+			return 0
+		},
+	})
+	srv := config.Server{Name: "web-1", Host: s.Host, Port: s.Port, User: "deploy"}
+	kh := sshtest.KnownHostsFile(t, s.KnownHostsLine(host.PublicKey()))
+	d := &Dialer{KnownHostsPath: kh, Creds: &Credentials{AgentSock: sshtest.Agent(t, key)}, DialTimeout: 5 * time.Second}
+	var err error
+	conn, err = d.Connect(ctxTimeout(t, 10*time.Second), srv)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	close(connected)
+	_, _, _, err = Exec(flipDeadlineCtx{context.Background(), past}, conn.Client, "x", nil)
+	if got := kindOf(t, err); got != fleet.ErrorKindTimeout {
+		t.Errorf("kind = %q, want %q (err: %v)", got, fleet.ErrorKindTimeout, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to wrap context.DeadlineExceeded", err)
+	}
+}

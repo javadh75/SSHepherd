@@ -55,8 +55,14 @@ var (
 		_, _ = io.WriteString(c, "please wait\r\n")
 		_ = c.Close()
 	}
-	// resetAtAccept refuses with a TCP RST instead of a FIN.
-	resetAtAccept = func(c net.Conn) {
+	// resetBeforeBanner refuses with a TCP RST instead of a FIN, as sshd's
+	// close does when the client's version line sits unread. It reads that
+	// line first: an RST sent straight after accept can reach the client
+	// before its connect() returns, which is a dial error, not this case.
+	resetBeforeBanner = func(c net.Conn) {
+		buf := make([]byte, 256)
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = c.Read(buf) // the client's version line
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetLinger(0)
 		}
@@ -87,7 +93,7 @@ func TestPreBannerDropGetsPenaltyHint(t *testing.T) {
 	}{
 		{"closed before any byte", dropAtAccept, PenaltyHint},
 		{"closed after a pre-banner line", dropAfterNotice, PenaltyHint},
-		{"reset before any byte", resetAtAccept, PenaltyHint},
+		{"reset before the server's banner", resetBeforeBanner, PenaltyHint},
 		{"closed after the banner", dropAfterBanner, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
