@@ -161,11 +161,12 @@ func TestExecuteSlotsCoverTheWholeChain(t *testing.T) {
 // writer.
 func TestExecutePassesProbeForward(t *testing.T) {
 	plans := levelPlans(t, "bastion-eu")
-	plans[0].ProbeForward = "10.0.1.5:22"
+	want := []string{"10.0.1.5:22", "10.0.1.6:22"}
+	plans[0].ProbeForward = want
 	f := &fakeWriter{}
 	Execute(context.Background(), plans, f, levelOpts(t, nil))
-	if got := f.calls["bastion-eu"].ProbeForward; got != "10.0.1.5:22" {
-		t.Errorf("ProbeForward = %q, want 10.0.1.5:22", got)
+	if got := f.calls["bastion-eu"].ProbeForward; !slices.Equal(got, want) {
+		t.Errorf("ProbeForward = %q, want %q", got, want)
 	}
 }
 

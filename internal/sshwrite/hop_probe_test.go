@@ -81,7 +81,7 @@ func bastionWrite(t *testing.T, forward func(string, uint32) (net.Conn, ssh.Reje
 	content := authkeys.ManagedHeader + "\n" + line + "\n"
 	err = w.Apply(context.Background(), config.Server{Name: "bastion", Host: srv.Host, Port: srv.Port, User: "jump"}, Request{
 		Content: []byte(content), Expect: SnapshotOf(false, orig), Survivors: []string{k.Fingerprint},
-		ProbeForward: "10.0.1.5:22",
+		ProbeForward: []string{"10.0.1.5:22", "10.0.1.6:22"},
 	})
 	now, rerr := os.ReadFile(file)
 	if rerr != nil {
@@ -100,6 +100,91 @@ func TestForwardProbeProhibitedRestores(t *testing.T) {
 	}
 	if after != before {
 		t.Errorf("file after the rejected forward = %q, want the original back", after)
+	}
+}
+
+// TestForwardProbeChecksEveryDependent (F007): the probe covers every
+// dependent, so a key that may forward to the first one only is caught at the
+// second: restore.
+func TestForwardProbeChecksEveryDependent(t *testing.T) {
+	onlyFirst := func(host string, _ uint32) (net.Conn, ssh.RejectionReason) {
+		if host == "10.0.1.6" {
+			return nil, ssh.Prohibited
+		}
+		return nil, ssh.ConnectionFailed
+	}
+	before, after, err := bastionWrite(t, onlyFirst)
+	var lockout *fleet.LockoutError
+	if !errors.As(err, &lockout) || lockout.Restore != nil {
+		t.Fatalf("Apply = %v, want a restored lockout", err)
+	}
+	if !strings.Contains(err.Error(), "10.0.1.6:22") {
+		t.Errorf("err = %v, want the prohibited dependent named", err)
+	}
+	if after != before {
+		t.Errorf("file after the rejected forward = %q, want the original back", after)
+	}
+}
+
+// TestProbeForwardsAHungDependentHidesNothing (F007): a dependent the bastion
+// is still connecting to must not use up the deadline before a later one is
+// asked, or a prohibited forward would read as a pass. The hung dependent is
+// released only once the later one has been probed.
+func TestProbeForwardsAHungDependentHidesNothing(t *testing.T) {
+	prohibited := errors.New("prohibited")
+	asked := make(chan struct{})
+	w := &FleetWriter{forward: func(ctx context.Context, _ *ssh.Client, addr string) error {
+		if addr == "10.0.1.5:22" {
+			select {
+			case <-asked:
+			case <-ctx.Done():
+			}
+			return nil
+		}
+		close(asked)
+		select {
+		case <-ctx.Done(): // what the real probe reads as "not prohibited"
+			return nil
+		default:
+			return prohibited
+		}
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := w.probeForwards(ctx, nil, []string{"10.0.1.5:22", "10.0.1.6:22"}); !errors.Is(err, prohibited) {
+		t.Fatalf("probeForwards = %v, want the later dependent's refusal", err)
+	}
+}
+
+// TestProbeForwardsReportsTheFirstDependentInOrder: which failure is reported
+// does not depend on which reply arrived first.
+func TestProbeForwardsReportsTheFirstDependentInOrder(t *testing.T) {
+	first, second := errors.New("first"), errors.New("second")
+	secondDone := make(chan struct{})
+	w := &FleetWriter{forward: func(ctx context.Context, _ *ssh.Client, addr string) error {
+		if addr == "a:22" {
+			select {
+			case <-secondDone:
+			case <-ctx.Done():
+			}
+			return first
+		}
+		close(secondDone)
+		return second
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := w.probeForwards(ctx, nil, []string{"a:22", "b:22"})
+	select {
+	case <-secondDone:
+	default:
+		t.Fatal("the second dependent was never probed")
+	}
+	if !errors.Is(err, first) || errors.Is(err, second) {
+		t.Fatalf("probeForwards = %v, want the first dependent's error alone", err)
+	}
+	if err := w.probeForwards(ctx, nil, nil); err != nil {
+		t.Fatalf("probeForwards with no dependents = %v", err)
 	}
 }
 

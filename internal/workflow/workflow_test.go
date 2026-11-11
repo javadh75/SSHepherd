@@ -504,6 +504,54 @@ func TestOutcomeExitCode(t *testing.T) {
 	}
 }
 
+// failingWriter fails every write with err.
+type failingWriter struct{ err error }
+
+func (w failingWriter) Apply(context.Context, config.Server, fleet.WriteRequest) error { return w.err }
+
+// TestApplyKeys2UnknownStateExit2 (F004): a rejected login check whose
+// authorized_keys2 copy could not be recovered, after the reply to the move
+// was lost, is an unrestored lockout and exits 2. "Lockout prevented" and
+// exit 1 are only for a state that is known.
+func TestApplyKeys2UnknownStateExit2(t *testing.T) {
+	probe := errors.New("ssh: unable to authenticate")
+	lost := errors.New("authorized_keys2 on a may have been moved aside, and checking it failed: EOF")
+	for _, tt := range []struct {
+		name    string
+		err     *fleet.LockoutError
+		outcome apply.Outcome
+		rolled  bool
+		code    int
+	}{
+		{"keys2-only, state unknown", &fleet.LockoutError{Path: "~/k", Probe: probe, FileKept: true, RestoreKeys2: lost}, apply.OutcomeLockoutUnrestored, false, 2},
+		{"full write, file restored, state unknown", &fleet.LockoutError{Path: "~/k", Probe: probe, RestoreKeys2: lost}, apply.OutcomeLockoutUnrestored, true, 2},
+		{"keys2-only, the copy was found and moved back", &fleet.LockoutError{Path: "~/k", Probe: probe, FileKept: true}, apply.OutcomeFailed, false, 1},
+		{"keys2-only, a listing proved it never moved", &fleet.LockoutError{Path: "~/k", Probe: probe, FileKept: true, Keys2Untouched: true}, apply.OutcomeFailed, false, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := fixture(t, &rec{})
+			req.Writer = failingWriter{tt.err}
+			out, err := Apply(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Plans) != 1 {
+				t.Fatalf("plans = %d, want 1", len(out.Plans))
+			}
+			p := out.Plans[0]
+			if p.Outcome != tt.outcome || p.RolledBack != tt.rolled {
+				t.Errorf("outcome = %s, rolled back = %v, want %s, %v", p.Outcome, p.RolledBack, tt.outcome, tt.rolled)
+			}
+			if got := out.ExitCode(); got != tt.code {
+				t.Errorf("ExitCode = %d, want %d", got, tt.code)
+			}
+			if tt.code == 2 && strings.Contains(p.OutcomeErr.Error(), "lockout prevented") {
+				t.Errorf("message claims the lockout was prevented: %q", p.OutcomeErr)
+			}
+		})
+	}
+}
+
 // captureWriter records each write's content.
 type captureWriter struct {
 	mu   sync.Mutex

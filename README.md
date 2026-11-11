@@ -2294,11 +2294,13 @@ their apply phase refuses those servers (exit `1`).
 **Bastions.** Writes run in levels: a server before the bastions it is reached
 through, deepest bastion last, each level finished before the next, so a bad bastion
 write cannot strand its dependents' writes. A managed bastion must keep forwarding:
-the plan refuses a write that leaves no surviving key you hold allowed to forward to
-every dependent (`no-port-forwarding` or `restrict` not followed by a later
-`port-forwarding` on the same line, since sshd applies a line's options in order, or a
-`permitopen=` that misses one), and the post-write login check on a bastion also
-opens a forward to one dependent; a refused forward restores the file. A `jump_only`
+the plan refuses a write unless the key the bastion login will use, the first
+surviving key you hold in offer order, may forward to every dependent
+(`no-port-forwarding` or `restrict` not followed by a later `port-forwarding` on the
+same line, since sshd applies a line's options in order, or a `permitopen=` that
+misses one). A later key that may forward does not help, because sshd stops at the
+first key that verifies. The post-write login check on a bastion also opens a forward
+to every dependent; a refused forward restores the file. A `jump_only`
 bastion is listed as `jump only` and never written, guarded or probed. A login check
 that fails at a bastion proves nothing about the server: the file is kept
 (`unproven`, exit 1), never restored. A `jump_only` bastion in the plan:
@@ -3467,9 +3469,9 @@ the server behind it. Each target gets its own fresh connection to its bastion, 
 pooled or shared, and timeouts and Ctrl-C reach the hop's socket, so a wedged bastion
 cannot hang a run. At most 8 connections go through one bastion at a time; a write
 holds two. Writes run in levels, dependents first and the deepest bastion last. The
-plan refuses a managed bastion write that leaves no surviving key you hold allowed to
-forward to every dependent, and the post-write login check on a bastion also opens a
-forward to one dependent; a refused forward restores the file. A hop failure in the
+plan refuses a managed bastion write unless the first surviving key you hold in offer
+order may forward to every dependent, and the post-write login check on a bastion also
+opens a forward to every dependent; a refused forward restores the file. A hop failure in the
 login check is unproven, never a restore: the bastion failed, not the server's new
 file, so the file is kept and the server reports `UNPROVEN` (exit 1, even for a
 bastion host-key alarm).

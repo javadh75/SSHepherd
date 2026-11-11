@@ -804,8 +804,8 @@ covers a two-bastion chain.
 `workflow`): dependents first, deepest bastion last; a write takes two `fleet.HopLimiter` slots per
 bastion before its pool slot and budget. `ClassJumpOnly` is listed, never written, guarded or probed,
 and never changes an exit code; `forwardRefusal` (`authkeys.Forwards`: `no-port-forwarding`,
-`restrict` without `port-forwarding`, `permitopen=`) refuses a managed bastion write no surviving
-held key may forward through; `ServerPlan.ProbeForward` feeds the post-write forward probe.
+`restrict` without `port-forwarding`, `permitopen=`) refuses a managed bastion write whose first
+surviving held key in offer order may not forward to every dependent (F007); `ServerPlan.ProbeForward` feeds the post-write forward probe.
 `needsHuman` excludes a bastion's host-key alarm (exit 1). `adopt` reads only non-`jump_only`
 servers; `--sweep` prints `not swept: NAME (jump only)` (`sweep.jump_only`). `TestE2EBastion` is the
 E2E (container C behind A; accounts `jump`, `jumpnl`, `jumpnofwd`, `hope2e`, `hopped`).
@@ -945,3 +945,12 @@ StrictModes walks take paths through a sentinel (`dirnameTo`, `resolvedTo` in
 named with a trailing newline is graded and refused rather than swapped for a decoy
 (`TestNewlineNamedAncestorRefused`, a `TestPostureCmdFindings` row, an `ownerCases` row).
 `TestE2ESSHDGrammar` (cmd/sshepherd, 26 rows, alpine/debian/rocky) pins F002, F003 and F025 to real sshd.
+Apply (F007, owner answer a; F004 apply side): `forwardRefusal` judges the first surviving key in
+`OfferOrder` (`firstOffered`, the head of `probeOrderFor`), and `OfferOrder` is unchanged. It refuses
+when that key cannot forward to every dependent, naming only the dependents it would cut off; when
+no survivor forwards to every dependent the old text stands. `ServerPlan.ProbeForward` and
+`fleet.WriteRequest.ProbeForward` are lists of every dependent's host:port, and `probeForwards`
+opens them concurrently under the one `probeExecDeadline`, so a hung dependent cannot hide a later
+prohibited one (`TestForwardGuardJudgesFirstOfferedKey`, `TestForwardProbeChecksEveryDependent`,
+`TestProbeForwardsAHungDependentHidesNothing`). F004 apply side: `TestApplyKeys2UnknownStateExit2`
+pins an unrecovered keys2 move as `lockout_unrestored`, exit 2, through `workflow.Apply`.

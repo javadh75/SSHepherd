@@ -259,7 +259,9 @@ func headlessWarning(paths []string, cause string) string {
 // the previous file was restored. A failed authorized_keys2 move-back is an
 // unrestored lockout even when authorized_keys went back: a key whose
 // authorized_keys line refuses this client (from=) may have logged in only
-// through authorized_keys2.
+// through authorized_keys2. That covers a move whose reply was lost and
+// whose copy could not be recovered (F004): the writer reports it as
+// RestoreKeys2.
 func failureOutcome(err error) (Outcome, bool) {
 	var unproven *fleet.UnprovenError
 	if errors.As(err, &unproven) {

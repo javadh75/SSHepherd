@@ -1091,7 +1091,7 @@ func TestIntegrationForwardProbeOnBastion(t *testing.T) {
 			srv := config.Server{Name: tt.user + "-it", Host: host, Port: port, User: tt.user}
 			reseed(t, d, srv, fixture{keys: strp(itDrifted(t))})
 			req := itRequest(t, d, srv, itRendered(t))
-			req.ProbeForward = forward
+			req.ProbeForward = []string{forward}
 			err := (&FleetWriter{Dialer: d}).Apply(itCtx(t), srv, req)
 			var lockout *fleet.LockoutError
 			switch {

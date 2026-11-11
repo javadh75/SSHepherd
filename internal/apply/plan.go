@@ -141,10 +141,10 @@ type ServerPlan struct {
 	// this run's keys, so a human run would otherwise remove CI's key with
 	// no sign (spec S4). Set only on a server that will be written.
 	ProtectedRemovals []string
-	// ProbeForward is the host:port the post-write login check forwards to
-	// when this server is another server's via (fleet.WriteRequest
-	// .ProbeForward); "" when nothing goes through it.
-	ProbeForward string
+	// ProbeForward lists every host:port the post-write login check forwards
+	// to when this server is another server's via (fleet.WriteRequest
+	// .ProbeForward); empty when nothing goes through it.
+	ProbeForward []string
 	// Kept counts the lines a preserve: rule keeps here (audit's External,
 	// spec S6); the render writes them after the desired keys. Meaningful
 	// for a converged or change plan.
@@ -606,7 +606,7 @@ func guardCheck(cfg *config.Config, r audit.ServerResult, entries []authkeys.Ren
 	if len(surviving) == 0 {
 		return guardVerdict{Refusal: lockoutRefusal(r.Server.Name, keys, held, set)}
 	}
-	if refusal := forwardRefusal(cfg, r.Server.Name, surviving); refusal != "" {
+	if refusal := forwardRefusal(cfg, r.Server.Name, keys, surviving); refusal != "" {
 		return guardVerdict{Refusal: refusal}
 	}
 
@@ -656,27 +656,48 @@ func lockoutRefusal(server string, keys []authkeys.Key, held []fleet.HeldKey, se
 }
 
 // forwardRefusal is the bastion guard (spec S5): a managed server another
-// server's via names must keep forwarding for a key this run holds, so some
-// surviving key's line must allow a direct-tcpip channel to every
-// dependent. "" when one does, or when nothing goes through the server. The
-// post-write forward probe then checks the key that actually logs in (gap
-// item 3).
-func forwardRefusal(cfg *config.Config, server string, surviving []authkeys.Key) string {
+// server's via names must keep forwarding for the key the hop logs in with,
+// the first surviving key in authkeys.OfferOrder (F007). sshd accepts the
+// first key that verifies and applies that line's options, so a later key
+// that may forward cannot help. "" when that key may open a direct-tcpip
+// channel to every dependent, or when nothing goes through the server.
+func forwardRefusal(cfg *config.Config, server string, desired, surviving []authkeys.Key) string {
 	deps := cfg.Dependents(server)
 	if len(deps) == 0 {
 		return ""
 	}
-	for _, k := range surviving {
-		if forwardsAll(k.Options, deps) {
-			return ""
+	first := firstOffered(desired, surviving)
+	if forwardsAll(first.Options, deps) {
+		return ""
+	}
+	if !slices.ContainsFunc(surviving, func(k authkeys.Key) bool { return forwardsAll(k.Options, deps) }) {
+		return fmt.Sprintf("none of the surviving keys you hold may forward through %s (no-port-forwarding, restrict or permitopen=); this write would cut off %s",
+			server, namesAndMore(deps))
+	}
+	var cut []config.Server
+	for _, d := range deps {
+		if !authkeys.Forwards(first.Options, d.Host, d.Port) {
+			cut = append(cut, d)
 		}
 	}
-	more := ""
+	return fmt.Sprintf("the first key offered to %s (%s, %s) may not forward to every server behind it (no-port-forwarding, restrict or permitopen=), and the login stops at that key; this write would cut off %s — lift its restriction or grant a key that may forward ahead of it",
+		server, survivorLabel(cfg, first), first.Fingerprint, namesAndMore(cut))
+}
+
+// firstOffered is the surviving key a connection offers first: the head of
+// the post-write probe's own order. surviving is non-empty and drawn from
+// desired, so that order always has a head and it is always found.
+func firstOffered(desired, surviving []authkeys.Key) authkeys.Key {
+	head := probeOrderFor(desired, surviving)[0]
+	return surviving[slices.IndexFunc(surviving, func(k authkeys.Key) bool { return k.Fingerprint == head })]
+}
+
+// namesAndMore is "web-1" or "web-1 and N more"; deps is non-empty.
+func namesAndMore(deps []config.Server) string {
 	if n := len(deps) - 1; n > 0 {
-		more = fmt.Sprintf(" and %d more", n)
+		return fmt.Sprintf("%s and %d more", deps[0].Name, n)
 	}
-	return fmt.Sprintf("none of the surviving keys you hold may forward through %s (no-port-forwarding, restrict or permitopen=); this write would cut off %s%s",
-		server, deps[0].Name, more)
+	return deps[0].Name
 }
 
 // forwardsAll reports whether a key line may forward to every dependent.
@@ -689,15 +710,15 @@ func forwardsAll(opts []string, deps []config.Server) bool {
 	return true
 }
 
-// probeForwardFor is where the bastion's post-write probe forwards: its
-// first dependent, as the bastion will be asked for it; "" when nothing
-// goes through the server.
-func probeForwardFor(cfg *config.Config, server string) string {
-	deps := cfg.Dependents(server)
-	if len(deps) == 0 {
-		return ""
+// probeForwardFor is where the bastion's post-write probe forwards: every
+// dependent, as the bastion will be asked for it, in manifest order; nil
+// when nothing goes through the server.
+func probeForwardFor(cfg *config.Config, server string) []string {
+	var addrs []string
+	for _, d := range cfg.Dependents(server) {
+		addrs = append(addrs, net.JoinHostPort(d.Host, strconv.Itoa(d.Port)))
 	}
-	return net.JoinHostPort(deps[0].Host, strconv.Itoa(deps[0].Port))
+	return addrs
 }
 
 // agentOnlyWarning is set when --identity keys were given (some held key

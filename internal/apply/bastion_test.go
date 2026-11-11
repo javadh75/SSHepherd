@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,12 +26,22 @@ func (f filesReader) ReadAuthorizedKeys(_ context.Context, s config.Server) (fle
 // key 1 (agent).
 func bastionPlans(t *testing.T, y string) (*config.Config, []ServerPlan) {
 	t.Helper()
+	return bastionPlansHolding(t, y, 1)
+}
+
+// bastionPlansHolding plans manifest y with every server's file empty,
+// holding the numbered keys (agent).
+func bastionPlansHolding(t *testing.T, y string, keys ...byte) (*config.Config, []ServerPlan) {
+	t.Helper()
 	cfg, err := config.Parse([]byte(y))
 	if err != nil {
 		t.Fatalf("Parse: %v\n%s", err, y)
 	}
 	results := audit.Run(context.Background(), cfg, filesReader{}, audit.Options{Parallel: 4})
-	held := []fleet.HeldKey{{Fingerprint: testKey(t, 1).Fingerprint, Source: fleet.SourceAgent}}
+	held := make([]fleet.HeldKey, 0, len(keys))
+	for _, n := range keys {
+		held = append(held, fleet.HeldKey{Fingerprint: testKey(t, n).Fingerprint, Source: fleet.SourceAgent})
+	}
 	plans, err := BuildWith(cfg, results, held, BuildOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -104,14 +115,68 @@ func TestForwardGuardJudgesOnlyHeldKeys(t *testing.T) {
 	}
 }
 
-// TestPlanSetsProbeForward: a bastion's write probes a forward to its first
-// dependent; a server nothing goes through probes none.
+// twoOperators: op (key 1) and ci (key 2), both operators, each with its own
+// options, on a managed bastion-eu with web-1 and web-2 behind it. op's key
+// comes first in manifest order.
+func twoOperators(t *testing.T, opOpts, ciOpts string) string {
+	t.Helper()
+	return "users:\n  - {name: op, operator: true, keys: ['" + opOpts + testkeys.Line(t, 1) + "']}\n" +
+		"  - {name: ci, operator: true, keys: ['" + ciOpts + testkeys.Line(t, 2) + "']}\n" +
+		"servers:\n  - {name: bastion-eu, host: bastion.example.com, user: jump}\n" +
+		"  - {name: web-1, host: 10.0.1.5, user: deploy, via: bastion-eu}\n" +
+		"  - {name: web-2, host: 10.0.1.6, user: deploy, via: bastion-eu}\n"
+}
+
+// TestForwardGuardJudgesFirstOfferedKey (F007, owner answer a): sshd stops
+// at the first key that verifies, so the hop logs in with the first surviving
+// key in authkeys.OfferOrder and a later key that may forward cannot help.
+func TestForwardGuardJudgesFirstOfferedKey(t *testing.T) {
+	const onlyWeb1 = `permitopen="10.0.1.5:22" `
+	firstKeyRefusal := func(owner string, key byte, cut string) string {
+		return "the first key offered to bastion-eu (" + owner + ", " + testKey(t, key).Fingerprint + ") may not forward to every server behind it " +
+			"(no-port-forwarding, restrict or permitopen=), and the login stops at that key; this write would cut off " + cut +
+			" \u2014 lift its restriction or grant a key that may forward ahead of it"
+	}
+	const noneRefusal = "none of the surviving keys you hold may forward through bastion-eu (no-port-forwarding, restrict or permitopen=); this write would cut off web-1 and 1 more"
+	for _, tt := range []struct {
+		name, op, ci string
+		held         []byte
+		want         string // "" = a change
+	}{
+		{name: "the report's repro: the first key reaches web-1 only, the second is plain", op: onlyWeb1, held: []byte{1, 2}, want: firstKeyRefusal("op", 1, "web-2")},
+		{name: "the first key may not forward at all", op: "no-port-forwarding ", held: []byte{1, 2}, want: firstKeyRefusal("op", 1, "web-1 and 1 more")},
+		{name: "a first key that forwards to both passes, whatever the second may do", ci: "no-port-forwarding ", held: []byte{1, 2}},
+		{name: "a first key whose permitopen names both passes", op: `permitopen="10.0.1.5:22",permitopen="10.0.1.6:22" `, held: []byte{1, 2}},
+		{name: "offer order, not manifest order: a plain key outranks an earlier from= line", op: `from="10.0.0.1",permitopen="10.0.1.5:22" `, held: []byte{1, 2}},
+		{name: "offer order, not manifest order: a from= line loses to the restricted plain one", op: `from="10.0.0.1" `, ci: onlyWeb1, held: []byte{1, 2}, want: firstKeyRefusal("ci", 2, "web-2")},
+		{name: "a key this run does not hold is not the first offered", op: "no-port-forwarding ", held: []byte{2}},
+		{name: "no survivor forwards to both: the old refusal", op: onlyWeb1, ci: "restrict ", held: []byte{1, 2}, want: noneRefusal},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, plans := bastionPlansHolding(t, twoOperators(t, tt.op, tt.ci), tt.held...)
+			p := planNamed(t, plans, "bastion-eu")
+			if tt.want == "" {
+				if p.Class != ClassChange {
+					t.Fatalf("bastion plan = %s %q, want a change", p.Class, p.Refusal)
+				}
+				return
+			}
+			if p.Class != ClassRefused || p.Refusal != tt.want {
+				t.Fatalf("bastion plan = %s\n got %q\nwant %q", p.Class, p.Refusal, tt.want)
+			}
+		})
+	}
+}
+
+// TestPlanSetsProbeForward: a bastion's write probes a forward to every
+// dependent, in manifest order; a server nothing goes through probes none.
 func TestPlanSetsProbeForward(t *testing.T) {
 	_, plans := bastionPlans(t, bastionYAML(t, ""))
-	if got := planNamed(t, plans, "bastion-eu").ProbeForward; got != "10.0.1.5:22" {
-		t.Errorf("bastion ProbeForward = %q, want 10.0.1.5:22", got)
+	want := []string{"10.0.1.5:22", "10.0.1.6:22"}
+	if got := planNamed(t, plans, "bastion-eu").ProbeForward; !slices.Equal(got, want) {
+		t.Errorf("bastion ProbeForward = %q, want %q", got, want)
 	}
-	if got := planNamed(t, plans, "web-1").ProbeForward; got != "" {
+	if got := planNamed(t, plans, "web-1").ProbeForward; len(got) != 0 {
 		t.Errorf("web-1 ProbeForward = %q, want none", got)
 	}
 }
@@ -122,7 +187,7 @@ func TestPlanJumpOnly(t *testing.T) {
 	y := strings.Replace(bastionYAML(t, "no-port-forwarding "), "user: jump}", "user: jump, jump_only: true}", 1)
 	_, plans := bastionPlans(t, y)
 	p := planNamed(t, plans, "bastion-eu")
-	if p.Class != ClassJumpOnly || p.Refusal != "" || p.ProbeForward != "" {
+	if p.Class != ClassJumpOnly || p.Refusal != "" || len(p.ProbeForward) != 0 {
 		t.Errorf("bastion plan = %+v, want class jump_only with nothing else", p)
 	}
 	for i := range plans {

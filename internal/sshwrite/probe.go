@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -119,10 +120,10 @@ func (w *FleetWriter) dialBound() time.Duration {
 // that authenticates but whose line forces a command would leave sshepherd
 // unable to manage the server, so the command must run and print
 // probeOutput, not just a handshake. On a bastion (forward set) the same
-// session then opens a direct-tcpip channel to one dependent (spec S5). The
-// dial is bounded by bound, the exec and the forward by probeExecDeadline
+// session then opens a direct-tcpip channel to every dependent (spec S5). The
+// dial is bounded by bound, the exec and the forwards by probeExecDeadline
 // (which starts when the connect returns).
-func (w *FleetWriter) probeOnce(ctx context.Context, srv config.Server, only []string, forward string, bound time.Duration) (probeStage, error) {
+func (w *FleetWriter) probeOnce(ctx context.Context, srv config.Server, only, forward []string, bound time.Duration) (probeStage, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	probe, err := w.connectFn()(dialCtx, srv, sshconn.ConnectOptions{Only: only, SessionTimeout: probeExecDeadline})
@@ -138,10 +139,27 @@ func (w *FleetWriter) probeOnce(ctx context.Context, srv config.Server, only []s
 		return stageAuthed, fmt.Errorf("probe command: %w", err)
 	case code != 0 || stdout.String() != probeOutput:
 		return stageAuthed, fmt.Errorf("probe command did not run as sent (exit %d) — a forced command= on the surviving key?", code)
-	case forward != "":
-		return stageAuthed, w.forwardFn()(execCtx, probe.Client, forward)
 	}
-	return stageAuthed, nil
+	return stageAuthed, w.probeForwards(execCtx, probe.Client, forward)
+}
+
+// probeForwards probes every dependent at once, so one the bastion is still
+// connecting to cannot use up the deadline and hide a later prohibited
+// forward. All of them share ctx's one deadline, and the first failure in
+// the given order is the one reported.
+func (w *FleetWriter) probeForwards(ctx context.Context, client *ssh.Client, addrs []string) error {
+	errs := make([]error, len(addrs))
+	var wg sync.WaitGroup
+	for i, addr := range addrs {
+		wg.Go(func() { errs[i] = w.forwardFn()(ctx, client, addr) })
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // probeForward opens a direct-tcpip channel to addr over the probe's
@@ -237,7 +255,7 @@ func (s *writeSession) headlessProof() {
 		s.w.log().Debug("headless proof skipped: session budget too low", "server", s.srv.Name)
 		return
 	}
-	_, err := s.w.probeOnce(s.ctx, s.srv, s.req.HeadlessProof, "", min(s.w.dialBound(), room))
+	_, err := s.w.probeOnce(s.ctx, s.srv, s.req.HeadlessProof, nil, min(s.w.dialBound(), room))
 	if err != nil && s.req.OnWarning != nil {
 		s.req.OnWarning(sshconn.SanitizedError{Err: err}.Error())
 	}
