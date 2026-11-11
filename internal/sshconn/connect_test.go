@@ -106,9 +106,15 @@ func TestConnectMatchingKeyRunsUnderSh(t *testing.T) {
 	}
 }
 
+// revokedLine is a known_hosts @revoked line for key (any host).
+func revokedLine(key ssh.PublicKey) string {
+	return "@revoked * " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+}
+
 func TestConnectHostKeyFailures(t *testing.T) {
 	user := sshtest.Key(1)
 	host := sshtest.Signer(t, sshtest.Key(40))
+	ca := sshtest.Signer(t, sshtest.Key(50))
 	tests := []struct {
 		name     string
 		hostKeys []ssh.Signer
@@ -155,6 +161,55 @@ func TestConnectHostKeyFailures(t *testing.T) {
 			},
 			kind: fleet.ErrorKindHostKeyRevoked,
 			want: []string{"@revoked"},
+		},
+		// F001: x/crypto refuses a certificate whose CA or certified key is
+		// @revoked with plain text ("certificate serial N revoked"), not a
+		// RevokedError; it is the same alarm as a revoked plain key.
+		{
+			name:     "a certificate signed by a revoked CA is refused as revoked",
+			hostKeys: []ssh.Signer{hostCert(t, host, ca, ssh.CertTimeInfinity)},
+			khLines: func(f fixture) []string {
+				return []string{caLine(f, ca.PublicKey()), revokedLine(ca.PublicKey())}
+			},
+			kind: fleet.ErrorKindHostKeyRevoked,
+			want: []string{"@revoked", "signing CA"},
+		},
+		{
+			name:     "a revoked host key served inside a certificate is refused as revoked",
+			hostKeys: []ssh.Signer{hostCert(t, host, ca, ssh.CertTimeInfinity)},
+			khLines: func(f fixture) []string {
+				return []string{caLine(f, ca.PublicKey()), revokedLine(host.PublicKey())}
+			},
+			kind: fleet.ErrorKindHostKeyRevoked,
+			want: []string{"@revoked", "key inside this host certificate"},
+		},
+		{
+			// knownhosts revokes the key a revoked certificate certifies.
+			name:     "an @revoked line holding a certificate revokes the key inside it",
+			hostKeys: []ssh.Signer{hostCert(t, host, ca, ssh.CertTimeInfinity)},
+			khLines: func(f fixture) []string {
+				return []string{caLine(f, ca.PublicKey()), revokedLine(hostCert(t, host, sshtest.Signer(t, sshtest.Key(43)), ssh.CertTimeInfinity).PublicKey())}
+			},
+			kind: fleet.ErrorKindHostKeyRevoked,
+			want: []string{"@revoked", "key inside this host certificate"},
+		},
+		{
+			name:     "a certificate from a revoked CA with no @cert-authority line left is still revoked",
+			hostKeys: []ssh.Signer{hostCert(t, host, ca, ssh.CertTimeInfinity)},
+			khLines: func(fixture) []string {
+				return []string{revokedLine(ca.PublicKey())}
+			},
+			kind: fleet.ErrorKindHostKeyRevoked,
+			want: []string{"@revoked", "signing CA"},
+		},
+		{
+			name:     "control: a certificate from a vouched CA with an unrelated @revoked key stays host_key when expired",
+			hostKeys: []ssh.Signer{hostCert(t, host, ca, uint64(time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC).Unix()))},
+			khLines: func(f fixture) []string {
+				return []string{caLine(f, ca.PublicKey()), revokedLine(sshtest.Signer(t, sshtest.Key(42)).PublicKey())}
+			},
+			kind:    fleet.ErrorKindHostKey,
+			notWant: []string{"@revoked"},
 		},
 	}
 	for _, tt := range tests {

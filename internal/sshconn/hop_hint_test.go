@@ -66,6 +66,41 @@ func TestKeyscanCompareCmdThroughBastion(t *testing.T) {
 	}
 }
 
+// TestRouteCmd pins the exported route builder (G017's lock-removal
+// command goes through it): remote words reach dest's shell as given, every
+// bastion goes in one -J, and a route with a word that is not a hopWord
+// gets no local ssh command, only what to run on the named bastion.
+func TestRouteCmd(t *testing.T) {
+	script := `p="${HOME:?}"/'.ssh/authorized_keys'; rmdir -- "$p.sshepherd.lock"`
+	target := config.Server{Name: "hopped", Host: "10.9.0.5", Port: 22, User: "deploy"}
+	bastion := config.Server{Name: "bastion", Host: "bastion.example.com", Port: 2222, User: "jump"}
+	edge := config.Server{Name: "edge", Host: "edge.example.com", Port: 22, User: "ops"}
+	onBastion := []string{"ssh", "-p", "22", "deploy@10.9.0.5", ShQuote(script)}
+	for _, tt := range []struct {
+		name string
+		hops []config.Server
+		dest config.Server
+		want string
+	}{
+		{"no bastion", nil, target,
+			`ssh -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
+		{"one bastion", []config.Server{bastion}, target,
+			`ssh -J jump@bastion.example.com:2222 -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
+		{"two bastions, root first", []config.Server{edge, bastion}, target,
+			`ssh -J ops@edge.example.com:22,jump@bastion.example.com:2222 -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
+		{"a bastion user that reads as an option", []config.Server{edge, {Name: "bastion", Host: "bastion.example.com", Port: 22, User: "-oProxyCommand=x"}}, target,
+			`on bastion "bastion": ssh -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
+		{"a dest host that is not a plain word", []config.Server{bastion}, config.Server{Name: "x", Host: "db$(x)", Port: 22, User: "deploy"},
+			`on bastion "bastion": ssh -p 22 deploy@10.9.0.5 'p="${HOME:?}"/'\''.ssh/authorized_keys'\''; rmdir -- "$p.sshepherd.lock"'`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RouteCmd(tt.hops, tt.dest, []string{script}, "bastion", onBastion); got != tt.want {
+				t.Errorf("RouteCmd =\n%s\nwant\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestUnknownTargetHostKeyHintThroughHop: an unrecorded target behind a
 // bastion is the target's own failure, and its hint scans from the bastion.
 func TestUnknownTargetHostKeyHintThroughHop(t *testing.T) {

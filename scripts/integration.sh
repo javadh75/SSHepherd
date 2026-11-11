@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Spins up three throwaway sshd containers from ci/images/sshd-<distro>.Dockerfile
+# Spins up four throwaway sshd containers from ci/images/sshd-<distro>.Dockerfile
 # (A: the full fixture on the default AuthorizedKeysFile, and the bastion;
 # B: one user whose sshd reads ~/.ssh/fleet_keys; C: on an --internal network
-# only, so reachable only through A), seeds keys, starts a dedicated
-# ssh-agent, and runs the build-tagged integration tests against them.
+# only, so reachable only through A; D: the distro's default
+# PerSourcePenalties, with accounts that fail auth and healthy ones), seeds
+# keys, starts a dedicated ssh-agent, and runs the build-tagged integration
+# tests against them.
+#
+# A, B and C set PerSourcePenalties no: their tests fail logins on purpose,
+# and OpenSSH 9.8+ would then drop every later handshake from this address.
+# D keeps the default so TestE2EPerSourcePenalties can pin how a penalty
+# drop is reported. Nothing else connects to D: its host key is recorded
+# from inside the container (never with ssh-keyscan, whose unauthenticated
+# connections are penalized too), and only that test uses it.
 #
 # Usage: scripts/integration.sh [alpine|debian|rocky]   (default: alpine, or
 # $IT_DISTRO, which `make integration IT_DISTRO=…` exports)
@@ -29,11 +38,12 @@ RUN_ID="${SSHEPHERD_IT_NAME:-sshepherd-it-$$}"
 CA="$RUN_ID-a"
 CB="$RUN_ID-b"
 CC="$RUN_ID-c"
+CD="$RUN_ID-d"
 NET="$RUN_ID-int"
 WORKDIR="$(mktemp -d)"
 
 cleanup() {
-  docker rm -f "$CA" "$CB" "$CC" >/dev/null 2>&1 || true
+  docker rm -f "$CA" "$CB" "$CC" "$CD" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   # Kill only the agent WE started — never an agent inherited from the shell.
   [ -n "${OUR_AGENT_PID:-}" ] && kill "$OUR_AGENT_PID" >/dev/null 2>&1 || true
@@ -217,7 +227,20 @@ FIXTURE_C='
     exec /usr/sbin/sshd -D -e
 '
 
-docker rm -f "$CA" "$CB" "$CC" >/dev/null 2>&1 || true
+# Container D: the distro's default PerSourcePenalties (OpenSSH 9.8+ refuses
+# a source address for a while after a few failed logins). bad1-4 hold only
+# the stale key, so the agent key fails there; good1-3 hold the agent key.
+# sshd_expect proves the default is still on.
+FIXTURE_D='
+    for u in good1 good2 good3 bad1 bad2 bad3 bad4; do mkuser "$u"; mkdir -p "/home/$u/.ssh"; done
+    for u in good1 good2 good3; do cp /seed/key.pub "/home/$u/.ssh/authorized_keys"; done
+    for u in bad1 bad2 bad3 bad4; do cp /seed/stale.pub "/home/$u/.ssh/authorized_keys"; done
+    for u in good1 good2 good3 bad1 bad2 bad3 bad4; do chown -R "$u:$u" "/home/$u/.ssh"; chmod 700 "/home/$u/.ssh"; chmod 600 "/home/$u/.ssh/authorized_keys"; done
+    sshd_expect "persourcepenalties .*authfail:[0-9.]+.*"
+    exec /usr/sbin/sshd -D -e
+'
+
+docker rm -f "$CA" "$CB" "$CC" "$CD" >/dev/null 2>&1 || true
 docker run -d --name "$CA" --label sshepherd-it=1 \
   -p "127.0.0.1:${SSHEPHERD_IT_PORT:-}:22" \
   -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
@@ -235,15 +258,21 @@ docker run -d --name "$CC" --label sshepherd-it=1 --network "$NET" \
   -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
   -v "$WORKDIR/stale.pub:/seed/stale.pub:ro" \
   "$IMAGE" sh -c "$PRELUDE$FIXTURE_C" >/dev/null
+docker run -d --name "$CD" --label sshepherd-it=1 \
+  -p "127.0.0.1::22" \
+  -v "$WORKDIR/id_ed25519.pub:/seed/key.pub:ro" \
+  -v "$WORKDIR/stale.pub:/seed/stale.pub:ro" \
+  "$IMAGE" sh -c "$PRELUDE$FIXTURE_D" >/dev/null
 docker network connect "$NET" "$CA"
 IP_C="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CC")"
 
 port_of() { docker port "$1" 22/tcp | sed -n 's/^127\.0\.0\.1://p' | head -n1; }
 PORT_A="$(port_of "$CA")"
 PORT_B="$(port_of "$CB")"
+PORT_D="$(port_of "$CD")"
 running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = true ]; }
 dump_logs() {
-  for c in "$CA" "$CB" "$CC"; do
+  for c in "$CA" "$CB" "$CC" "$CD"; do
     echo "--- docker logs $c ---" >&2
     docker logs "$c" >&2 || true
   done
@@ -266,20 +295,23 @@ if ! { [ "$(grep -c "^\[127.0.0.1\]:$PORT_A " "$KH")" -gt 0 ] && [ "$(grep -c "^
   dump_logs
   exit 1
 fi
-# C is not reachable from here: wait for its sshd in the logs, then record
-# its key as seen from inside the container (the out-of-band check a real
-# operator does on the console).
-for _ in $(seq 1 120); do
-  docker logs "$CC" 2>&1 | grep -q 'Server listening' && break
-  running "$CC" || break
-  sleep 1
-done
-if ! docker logs "$CC" 2>&1 | grep -q 'Server listening'; then
-  echo "sshd never came up on the internal container; container logs:" >&2
+# C is not reachable from here, and D must not be scanned (see the header):
+# wait for each sshd in the logs, then record its key as seen from inside
+# the container (the out-of-band check a real operator does on the console).
+wait_listening() {
+  for _ in $(seq 1 120); do
+    docker logs "$1" 2>&1 | grep -q 'Server listening' && return 0
+    running "$1" || break
+    sleep 1
+  done
+  echo "sshd never came up on $1; container logs:" >&2
   dump_logs
   exit 1
-fi
+}
+wait_listening "$CC"
 docker exec "$CC" cat /etc/ssh/ssh_host_ed25519_key.pub | awk -v h="$IP_C" '{print h" "$1" "$2}' >>"$KH"
+wait_listening "$CD"
+docker exec "$CD" cat /etc/ssh/ssh_host_ed25519_key.pub | awk -v h="[127.0.0.1]:$PORT_D" '{print h" "$1" "$2}' >>"$KH"
 
 eval "$(ssh-agent -s)" >/dev/null
 OUR_AGENT_PID="$SSH_AGENT_PID"
@@ -288,6 +320,7 @@ ssh-add "$WORKDIR/id_ed25519"
 export SSHEPHERD_IT_HOST=127.0.0.1 \
   SSHEPHERD_IT_PORT="$PORT_A" \
   SSHEPHERD_IT_PORT_B="$PORT_B" \
+  SSHEPHERD_IT_PORT_PENALTY="$PORT_D" \
   SSHEPHERD_IT_TARGET_HOST="$IP_C" \
   SSHEPHERD_IT_TARGET_PORT=22 \
   SSHEPHERD_IT_DISTRO="$DISTRO" \

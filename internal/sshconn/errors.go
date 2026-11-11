@@ -3,8 +3,11 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/javadh75/SSHepherd/internal/fleet"
@@ -114,6 +117,65 @@ func ctxKind(ctx context.Context) fleet.ErrorKind {
 		return fleet.ErrorKindCanceled
 	}
 	return fleet.ErrorKindTimeout
+}
+
+// PenaltyHint is the remediation for a handshake the server ended before
+// its SSH version banner. OpenSSH 9.8+ sshd drops every new connection from
+// an address it is penalizing (PerSourcePenalties, on by default) after
+// failed logins from it, so a few accounts that fail turn the healthy ones
+// on the same host into this bare EOF; MaxStartups and firewalls look the
+// same from here.
+const PenaltyHint = `the server closed the connection before its SSH banner: sshd's PerSourcePenalties may be refusing this address after failed logins (or MaxStartups, or a firewall); look for "drop connection ... penalty" in the server log, then fix the account whose login fails or add this address to PerSourcePenaltyExemptList`
+
+// bannerWatch is a net.Conn that notes whether the server's SSH version
+// banner arrived: a line starting "SSH-" and ended by a newline (RFC 4253
+// lets other lines come first). It only watches until it has seen one.
+type bannerWatch struct {
+	net.Conn
+	seen atomic.Bool
+	// line state, touched only by Read (one reader at a time): how many
+	// bytes of "SSH-" the current line has matched, -1 when it cannot.
+	matched int
+}
+
+func (b *bannerWatch) Read(p []byte) (int, error) {
+	n, err := b.Conn.Read(p)
+	if !b.seen.Load() {
+		b.scan(p[:n])
+	}
+	return n, err //nolint:wrapcheck // a transparent conn: x/crypto must see the transport's error verbatim
+}
+
+// scan advances the line state over p.
+func (b *bannerWatch) scan(p []byte) {
+	const prefix = "SSH-"
+	for _, c := range p {
+		switch {
+		case c == '\n':
+			if b.matched == len(prefix) {
+				b.seen.Store(true)
+				return
+			}
+			b.matched = 0
+		case b.matched >= 0 && b.matched < len(prefix):
+			if c == prefix[b.matched] {
+				b.matched++
+			} else {
+				b.matched = -1
+			}
+		}
+	}
+}
+
+// bannerSeen reports whether the server's banner arrived; true for a nil
+// watch (no facts: no hint).
+func (b *bannerWatch) bannerSeen() bool { return b == nil || b.seen.Load() }
+
+// droppedBeforeBanner reports a handshake the server ended before it sent
+// its banner: the connection closed (EOF) or was reset, with no banner seen.
+func droppedBeforeBanner(err error, b *bannerWatch) bool {
+	return !b.bannerSeen() &&
+		(errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE))
 }
 
 // AuthExhausted reports whether err's chain carries the MaxAuthTries signal

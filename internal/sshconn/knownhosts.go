@@ -27,6 +27,9 @@ type KnownHosts struct {
 	// authorities are the @cert-authority keys, used only to decide whether
 	// to offer certificate host-key algorithms (matching stays knownhosts').
 	authorities []ssh.PublicKey
+	// revoked are the @revoked keys, used only to name why a host
+	// certificate was refused (revokedCertPart); the refusal is knownhosts'.
+	revoked []ssh.PublicKey
 }
 
 // LoadKnownHosts parses path under strict semantics (knownhosts.New) and
@@ -40,25 +43,27 @@ func LoadKnownHosts(path string) (*KnownHosts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load known_hosts %s: %w", path, err)
 	}
-	return &KnownHosts{Path: path, callback: cb, authorities: certAuthorities(data)}, nil
+	return &KnownHosts{Path: path, callback: cb,
+		authorities: markedKeys(data, "cert-authority"), revoked: markedKeys(data, "revoked")}, nil
 }
 
-// certAuthorities extracts the keys of @cert-authority lines. Lines that do
-// not parse are skipped: knownhosts.New has already accepted the file.
-func certAuthorities(data []byte) []ssh.PublicKey {
-	var cas []ssh.PublicKey
+// markedKeys extracts the keys of the lines carrying @marker
+// ("cert-authority" or "revoked"). Lines that do not parse are skipped:
+// knownhosts.New has already accepted the file.
+func markedKeys(data []byte, marker string) []ssh.PublicKey {
+	var keys []ssh.PublicKey
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
 		line := bytes.TrimLeft(sc.Bytes(), " \t")
-		if !bytes.HasPrefix(line, []byte("@cert-authority")) {
+		if !bytes.HasPrefix(line, []byte("@"+marker)) {
 			continue
 		}
-		marker, _, key, _, _, err := ssh.ParseKnownHosts(line)
-		if err == nil && marker == "cert-authority" {
-			cas = append(cas, key)
+		got, _, key, _, _, err := ssh.ParseKnownHosts(line)
+		if err == nil && got == marker {
+			keys = append(keys, key)
 		}
 	}
-	return cas
+	return keys
 }
 
 // Host-key algorithm preference tables. Plain algorithms are ordered by
@@ -172,6 +177,48 @@ func (k *KnownHosts) isAuthority(key ssh.PublicKey) bool {
 		}
 	}
 	return false
+}
+
+// revokedCertPart names what of a presented host certificate an @revoked
+// line marks: "CA" for its signing key, "key" for the key it certifies, ""
+// for neither or for a presented key that is no certificate. x/crypto
+// refuses such a certificate with plain text ("certificate serial N
+// revoked"), not a RevokedError, and a revoked CA whose @cert-authority
+// line is gone fails earlier as "no authorities"; this reads the snapshot
+// instead of either text. Keys compare as knownhosts compares them: a
+// certificate by the key it certifies.
+func (k *KnownHosts) revokedCertPart(presented ssh.PublicKey) string {
+	cert, ok := presented.(*ssh.Certificate)
+	switch {
+	case !ok:
+		return ""
+	case k.isRevoked(cert.SignatureKey):
+		return "CA"
+	case k.isRevoked(cert.Key):
+		return "key"
+	}
+	return ""
+}
+
+// isRevoked reports whether an @revoked line names key (a plain key: a
+// certificate's SignatureKey or Key). An @revoked line holding a
+// certificate revokes the key it certifies, as in knownhosts.
+func (k *KnownHosts) isRevoked(key ssh.PublicKey) bool {
+	want := key.Marshal()
+	for _, r := range k.revoked {
+		if bytes.Equal(plainKey(r).Marshal(), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// plainKey is key, or for a certificate the key it certifies.
+func plainKey(key ssh.PublicKey) ssh.PublicKey {
+	if cert, ok := key.(*ssh.Certificate); ok {
+		return cert.Key
+	}
+	return key
 }
 
 // authorityMatches reports whether any @cert-authority line applies to addr.

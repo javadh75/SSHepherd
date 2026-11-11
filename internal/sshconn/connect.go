@@ -256,7 +256,8 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close(); hop.closeQuiet() })
 	defer stopCancel()
 
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
+	banner := &bannerWatch{Conn: conn} // a drop before the banner gets PenaltyHint (G016)
+	sshConn, chans, reqs, err := ssh.NewClientConn(banner, addr, &ssh.ClientConfig{
 		User:              srv.User,
 		Auth:              []ssh.AuthMethod{auth},
 		HostKeyCallback:   cb,
@@ -265,7 +266,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	if err != nil {
 		_ = conn.Close()
 		hop.closeQuiet()
-		return nil, dialFacts{user: srv.User, addr: addr, hk: hk, rec: rec, asked: len(opts.Only), missing: missing, offer: offer}.failure(ctx, err)
+		return nil, dialFacts{user: srv.User, addr: addr, hk: hk, rec: rec, asked: len(opts.Only), missing: missing, offer: offer, banner: banner}.failure(ctx, err)
 	}
 	if !stopCancel() {
 		// ctx ended exactly as the handshake completed: the socket is closed.
@@ -310,6 +311,7 @@ type dialFacts struct {
 	asked      int // len(ConnectOptions.Only)
 	missing    int // how many of those fingerprints were not offered
 	offer      offering
+	banner     *bannerWatch // whether the server's banner arrived; nil: unknown
 }
 
 // failure classifies a failed ssh.NewClientConn. An incomplete Only offer
@@ -329,6 +331,8 @@ func (f dialFacts) failure(ctx context.Context, err error) error {
 		return classify(fleet.ErrorKindAgent, fmt.Errorf("%w; %d of the %d surviving keys not offered (agent locked, or keys removed since the plan)", wrapped, f.missing, f.asked))
 	case kind == fleet.ErrorKindHandshake && f.rec.signFailed():
 		return classify(fleet.ErrorKindAgent, wrapped)
+	case kind == fleet.ErrorKindHandshake && droppedBeforeBanner(err, f.banner):
+		return &Error{Kind: kind, Err: wrapped, Hint: PenaltyHint}
 	}
 	return &Error{Kind: kind, Err: wrapped, Hint: f.offer.authHint(kind), AuthExhausted: exhausted}
 }
@@ -454,10 +458,17 @@ func viaFailure(hop string, err error) error {
 // permitopen=) is the bastion's doing: kind dial, ForwardHint, HopStage
 // set. Any other rejection means the bastion could not reach the server:
 // the server's own dial failure, with HopDialHint (DialHint's "needs via:"
-// would be wrong advice here). Server text is bounded (remoteText).
+// would be wrong advice here). Server text is bounded (remoteText). A
+// failure once ctx's deadline has passed is a timeout even before ctx.Err
+// is set, as in handshakeKind: the hop's socket carries the same deadline,
+// and its read timeout can fail the pending open first (F012).
 func forwardFailure(ctx context.Context, hop, addr string, err error) error {
-	if ctx.Err() != nil {
-		return classify(ctxKind(ctx), fmt.Errorf("via %s: open %s: %w", hop, addr, ctx.Err()))
+	if ctx.Err() != nil || pastDeadline(ctx) {
+		cause := ctx.Err()
+		if cause == nil {
+			cause = context.DeadlineExceeded
+		}
+		return classify(ctxKind(ctx), fmt.Errorf("via %s: open %s: %w", hop, addr, cause))
 	}
 	var oce *ssh.OpenChannelError
 	if errors.As(err, &oce) && oce.Reason == ssh.Prohibited {

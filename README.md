@@ -1212,7 +1212,7 @@ Summary: 0/2 servers compliant · 2 with drift (1 critical) · 0 unreachable  �
 `handshake` or `remote`. Unclassified errors keep a plain `ERROR:` head. A server that accepts the login but never answers a session open is given up after 10 seconds, or sooner when the per-server timeout ends, and reports `timeout`; a session open the server refuses stays `remote`. A host key
 that **changed** or is marked `@revoked` in `known_hosts` (possible impersonation)
 counts as a host-key alert and makes the run exit `2`.
-`host_key_type_changed` (exit 2): `known_hosts` records a key type x/crypto can verify and the server presented a different type, or a certificate from a signer no `@cert-authority` line for this host vouches for. `host_key_type_unrecorded` (exit 1) now remains only when every recorded type is unsupported. A certificate from a vouched CA that fails validation stays `host_key` (exit 1).
+`host_key_type_changed` (exit 2): `known_hosts` records a key type x/crypto can verify and the server presented a different type, or a certificate from a signer no `@cert-authority` line for this host vouches for. `host_key_type_unrecorded` (exit 1) now remains only when every recorded type is unsupported. A certificate from a vouched CA that fails validation stays `host_key` (exit 1), unless its signing CA or the key inside it is marked `@revoked` in `known_hosts`: that is `host_key_revoked` (exit 2), like a plain `@revoked` key.
 A failed or malformed posture probe makes the server unreachable with `error_kind: remote` (`timeout` when its session never opens; exit 1), so a server cannot be graded clean while hiding its posture.
 When a failure has a remediation, it prints on its own `hint:` line under the first
 server that needs it; a hint shared by many servers prints once:
@@ -2262,7 +2262,7 @@ already being written finish their write, verify and login probe (bounded by a
 (exit 1). A second Ctrl-C kills the process immediately. An interrupt before any
 write starts — during `apply`'s planning or at its `[y/N]` prompt — writes nothing
 and exits `3`. In `audit` and `adopt`, an interrupt at any point closes in-flight
-sessions and exits `3` without rendering a report or writing a manifest (servers cut
+connections, even to a server that has stopped answering, and exits `3` without rendering a report or writing a manifest (servers cut
 short are never passed off as unreachable).
 
 **Weak keys.** A server that grants a weak key (DSA, RSA under 2048 bits) is refused and the rest of the plan proceeds, exit 1, except a write that grants nothing and removes at least one key: it cannot install or widen the weak key, so it proceeds. A server already holding exactly its keys stays refused until the weak key is gone. A refusal for a weak key never stops `revoke` or `rotate` from saving their edit.
@@ -3166,8 +3166,8 @@ Monitoring-style, one table shared by `audit`, `apply`, `revoke` and `rotate`
 | Code | `audit` | `apply` | `revoke` / `rotate` |
 | ---- | ------- | ------- | ------------------- |
 | `0` | Compliant (a header serial below the manifest's is not drift; lines a `preserve:` rule keeps are not drift) | Converged — nothing to do, including a header-only write applied, a newer-serial server with an equal body (with a note), and a server the manifest grants nothing that holds only kept lines | Converged (with `--sweep`: no revoked key found); a repeated `revoke` whose targets were already revoked (with `--sweep`: no revoked key found); or `--no-apply` saved the edit without pushing it (run the `apply` hint it prints) |
-| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`; `timeout` when its session never opens); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`); an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a restriction conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
-| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key or a restriction conflict), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
+| `1` | Drift or unreachable servers — compliance not proven; a server serial ahead of the manifest; a key installed where its access was revoked; a posture finding short of world-writable (`symlink`, `foreign_owner`, `group_writable`); a failed or malformed posture probe (`error_kind: remote`; `timeout` when its session never opens); `host_key_type_unrecorded`, now only when every recorded type is unsupported; an invalid certificate from a vouched CA (`host_key`), unless its CA or key is `@revoked`; an unrecorded bastion host key (no alert); a bastion that refuses the forward | Pending changes (including a header-only write under `--dry-run`), refused servers (a newer manifest's serial, a policy conflict, a granted weak key, a restriction conflict, a no-grant server whose `authorized_keys2` holds keys, a header-only write the guard refuses), failed or unreachable servers, a write whose login check could not prove access (`unproven`), other than the host-key alarms in row `2`; a changed or `@revoked` bastion host key, or a changed bastion host key type, in phase 1 or at the login check | Not converged, unproven, as for `apply`; `--sweep` could not read a server or prove the removal |
+| `2` | **Critical**: a missing operator or protected key, or such a key present but unable to log in (`cert_only`, `expired`, `ignored`), a host key that **changed**, a host key type that changed, a host key `@revoked` in `known_hosts`, or a host certificate whose CA or key is `@revoked` (possible impersonation), on the server or on a bastion it goes through (one bastion counts once, however many servers sit behind it), a world-writable managed path, a revoked key still installed, a policy conflict (including a granted weak key or a restriction conflict), a forged header serial | **Lockout not restored** (`lockout_unrestored`: after a rejected login check the restore of `authorized_keys` failed or `authorized_keys2` could not be moved back, a restore over a dropped connection could not be retried, or the reconnect after the upload started was refused); a **rollback that put back a key on the manifest's `revoked:` list** (`failed`); the post-write login check **stopped at a changed or `@revoked` host key, or a changed host key type (`host_key_type_changed`)** of the server itself (`unproven`; a bastion's is `1`) | As for `apply`, or `--sweep` found a revoked key still installed |
 | `3` | Tool error — bad flags, unloadable manifest, failed preflight, an `--identity` key that cannot be read, is refused, or has no passphrase source, interrupted | Tool error — as for `audit`, interrupted before any write, a manifest that changed since it was read, a failed serial save | Tool error — as for `audit`, a run refused before anything is saved (unknown user (never revoked), an unknown or ungranted `--from-server`, a protected target without `--operator`, a manifest the edits cannot handle or that is not a regular file, a manifest that would keep a revoked-key or revoked-access conflict (a restriction conflict never stops a revoke or rotate save; its servers are refused in the apply phase, exit `1`), a concurrent save). `3` for saving commands additionally covers a save that would **add** a DSA or RSA<2048 key; unrelated saves and a weak key's own `rotate`/`revoke --key` always save |
 
 `adopt` and `import --merge` also exit `3` when the save would add a restriction conflict on a (user, server) pair the manifest did not have; a clash already there does not stop the save.
@@ -3441,6 +3441,14 @@ then forced `command=` lines, then certificate-only lines (`cert-authority`,
 A session therefore authenticates with an unrestricted key whenever one is held, so
 a key that gains a forced `command=` cannot capture later runs. Remote commands always run under `/bin/sh`. Audit's posture check mirrors StrictModes.
 
+**Failed logins and sshd penalties.** OpenSSH 9.8 and later turn on `PerSourcePenalties` by
+default: after a few failed logins from one address, sshd drops every new connection from that
+address for a while, healthy accounts included. A fleet with several accounts on one host, some
+not yet holding your key, can trigger it. Behind a bastion, every target sees the bastion's
+address. SSHepherd reports such a drop as `handshake` (exit `1`), never as a refused key, with
+this hint: `the server closed the connection before its SSH banner: sshd's PerSourcePenalties may be refusing this address after failed logins (or MaxStartups, or a firewall); look for "drop connection ... penalty" in the server log, then fix the account whose login fails or add this address to PerSourcePenaltyExemptList`.
+SSHepherd does not change its fan-out to avoid penalties.
+
 **Bastions.** A server with `via:` is reached through its bastions (see
 [Bastions](#bastions-via)) with the same strict `known_hosts` on every hop: a missing,
 changed or `@revoked` bastion host key refuses the dial before any key is offered to
@@ -3470,7 +3478,7 @@ Everything below runs the same commands CI runs.
 $ make check        # the full gate: tidy, fmt, vet, lint, layering, deadcode, security, licenses, coverage (≥93%, production packages; test helpers excluded)
 $ make test         # go test -race with an atomic coverage profile
 $ make coverage     # coverage report; fails below 93% line coverage (production packages; test helpers excluded)
-$ make integration  # three dockerized alpine sshd containers (one behind a bastion) + build-tagged integration/E2E tests
+$ make integration  # four dockerized alpine sshd containers (one behind a bastion, one on sshd's default penalties) + build-tagged integration/E2E tests
 $ make integration IT_DISTRO=debian  # or alpine | rocky
 $ make fuzz         # every Fuzz* target, found automatically (FUZZTIME=15s each); fails if a package's tests do not build
 $ make fuzz-list    # every Fuzz* target as 'importpath Target'
@@ -3579,7 +3587,7 @@ Every release tag must point at a commit at or after `ca50409`, the commit that 
 the gated release workflow; older commits run an ungated release workflow or one whose
 publish step always fails.
 
-Integration and E2E tests run against three throwaway sshd containers built from
+Integration and E2E tests run against four throwaway sshd containers built from
 `ci/images/sshd-<distro>.Dockerfile` (alpine: busybox; debian: dash, GNU coreutils,
 PAM; rocky: bash as /bin/sh, RHEL sshd, PAM). Container A holds every fixture user
 and is also the bastion (`AllowTcpForwarding yes`). Container B's sshd reads
@@ -3587,6 +3595,9 @@ and is also the bastion (`AllowTcpForwarding yes`). Container B's sshd reads
 `authorized_keys_file` override and per-host `known_hosts`. Container C sits on an
 `--internal` Docker network that only A also joins, so it is reachable only through A
 as a `via:` bastion.
+Container D keeps the distribution's default `PerSourcePenalties`, with accounts that fail
+authentication and healthy ones, so the E2E suite pins how a penalty drop is reported; the other
+three turn penalties off because their tests fail logins on purpose.
 Host keys are generated when each container starts. Each run uses unique container
 names and ports that Docker picks, so parallel runs never collide.
 `SSHEPHERD_IT_PORT` pins container A's port, and `SSHEPHERD_IT_NAME` sets the

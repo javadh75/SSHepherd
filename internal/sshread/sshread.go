@@ -173,6 +173,11 @@ func (c *Client) getDialer() *sshconn.Dialer {
 // posture). Deadline semantics live
 // in Connect: the ctx deadline (or the derived 3×DialTimeout floor) bounds
 // the whole exchange, not just the dial; ctx cancellation ends it at once.
+// Exec's own watcher only closes its session, which waits for the peer's
+// reply; a read has nothing to finish, so a watcher closes the whole
+// connection and its hop the moment ctx ends, and a peer that stopped
+// answering cannot hold an interrupt until the socket deadline (F011). The
+// write path keeps its detached ctx: a started write must finish.
 func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (fleet.ReadResult, error) {
 	var zero fleet.ReadResult
 	conn, err := c.getDialer().Connect(ctx, srv)
@@ -180,6 +185,8 @@ func (c *Client) readAuthorizedKeys(ctx context.Context, srv config.Server) (fle
 		return zero, err
 	}
 	defer func() { _ = conn.Close() }()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	path := srv.AuthorizedKeysFile
 	if path == "" {

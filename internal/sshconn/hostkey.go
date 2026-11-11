@@ -32,6 +32,10 @@ import (
 // from a signer no matching @cert-authority line vouches for on a CA-vouched
 // host: negotiation offers the recorded types and the CA's certificates
 // first, so a genuine server reaches either case only by dropping them all.
+//
+// A refused host certificate whose signing CA or certified key an @revoked
+// line marks is host_key_revoked too (exit 2, as for a plain @revoked key),
+// whatever x/crypto's own reason: that is the case @revoked exists for.
 func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, route []config.Server, kh *KnownHosts) error {
 	if presented != nil {
 		err = fmt.Errorf("presented %s key %s: %w", presented.Type(), ssh.FingerprintSHA256(presented), err)
@@ -40,6 +44,16 @@ func hostKeyHint(err error, presented ssh.PublicKey, srv config.Server, route []
 	if errors.As(err, &revoked) {
 		return classifyHint(fleet.ErrorKindHostKeyRevoked, fmt.Sprintf(
 			"this key is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
+			kh.Path), err)
+	}
+	switch kh.revokedCertPart(presented) {
+	case "CA":
+		return classifyHint(fleet.ErrorKindHostKeyRevoked, fmt.Sprintf(
+			"this host certificate's signing CA is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
+			kh.Path), err)
+	case "key":
+		return classifyHint(fleet.ErrorKindHostKeyRevoked, fmt.Sprintf(
+			"the key inside this host certificate is marked @revoked in %s — do not connect until the host is re-keyed and the new key verified out of band",
 			kh.Path), err)
 	}
 	var ke *knownhosts.KeyError
@@ -123,19 +137,39 @@ func keyscanCompareCmd(presented ssh.PublicKey, srv config.Server, route []confi
 	}
 	const seen = " | ssh-keygen -lf - (as seen by the bastion; still compare with the console)"
 	hop := route[len(route)-1]
-	if slices.ContainsFunc(route, unsafeHop) {
-		return fmt.Sprintf("on bastion %q: %s%s%s", hop.Name, scan, localWord(srv.Host), seen)
+	words := append(strings.Fields(scan), localWord(srv.Host)) // the scan as the bastion's shell reads it
+	return RouteCmd(route[:len(route)-1], hop, words, hop.Name, words) + seen
+}
+
+// RouteCmd is the paste-ready command that runs remote on dest through
+// hops (dest's bastions, root first): `ssh [-J USER@HOST:PORT,…] -p PORT
+// USER@HOST remote…`. remote holds the words of the command line exactly as
+// dest's shell must read them; each is quoted once more for the operator's
+// shell (ssh joins them and the far side parses the line again). The hint
+// is pasted into a shell, so a manifest value never stands where ssh reads
+// options: when a hop's or dest's user or host is not a hopWord, no local
+// ssh command is built at all, and the result is `on bastion "BASTION":
+// onBastion…`, the words to run on that bastion, already quoted for its
+// shell. keyscanCompareCmd runs its scan on a server's own bastion through
+// it; sshwrite's lock-removal command reaches a via server through it.
+func RouteCmd(hops []config.Server, dest config.Server, remote []string, bastion string, onBastion []string) string {
+	if slices.ContainsFunc(hops, unsafeHop) || unsafeHop(dest) {
+		return fmt.Sprintf("on bastion %q: %s", bastion, strings.Join(onBastion, " "))
 	}
 	jump := ""
-	if outer := route[:len(route)-1]; len(outer) > 0 {
-		hops := make([]string, 0, len(outer))
-		for _, h := range outer {
-			hops = append(hops, h.User+"@"+net.JoinHostPort(h.Host, strconv.Itoa(h.Port)))
+	if len(hops) > 0 {
+		specs := make([]string, 0, len(hops))
+		for _, h := range hops {
+			specs = append(specs, h.User+"@"+net.JoinHostPort(h.Host, strconv.Itoa(h.Port)))
 		}
-		jump = "-J " + localWord(strings.Join(hops, ",")) + " "
+		jump = "-J " + localWord(strings.Join(specs, ",")) + " "
 	}
-	return "ssh " + jump + "-p " + strconv.Itoa(hop.Port) + " " + localWord(hop.User+"@"+hop.Host) +
-		" " + scan + remoteWord(srv.Host) + seen
+	words := make([]string, len(remote))
+	for i, w := range remote {
+		words[i] = localWord(w)
+	}
+	return "ssh " + jump + "-p " + strconv.Itoa(dest.Port) + " " + localWord(dest.User+"@"+dest.Host) +
+		" " + strings.Join(words, " ")
 }
 
 // hopWord is a bastion user or host the through-bastion command may carry
@@ -166,16 +200,6 @@ func localWord(s string) string {
 		return s
 	}
 	return ShQuote(s)
-}
-
-// remoteWord is s as one word for the bastion's shell too: ssh joins its
-// arguments into one command line the far side parses again, so a word
-// that is not plain is quoted twice.
-func remoteWord(s string) string {
-	if plainWord.MatchString(s) {
-		return s
-	}
-	return ShQuote(ShQuote(s))
 }
 
 // keyscanType maps a key type to ssh-keyscan's -t vocabulary.

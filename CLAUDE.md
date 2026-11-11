@@ -180,8 +180,8 @@ test that fails before the fix and passes after.
   throwaway container); guard behind a build tag (e.g. `//go:build integration`) so the unit
   path stays fast.
   `scripts/integration.sh [alpine|debian|rocky]` (`make integration IT_DISTRO=…`) builds
-  `ci/images/sshd-<distro>.Dockerfile` and starts three sshd containers (A: every fixture user, and the bastion;
-  B: a custom `AuthorizedKeysFile`; C: reachable only through A on an `--internal` network) on dynamic ports with unique names. The CI and release
+  `ci/images/sshd-<distro>.Dockerfile` and starts four sshd containers (A: every fixture user, and the bastion;
+  B: a custom `AuthorizedKeysFile`; C: reachable only through A on an `--internal` network; D: the distro's default `PerSourcePenalties`, used only by `TestE2EPerSourcePenalties`, its host key recorded from inside the container because ssh-keyscan's unauthenticated connections are penalized too) on dynamic ports with unique names. The CI and release
   `integration` jobs are an alpine/debian/rocky matrix.
 - **End-to-end (E2E)** — drive the actual CLI binary through full flows
   (distribute → audit → revoke → rotate) against a small fleet of test containers.
@@ -899,3 +899,17 @@ unsafe (`RenderTextIssue`, `CheckOption`, `ServerFieldIssue`, `authorized_keys_f
 `audit.ServerHead` sanitizes; `TestParseRefusesInvalidUTF8`, `TestBuildRefusesUnreadableRemoteText`.
 F009: `internal/authkeys/sshdmodel` is a separate port of sshd's line acceptance, the oracle of
 `FuzzParseLine` and `FuzzCheckOption` (test support, imported by no production code).
+Transport (F001, F011, F012, G016): a host certificate whose signing CA or certified key is
+`@revoked` is `host_key_revoked` (exit 2), read from the known_hosts snapshot
+(`KnownHosts.revokedCertPart`) and never from x/crypto's text, including a revoked CA whose
+`@cert-authority` line is gone (rows in `TestConnectHostKeyFailures`). `sshread` ties the whole
+connection and its hop to ctx with an `AfterFunc` until the read returns, so Ctrl-C ends a read on a
+silent peer at once (`TestCancelEndsAReadOnASilentPeer`, direct and through a bastion); the write
+path keeps its detached ctx. `forwardFailure` counts a failure past ctx's deadline as `timeout`
+(`TestForwardFailurePastDeadlineIsTimeout`, `TestConnectForwardNeverAnswersIsTimeout`). A handshake
+that ends before the server's banner (`bannerWatch`, `droppedBeforeBanner`: EOF, reset or broken
+pipe) carries `sshconn.PenaltyHint`. Integration container D keeps the default `PerSourcePenalties`
+and `TestE2EPerSourcePenalties` pins audit's report (handshake, the hint, exit 1);
+`TestProbePenaltyDropStaysTransient` pins the login check's reading of the same error (retried, then
+UNPROVEN). `sshconn.RouteCmd` is the exported route builder behind `keyscanCompareCmd`, for lane
+`write`'s G017.

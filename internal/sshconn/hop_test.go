@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -315,6 +316,58 @@ func TestConnectHopFailures(t *testing.T) {
 		assertHopErr(t, err, fleet.ErrorKindAuth, "", "")
 		goleak.VerifyNone(t, idle)
 	})
+}
+
+// TestForwardFailurePastDeadlineIsTimeout (F012): the hop's socket deadline
+// is ctx's instant, so the bastion's mux can fail a pending channel open
+// before ctx's timer sets Err. That failure is the deadline's: timeout,
+// never the target's dial with HopDialHint and x/crypto's internal text.
+func TestForwardFailurePastDeadlineIsTimeout(t *testing.T) {
+	openErr := errors.New("ssh: unexpected packet in response to channel open: <nil>")
+	err := forwardFailure(pastDeadlineCtx{context.Background()}, "bastion", "10.0.0.5:22", openErr)
+	if got := kindOf(t, err); got != fleet.ErrorKindTimeout {
+		t.Errorf("kind past the deadline = %q, want %q (err: %v)", got, fleet.ErrorKindTimeout, err)
+	}
+	if hint := fleet.HintOf(err); hint != "" {
+		t.Errorf("hint past the deadline = %q, want none", hint)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "%!") || strings.Contains(err.Error(), "unexpected packet") {
+		t.Errorf("error = %q, want the deadline named, not x/crypto's text", err)
+	}
+	future, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	err = forwardFailure(future, "bastion", "10.0.0.5:22", openErr)
+	if kindOf(t, err) != fleet.ErrorKindDial || fleet.HintOf(err) != HopDialHint {
+		t.Errorf("before the deadline: kind %q hint %q, want dial with HopDialHint", kindOf(t, err), fleet.HintOf(err))
+	}
+}
+
+// TestConnectForwardNeverAnswersIsTimeout (F012): a bastion whose forward
+// never answers holds the channel open until the deadline; the result is a
+// timeout every time (run with -race -count=50: it used to come back as the
+// target's dial failure about one run in eight).
+func TestConnectForwardNeverAnswersIsTimeout(t *testing.T) {
+	release := make(chan struct{})
+	wedged := func(string, uint32) (net.Conn, ssh.RejectionReason) {
+		<-release
+		return nil, ssh.ConnectionFailed
+	}
+	f := newHopFixture(t, sshtest.ServerConfig{Forward: wedged}, sshtest.ServerConfig{})
+	t.Cleanup(func() { close(release) }) // runs before the servers' cleanup
+	start := time.Now()
+	_, err := f.dialer().Connect(ctxTimeout(t, 400*time.Millisecond), f.targetSrv)
+	if err == nil {
+		t.Fatal("Connect succeeded through a forward that never answers")
+	}
+	if got := kindOf(t, err); got != fleet.ErrorKindTimeout {
+		t.Fatalf("kind = %q, want %q (err: %v, hint %q)", got, fleet.ErrorKindTimeout, err, fleet.HintOf(err))
+	}
+	if hint := fleet.HintOf(err); hint == HopDialHint {
+		t.Errorf("hint = %q, a timeout must not blame the target", hint)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Errorf("Connect took %v, want about the 400ms deadline", d)
+	}
 }
 
 func assertHopErr(t *testing.T, err error, kind fleet.ErrorKind, hop, hint string) {
