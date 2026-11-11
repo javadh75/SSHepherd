@@ -19,11 +19,9 @@ import (
 type TTY struct {
 	path  string   // "/dev/tty"
 	stdin *os.File // must be a terminal too (apply's confirmation contract)
-	// Test seams, nil in production: inForeground replaces foreground (a
-	// test pty is not the controlling terminal) and raise replaces stopping
-	// this process with a job-control signal.
+	// Test seam, nil in production: inForeground replaces foreground (a
+	// test pty is not the controlling terminal).
 	inForeground func(*os.File) bool
-	raise        func(syscall.Signal)
 }
 
 var _ Prompter = (*TTY)(nil)
@@ -62,10 +60,6 @@ func foreground(f *os.File) bool {
 	return fg
 }
 
-// stopSignals are the job-control stop signals the prompt handles the way
-// readpassphrase(3) does.
-var stopSignals = []syscall.Signal{syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIGTTOU}
-
 // ReadPassphrase writes prompt to the terminal, turns echo off, and reads
 // one line. On ctx.Done() it restores the terminal state, prints a newline,
 // closes the tty and returns ctx.Err() (wrapped) at once — the first Ctrl-C
@@ -73,30 +67,31 @@ var stopSignals = []syscall.Signal{syscall.SIGTSTP, syscall.SIGTTIN, syscall.SIG
 // through the *os.File (SyscallConn for the ioctls), never a raw fd, so
 // closing it cannot race a read onto a reused descriptor.
 //
-// Job control follows readpassphrase(3) (G009): on SIGTSTP/SIGTTIN/SIGTTOU
-// the prompt restores the terminal, lets the signal take its default action
-// and stops; on SIGCONT it turns echo off again and rewrites the prompt, so
-// a passphrase typed after Ctrl-Z and fg is never shown. A stop signal the
-// process inherited as ignored stays ignored.
+// Job control (G009): the stop signals (SIGTSTP, SIGTTIN, SIGTTOU) are
+// never caught. Once os/signal has caught one, Go keeps its own handler
+// for good and drops the signal when nobody listens, so Ctrl-Z would stop
+// working for the rest of the run (and an inherited SIG_IGN cannot be
+// seen through signal.Ignored for them). The process stops as any program
+// does, the shell takes the terminal back in its own mode, and on SIGCONT
+// the prompt turns echo off again and rewrites itself, so a passphrase
+// typed after Ctrl-Z and fg is never shown.
 func (t *TTY) ReadPassphrase(ctx context.Context, prompt string) ([]byte, error) {
 	f, err := os.OpenFile(t.path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", t.path, err)
 	}
-	// Registered before echo goes off, so a stop that comes once the
-	// prompt is up is always caught.
-	jc := t.watchJobControl()
+	// Registered before echo goes off, so a resume that comes once the
+	// prompt is up is always seen.
+	cont := make(chan os.Signal, 1)
+	signal.Notify(cont, syscall.SIGCONT)
 	mode, err := echoOff(f)
 	if err != nil {
-		jc.stop()
+		signal.Stop(cont)
 		_ = f.Close()
 		return nil, err
 	}
 	done := func() {
-		// Back to the default stop actions first: a restore from the
-		// background then stops the process (as before) instead of looping
-		// on a caught SIGTTOU.
-		jc.stop()
+		signal.Stop(cont)
 		mode.restore()
 		_, _ = f.WriteString("\n") // the user's Enter was not echoed
 		_ = f.Close()
@@ -122,70 +117,21 @@ func (t *TTY) ReadPassphrase(ctx context.Context, prompt string) ([]byte, error)
 		case <-ctx.Done():
 			done() // closing the tty ends the read where the platform allows; the result is dropped
 			return nil, fmt.Errorf("passphrase prompt: %w", ctx.Err())
-		case sig := <-jc.stops:
-			t.suspend(f, mode, sig)
-		case <-jc.cont:
-			t.resume(f, mode, jc, prompt)
+		case <-cont:
+			t.resume(f, mode, prompt)
 		}
 	}
-}
-
-// jobControl is the prompt's job-control signal registration.
-type jobControl struct {
-	handled []os.Signal // the stop signals not inherited as ignored
-	stops   chan os.Signal
-	cont    chan os.Signal
-}
-
-func (t *TTY) watchJobControl() *jobControl {
-	jc := &jobControl{stops: make(chan os.Signal, len(stopSignals)), cont: make(chan os.Signal, 1)}
-	for _, s := range stopSignals {
-		if !signal.Ignored(s) {
-			jc.handled = append(jc.handled, s)
-		}
-	}
-	signal.Notify(jc.cont, syscall.SIGCONT)
-	jc.arm()
-	return jc
-}
-
-// arm (re-)catches the stop signals.
-func (jc *jobControl) arm() {
-	if len(jc.handled) > 0 {
-		signal.Notify(jc.stops, jc.handled...)
-	}
-}
-
-// stop hands every signal back to its previous disposition.
-func (jc *jobControl) stop() {
-	signal.Stop(jc.stops)
-	signal.Stop(jc.cont)
-}
-
-// suspend restores the terminal (only from the foreground: tcsetattr from
-// the background raises SIGTTOU), gives sig its default action back and
-// re-raises it, stopping the process.
-func (t *TTY) suspend(f *os.File, mode *ttyMode, sig os.Signal) {
-	s, ok := sig.(syscall.Signal)
-	if !ok {
-		return
-	}
-	if t.foreground(f) {
-		mode.restore()
-	}
-	signal.Reset(s)
-	t.raiseSignal(s)
 }
 
 // resume runs on SIGCONT: from the foreground it turns echo off again and
 // rewrites the prompt (the shell gave the terminal back in its own,
-// echoing mode); it always re-arms the stop signals.
-func (t *TTY) resume(f *os.File, mode *ttyMode, jc *jobControl, prompt string) {
+// echoing mode). From the background it leaves the terminal alone:
+// tcsetattr there would raise SIGTTOU.
+func (t *TTY) resume(f *os.File, mode *ttyMode, prompt string) {
 	if t.foreground(f) {
 		mode.silence()
 		_, _ = f.WriteString(prompt)
 	}
-	jc.arm()
 }
 
 func (t *TTY) foreground(f *os.File) bool {
@@ -193,14 +139,6 @@ func (t *TTY) foreground(f *os.File) bool {
 		return t.inForeground(f)
 	}
 	return foreground(f)
-}
-
-func (t *TTY) raiseSignal(s syscall.Signal) {
-	if t.raise != nil {
-		t.raise(s)
-		return
-	}
-	_ = unix.Kill(os.Getpid(), s)
 }
 
 // ttyMode is the terminal state the prompt saved and changes.

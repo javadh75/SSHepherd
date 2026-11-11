@@ -2988,9 +2988,10 @@ and fails fast with the no-passphrase-source error instead of hanging. The promp
 and its `waiting for passphrase for KEY on the terminal` line go to the terminal,
 never stdout (`audit --json` stays clean), and appear even under `-q`. `--yes` does
 not disable prompting. Ctrl-C at the prompt restores the terminal and exits `3`
-without connecting anywhere. Ctrl-Z at the prompt works like `ssh`: the terminal goes back
-to normal before SSHepherd stops, and after `fg` echo is turned off again and the prompt is
-printed again. A passphrase typed after you resume is not shown.
+without connecting anywhere. Ctrl-Z at the prompt stops SSHepherd like any other program
+(your shell takes the terminal back in its own mode), and after `fg` echo is turned off again
+and the prompt is printed again, so a passphrase typed after you resume is not shown. Ctrl-Z
+keeps working after the prompt, and a Ctrl-Z the shell set to be ignored stays ignored.
 
 **Order of operations.** Flags are validated first, then the manifest; an empty
 fleet (or no targeted server) returns before any key file is read; then

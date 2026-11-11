@@ -924,12 +924,13 @@ spelled `<<`) as `UnsupportedError`, like anchors (`checkMappingKey`; `TestLoadR
 and a `TestRevokeUsage` row: revoke --from-server exits 3 and saves nothing). G020: KEY step 2
 accepts only the `ssh-keygen -l` shape (`keygenOutput`), so a key line whose comment holds `
 SHA256:…` is that key line (`TestClassifyKeyArg` rows; `FuzzKeyArg`'s oracle: a parseable key line
-never gets another key's fingerprint). G009: the /dev/tty prompt handles job control like
-readpassphrase(3). On SIGTSTP/SIGTTIN/SIGTTOU it restores termios (only in the foreground), resets
-the signal and raises it again. On SIGCONT it turns echo off again, rewrites the prompt and re-arms.
-Inherited-ignored stop signals stay ignored (`TestTTYSuspendResumeKeepsEchoOff`,
-`TestTTYStopAgainAfterResume`, `TestTTYBackgroundLeavesTerminalAlone`,
-`TestTTYCanceledAfterResumeRestoresEcho` on a pty with a recording raise seam).
+never gets another key's fingerprint). G009 (repaired): the /dev/tty prompt never catches SIGTSTP/SIGTTIN/SIGTTOU (once os/signal
+catches one, Go keeps its handler and drops the signal, so Ctrl-Z stopped nothing and echo came back
+on); the process stops as any program does, and on SIGCONT, from the foreground only, the prompt
+turns echo off again over the current termios and rewrites itself. `TestTTYJobControlRealProcess`
+re-executes the test binary as a job-control shell on a pty and checks a real stop, no echo after
+fg, a working Ctrl-Z after the prompt and an inherited-ignored SIGTSTP (`TestTTYResumeTurnsEchoOffAgain`,
+`TestTTYBackgroundResumeLeavesTerminalAlone`, `TestTTYPromptForcesCanonicalAndSignals`).
 Write path (F004, F010, F014, G017, G018): a first-contact write removes a stale `.sshepherd.bak`
 after the absent check and its lockout and unknown-state messages say there was no previous file
 (`LockoutError.Created`, `TestCreateClearsAnOlderBackup`, `TestFirstContactMessagesNeverPointAtABackup`);
