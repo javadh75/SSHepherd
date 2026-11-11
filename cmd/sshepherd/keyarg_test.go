@@ -71,6 +71,18 @@ func TestClassifyKeyArg(t *testing.T) {
 		{"key line with options, comment holds a fingerprint", roleOld, "restrict " + testkeys.Line(t, 1) + " old " + fpOf(t, 2), fp1, true, ""},
 		{"key line, comment holds a malformed fingerprint", roleKey, testkeys.Line(t, 1) + " old SHA256:" + strings.Repeat("A", 43), fp1, true, ""},
 		{"--new key line, comment holds a fingerprint", roleNew, testkeys.Line(t, 1) + " dave from " + fpOf(t, 2), fp1, true, ""},
+		// The keygen shape is exact: anchored at both ends, digits for bits,
+		// a SHA256 token, an optional comment and an upper-case type that may
+		// hold a '-' (ED25519-SK), in closed parentheses.
+		{"key line, comment holds pasted ssh-keygen output", roleKey, testkeys.Line(t, 1) + " replaces 256 " + fpOf(t, 2) + " old laptop (ED25519)", fp1, true, ""},
+		{"pasted output, text after the type", roleKey, "256 " + fp1 + " me (ED25519) extra", "", false, "not a valid public key line"},
+		{"pasted output, no bits", roleKey, " " + fp1 + " me (ED25519)", "", false, "not a valid public key line"},
+		{"pasted output, bits not a number", roleKey, "abc " + fp1 + " me (ED25519)", "", false, "not a valid public key line"},
+		{"pasted output, no comment at all", roleKey, "256 " + fp1 + " (ED25519)", fp1, false, ""},
+		{"pasted output, type not upper case", roleKey, "256 " + fp1 + " me (not a type)", "", false, "not a valid public key line"},
+		{"pasted output, security key type", roleKey, "256 " + fp1 + " me@laptop (ED25519-SK)", fp1, false, ""},
+		{"pasted output, unclosed type", roleKey, "256 " + fp1 + " me (ED25519", "", false, "not a valid public key line"},
+		{"pasted output, not a SHA256 token", roleKey, "256 abcdef me (ED25519)", "", false, "not a valid public key line"},
 		{"text holding a fingerprint is not a fingerprint", roleKey, "bob " + fpOf(t, 2), "", false, "not a valid public key line"},
 		{"MD5 prefix", roleKey, "MD5:aa:bb:cc", "", false, "MD5 fingerprints are not supported — use ssh-keygen -l -E sha256 -f FILE"},
 		{"hex colon", roleOld, "aa:bb:cc:dd:ee:ff", "", false, "MD5 fingerprints are not supported"},

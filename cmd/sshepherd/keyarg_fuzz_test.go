@@ -41,6 +41,8 @@ func FuzzKeyArg(f *testing.F) {
 	// one whose comment holds a malformed one.
 	f.Add(line+" alice new laptop, replaces SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4", []byte(line+"\n"))
 	f.Add(line+" old SHA256:"+strings.Repeat("A", 43), []byte(line+"\n"))
+	// A key line whose comment holds pasted ssh-keygen -l output.
+	f.Add(line+" replaces 256 SHA256:4A9jyZBOhnKZvcGQ6TRFbf5Gymb41AfYvYaVmWHD+G4 old (ED25519)", []byte(line+"\n"))
 	f.Fuzz(func(t *testing.T, arg string, content []byte) {
 		read := func(string) ([]byte, error) { return content, nil }
 		own, perr := authkeys.ParseLine(arg)
