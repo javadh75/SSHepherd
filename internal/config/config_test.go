@@ -385,6 +385,16 @@ servers:
 servers:
   - {name: s, host: h, user: "u\u2028x"}
 `, "contains control or format characters"},
+		// F002: bytes sshd skips but a reviewer cannot see; only the
+		// whole-line check (LineTextIssue) catches them.
+		{"key line with a NUL tail", `
+users:
+  - {name: alice, keys: ["KEYA\u0000junk"]}
+`, `user "alice" key 1: contains control or format characters`},
+		{"key field with a VT inside", `
+users:
+  - {name: alice, keys: ["ssh-ed25519 BLOBA\u000b alice"]}
+`, `user "alice" key 1: contains control or format characters`},
 		{"authorized_keys_file too long", `
 servers:
   - {name: s, host: h, user: u, authorized_keys_file: "/` + strings.Repeat("a", 4096) + `"}

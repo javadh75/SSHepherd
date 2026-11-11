@@ -253,12 +253,14 @@ func FuzzCheckOption(f *testing.F) {
 // with NAME of [A-Za-z0-9_]; tunnel is a number up to 2147483645 or "any";
 // sshd's C string ends at a NUL, so a NUL inside a value leaves the quote
 // open. A service name for a port (sshd's a2port asks getservbyname) depends
-// on the server's /etc/services and is not in sshd's manual: it counts as a
-// port sshd cannot read.
+// on the server's /etc/services: one every services database carries is a
+// port sshd reads (named: honored, but refused by the manifest), any other
+// name is not.
 func TestOptionValues(t *testing.T) {
 	const (
-		ok  = ""
-		bad = "bad"
+		ok    = ""
+		bad   = "bad"
+		named = "named"
 	)
 	tests := []struct{ opt, want string }{
 		{`permitopen="db:22"`, ok},
@@ -284,7 +286,14 @@ func TestOptionValues(t *testing.T) {
 		{`permitopen="2001:db8::5:22"`, bad},
 		{`permitopen="` + strings.Repeat("h", 1025) + `:22"`, bad},
 		{`permitopen="` + strings.Repeat("h", 1024) + `:22"`, ok},
-		{`permitopen="db:ssh"`, bad},
+		{`permitopen="db:ssh"`, named},
+		{`permitopen="db:https"`, named},
+		{`permitopen="[::1]:postgresql"`, named},
+		{`permitopen="db:SSH"`, bad},
+		{`permitopen="db:nope"`, bad},
+		{`permitopen="[::1]"`, bad},
+		{`permitopen="db: 22"`, ok},
+		{`permitopen="` + strings.Repeat("h", 1023) + `\":22"`, ok}, // 1024 bytes once \" is read as "
 		{`permitlisten="8080"`, ok},
 		{`permitlisten="*"`, ok},
 		{`permitlisten="localhost:8080"`, ok},
@@ -294,11 +303,15 @@ func TestOptionValues(t *testing.T) {
 		{`permitlisten="0"`, bad},
 		{`permitlisten=""`, bad},
 		{`permitlisten="host/80"`, bad},
-		{`permitlisten="http"`, bad},
+		{`permitlisten="http"`, named},
+		{`permitlisten="localhost:www"`, named},
+		{`permitlisten="nope2"`, bad},
 		{`environment="FOO=1"`, ok},
 		{`environment="A_B="`, ok},
 		{`environment="1A=x=y"`, ok},
 		{`Environment="FOO=a b,c"`, ok},
+		{`environment="Zz9_=1"`, ok},
+		{`environment="_A=1"`, ok},
 		{`environment="FOO"`, bad},
 		{`environment="=x"`, bad},
 		{`environment="F-O=1"`, bad},
@@ -314,6 +327,12 @@ func TestOptionValues(t *testing.T) {
 		{`tunnel="-1"`, bad},
 		{`tunnel=""`, bad},
 		{`tunnel="1x"`, bad},
+		{`tunnel=" 5"`, ok},
+		{`tunnel="-0"`, ok},
+		{`tunnel="+5"`, ok},
+		{`tunnel="++5"`, bad},
+		{`tunnel="+-5"`, bad},
+		{`tunnel="anyx"`, bad},
 		{"touch-required", ok},
 		{"No-Verify-Required", ok},
 		{"no-verify-required", ok},
@@ -332,6 +351,17 @@ func TestOptionValues(t *testing.T) {
 			if sshd == nil || check == "" {
 				t.Errorf("%q: IgnoredBySSHD = %v, CheckOption = %q; want both to refuse", tt.opt, sshd, check)
 			}
+		case named:
+			if sshd != nil || !strings.Contains(check, "names its port by service") {
+				t.Errorf("%q: IgnoredBySSHD = %v, CheckOption = %q; want sshd to honor it and the manifest to refuse it", tt.opt, sshd, check)
+			}
+		}
+	}
+	// strtoll skips all of C's whitespace before a number; the manifest
+	// refuses those bytes, sshd does not.
+	for _, opt := range []string{"tunnel=\"\v5\"", "tunnel=\"\f5\"", "tunnel=\"\r5\"", "permitopen=\"db:\t22\""} {
+		if err := IgnoredBySSHD([]string{opt}); err != nil {
+			t.Errorf("IgnoredBySSHD(%q) = %v, want nil (strtonum skips leading whitespace)", opt, err)
 		}
 	}
 }
@@ -343,7 +373,8 @@ func TestOptionValueMessages(t *testing.T) {
 		`permitlisten="nope"`:       "has an invalid value (want [host:]port or *, port 1-65535)",
 		`environment="FOO"`:         "has an invalid value (want NAME=value, NAME of letters, digits and _)",
 		`tunnel="abc"`:              "has an invalid value (want a number up to 2147483645 or any)",
-		`permitopen="db:ssh"`:       "has an invalid value (want host:port or host:*, port 1-65535)",
+		`permitopen="db:ssh"`:       "names its port by service; whether sshd can read it depends on the server's /etc/services (write the port number)",
+		`permitopen="db:nope"`:      "has an invalid value (want host:port or host:*, port 1-65535)",
 		`command="a` + "\x00" + `"`: "contains control or format characters",
 		`expiry-time="2027"`:        "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])",
 	} {

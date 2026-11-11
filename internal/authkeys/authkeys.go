@@ -19,9 +19,11 @@ type Key struct {
 	Comment     string   // trailing comment, conventionally user@host
 	Options     []string // leading options, e.g. ["no-port-forwarding"]
 	Fingerprint string   // SHA256 fingerprint, e.g. "SHA256:abc..."
-	// Raw is the original line, whitespace-trimmed: options, key material,
-	// comment, and any bytes sshd does not read (a tail after a NUL,
-	// whitespace inside the key field), so it is never silently shortened.
+	// Raw is the original line: options, key material, comment, and any
+	// bytes sshd does not read (a tail after a NUL, whitespace inside the key
+	// field), so it is never silently shortened. Only the spaces and tabs
+	// sshd skips are trimmed at its start (a leading VT, FF or CR makes sshd
+	// ignore the line and stays), and whitespace at its end.
 	Raw string
 	// Weak is StrengthIssue's verdict ("" for an acceptable key) and WeakBits
 	// the RSA modulus size it found, set by ParseLine so the line is parsed once.
@@ -59,7 +61,7 @@ func parseLine(line string) (*Key, ssh.PublicKey, error) {
 		Comment:     strings.TrimSpace(f.comment),
 		Options:     f.options,
 		Fingerprint: ssh.FingerprintSHA256(f.pub),
-		Raw:         strings.TrimSpace(line),
+		Raw:         strings.TrimRightFunc(strings.TrimLeft(line, fieldSeparators), unicode.IsSpace),
 	}, f.pub, nil
 }
 

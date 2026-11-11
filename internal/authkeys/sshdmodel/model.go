@@ -13,12 +13,13 @@
 // (cert-authority, principals=, from=, a passed expiry-time=, command=).
 //
 // Known limits, all deliberate:
-//   - A port that is not a number is refused: real sshd also asks
-//     getservbyname, which only the server's /etc/services can answer.
+//   - A port that is not a number is read only when it is one of the TCP
+//     service names every services database carries (macOS, Alpine, Rocky,
+//     Debian netbase): real sshd asks getservbyname, which only the server's
+//     /etc/services can answer (a host with no such file refuses them all).
 //   - expiry-time= uses Go's calendar check, like internal/authkeys; sshd's
 //     strptime is laxer about impossible dates, and sshd also refuses a
 //     time equal to the epoch.
-//   - The count limits (environment= 1024, permitopen= 4096) are not modeled.
 //   - ssh-dss is read, as sshd before 10.0 does.
 package sshdmodel
 
@@ -251,9 +252,11 @@ func ParseOptions(opts string) string {
 }
 
 type optParser struct {
-	s    string
-	i    int
-	seen map[string]bool
+	s       string
+	i       int
+	seen    map[string]bool
+	envs    map[string]bool // distinct environment= names
+	permits map[string]int  // permitopen=/permitlisten= clauses
 }
 
 func (p *optParser) atEnd() bool {
@@ -372,7 +375,35 @@ func (p *optParser) valued() string {
 			if reason != "" {
 				return reason
 			}
-			return c.check(v)
+			if reason := c.check(v); reason != "" {
+				return reason
+			}
+			return p.count(c.name, v)
+		}
+	}
+	return ""
+}
+
+// count applies sshd's per-line limits, as measured on OpenSSH 10.5p1:
+// at most 1025 distinct environment= names (first match wins, so a repeat
+// is not counted) and 4097 clauses of each of permitopen=/permitlisten=.
+func (p *optParser) count(name, v string) string {
+	switch name {
+	case "environment":
+		if p.envs == nil {
+			p.envs = map[string]bool{}
+		}
+		p.envs[v[:strings.IndexByte(v, '=')]] = true
+		if len(p.envs) > 1025 {
+			return "too many environment strings"
+		}
+	case "permitopen", "permitlisten":
+		if p.permits == nil {
+			p.permits = map[string]int{}
+		}
+		p.permits[name]++
+		if p.permits[name] > 4097 {
+			return "too many permission directives"
 		}
 	}
 	return ""
@@ -433,13 +464,25 @@ func hpdelim2(v string) (host, port string, hasPort, ok bool) {
 	return v[:s], v[s+1:], true, true
 }
 
-// a2port is the number branch of a2port: -1 unless 0-65535.
+// a2port is a2port: the number 0-65535, or the port of a known service
+// name (getservbyname, matched case-sensitively), else -1.
 func a2port(s string) int64 {
 	n, ok := strtonum(s, 0, 65535)
-	if !ok {
-		return -1
+	if ok {
+		return n
 	}
-	return n
+	if port, ok := services[s]; ok {
+		return port
+	}
+	return -1
+}
+
+// services are the TCP names (and aliases) every services database carries.
+var services = map[string]int64{
+	"domain": 53, "ftp": 21, "ftp-data": 20, "ftps": 990, "git": 9418, "http": 80, "https": 443,
+	"imap": 143, "imaps": 993, "kerberos": 88, "ldap": 389, "ldaps": 636, "mysql": 3306,
+	"nntp": 119, "pop3": 110, "pop3s": 995, "postgresql": 5432, "rsync": 873, "smtp": 25,
+	"socks": 1080, "ssh": 22, "submission": 587, "telnet": 23, "www": 80,
 }
 
 // checkTunnel is a2tun: "any" (any case) or a number up to SSH_TUNID_MAX.

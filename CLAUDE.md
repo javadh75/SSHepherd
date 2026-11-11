@@ -960,3 +960,12 @@ before ctx.Err is set (`TestExecRunFailurePastDeadlineIsTimeout`; a read that ti
 was `remote` about 15% of the time); a certificate whose CA and certified key are both `@revoked`
 names the CA; an IPv6 bastion's `-J` spec is quoted in `RouteCmd`; the pre-banner RST row reads the
 client's version line first, so it no longer races connect() into a `dial` error.
+W1 repair (parser): a permitopen=/permitlisten= port named by a service every services database
+carries (`authkeys.IsServiceName`: ssh, http, https, postgresql, …) is a line sshd honors for
+audit and adopt (a false CRITICAL before), while `CheckOption` still refuses every service name;
+sshd's per-line clause limits are modeled in production and in sshdmodel (1025 distinct
+environment= names, 4097 clauses of each permit kind; measured on OpenSSH 10.5p1); `Key.Raw` trims
+only spaces and tabs at its start, so a kept line starting with VT/FF/CR stays dead; `identity`
+skips (and `--operator-key` refuses) a .pub whose line holds a NUL tail or whitespace inside the
+key field instead of failing import's self-check; `TestEveryKeyTypeToken` pins each of the 21
+type tokens, and new rows kill the parser lane's surviving mutants.

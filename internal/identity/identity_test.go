@@ -180,6 +180,41 @@ func TestResolveUnsafeCommentSkipped(t *testing.T) {
 	}
 }
 
+// TestResolveHiddenBytesSkipped (review F002): ParseLine reads a .pub line
+// as sshd does, past a NUL and whitespace inside the key field, but the
+// manifest refuses those bytes; the identity is skipped with a warning (and
+// --operator-key refused) instead of failing import's self-check.
+func TestResolveHiddenBytesSkipped(t *testing.T) {
+	typ, blob, _ := strings.Cut(testkeys.Line(t, 1), " ")
+	for name, content := range map[string]string{
+		"VT in the key field": typ + " " + blob[:20] + "\v" + blob[20:] + " me@x\n",
+		"FF in the key field": typ + " " + blob[:20] + "\f" + blob[20:] + " me@x\n",
+		"NUL tail":            typ + " " + blob + " me@x\x00junk\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, ".ssh", "odd.pub"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := Resolver{Home: home, LocalUser: "javad"}
+			users, warnings := r.Resolve([]sshcfg.Host{{Alias: "a", User: "u", Identities: []string{"~/.ssh/odd"}}})
+			if len(users) != 0 {
+				t.Errorf("users = %+v, want none", users)
+			}
+			if !hasWarning(warnings, "line contains control or format characters, skipped") {
+				t.Errorf("warnings = %v, want a hidden-bytes skip", warnings)
+			}
+			if _, err := r.MarkOperators(nil, []string{"~/.ssh/odd"}); err == nil ||
+				!strings.Contains(err.Error(), "line contains control or format characters") {
+				t.Errorf("MarkOperators err = %v, want a hidden-bytes error", err)
+			}
+		})
+	}
+}
+
 // writePub writes <dir>/<name>.pub and returns the key line. It never writes
 // a private key: Resolve must work from .pub files alone.
 func writePub(t *testing.T, dir, name string, seed byte, comment string) string {

@@ -94,3 +94,13 @@ func TestServerHeadNeverPrintsRawBytes(t *testing.T) {
 		t.Errorf("ServerHead = %q, want %q", got, want)
 	}
 }
+
+// TestServerHeadIsOneLine: whitespace runs in a hand-built Server's fields
+// (config refuses them at load) print as one space, so the head stays one
+// line.
+func TestServerHeadIsOneLine(t *testing.T) {
+	got := ServerHead(config.Server{Name: " web \n 1 ", User: "de\tploy", Host: "10.0.0.1\u2028x", Port: 22})
+	if want := "web 1 (de ploy@10.0.0.1 x:22)"; got != want {
+		t.Errorf("ServerHead = %q, want %q", got, want)
+	}
+}

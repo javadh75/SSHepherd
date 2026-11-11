@@ -246,6 +246,13 @@ func (res *resolution) grant(c candidate, alias string) bool {
 		res.warnf("identity %s: %s comment %s, skipped", c.source, pubPath, issue)
 		return false
 	}
+	if issue := authkeys.LineTextIssue(line); issue != "" {
+		// sshd reads past a NUL and whitespace inside the key field
+		// (ParseLine does too), but the manifest refuses such bytes.
+		res.failed[c.path] = true
+		res.warnf("identity %s: %s line %s, skipped", c.source, pubPath, issue)
+		return false
+	}
 	i, ok := res.byFingerprint[k.Fingerprint]
 	if !ok {
 		i = len(res.users)
@@ -329,6 +336,9 @@ func (r Resolver) MarkOperators(users []User, paths []string) ([]User, error) {
 		}
 		if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
 			return nil, fmt.Errorf("operator key %q: %s comment %s", raw, pubPath, issue)
+		}
+		if issue := authkeys.LineTextIssue(line); issue != "" {
+			return nil, fmt.Errorf("operator key %q: %s line %s", raw, pubPath, issue)
 		}
 		if seen[k.Fingerprint] {
 			continue

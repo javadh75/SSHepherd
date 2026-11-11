@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -112,7 +113,9 @@ func TestRead(t *testing.T) {
 		{"permitopen brackets, no port", `permitopen="[::1]" ` + line, false, "invalid permission port"},
 		{"permitopen port 0", `permitopen="db:0" ` + line, false, "invalid permission port"},
 		{"permitopen port too big", `permitopen="db:65536" ` + line, false, "invalid permission port"},
-		{"permitopen service name", `permitopen="db:ssh" ` + line, false, "invalid permission port"},
+		{"permitopen common service name", `permitopen="db:ssh" ` + line, true, ""},
+		{"permitopen unknown service name", `permitopen="db:nope" ` + line, false, "invalid permission port"},
+		{"permitopen service name, wrong case", `permitopen="db:SSH" ` + line, false, "invalid permission port"},
 		{"permitopen open bracket", `permitopen="[::1" ` + line, false, "invalid permission hostname"},
 		{"permitopen junk after bracket", `permitopen="[::1]x:22" ` + line, false, "invalid permission hostname"},
 		{"permitopen long host", `permitopen="` + strings.Repeat("h", 1025) + `:22" ` + line, false, "invalid permission hostname"},
@@ -124,11 +127,13 @@ func TestRead(t *testing.T) {
 		{"environment no equals", `environment="FOO" ` + line, false, "invalid environment string"},
 		{"environment no name", `environment="=x" ` + line, false, "invalid environment string"},
 		{"environment bad name", `environment="F-O=1" ` + line, false, "invalid environment string"},
+		{"environment name starting with _", `environment="_A=1" ` + line, true, ""},
 		{"tunnel number", `tunnel="1" ` + line, true, ""},
 		{"tunnel any", `tunnel="AnY" ` + line, true, ""},
 		{"tunnel max", `tunnel="2147483645" ` + line, true, ""},
 		{"tunnel too big", `tunnel="2147483646" ` + line, false, "invalid tun device"},
 		{"tunnel word", `tunnel="abc" ` + line, false, "invalid tun device"},
+		{"tunnel any with a tail", `tunnel="anyx" ` + line, false, "invalid tun device"},
 		{"tunnel bad quote", `tunnel=1 ` + line, false, "missing start quote"},
 		{"expiry", `expiry-time="20990101" ` + line, true, ""},
 		{"expiry with time and Z", `expiry-time="209901011200Z" ` + line, true, ""},
@@ -242,5 +247,42 @@ func TestLookupName(t *testing.T) {
 	}
 	if typ, nid := lookupName("ecdsa-sha2-nistp384"); typ != keyECDSA || nid != 384 {
 		t.Errorf("lookupName(p384) = %d, %d", typ, nid)
+	}
+}
+
+// TestClauseLimits: sshd's per-line clause limits, measured against
+// OpenSSH 10.5p1 (1025 distinct environment= names; 4097 clauses of each
+// permit kind, repeats counted).
+func TestClauseLimits(t *testing.T) {
+	line := testkeys.Line(t, 9)
+	join := func(n int, f func(i int) string) string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = f(i)
+		}
+		return strings.Join(out, ",") + " " + line
+	}
+	env := func(i int) string { return fmt.Sprintf(`environment="V%d=1"`, i) }
+	for _, tt := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"1025 environment names", join(1025, env), true},
+		{"1026 environment names", join(1026, env), false},
+		{"a repeated environment name is not counted", join(2000, func(i int) string { return fmt.Sprintf(`environment="V=%d"`, i) }), true},
+		{"4097 permitopen", join(4097, func(int) string { return `permitopen="h:22"` }), true},
+		{"4098 permitopen", join(4098, func(int) string { return `permitopen="h:22"` }), false},
+		{"4098 permitlisten", join(4098, func(i int) string { return fmt.Sprintf(`permitlisten="%d"`, 1000+i) }), false},
+		{"3000 of each kind", join(6000, func(i int) string {
+			if i%2 == 0 {
+				return `permitopen="h:22"`
+			}
+			return `permitlisten="80"`
+		}), true},
+	} {
+		if got := Read(tt.line).Accepted; got != tt.want {
+			t.Errorf("%s: accepted = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

@@ -64,15 +64,48 @@ func hostPort(v string) (host, port string, ok bool) {
 	return v[:end], v[end+1:], true
 }
 
-// portValue is a2port's number: 1-65535 as strtonum reads it. a2port then
-// tries the name as a service (getservbyname), which only the server's
-// /etc/services can answer and sshd's manual does not offer; SSHepherd
-// counts a service name as a port sshd cannot read.
+// portValue is a2port: 1-65535 as strtonum reads it, or a name it looks up
+// with getservbyname. Only the server's /etc/services can answer that, so
+// sshd's verdict on a line (IgnoredBySSHD) takes a name every services
+// database carries (IsServiceName) as a port it can read: calling a working
+// line (permitopen="db:https") dead would page a false CRITICAL for an
+// operator key. Any other name is refused. The manifest refuses every name
+// (CheckOption): what it renders must not depend on the server.
 func portValue(p string, want error) error {
-	if _, ok := strtonum(p, 1, 65535); ok {
+	if _, ok := strtonum(p, 1, 65535); ok || IsServiceName(p) {
 		return nil
 	}
 	return want
+}
+
+// commonServices are the TCP service names (and aliases) the services
+// databases of macOS, Alpine, Rocky (setup) and Debian (netbase) all carry.
+// getservbyname matches case-sensitively.
+var commonServices = map[string]bool{
+	"domain": true, "ftp": true, "ftp-data": true, "ftps": true, "git": true, "http": true,
+	"https": true, "imap": true, "imaps": true, "kerberos": true, "ldap": true, "ldaps": true,
+	"mysql": true, "nntp": true, "pop3": true, "pop3s": true, "postgresql": true, "rsync": true,
+	"smtp": true, "socks": true, "ssh": true, "submission": true, "telnet": true, "www": true,
+}
+
+// IsServiceName reports whether p is a port given by a service name every
+// services database knows.
+func IsServiceName(p string) bool { return commonServices[p] }
+
+// permitPort returns the port of a valid permitopen=/permitlisten= option
+// (opt is name="value"), and whether opt is one.
+func permitPort(opt string) (string, bool) {
+	name := nameOf(opt)
+	_, value, _ := strings.Cut(opt, "=")
+	if (name != "permitopen" && name != "permitlisten") || len(value) < 2 {
+		return "", false
+	}
+	v := dequote(value[1 : len(value)-1])
+	if name == "permitlisten" && !strings.Contains(v, ":") {
+		return v, true
+	}
+	_, port, ok := hostPort(v)
+	return port, ok
 }
 
 // validEnvironment is sshd's environment= check: NAME=value, NAME

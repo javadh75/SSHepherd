@@ -74,7 +74,8 @@ func sshdGrammarLines(tb testing.TB) []string {
 		"ssh-rsa " + rsaBlob[:len(rsaBlob)-2] + "B=", // non-zero spare bits
 		", " + line, "no-pty, " + line, ",,no-pty,, " + line,
 		`command="a` + "\x00" + `" ` + line,
-		"restr\u0130ct " + line, // U+0130 is not i to strcasecmp
+		"restr\u0130ct " + line,           // U+0130 is not i to strcasecmp
+		`command="a \" b",no-pty ` + line, // an escaped quote, then a comma outside quotes
 		"ed25519-s\u212a " + blob,
 	}
 	for _, opt := range sshdGrammarOptions() {
@@ -95,6 +96,11 @@ func sshdGrammarOptions() []string {
 		"touch-required", "no-touch-required", "verify-required", "no-verify-required",
 		"no-restrict", "no-cert-authority", "bogus-opt", `expiry-time="20990101"`, `expiry-time="2027"`,
 		`command="\"x\""`, `command="a"b`, `from="a",pty`, "no-pty,", "NO-PTY",
+		// Repair round: service names, strtonum's whitespace and signs, the
+		// env name's alphabet edges, a bracketed host with no port.
+		`permitopen="db:https"`, `permitopen="db:nope"`, `permitopen="db:SSH"`, `permitopen="[::1]"`,
+		`permitopen="db: 22"`, `tunnel=" 5"`, `tunnel="-0"`, `tunnel="++5"`, `tunnel="anyx"`,
+		`environment="_A=1"`, `environment="Zz9=1"`, "environment=\"\x80=1\"",
 	}
 }
 

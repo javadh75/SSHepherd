@@ -97,7 +97,13 @@ func CheckOption(opt string) string {
 	if unsafeText(opt, noSkip) {
 		return "contains control or format characters"
 	}
-	return sshdIssue(opt)
+	if issue := sshdIssue(opt); issue != "" {
+		return issue
+	}
+	if port, ok := permitPort(opt); ok && IsServiceName(port) {
+		return "names its port by service; whether sshd can read it depends on the server's /etc/services (write the port number)"
+	}
+	return ""
 }
 
 // sshdIssue reports why one option makes sshd reject the line; "" means sshd
@@ -170,12 +176,49 @@ func OptionIssue(opts []string) error { return linesIssue(opts, CheckOption) }
 func IgnoredBySSHD(opts []string) error { return linesIssue(opts, sshdIssue) }
 
 func linesIssue(opts []string, check func(string) string) error {
+	c := clauseCounts{env: map[string]bool{}, permits: map[string]int{}}
 	for i, o := range opts {
 		if issue := check(o); issue != "" {
 			return fmt.Errorf("option %q %s", o, issue)
 		}
 		if repeatOf(opts, i) {
 			return fmt.Errorf("option %q repeats %s=, which sshd allows once per line", o, nameOf(o))
+		}
+		if err := c.add(o); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sshd's per-line clause limits (auth-options.c, measured against
+// OpenSSH 10.5p1): more distinct environment= names, or more clauses of
+// one of permitopen=/permitlisten=, and sshd skips the line.
+const (
+	maxEnvNames = 1025 // "too many environment strings"; a repeated name is not counted
+	maxPermits  = 4097 // "too many permission directives", per option name
+)
+
+type clauseCounts struct {
+	env     map[string]bool
+	permits map[string]int
+}
+
+// add counts one clause that passed its own check (so a valued one is
+// quoted) and reports the clause that goes past a limit.
+func (c clauseCounts) add(o string) error {
+	switch name := nameOf(o); name {
+	case "environment":
+		_, value, _ := strings.Cut(o, "=")
+		envName, _, _ := strings.Cut(dequote(value[1:len(value)-1]), "=")
+		c.env[envName] = true
+		if len(c.env) > maxEnvNames {
+			return fmt.Errorf("option %q goes past sshd's limit of %d environment= names per line", o, maxEnvNames)
+		}
+	case "permitopen", "permitlisten":
+		c.permits[name]++
+		if c.permits[name] > maxPermits {
+			return fmt.Errorf("option %q goes past sshd's limit of %d %s= clauses per line", o, maxPermits, name)
 		}
 	}
 	return nil

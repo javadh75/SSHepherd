@@ -654,11 +654,16 @@ The loader fails the whole manifest (exit 3) on any of these:
   `any`. sshd skips a line with any other value, so the loader refuses it, e.g.
   `user "alice" key 1: option "permitopen=\"db.internal\"" has an invalid value (want host:port or host:*, port 1-65535)`.
   A port written as a service name (`db:ssh`) is refused too: whether sshd can read it
-  depends on the server's /etc/services.
+  depends on the server's /etc/services. `audit` and `adopt` take an on-server line whose
+  port is one of the names every services database carries (`ssh`, `http`, `https`,
+  `postgresql`, …) as a line sshd honors, and any other name as one it skips.
   `command`, `from` and `principals` may appear once per line. sshd rejects a line
   that repeats one, so the loader does too:
   `user "alice" key 1: option "command=\"echo B\"" repeats command=, which sshd allows once per line`.
-  `permitopen`, `permitlisten` and `environment` may repeat.
+  `permitopen`, `permitlisten` and `environment` may repeat, up to sshd's per-line limits:
+  1025 distinct `environment` names, and 4097 clauses each of `permitopen` and
+  `permitlisten`. sshd skips a line past one, so the loader refuses it, e.g.
+  `user "alice" key 1: option "environment=\"V1025=1\"" goes past sshd's limit of 1025 environment= names per line`.
 - **Server `name`, `host` and `user`** may not contain whitespace or control, format
   or line-separator characters (U+2028/U+2029 included).
 - **`preserve:`** (on a server, see [Co-managed accounts](#co-managed-accounts-preserve)) is a list of
@@ -2190,8 +2195,8 @@ See `internal/apply/testdata/json_*.golden.json` for every shape.
 
 Rewrite rows show what changes on a key line, and a rewrite that **drops a
 restrictive option** (`from=`, `command=`, `restrict`, `no-agent-forwarding`,
-`no-port-forwarding`, `no-pty`, `no-user-rc`, `no-X11-forwarding`, `verify-required`,
-`expiry-time=`, the last `permitopen=`/`permitlisten=` (dropping one while others
+`no-port-forwarding`, `no-pty`, `no-user-rc`, `no-X11-forwarding`, `touch-required`,
+`verify-required`, `expiry-time=`, the last `permitopen=`/`permitlisten=` (dropping one while others
 stay narrows the union and is not flagged), `cert-authority`, `principals=`, or any
 on-server option that makes sshd ignore the line today (an unknown option such as
 `no-ptty`, a bad value, a repeated `command=`/`from=`/`principals=`): rewriting a
