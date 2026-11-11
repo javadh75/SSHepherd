@@ -6,7 +6,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -252,5 +254,65 @@ func TestProbeHopDeathIsUnproven(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(file); string(after) != content {
 		t.Errorf("file = %q, want the new file kept", after)
+	}
+}
+
+// TestProbeForwardsShareTheExecDeadline (F007): every concurrent forward
+// runs under the probe's one exec deadline, however long the caller's ctx
+// lives.
+func TestProbeForwardsShareTheExecDeadline(t *testing.T) {
+	type seen struct {
+		addr     string
+		deadline time.Time
+		ok       bool
+	}
+	got := make(chan seen, 4)
+	w := seamedWriter(&scriptedExec{}, &seamedConnect{})
+	w.forward = func(ctx context.Context, _ *ssh.Client, addr string) error {
+		dl, ok := ctx.Deadline()
+		got <- seen{addr, dl, ok}
+		return nil
+	}
+	start := time.Now()
+	if _, err := w.probeOnce(context.Background(), config.Server{Name: "bastion"}, nil, []string{"a:22", "b:22"}, time.Second); err != nil {
+		t.Fatalf("probeOnce: %v", err)
+	}
+	close(got)
+	n := 0
+	for s := range got {
+		n++
+		if !s.ok || s.deadline.After(start.Add(probeExecDeadline+time.Second)) {
+			t.Errorf("forward to %s: deadline = %v, %v; want within %v of the connect", s.addr, s.deadline, s.ok, probeExecDeadline)
+		}
+	}
+	if n != 2 {
+		t.Errorf("%d forwards, want 2", n)
+	}
+}
+
+// TestHeadlessProofOpensNoForwards (D9b, F007): the warn-only headless
+// proof only logs in; the bastion's forwards are proven once, by the login
+// check.
+func TestHeadlessProofOpensNoForwards(t *testing.T) {
+	r := req("x\n", "SHA256:agent")
+	r.HeadlessProof = []string{"SHA256:file"}
+	r.ProbeForward = []string{"10.0.1.5:22", "10.0.1.6:22"}
+	var warnings []string
+	r.OnWarning = func(cause string) { warnings = append(warnings, cause) }
+	c := &seamedConnect{}
+	w := seamedWriter(&scriptedExec{responses: goodWrite}, c)
+	var forwards atomic.Int32
+	w.forward = func(context.Context, *ssh.Client, string) error {
+		forwards.Add(1)
+		return nil
+	}
+	if err := w.Apply(context.Background(), config.Server{Name: "bastion-eu"}, r); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(c.opts) != 3 || !slices.Equal(c.opts[2].Only, r.HeadlessProof) {
+		t.Fatalf("connects = %+v, want the write, the login check and the headless proof", c.opts)
+	}
+	if n := int(forwards.Load()); n != len(r.ProbeForward) || len(warnings) != 0 {
+		t.Errorf("forwards = %d, warnings = %q; want only the login check's %d", n, warnings, len(r.ProbeForward))
 	}
 }

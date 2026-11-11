@@ -670,7 +670,10 @@ func forwardRefusal(cfg *config.Config, server string, desired, surviving []auth
 	if forwardsAll(first.Options, deps) {
 		return ""
 	}
-	if !slices.ContainsFunc(surviving, func(k authkeys.Key) bool { return forwardsAll(k.Options, deps) }) {
+	// The general text only when it is true: no surviving key may forward
+	// to any server behind this one. Otherwise the first key is what cuts
+	// the dependents off, and only those it cannot reach are named.
+	if !slices.ContainsFunc(surviving, func(k authkeys.Key) bool { return forwardsAny(k.Options, deps) }) {
 		return fmt.Sprintf("none of the surviving keys you hold may forward through %s (no-port-forwarding, restrict or permitopen=); this write would cut off %s",
 			server, namesAndMore(deps))
 	}
@@ -698,6 +701,11 @@ func namesAndMore(deps []config.Server) string {
 		return fmt.Sprintf("%s and %d more", deps[0].Name, n)
 	}
 	return deps[0].Name
+}
+
+// forwardsAny reports whether a key line may forward to some dependent.
+func forwardsAny(opts []string, deps []config.Server) bool {
+	return slices.ContainsFunc(deps, func(d config.Server) bool { return authkeys.Forwards(opts, d.Host, d.Port) })
 }
 
 // forwardsAll reports whether a key line may forward to every dependent.

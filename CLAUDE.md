@@ -977,3 +977,9 @@ unchangedReadCmdFor, disableKeys2Cmd; the pre-walk, `createDirs` and restoreKeys
 script goldens changed). New rows pin a keys2 disable that fails before its mv (no listing,
 untouched), a keys2-only unknown move-back that never reads as untouched, and a dangling-symlink
 copy that is listed and moved back.
+W1 repair (apply): the bastion guard keeps `none of the surviving keys you hold may forward
+through …` for when no survivor may forward to any dependent; when some may, the first offered
+key's refusal names only the dependents it cuts off (the old text named web-1 when op's
+`permitopen=` still reached it). New tests pin a dependent's own port and an IPv6 host in
+`ProbeForward`, every concurrent forward under the probe's exec deadline, and a headless proof
+that opens no forwards.

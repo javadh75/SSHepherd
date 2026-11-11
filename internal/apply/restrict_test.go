@@ -122,9 +122,13 @@ func TestGrantOptionsForwardGuard(t *testing.T) {
 				"  - {user: op, servers: [bastion-eu], options: [" + tt.opts + "]}\n"
 			_, plans := bastionPlans(t, y)
 			p := planNamed(t, plans, "bastion-eu")
+			wantRefusal := refusal
+			if strings.Contains(tt.opts, "permitopen") { // op may still reach web-1: only web-2 is cut off
+				wantRefusal = onlyWeb2Refusal(t)
+			}
 			switch {
-			case tt.refused && (p.Class != ClassRefused || p.Refusal != refusal):
-				t.Errorf("bastion plan = %s %q, want refused with %q", p.Class, p.Refusal, refusal)
+			case tt.refused && (p.Class != ClassRefused || p.Refusal != wantRefusal):
+				t.Errorf("bastion plan = %s %q, want refused with %q", p.Class, p.Refusal, wantRefusal)
 			case !tt.refused && p.Class != ClassChange:
 				t.Errorf("bastion plan = %s %q, want a change", p.Class, p.Refusal)
 			}

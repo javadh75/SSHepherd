@@ -70,6 +70,15 @@ func bastionYAML(t *testing.T, opts string) string {
 		"  - {name: web-2, host: 10.0.1.6, user: deploy, via: bastion-eu}\n"
 }
 
+// onlyWeb2Refusal is the refusal for op's line when its permitopen= names
+// web-1 alone: op's key is the first offered, and only web-2 is cut off.
+func onlyWeb2Refusal(t *testing.T) string {
+	t.Helper()
+	return "the first key offered to bastion-eu (op, " + testKey(t, 1).Fingerprint + ") may not forward to every server behind it " +
+		"(no-port-forwarding, restrict or permitopen=), and the login stops at that key; this write would cut off web-2" +
+		" \u2014 lift its restriction or grant a key that may forward ahead of it"
+}
+
 // TestForwardGuard (spec S5 Guard): a managed bastion must keep forwarding
 // to every dependent for a key this run holds.
 func TestForwardGuard(t *testing.T) {
@@ -89,9 +98,13 @@ func TestForwardGuard(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, plans := bastionPlans(t, bastionYAML(t, tt.opts))
 			p := planNamed(t, plans, "bastion-eu")
+			want := refusal
+			if strings.HasPrefix(tt.opts, "permitopen") { // op may still reach web-1: only web-2 is cut off
+				want = onlyWeb2Refusal(t)
+			}
 			switch {
-			case tt.refused && (p.Class != ClassRefused || p.Refusal != refusal):
-				t.Errorf("bastion plan = %s %q, want refused with %q", p.Class, p.Refusal, refusal)
+			case tt.refused && (p.Class != ClassRefused || p.Refusal != want):
+				t.Errorf("bastion plan = %s %q, want refused with %q", p.Class, p.Refusal, want)
 			case !tt.refused && p.Class != ClassChange:
 				t.Errorf("bastion plan = %s %q, want a change", p.Class, p.Refusal)
 			}
@@ -150,7 +163,11 @@ func TestForwardGuardJudgesFirstOfferedKey(t *testing.T) {
 		{name: "offer order, not manifest order: a plain key outranks an earlier from= line", op: `from="10.0.0.1",permitopen="10.0.1.5:22" `, held: []byte{1, 2}},
 		{name: "offer order, not manifest order: a from= line loses to the restricted plain one", op: `from="10.0.0.1" `, ci: onlyWeb1, held: []byte{1, 2}, want: firstKeyRefusal("ci", 2, "web-2")},
 		{name: "a key this run does not hold is not the first offered", op: "no-port-forwarding ", held: []byte{2}},
-		{name: "no survivor forwards to both: the old refusal", op: onlyWeb1, ci: "restrict ", held: []byte{1, 2}, want: noneRefusal},
+		// The general text is kept for when it is true: op may forward to
+		// web-1, so only web-2 is cut off, and the first key is named.
+		{name: "no survivor forwards to both: the first key's refusal names what it cuts off", op: onlyWeb1, ci: "restrict ", held: []byte{1, 2}, want: firstKeyRefusal("op", 1, "web-2")},
+		{name: "no survivor forwards anywhere: the general refusal", op: "no-port-forwarding ", ci: "restrict ", held: []byte{1, 2}, want: noneRefusal},
+		{name: "a later key that forwards to one dependent: the first key's refusal", op: "no-port-forwarding ", ci: onlyWeb1, held: []byte{1, 2}, want: firstKeyRefusal("op", 1, "web-1 and 1 more")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, plans := bastionPlansHolding(t, twoOperators(t, tt.op, tt.ci), tt.held...)
@@ -178,6 +195,19 @@ func TestPlanSetsProbeForward(t *testing.T) {
 	}
 	if got := planNamed(t, plans, "web-1").ProbeForward; len(got) != 0 {
 		t.Errorf("web-1 ProbeForward = %q, want none", got)
+	}
+}
+
+// TestPlanProbeForwardCarriesPorts: the probe forwards to each dependent's
+// own port, and brackets an IPv6 host, as the bastion will be asked for it.
+func TestPlanProbeForwardCarriesPorts(t *testing.T) {
+	y := strings.Replace(bastionYAML(t, ""), "{name: web-2, host: 10.0.1.6, user: deploy, via: bastion-eu}",
+		"{name: web-2, host: 10.0.1.6, port: 2222, user: deploy, via: bastion-eu}", 1)
+	y += "  - {name: web-3, host: \"fd00::5\", port: 2200, user: deploy, via: bastion-eu}\n"
+	_, plans := bastionPlans(t, y)
+	want := []string{"10.0.1.5:22", "10.0.1.6:2222", "[fd00::5]:2200"}
+	if got := planNamed(t, plans, "bastion-eu").ProbeForward; !slices.Equal(got, want) {
+		t.Errorf("bastion ProbeForward = %q, want %q", got, want)
 	}
 }
 
