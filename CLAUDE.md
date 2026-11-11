@@ -199,6 +199,11 @@ test that fails before the fix and passes after.
   restricted by its own "*" grant still passes the post-write login check; one key restricted on
   one server and plain on another), checks the re-apply is a no-op and audit is clean, then adds a
   clashing grant: audit exits 2 and apply refuses only that server (exit 1).
+  `TestE2ESSHDGrammar` installs each line of one table as the only line for fixture account `rootvictim`
+  (root rewrites the file in place; the original bytes are restored at the end) and logs in with that key
+  against real sshd: the F002 NUL/VT/FF/CR lines, the F003 bad and good option values, and both polarities
+  of `touch-required`/`verify-required`. The login result must equal the table, `sshdmodel.Read` and the
+  production parser (`authkeys.ParseFile` + `IgnoredBySSHD`).
   `TestE2EPreserve` keeps a Gitea-style `command=` line and its mark through apply against real
   sshd, checks a re-apply is a no-op and audit is clean, that dropping the rule plans its removal,
   and that a key tombstone beats `preserve:` (audit 2, apply removes the line).
@@ -939,3 +944,4 @@ StrictModes walks take paths through a sentinel (`dirnameTo`, `resolvedTo` in
 `internal/sshconn/posture.go`) and the posture record prints a path's newlines as `?`, so a directory
 named with a trailing newline is graded and refused rather than swapped for a decoy
 (`TestNewlineNamedAncestorRefused`, a `TestPostureCmdFindings` row, an `ownerCases` row).
+`TestE2ESSHDGrammar` (cmd/sshepherd, 26 rows, alpine/debian/rocky) pins F002, F003 and F025 to real sshd.
