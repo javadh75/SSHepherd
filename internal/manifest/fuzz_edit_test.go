@@ -29,6 +29,16 @@ func FuzzManifestEdit(f *testing.F) {
 	f.Add(tagEditFixture(f)+"revoked:\n  - {user: bob, servers: [web-1], date: 2026-11-08}\n", uint8(3))
 	f.Add(groupEditFixture(f), uint8(1))
 	f.Add(groupEditFixture(f), uint8(3))
+	// G001: a key riding an inline merge key is invisible to the editor
+	// (RemoveKey said "not in the manifest"); Load refuses merge keys.
+	f.Add(`users:
+  - name: carol
+    <<: {keys: ["`+testkeys.Line(f, 2)+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - {user: carol, servers: [web-1]}
+`, uint8(0))
 	f.Fuzz(func(t *testing.T, in string, pick uint8) {
 		mf, err := Load([]byte(in))
 		if err != nil {
@@ -133,6 +143,19 @@ func FuzzRemoveAccess(f *testing.F) {
 	f.Add(tagEditFixture(f), uint8(7))
 	f.Add(editFixture(f), uint8(1))
 	f.Add(groupEditFixture(f), uint8(0))
+	// G001: an except: or servers: riding an inline merge key is invisible to
+	// the editor (a written except: overrode the merged one; a merged
+	// servers: grant survived the removal); Load refuses merge keys.
+	f.Add(mergeExceptFixture(f), uint8(1))
+	f.Add(`users:
+  - {name: alice, keys: ["`+testkeys.Line(f, 1)+`"]}
+  - {name: bob, keys: ["`+testkeys.Line(f, 2)+`"]}
+servers:
+  - {name: web-1, host: 10.0.0.1, user: deploy}
+access:
+  - user: bob
+    <<: {servers: [web-1]}
+`, uint8(1))
 	f.Fuzz(func(t *testing.T, in string, pick uint8) {
 		mf, err := Load([]byte(in))
 		if err != nil {

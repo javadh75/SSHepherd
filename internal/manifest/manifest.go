@@ -145,7 +145,11 @@ func checkTopLevelKeys(root *yaml.Node) error {
 // anchor or alias anywhere (append rebuilds null sections without carrying
 // anchors, so an alias elsewhere would dangle; sharing structure across
 // sections also makes "append to the anchored node" ambiguous — reject the
-// whole class rather than half-support it). Only called on trees
+// whole class rather than half-support it). It also rejects a YAML merge
+// key (`<<:`, tagged !!merge or spelled "<<"): config.Parse applies the
+// merged fields, but the editor reads only literal keys, so an edit could
+// write an except: or servers: that overrides the merged one and widen
+// access (G001). Only called on trees
 // config.Parse already accepted, so nesting depth is schema-bounded.
 func checkNodeShapes(n *yaml.Node) error {
 	if n.Anchor != "" || n.Kind == yaml.AliasNode {
@@ -154,9 +158,8 @@ func checkNodeShapes(n *yaml.Node) error {
 	switch n.Kind {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			k := n.Content[i]
-			if k.Kind != yaml.ScalarNode || k.Tag == "!!null" || k.Value == "" {
-				return &UnsupportedError{Reason: fmt.Sprintf("manifest contains an unsupported mapping key (line %d)", k.Line)}
+			if err := checkMappingKey(n.Content[i]); err != nil {
+				return err
 			}
 		}
 	case yaml.SequenceNode:
@@ -170,6 +173,18 @@ func checkNodeShapes(n *yaml.Node) error {
 		if err := checkNodeShapes(c); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// checkMappingKey refuses a mapping key that is not a plain, non-empty
+// scalar, and a YAML merge key (tagged !!merge or spelled "<<", G001).
+func checkMappingKey(k *yaml.Node) error {
+	if k.Kind != yaml.ScalarNode || k.Tag == "!!null" || k.Value == "" {
+		return &UnsupportedError{Reason: fmt.Sprintf("manifest contains an unsupported mapping key (line %d)", k.Line)}
+	}
+	if k.ShortTag() == "!!merge" || k.Value == "<<" {
+		return &UnsupportedError{Reason: fmt.Sprintf("manifest contains a YAML merge key \"<<\" (line %d); comment-preserving edits do not support them", k.Line)}
 	}
 	return nil
 }

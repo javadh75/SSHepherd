@@ -85,8 +85,9 @@ public-key line, or a path to a `.pub` file; for `--new`, a key line or a
 1. Starts with `SHA256:` → fingerprint. The value must be 43 characters of
    unpadded base64 (one trailing `=` is stripped); otherwise exit 3
    `malformed fingerprint`.
-2. Contains ` SHA256:` (pasted `ssh-keygen -lf` output) → that token is the
-   fingerprint, validated as above.
+2. Matches the `ssh-keygen -l` shape `^\d+ SHA256:\S+( .*)? \([A-Z0-9-]+\)$` (trailing
+   whitespace ignored) → the second field is the fingerprint, validated as above. A key
+   line whose comment holds ` SHA256:…` is not this shape and falls to step 4 (G020).
 3. Starts with `MD5:` or is hex-colon (`aa:bb:…`) → exit 3: `MD5
    fingerprints are not supported — use ssh-keygen -l -E sha256 -f FILE`.
 4. Contains whitespace, or starts with a known key type or option →

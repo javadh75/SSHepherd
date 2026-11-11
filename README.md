@@ -2475,7 +2475,9 @@ that was never revoked
 still exits `3` with `not in the manifest (already revoked?)`.
 `revoke --key KEY...` removes each key line from its owner; a user left with no keys
 stays with `keys: []`. A `KEY` is a `SHA256:` fingerprint (pasted `ssh-keygen -lf`
-output works), a public-key line (quote it), or a path to a `.pub` file holding
+output works, only in its own shape, `BITS SHA256:… COMMENT (TYPE)`; a key line whose
+comment contains a `SHA256:` fingerprint is read as that key line, not as the
+fingerprint), a public-key line (quote it), or a path to a `.pub` file holding
 exactly one key. MD5 fingerprints, certificates (`*-cert.pub`) and private keys are
 refused with the fix; an error never quotes a file's contents. `revoke --key` of a key
 no user has records it
@@ -2760,9 +2762,16 @@ Removing a protected key through an `except:` prints a warning in the plan, beca
   the header warns (`would have no granted keys`), that server is refused, and the
   key stays installed — grant another user (or an operator) there first, or remove
   the key by hand.
-- **Anchors and aliases.** A manifest using YAML anchors/aliases (or null list
-  entries) cannot be edited faithfully:
+- **Anchors, aliases and merge keys.** A manifest using YAML anchors/aliases, merge
+  keys (`<<:`) (or null list entries) cannot be edited faithfully:
   `cannot edit PATH: … — edit the manifest by hand and run 'sshepherd apply'`.
+  A merge key is refused because the edit could not see the merged fields:
+  `revoke --from-server` on an entry whose `except:` comes through `<<:` would write a
+  second `except:` that replaces it. For a manifest at `CFG`:
+  `cannot edit CFG: manifest contains a YAML merge key "<<" (line 13); comment-preserving edits do not support them — edit the manifest by hand and run 'sshepherd apply --config CFG'`.
+  As with anchors, `validate` reports it as
+  `revoke, rotate and --merge cannot edit this manifest: …` and `apply` still runs
+  without bumping the serial.
 - **Fidelity.** Comments are preserved: a removed entry's comment moves to the next
   entry (or the section's end); a removed key line's own comment goes with it. Blank
   lines and quoting may normalize — review the `git diff` before you commit.
@@ -2977,7 +2986,9 @@ and fails fast with the no-passphrase-source error instead of hanging. The promp
 and its `waiting for passphrase for KEY on the terminal` line go to the terminal,
 never stdout (`audit --json` stays clean), and appear even under `-q`. `--yes` does
 not disable prompting. Ctrl-C at the prompt restores the terminal and exits `3`
-without connecting anywhere.
+without connecting anywhere. Ctrl-Z at the prompt works like `ssh`: the terminal goes back
+to normal before SSHepherd stops, and after `fg` echo is turned off again and the prompt is
+printed again. A passphrase typed after you resume is not shown.
 
 **Order of operations.** Flags are validated first, then the manifest; an empty
 fleet (or no targeted server) returns before any key file is read; then

@@ -63,6 +63,15 @@ func TestClassifyKeyArg(t *testing.T) {
 		{"malformed fingerprint", roleKey, "SHA256:abc", "", false, "--key SHA256:abc: malformed fingerprint"},
 		{"pasted ssh-keygen -lf output", roleKey, "256 " + fp1 + " me@laptop (ED25519)", fp1, false, ""},
 		{"pasted output, malformed", roleKey, "256 SHA256:short me (ED25519)", "", false, "malformed fingerprint"},
+		{"pasted output, no comment", roleOld, "256 " + fp1 + " no comment (ED25519)", fp1, false, ""},
+		{"pasted output, trailing newline", roleKey, "256 " + fp1 + " me@laptop (ED25519)\n", fp1, false, ""},
+		// G020: a key line whose comment names another key's fingerprint is
+		// that key line, never the fingerprint in its comment.
+		{"key line, comment holds a fingerprint", roleKey, testkeys.Line(t, 1) + " alice new laptop, replaces " + fpOf(t, 2), fp1, true, ""},
+		{"key line with options, comment holds a fingerprint", roleOld, "restrict " + testkeys.Line(t, 1) + " old " + fpOf(t, 2), fp1, true, ""},
+		{"key line, comment holds a malformed fingerprint", roleKey, testkeys.Line(t, 1) + " old SHA256:" + strings.Repeat("A", 43), fp1, true, ""},
+		{"--new key line, comment holds a fingerprint", roleNew, testkeys.Line(t, 1) + " dave from " + fpOf(t, 2), fp1, true, ""},
+		{"text holding a fingerprint is not a fingerprint", roleKey, "bob " + fpOf(t, 2), "", false, "not a valid public key line"},
 		{"MD5 prefix", roleKey, "MD5:aa:bb:cc", "", false, "MD5 fingerprints are not supported — use ssh-keygen -l -E sha256 -f FILE"},
 		{"hex colon", roleOld, "aa:bb:cc:dd:ee:ff", "", false, "MD5 fingerprints are not supported"},
 		{"key line", roleKey, testkeys.Line(t, 1) + " me@laptop", fp1, true, ""},

@@ -831,6 +831,13 @@ func TestRevokeUsage(t *testing.T) {
 		{"malformed --key", []string{"revoke", "--key", "SHA256:nope"}, cfgBody, "malformed fingerprint"},
 		{"anchors cannot be edited", []string{"revoke", "bob"}, "users: &u []\nservers: []\naccess: []\n",
 			"cannot edit CFG: manifest contains a YAML anchor or alias (line 1); comment-preserving edits do not support them — edit the manifest by hand and run 'sshepherd apply --config CFG'"},
+		// G001: the merged except: kept carol off db-1; the edit used to write
+		// an except: overriding it, granting carol db-1.
+		{"merge keys cannot be edited", []string{"revoke", "carol", "--from-server", "web-1", "--no-apply", "--yes"},
+			"users:\n  - {name: alice, keys: [" + qk(t, 1) + "]}\n  - {name: carol, keys: [" + qk(t, 2) + "]}\n" +
+				"servers:\n  - {name: web-1, host: 10.0.0.1, user: deploy}\n  - {name: web-2, host: 10.0.0.2, user: deploy}\n  - {name: db-1, host: 10.0.0.9, user: deploy}\n" +
+				"access:\n  - user: alice\n    servers: [web-1]\n  - user: carol\n    servers: [\"*\"]\n    <<: {except: [db-1]}\n",
+			"cannot edit CFG: manifest contains a YAML merge key \"<<\" (line 13); comment-preserving edits do not support them — edit the manifest by hand and run 'sshepherd apply --config CFG'"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

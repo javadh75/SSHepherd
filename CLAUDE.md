@@ -913,3 +913,15 @@ and `TestE2EPerSourcePenalties` pins audit's report (handshake, the hint, exit 1
 `TestProbePenaltyDropStaysTransient` pins the login check's reading of the same error (retried, then
 UNPROVEN). `sshconn.RouteCmd` is the exported route builder behind `keyscanCompareCmd`, for lane
 `write`'s G017.
+Editor (G001, G009, G020): `manifest.Load` refuses YAML merge keys (`<<:`, tagged `!!merge` or
+spelled `<<`) as `UnsupportedError`, like anchors (`checkMappingKey`; `TestLoadRefusesMergeKeys`,
+`TestMergeKeyRevokeFromServerRepro`, merge-key seeds in `FuzzManifestEdit` and `FuzzRemoveAccess`,
+and a `TestRevokeUsage` row: revoke --from-server exits 3 and saves nothing). G020: KEY step 2
+accepts only the `ssh-keygen -l` shape (`keygenOutput`), so a key line whose comment holds `
+SHA256:…` is that key line (`TestClassifyKeyArg` rows; `FuzzKeyArg`'s oracle: a parseable key line
+never gets another key's fingerprint). G009: the /dev/tty prompt handles job control like
+readpassphrase(3). On SIGTSTP/SIGTTIN/SIGTTOU it restores termios (only in the foreground), resets
+the signal and raises it again. On SIGCONT it turns echo off again, rewrites the prompt and re-arms.
+Inherited-ignored stop signals stay ignored (`TestTTYSuspendResumeKeepsEchoOff`,
+`TestTTYStopAgainAfterResume`, `TestTTYBackgroundLeavesTerminalAlone`,
+`TestTTYCanceledAfterResumeRestoresEcho` on a pty with a recording raise seam).

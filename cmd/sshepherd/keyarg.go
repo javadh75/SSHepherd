@@ -38,6 +38,11 @@ const maxKeyFile = 64 << 10
 
 var (
 	hexColonFP = regexp.MustCompile(`^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2})+$`)
+	// keygenOutput is one line of `ssh-keygen -l` output: bits, the SHA256
+	// fingerprint, the comment ("no comment" when there is none), and the
+	// key type in parentheses. Only this shape is a pasted fingerprint: a
+	// key line whose comment holds " SHA256:…" is that key line (G020).
+	keygenOutput = regexp.MustCompile(`^[0-9]+ SHA256:\S+( .*)? \([A-Z0-9-]+\)$`)
 	// keyTypePrefixes are the key types (and type families) that mark a
 	// bare argument as a (possibly broken) key line rather than a path:
 	// whole type names, so a path like ssh-keys/alice.pub or a user named
@@ -69,20 +74,17 @@ func readKeyFile(path string) ([]byte, error) {
 }
 
 // classifyKeyArg implements the spec's KEY classification, in order:
-// SHA256 fingerprint; pasted `ssh-keygen -lf` output; MD5 (refused); key
-// line; path. read is the file seam. Errors name the argument and never
-// quote file contents.
+// SHA256 fingerprint; pasted `ssh-keygen -lf` output (exactly that shape,
+// so a key line whose comment holds a fingerprint stays a key line); MD5
+// (refused); key line; path. read is the file seam. Errors name the
+// argument and never quote file contents.
 func classifyKeyArg(role keyRole, arg, home string, read func(string) ([]byte, error)) (keyArg, error) {
 	a := keyArg{Arg: arg}
 	switch {
 	case strings.HasPrefix(arg, "SHA256:"):
 		return fingerprintArg(role, arg, arg)
-	case strings.Contains(arg, " SHA256:"):
-		for _, f := range strings.Fields(arg) {
-			if strings.HasPrefix(f, "SHA256:") {
-				return fingerprintArg(role, arg, f)
-			}
-		}
+	case keygenOutput.MatchString(strings.TrimRight(arg, " \t\r\n")):
+		return fingerprintArg(role, arg, strings.Fields(arg)[1])
 	case strings.HasPrefix(arg, "MD5:") || hexColonFP.MatchString(arg):
 		return a, fmt.Errorf("%s %s: MD5 fingerprints are not supported — use ssh-keygen -l -E sha256 -f FILE", role, arg)
 	case looksLikeKeyLine(arg):
