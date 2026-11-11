@@ -101,12 +101,19 @@ const (
 // once mkdir has created new — so U, which rmdirs exactly the recorded
 // depths deepest first, never removes a directory this run did not create
 // (WP-9). U runs from the EXIT trap on any nonzero exit; rmdir removes
-// only empty directories. Needs d and m.
-const createDirs = `; C=; U() { for k in $C; do j=0; q="$d"; while [ $j -lt $k ]; do q=$(dirname "$q"); j=$((j+1)); done; rmdir "$q" 2>/dev/null; done; }` +
+// only empty directories. Every parent is taken through
+// sshconn.DirnameTo, never a bare $(dirname …), which would drop a trailing
+// newline from a name (G018). Needs d and m.
+var createDirs = `; C=; U() { for k in $C; do j=0; q="$d"; while [ $j -lt $k ]; do ` + sshconn.DirnameTo("q", `"$q"`) + `; j=$((j+1)); done; rmdir "$q" 2>/dev/null; done; }` +
 	`; trap '[ $? = 0 ] || U' EXIT; ` + signalTrap +
-	`; if [ -n "$m" ]; then k=0; q="$d"; while [ "$q" != "$m" ] && [ "$q" != / ] && [ "$q" != . ]; do k=$((k+1)); q=$(dirname "$q"); done` +
-	`; while [ $k -ge 0 ]; do j=0; q="$d"; while [ $j -lt $k ]; do q=$(dirname "$q"); j=$((j+1)); done` +
+	`; if [ -n "$m" ]; then k=0; q="$d"; while [ "$q" != "$m" ] && [ "$q" != / ] && [ "$q" != . ]; do k=$((k+1)); ` + sshconn.DirnameTo("q", `"$q"`) + `; done` +
+	`; while [ $k -ge 0 ]; do j=0; q="$d"; while [ $j -lt $k ]; do ` + sshconn.DirnameTo("q", `"$q"`) + `; j=$((j+1)); done` +
 	`; if [ ! -e "$q" ] && [ ! -L "$q" ]; then mkdir "$q" || exit 1; C="$k $C"; fi; k=$((k-1)); done; fi`
+
+// parentOfP assigns "$p"'s directory to d, keeping a trailing newline in
+// its name (a bare $(dirname "$p") drops it, and the walk would check a
+// decoy without it: G018).
+var parentOfP = sshconn.DirnameTo("d", `"$p"`)
 
 // ancestorCheck is the write path's StrictModes walk: the shared
 // sshconn.AncestorWalk refusing (48) any component it objects to. Needs u
@@ -176,11 +183,11 @@ var ancestorCheck = sshconn.AncestorWalk("exit "+strconv.Itoa(unsafePathExit), "
 // POSIX-only: it is exercised under dash, bash and busybox ash.
 func writeCmdFor(path string, expect Snapshot, size int) string {
 	return sshconn.PathAssign(path) +
-		`; set -f; umask 077; u=$(id -u); d=$(dirname "$p"); b="$p"` + bakSuffix + `; o="$p"` + origSuffix + `; t="$p"` + tmpSuffix + `; c="$p"` + casSuffix +
+		`; set -f; umask 077; u=$(id -u); ` + parentOfP + `; b="$p"` + bakSuffix + `; o="$p"` + origSuffix + `; t="$p"` + tmpSuffix + `; c="$p"` + casSuffix +
 		`; if [ -L "$p" ]; then exit 45; fi; if [ -L "$d" ]; then exit 48; fi` +
 		// WP-9: walk the nearest EXISTING ancestor before creating anything,
 		// so a refusal (48) leaves the tree exactly as it was.
-		`; m=; e="$d"; while [ ! -e "$e" ] && [ ! -L "$e" ]; do m="$e"; e=$(dirname "$e"); done; D="$d"; d="$e"; ` + ancestorCheck + `; d="$D"` +
+		`; m=; e="$d"; while [ ! -e "$e" ] && [ ! -L "$e" ]; do m="$e"; ` + sshconn.DirnameTo("e", `"$e"`) + `; done; D="$d"; d="$e"; ` + ancestorCheck + `; d="$D"` +
 		createDirs +
 		// The full walk of $d after mkdir: catches ".." and symlinks the
 		// textual pre-walk could not see. On refusal the EXIT trap (U)
@@ -256,7 +263,7 @@ func restoreCmdFor(path string, wasAbsent bool, wrote Snapshot) string {
 	if wasAbsent {
 		undo = `rm -f "$p"`
 	}
-	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); d=$(dirname "$p"); b="$p"` + bakSuffix + `; ` + ancestorCheck + `; ` + lockPrologue() +
+	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); ` + parentOfP + `; b="$p"` + bakSuffix + `; ` + ancestorCheck + `; ` + lockPrologue() +
 		`; if [ -L "$p" ]; then exit 45; fi; ` + casCheck(wrote) + `; ` + undo
 }
 
@@ -266,7 +273,7 @@ func restoreCmdFor(path string, wasAbsent bool, wrote Snapshot) string {
 // not be taken there.
 func lockedReadCmdFor(path string) string {
 	read := strings.TrimPrefix(sshconn.AuthorizedKeysCmdFor(path), sshconn.PathAssign(path))
-	return sshconn.PathAssign(path) + `; set -f; if [ ! -d "$(dirname "$p")" ]; then exit 44; fi; ` + lockPrologue() + read
+	return sshconn.PathAssign(path) + `; set -f; ` + parentOfP + `; if [ ! -d "$d" ]; then exit 44; fi; ` + lockPrologue() + read
 }
 
 // unchangedReadCmdFor reads path for a keys2-only plan (SkipWrite), after
@@ -276,7 +283,7 @@ func lockedReadCmdFor(path string) string {
 // and creates nothing.
 func unchangedReadCmdFor(path string) string {
 	read := strings.TrimPrefix(sshconn.AuthorizedKeysCmdFor(path), sshconn.PathAssign(path))
-	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); d=$(dirname "$p"); if [ -L "$p" ]; then exit 45; fi; if [ ! -e "$p" ]; then exit 44; fi; if [ -L "$d" ]; then exit 48; fi` +
+	return sshconn.PathAssign(path) + `; set -f; u=$(id -u); ` + parentOfP + `; if [ -L "$p" ]; then exit 45; fi; if [ ! -e "$p" ]; then exit 44; fi; if [ -L "$d" ]; then exit 48; fi` +
 		`; ( set -- $(ls -ldn "$d"); if [ "$3" != "$u" ]; then exit 48; fi; ` + ancestorCheck + ` ) || exit $?` +
 		`; set -- $(ls -ldn "$p"); if [ "$3" != "$u" ]; then exit 48; fi` + read
 }
@@ -291,7 +298,7 @@ func unchangedReadCmdFor(path string) string {
 func disableKeys2Cmd() string {
 	taken := func(v string) string { return `[ -e "` + v + `" ] || [ -L "` + v + `" ]` }
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
-		`; set -f; u=$(id -u); d=$(dirname "$p"); s="$p"` + fleet.Keys2DisabledSuffix + `; ` + ancestorCheck +
+		`; set -f; u=$(id -u); ` + parentOfP + `; s="$p"` + fleet.Keys2DisabledSuffix + `; ` + ancestorCheck +
 		`; if ` + taken("$p") + `; then` +
 		` if ` + taken("$s") + `; then s="$s.$(date -u +%Y%m%dT%H%M%SZ)"; if ` + taken("$s") + `; then s="$s.$$"; fi; if ` + taken("$s") + `; then exit 1; fi; fi` +
 		`; mv -f "$p" "$s" || exit 1; echo "sshepherd-keys2 ${s##*/}"; fi`
@@ -304,7 +311,7 @@ func disableKeys2Cmd() string {
 // and exiting 0 would report that it was.
 func restoreKeys2Cmd(name string) string {
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
-		`; set -f; s="$(dirname "$p")"/` + sshconn.ShQuote(name) +
+		`; set -f; ` + sshconn.DirnameTo("s", `"$p"`) + `; s="$s"/` + sshconn.ShQuote(name) +
 		`; if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi; if [ ! -e "$s" ] && [ ! -L "$s" ]; then exit ` + strconv.Itoa(sshconn.FileAbsentExit) + `; fi; mv -f "$s" "$p" || exit 1`
 }
 

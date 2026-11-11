@@ -254,6 +254,57 @@ func TestPostureHomeNameEndsInANewline(t *testing.T) {
 	}
 }
 
+// newlineNamedHome makes <tmp>/h<NL> as HOME (mode) and, when decoyMode is
+// non-zero, the sibling <tmp>/h a bare $(dirname …) would name instead.
+func newlineNamedHome(t *testing.T, mode, decoyMode os.FileMode) string {
+	t.Helper()
+	outer := t.TempDir()
+	must(t, os.Chmod(outer, 0o700))
+	home := filepath.Join(outer, "h") + "\n"
+	must(t, os.Mkdir(home, 0o700))
+	must(t, os.Mkdir(filepath.Join(home, ".ssh"), 0o700))
+	must(t, os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys"), []byte("k\n"), 0o600))
+	must(t, os.Chmod(home, mode))
+	if decoyMode != 0 {
+		must(t, os.Mkdir(filepath.Join(outer, "h"), 0o700))
+		must(t, os.Chmod(filepath.Join(outer, "h"), decoyMode))
+	}
+	return home
+}
+
+// TestPostureOverrideInAHomeEndingInANewline (G018): a ~/NAME override's
+// directory is $HOME itself, and a missing directory's parent may be too;
+// every parent the probe takes keeps a trailing newline, so it grades the
+// home, not a sibling without the newline.
+func TestPostureOverrideInAHomeEndingInANewline(t *testing.T) {
+	for _, tt := range []struct {
+		name, path string
+		file       bool
+	}{
+		{"a file directly in the home", "~/ak", true},
+		{"a missing directory in the home", "~/new/ak", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := newlineNamedHome(t, 0o777, 0o700)
+			if tt.file {
+				must(t, os.WriteFile(filepath.Join(home, "ak"), []byte("k\n"), 0o600))
+			}
+			issues, _ := runPosture(t, home, tt.path)
+			if got := issueSet(issues); !slices.Contains(got, "h? world_writable") {
+				t.Errorf("findings = %v, want the world-writable home (h?)", got)
+			}
+		})
+	}
+	t.Run("keys2 beside a ~/NAME link to the default file", func(t *testing.T) {
+		home := newlineNamedHome(t, 0o700, 0)
+		must(t, os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys2"), []byte("ssh-ed25519 AAAA planted\n"), 0o600))
+		must(t, os.Symlink(filepath.Join(home, ".ssh", "authorized_keys"), filepath.Join(home, "authorized_keys")))
+		if _, keys2 := runPosture(t, home, "~/authorized_keys"); !keys2 {
+			t.Error("keys2 = false, want true: ~/authorized_keys is the default file")
+		}
+	})
+}
+
 // TestPostureOutsideHomeWalksToRoot (D14c): an override outside $HOME is
 // walked up to /, so a writable directory far above it is reported.
 func TestPostureOutsideHomeWalksToRoot(t *testing.T) {
@@ -442,6 +493,18 @@ func TestPostureKeys2(t *testing.T) {
 			setup: linkFile(".ssh/authorized_keys")},
 		{name: "symlinked file to another file", path: func(h string) string { return filepath.Join(h, "keys", "ak") },
 			setup: linkFile(".ssh/other"), ak2: true},
+		// The managed file is absent, so test -ef cannot match: only the
+		// resolved directory, newline kept, says it is ~/.ssh (G018).
+		{name: "a link to a newline-named ~/.ssh, managed file absent", path: func(h string) string { return filepath.Join(h, "link", "authorized_keys") },
+			setup: func(t *testing.T, h string) {
+				t.Helper()
+				k2, aside := filepath.Join(h, ".ssh", "authorized_keys2"), filepath.Join(h, "k2-aside")
+				must(t, os.Rename(k2, aside))
+				dir := newlineSSHDir(t, h, 0o700)
+				must(t, os.Rename(aside, filepath.Join(dir, "authorized_keys2")))
+				must(t, os.Remove(filepath.Join(dir, "authorized_keys")))
+				must(t, os.Symlink(dir, filepath.Join(h, "link")))
+			}, ak2: true, want: true},
 		{name: "a decoy of a newline-named ~/.ssh is not ~/.ssh", path: func(h string) string { return filepath.Join(h, "decoy", "authorized_keys") }, // G018
 			setup: func(t *testing.T, h string) {
 				t.Helper()

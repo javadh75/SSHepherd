@@ -1695,6 +1695,27 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 				t.Errorf("timestamped copy = %q", got)
 			}
 		})
+		// disable moves a symlinked authorized_keys2 as the link itself, so
+		// a copy may be a dangling symlink: the recovery listing names it and
+		// the move-back puts it back, never calling it gone (F004).
+		t.Run("a dangling-symlink copy is listed and moved back", func(t *testing.T) {
+			home, k2 := setup(t)
+			name := "authorized_keys2" + fleet.Keys2DisabledSuffix
+			dest := filepath.Join(home, "nowhere")
+			if err := os.Symlink(dest, k2+fleet.Keys2DisabledSuffix); err != nil {
+				t.Fatal(err)
+			}
+			code, out := runShOut(t, sh, listKeys2Cmd(), home, nil)
+			if names, ok := parseKeys2Listing(out); code != 0 || !ok || !slices.Equal(names, []string{name}) {
+				t.Fatalf("listing = (%d, %q) -> %q, %v; want the copy", code, out, names, ok)
+			}
+			if code := runSh(t, sh, restoreKeys2Cmd(name), home, nil); code != 0 {
+				t.Fatalf("move-back exit = %d, want 0", code)
+			}
+			if got, err := os.Readlink(k2); err != nil || got != dest {
+				t.Errorf("authorized_keys2 = %q, %v; want the symlink moved back", got, err)
+			}
+		})
 		t.Run("every fallback name taken refuses and moves nothing", func(t *testing.T) {
 			home, k2 := setup(t)
 			stub, mark := t.TempDir(), filepath.Join(t.TempDir(), "date.called")

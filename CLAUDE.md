@@ -969,3 +969,11 @@ only spaces and tabs at its start, so a kept line starting with VT/FF/CR stays d
 skips (and `--operator-key` refuses) a .pub whose line holds a NUL tail or whitespace inside the
 key field instead of failing import's self-check; `TestEveryKeyTypeToken` pins each of the 21
 type tokens, and new rows kill the parser lane's surviving mutants.
+W1 repair (write): every write-path script takes its parents through the exported
+`sshconn.DirnameTo` (`parentOfP` in writeCmdFor, restoreCmdFor, lockedReadCmdFor,
+unchangedReadCmdFor, disableKeys2Cmd; the pre-walk, `createDirs` and restoreKeys2Cmd too), so a
+`~/NAME` override in a HOME whose name ends in a newline is graded, not a sibling without it
+(`TestWriteScriptsWalkAHomeEndingInANewline`, `TestPostureOverrideInAHomeEndingInANewline`; the
+script goldens changed). New rows pin a keys2 disable that fails before its mv (no listing,
+untouched), a keys2-only unknown move-back that never reads as untouched, and a dangling-symlink
+copy that is listed and moved back.

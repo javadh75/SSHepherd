@@ -434,6 +434,33 @@ func TestApplyKeys2LostReply(t *testing.T) {
 			t.Fatalf("lockout = %+v, cmds = %q", lo, s.cmds)
 		}
 	})
+	// The script's own failures come before its mv (exit below 128): the
+	// move did not happen, so nothing is listed and keys2 is untouched.
+	t.Run("a script failure before the move moved nothing: no listing", func(t *testing.T) {
+		s, lo := run(t, keys2Only, rejected(), execResp{code: 1, stderr: "mv: cannot move"})
+		if lo.RestoreKeys2 != nil || listings(s) != 0 || !lo.Keys2Untouched {
+			t.Fatalf("lockout = %+v, cmds = %q", lo, s.cmds)
+		}
+	})
+	// F004: when the move-back state is unknown, a keys2-only run never says
+	// keys2 was left alone; it says moving it back failed.
+	for name, after := range map[string][]execResp{
+		"the listing is unavailable": {drop, drop},
+		"the listing exits nonzero":  {drop, {code: 1, stderr: "boom"}},
+		"more than one copy":         {drop, {stdout: listed + "sshepherd-keys2 " + copyName + ".20261108T010203Z\n"}},
+	} {
+		t.Run("keys2-only, "+name+": never untouched", func(t *testing.T) {
+			c := rejected()
+			c.fullErrs = []error{kinded(fleet.ErrorKindAuth, "denied")}
+			_, lo := run(t, keys2Only, c, after...)
+			if lo.RestoreKeys2 == nil || lo.Keys2Untouched {
+				t.Fatalf("lockout = %+v", lo)
+			}
+			if msg := lo.Error(); !strings.Contains(msg, "moving authorized_keys2 back failed") || strings.Contains(msg, "was not moved aside") {
+				t.Errorf("err = %q, want the failed move-back", msg)
+			}
+		})
+	}
 	t.Run("a passing login never lists", func(t *testing.T) {
 		s := &scriptedExec{responses: []execResp{{stdout: "x\n"}, drop}}
 		err := seamedWriter(s, &seamedConnect{}).Apply(ctx, srv, keys2Only)
