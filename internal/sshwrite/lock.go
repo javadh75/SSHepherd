@@ -92,9 +92,9 @@ func (e *LockedError) Error() string {
 }
 
 // lockedErrorFor builds the refusal for a script that exited 47.
-func lockedErrorFor(srv config.Server, path, stdout string) *LockedError {
+func lockedErrorFor(srv config.Server, route []config.Server, path, stdout string) *LockedError {
 	info := parseLockOwner(stdout)
-	return &LockedError{Path: path, Owner: info.owner, Age: info.age, Known: info.known, RemoveCmd: lockRemoveCmd(srv, path)}
+	return &LockedError{Path: path, Owner: info.owner, Age: info.age, Known: info.known, RemoveCmd: lockRemoveCmd(srv, route, path)}
 }
 
 // lockRemovalScript removes a stale lock. rmdir, not rm -r: it refuses a
@@ -106,10 +106,23 @@ func lockRemovalScript(path string) string {
 // plainShellWord matches what a shell reads as one literal word.
 var plainShellWord = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
 
-// lockRemoveCmd is the paste-ready removal: the remote script quoted once
-// more for the local shell, and a manifest-controlled target that can
-// become neither a local command nor an ssh option.
-func lockRemoveCmd(srv config.Server, path string) string {
+// lockRemoveCmd is the paste-ready removal. A server behind bastions (route,
+// root first) is reached through them (sshconn.RouteCmd), or the command is
+// named as one to run on its bastion when a hop or the server is not a plain
+// word (G017).
+func lockRemoveCmd(srv config.Server, route []config.Server, path string) string {
+	script := lockRemovalScript(path)
+	direct := directRemoveCmd(srv, script)
+	if len(route) == 0 {
+		return direct
+	}
+	return sshconn.RouteCmd(route, srv, []string{script}, route[len(route)-1].Name, []string{direct})
+}
+
+// directRemoveCmd is the ssh command straight to srv: the remote script
+// quoted once more for the local shell, and a manifest-controlled target
+// that can become neither a local command nor an ssh option.
+func directRemoveCmd(srv config.Server, script string) string {
 	target := srv.User + "@" + srv.Host
 	word := target
 	if !plainShellWord.MatchString(target) {
@@ -118,7 +131,7 @@ func lockRemoveCmd(srv config.Server, path string) string {
 	if strings.HasPrefix(target, "-") {
 		word = "-- " + word
 	}
-	return fmt.Sprintf("ssh -p %d %s %s", srv.Port, word, sshconn.ShQuote(lockRemovalScript(path)))
+	return fmt.Sprintf("ssh -p %d %s %s", srv.Port, word, sshconn.ShQuote(script))
 }
 
 // clientIdent is the "<host> <pid>" of the lock record: the host reduced to

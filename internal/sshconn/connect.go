@@ -223,7 +223,7 @@ func (d *Dialer) ConnectWith(ctx context.Context, srv config.Server, opts Connec
 	cb := func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := kh.callback(hostname, remote, key)
 		if err != nil {
-			err = hostKeyHint(err, key, srv, d.route(srv), kh)
+			err = hostKeyHint(err, key, srv, d.Route(srv), kh)
 		} else {
 			log.Debug("host key verified", "server", srv.Name)
 		}
@@ -423,9 +423,9 @@ func (d *Dialer) lookup(name string) (config.Server, bool) {
 	return d.Server(name)
 }
 
-// route lists the bastions srv is reached through, root first, as far as
+// Route lists the bastions srv is reached through, root first, as far as
 // the Dialer resolves them; nil for a direct server.
-func (d *Dialer) route(srv config.Server) []config.Server {
+func (d *Dialer) Route(srv config.Server) []config.Server {
 	var out []config.Server
 	for v := srv.Via; v != "" && len(out) <= config.MaxViaDepth; {
 		hop, ok := d.lookup(v)

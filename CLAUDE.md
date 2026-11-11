@@ -925,3 +925,17 @@ the signal and raises it again. On SIGCONT it turns echo off again, rewrites the
 Inherited-ignored stop signals stay ignored (`TestTTYSuspendResumeKeepsEchoOff`,
 `TestTTYStopAgainAfterResume`, `TestTTYBackgroundLeavesTerminalAlone`,
 `TestTTYCanceledAfterResumeRestoresEcho` on a pty with a recording raise seam).
+Write path (F004, F010, F014, G017, G018): a first-contact write removes a stale `.sshepherd.bak`
+after the absent check and its lockout and unknown-state messages say there was no previous file
+(`LockoutError.Created`, `TestCreateClearsAnOlderBackup`, `TestFirstContactMessagesNeverPointAtABackup`);
+a keys2 move whose reply was lost is an unknown state, recovered after a rejected login by
+`listKeys2Cmd` and moved back only when one copy exists, otherwise `RestoreKeys2` is set and the run
+exits 2 (`keys2_recover.go`, `TestApplyKeys2LostReply`), and `restoreKeys2Cmd` exits 44 on a missing
+copy; `TestRefusalsThroughRealSh` pins by behaviour the refusals only the script golden covered
+(symlinked or directory `.bak`, symlink at the temp, CAS-time symlink, size-only CAS through a
+stubbed `cksum`); `lockRemoveCmd` routes through the server's bastions via `sshconn.RouteCmd`
+(`FleetWriter.routeOf` over the now-exported `Dialer.Route`, `TestLockRemoveCmdRoutes`); the
+StrictModes walks take paths through a sentinel (`dirnameTo`, `resolvedTo` in
+`internal/sshconn/posture.go`) and the posture record prints a path's newlines as `?`, so a directory
+named with a trailing newline is graded and refused rather than swapped for a decoy
+(`TestNewlineNamedAncestorRefused`, a `TestPostureCmdFindings` row, an `ownerCases` row).

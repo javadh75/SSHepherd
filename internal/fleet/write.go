@@ -10,7 +10,9 @@ import (
 const Keys2DisabledSuffix = ".sshepherd.disabled"
 
 // BackupSuffix names the previous version the write protocol keeps next to
-// the target (replaced by every write that changes the file).
+// the target: replaced by every write that changes the file, and removed by
+// a write that creates it, so it only ever holds the bytes the latest write
+// replaced.
 const BackupSuffix = ".sshepherd.bak"
 
 // Snapshot is the phase-1 state a write is conditional on: the file was
@@ -143,22 +145,52 @@ type LockoutError struct {
 	Restore      error // nil when the previous file was put back, or FileKept
 	RestoreKeys2 error // nil when authorized_keys2 went back, or was not moved
 	FileKept     bool  // SkipWrite: authorized_keys was never written, so no file was restored
+	// Created: the write created the file, so there is no previous version
+	// and the undo is deleting it; the text never points at the backup.
+	Created bool
+	// Keys2Untouched: FileKept, and authorized_keys2 is known not to have been
+	// moved (the move never ran, or a listing found it in place), so nothing
+	// was restored and the text claims nothing was.
+	Keys2Untouched bool
 }
 
 func (e *LockoutError) Error() string {
+	const check = "post-write login offering only the surviving keys you hold failed"
 	switch {
 	case errors.Is(e.Restore, ErrNoSession):
-		return fmt.Sprintf("connection dropped after the upload started and a fresh login offering the keys you hold was refused (%v) — the new file may lock you out; the previous version is at %s%s", e.Probe, e.Path, BackupSuffix)
+		return fmt.Sprintf("connection dropped after the upload started and a fresh login offering the keys you hold was refused (%v) — the new file may lock you out; %s", e.Probe, e.undoText())
 	case e.Restore != nil:
-		return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) AND restoring the previous file failed (%v) — the previous version is at %s%s; repair it over a session that is still open", e.Probe, errors.Join(e.Restore, e.RestoreKeys2), e.Path, BackupSuffix)
+		verb := "restoring the previous file"
+		if e.Created {
+			verb = "removing the file this write created"
+		}
+		return fmt.Sprintf("%s (%v) AND %s failed (%v) — %s; repair it over a session that is still open", check, e.Probe, verb, errors.Join(e.Restore, e.RestoreKeys2), e.undoText())
+	case e.FileKept && e.Keys2Untouched:
+		return fmt.Sprintf("%s (%v); authorized_keys2 was not moved aside and authorized_keys was not changed", check, e.Probe)
 	case e.FileKept && e.RestoreKeys2 != nil:
-		return fmt.Sprintf("post-write login offering only the surviving keys you hold failed (%v) and moving authorized_keys2 back failed (%v); authorized_keys was not changed", e.Probe, e.RestoreKeys2)
+		return fmt.Sprintf("%s (%v) and moving authorized_keys2 back failed (%v); authorized_keys was not changed", check, e.Probe, e.RestoreKeys2)
 	case e.FileKept:
-		return fmt.Sprintf("lockout prevented — moved authorized_keys2 back (post-write login offering only the surviving keys you hold failed: %v); authorized_keys was not changed", e.Probe)
+		return fmt.Sprintf("lockout prevented — moved authorized_keys2 back (%s: %v); authorized_keys was not changed", check, e.Probe)
 	case e.RestoreKeys2 != nil:
-		return fmt.Sprintf("restored previous file (post-write login offering only the surviving keys you hold failed: %v), but restoring authorized_keys2 failed (%v)", e.Probe, e.RestoreKeys2)
+		return fmt.Sprintf("%s (%s: %v), but restoring authorized_keys2 failed (%v)", e.restoredText(), check, e.Probe, e.RestoreKeys2)
 	}
-	return fmt.Sprintf("lockout prevented — restored previous file (post-write login offering only the surviving keys you hold failed: %v)", e.Probe)
+	return fmt.Sprintf("lockout prevented — %s (%s: %v)", e.restoredText(), check, e.Probe)
+}
+
+// undoText says what undoes the write by hand.
+func (e *LockoutError) undoText() string {
+	if e.Created {
+		return "there was no previous file; the undo is deleting " + e.Path
+	}
+	return "the previous version is at " + e.Path + BackupSuffix
+}
+
+// restoredText says what a successful restore did.
+func (e *LockoutError) restoredText() string {
+	if e.Created {
+		return "removed the file this write created, there was no previous file"
+	}
+	return "restored previous file"
 }
 
 // Unwrap keeps the probe's kind first in the chain.

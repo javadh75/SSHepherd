@@ -210,7 +210,7 @@ func (s *writeSession) probeWithRetries() probeResult {
 // restores over the still-open connection; anything else that never got
 // past authentication keeps the file (*fleet.UnprovenError), because
 // restoring could reinstall a key the manifest removed.
-func (s *writeSession) proveOrRestore(keys2Name string) error {
+func (s *writeSession) proveOrRestore(keys2 keys2Move) error {
 	res := s.probeWithRetries()
 	switch {
 	case res.err == nil:
@@ -218,7 +218,7 @@ func (s *writeSession) proveOrRestore(keys2Name string) error {
 		s.headlessProof()
 		return nil
 	case res.verdict == verdictRejected:
-		return s.rollback(keys2Name, res.err)
+		return s.rollback(keys2, res.err)
 	}
 	return &fleet.UnprovenError{Path: s.path, Attempts: res.attempts, HostKey: res.verdict == verdictHostKey, Last: sshconn.SanitizedError{Err: res.err}}
 }

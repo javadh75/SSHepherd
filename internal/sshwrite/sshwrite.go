@@ -155,7 +155,9 @@ var ancestorCheck = sshconn.AncestorWalk("exit "+strconv.Itoa(unsafePathExit), "
 //     once (it is never rewritten, so a crash must not leave it empty —
 //     WP-4); the copy then
 //     becomes .sshepherd.bak (the previous version, replaced every apply,
-//     holding exactly the bytes the CAS validated) and is flushed too. Every
+//     holding exactly the bytes the CAS validated) and is flushed too; a
+//     write that creates the file removes any older .bak instead, so that
+//     name only ever holds the bytes the latest write replaced. Every
 //     scratch name is created fresh with rm -f + set -C, so a symlink
 //     planted at any of them is removed or refused, never written through.
 //  7. mv the temp over the target — an atomic rename in the same directory,
@@ -213,10 +215,13 @@ func cksumPresent(expect Snapshot) string {
 // exactly the bytes the CAS validated, and a lock-less editor that changed
 // the file during the upload refuses the write instead of losing its edit.
 // rm -f + set -C keep the staging name from following a planted symlink;
-// rm -f "$b" fails (exit 1) on a directory planted at .bak.
+// rm -f "$b" fails (exit 1) on a directory planted at .bak. A write over an
+// absent file has nothing to back up, but an older .bak must go (F010): it
+// is not this write's previous version. That removal comes after the absent
+// check, so a refused write still changes nothing.
 func casBackupBlock(expect Snapshot) string {
 	if expect.Absent {
-		return `if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi`
+		return `if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi; rm -f "$b" || exit 1`
 	}
 	b := `if [ -L "$p" ]; then exit 45; fi; if [ ! -f "$p" ]; then exit 46; fi` +
 		`; rm -f "$c" || exit 1; (set -C; cat "$p" > "$c") || exit 1` +
@@ -294,11 +299,13 @@ func disableKeys2Cmd() string {
 
 // restoreKeys2Cmd undoes disableKeys2Cmd after a failed login probe,
 // moving back exactly the copy this run made (name passed parseKeys2Name),
-// refusing (46) to clobber an authorized_keys2 recreated meanwhile.
+// refusing (46) to clobber an authorized_keys2 recreated meanwhile. A copy
+// that is not there is 44 (sshconn.FileAbsentExit): nothing was moved back,
+// and exiting 0 would report that it was.
 func restoreKeys2Cmd(name string) string {
 	return sshconn.PathAssign(sshconn.SecondaryAuthorizedKeysPath) +
 		`; set -f; s="$(dirname "$p")"/` + sshconn.ShQuote(name) +
-		`; if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi; if [ -e "$s" ] || [ -L "$s" ]; then mv -f "$s" "$p" || exit 1; fi`
+		`; if [ -e "$p" ] || [ -L "$p" ]; then exit 46; fi; if [ ! -e "$s" ] && [ ! -L "$s" ]; then exit ` + strconv.Itoa(sshconn.FileAbsentExit) + `; fi; mv -f "$s" "$p" || exit 1`
 }
 
 // keys2NameRE is the only copy name the client passes back to a script.
@@ -447,6 +454,15 @@ func (w *FleetWriter) sleepFn() func(context.Context, time.Duration) error {
 	return sleepCtx
 }
 
+// routeOf lists srv's bastions, root first, as far as the Dialer resolves
+// them: the route a lock-removal hint must print.
+func (w *FleetWriter) routeOf(srv config.Server) []config.Server {
+	if w.Dialer == nil {
+		return nil
+	}
+	return w.Dialer.Route(srv)
+}
+
 // sleepCtx waits d or until ctx ends.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
@@ -497,7 +513,7 @@ func (w *FleetWriter) connectForWrite(ctx context.Context, srv config.Server) (*
 
 // writeExitError maps the write script's exit status to its typed outcome;
 // nil for success.
-func writeExitError(code int, path string, srv config.Server, stdout, stderr *sshconn.CappedBuffer) error {
+func writeExitError(code int, path string, srv config.Server, route []config.Server, stdout, stderr *sshconn.CappedBuffer) error {
 	switch code {
 	case 0:
 		return nil
@@ -506,7 +522,7 @@ func writeExitError(code int, path string, srv config.Server, stdout, stderr *ss
 	case changedExit:
 		return fleet.Refused(&ChangedError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case lockedExit:
-		return fleet.Refused(lockedErrorFor(srv, path, stdout.String())) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
+		return fleet.Refused(lockedErrorFor(srv, route, path, stdout.String())) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case unsafePathExit:
 		return fleet.Refused(&UnsafePathError{Path: path}) //nolint:wrapcheck // Refused is the refusal marker itself; the message is the typed error's
 	case shortWriteExit:

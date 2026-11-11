@@ -24,13 +24,30 @@ import (
 // ls -ldn reports a symlink itself, so the as-written walk sees each link,
 // not its target. Needs u and d.
 func AncestorWalk(onMode, onOwner string) string {
-	return `h=${HOME%/}; ph=$(cd -P "$h" 2>/dev/null && pwd -P)` +
+	return `h=${HOME%/}; ` + resolvedTo("ph", `"$h"`, ` 2>/dev/null`) +
 		`; q="$d"; while :; do set -- $(ls -ldn "$q"); case $1 in l*) ;; ?????w*|????????w*) ` + onMode +
 		`;; esac; if [ "$3" != "$u" ] && [ "$3" != 0 ]; then ` + onOwner +
-		`; fi; if [ "$q" = "$h" ] || [ "$q" = / ] || [ "$q" = . ]; then break; fi; q=$(dirname "$q"); done` +
-		`; q=$(cd -P "$d" && pwd -P) || exit 1; while :; do set -- $(ls -ldn "$q"); case $1 in ?????w*|????????w*) ` + onMode +
+		`; fi; if [ "$q" = "$h" ] || [ "$q" = / ] || [ "$q" = . ]; then break; fi; ` + dirnameTo("q", `"$q"`) + `; done` +
+		`; q=$(cd -P "$d" && pwd -P && echo .) || exit 1; q=${q%??}` +
+		`; while :; do set -- $(ls -ldn "$q"); case $1 in ?????w*|????????w*) ` + onMode +
 		`;; esac; if [ "$3" != "$u" ] && [ "$3" != 0 ]; then ` + onOwner +
-		`; fi; if [ "$q" = "$ph" ] || [ "$q" = / ]; then break; fi; q=$(dirname "$q"); done`
+		`; fi; if [ "$q" = "$ph" ] || [ "$q" = / ]; then break; fi; ` + dirnameTo("q", `"$q"`) + `; done`
+}
+
+// A bare "$(cmd)" drops every trailing newline, so a directory whose name
+// ends in one would read as a sibling without it, and a walk would check
+// that decoy (G018). These forms print a sentinel after the path and strip
+// it with the one newline echo added before it, leaving the name intact.
+
+// dirnameTo assigns the parent directory of the word from to the variable v.
+func dirnameTo(v, from string) string {
+	return v + `=$(dirname ` + from + ` && echo .); ` + v + `=${` + v + `%??}`
+}
+
+// resolvedTo assigns the physical path of the directory word dir to the
+// variable v; a cd that fails leaves v empty. errs is cd's redirection.
+func resolvedTo(v, dir, errs string) string {
+	return v + `=$(cd -P ` + dir + errs + ` && pwd -P && echo .); ` + v + `=${` + v + `%??}`
 }
 
 // Records the posture probe prints, one per line.
@@ -42,8 +59,9 @@ const (
 )
 
 // postureRecord is the probe's one record shape. Issue names and the mode
-// are closed sets; the path is the rest of the line, so a path containing a
-// newline breaks the grammar and fails closed.
+// are closed sets; the path is the rest of the line, so a raw newline breaks
+// the grammar and fails closed. The probe prints a path's newlines as '?'
+// (R in PostureCmdFor), so a directory named with one is still graded.
 var postureRecord = regexp.MustCompile(`^SSHEPHERD-POSTURE ([-dlbcps][-rwxsStT]{9}[.+@]?) ([0-9]+) (` +
 	fleet.PostureSymlink + `|` + fleet.PostureForeignOwner + `|` + fleet.PostureGroupWritable + `|` + fleet.PostureWorldWritable + `) (.+)$`)
 
@@ -60,14 +78,14 @@ var errPostureMalformed = errors.New("posture probe output malformed")
 // components are not findings: the read already reports absence.
 func PostureCmdFor(path string) string {
 	const (
-		rec        = `R() { printf 'SSHEPHERD-POSTURE %s %s %s %s\n' "$1" "$2" "$3" "$q"; }`
+		rec        = `R() { printf 'SSHEPHERD-POSTURE %s %s %s %s\n' "$1" "$2" "$3" "$(printf '%s' "$q" | tr '\n' '?')"; }`
 		modeFinds  = `case $1 in ?????w*) R "$1" "$3" ` + fleet.PostureGroupWritable + `;; esac; case $1 in ????????w*) R "$1" "$3" ` + fleet.PostureWorldWritable + `;; esac`
 		ownerFinds = `R "$1" "$3" ` + fleet.PostureForeignOwner
 	)
 	return PathAssign(path) + `; set -f; u=$(id -u) || exit 1; ` + rec +
 		`; q="$p"; if [ -L "$p" ]; then set -- $(ls -ldn "$p"); R "$1" "$3" ` + fleet.PostureSymlink +
 		`; elif [ -e "$p" ]; then set -- $(ls -ldn "$p"); if [ "$3" != "$u" ] && [ "$3" != 0 ]; then ` + ownerFinds + `; fi; ` + modeFinds + `; fi` +
-		`; d=$(dirname "$p"); while [ ! -d "$d" ]; do if [ -L "$d" ]; then q="$d"; set -- $(ls -ldn "$q"); if [ "$3" != "$u" ] && [ "$3" != 0 ]; then ` + ownerFinds + `; fi; fi; d=$(dirname "$d"); done; ` + AncestorWalk(modeFinds, ownerFinds) +
+		`; ` + dirnameTo("d", `"$p"`) + `; while [ ! -d "$d" ]; do if [ -L "$d" ]; then q="$d"; set -- $(ls -ldn "$q"); if [ "$3" != "$u" ] && [ "$3" != 0 ]; then ` + ownerFinds + `; fi; fi; ` + dirnameTo("d", `"$d"`) + `; done; ` + AncestorWalk(modeFinds, ownerFinds) +
 		`; k="${HOME:?}"/.ssh; ` + keys2Check(path) + `; exit 0`
 }
 
@@ -82,7 +100,8 @@ func keys2Check(path string) string {
 	if path == DefaultAuthorizedKeysPath {
 		return report
 	}
-	return `a=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd -P) && s=$(cd -P "$k" 2>/dev/null && pwd -P)` +
+	return dirnameTo("m", `"$p"`) + `; ` + resolvedTo("a", `"$m"`, ` 2>/dev/null`) + `; ` + resolvedTo("s", `"$k"`, ` 2>/dev/null`) +
+		`; [ -n "$a" ] && [ -n "$s" ]` +
 		` && { [ "$a/${p##*/}" = "$s/authorized_keys" ] || [ "$p" -ef "$s/authorized_keys" ] 2>/dev/null; } && { ` + report + `; }`
 }
 

@@ -258,8 +258,9 @@ SSHEPHERD-KEYS2 1
   stdout at the `MaxRemoteOutput` cap (1 MiB), or a non-zero exit → `ErrorKindRemote`
   with the message `posture probe output malformed` (or
   `posture probe failed (exit N): <sanitize.RemoteSnippet of stderr>`), so the server
-  is **unreachable** (D14b). A path containing a newline therefore breaks the grammar
-  and fails closed. The as-written and resolved walks visit the same directory when no
+  is **unreachable** (D14b). The probe prints a path's newlines as `?` (review wave 1,
+  G018), so such a path is graded; a raw newline in a record still breaks the grammar and
+  fails closed. The as-written and resolved walks visit the same directory when no
   symlink is involved, so identical `(path, issue)` records collapse to one after the
   count check. Paths are sanitized (`sanitize.Remote`) before they are printed; the
   JSON carries the sanitized form.

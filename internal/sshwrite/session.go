@@ -47,8 +47,8 @@ func (s *writeSession) run() error {
 	if err := write(); err != nil {
 		return err
 	}
-	keys2Name, keys2Err := s.disableKeys2()
-	if err := s.proveOrRestore(keys2Name); err != nil {
+	keys2, keys2Err := s.disableKeys2()
+	if err := s.proveOrRestore(keys2); err != nil {
 		return err
 	}
 	return keys2Err
@@ -91,7 +91,7 @@ func (s *writeSession) writeAndVerify() error {
 		// A session that never opened cannot have started the script.
 		return s.recheckAfterDrop(fmt.Errorf("write on %s: %w", s.srv.Name, err), !errors.Is(err, sshconn.ErrSessionNotOpened))
 	}
-	if err := writeExitError(code, s.path, s.srv, stdout, stderr); err != nil {
+	if err := writeExitError(code, s.path, s.srv, s.w.routeOf(s.srv), stdout, stderr); err != nil {
 		return err
 	}
 	s.w.log().Debug("write ok", "server", s.srv.Name, "bytes", len(s.req.Content))
@@ -122,40 +122,50 @@ func (s *writeSession) verify() error {
 }
 
 // disableKeys2 moves a non-empty authorized_keys2 aside before the login
-// check, so the check proves the survivors log in without it. It returns
-// the copy's basename ("" when nothing was moved).
-func (s *writeSession) disableKeys2() (string, error) {
+// check, so the check proves the survivors log in without it. The result
+// says where the file went, or that the move may have happened but no name
+// came back (keys2Move.unknown).
+func (s *writeSession) disableKeys2() (keys2Move, error) {
 	if !s.req.DisableKeys2 {
-		return "", nil
+		return keys2Move{}, nil
 	}
 	code, stdout, stderr, err := s.exec(disableKeys2Cmd(), nil)
 	switch {
 	case err != nil:
-		return "", sshconn.SanitizedError{Err: fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s failed: %w", s.srv.Name, err)}
+		// A session that never opened cannot have started the script.
+		return keys2Move{unknown: !errors.Is(err, sshconn.ErrSessionNotOpened)},
+			sshconn.SanitizedError{Err: fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s failed: %w", s.srv.Name, err)}
 	case code == unsafePathExit:
-		return "", fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s was refused: its directory fails the ownership/mode walk", s.srv.Name)
+		return keys2Move{}, fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s was refused: its directory fails the ownership/mode walk", s.srv.Name)
 	case code != 0:
-		return "", fmt.Errorf("authorized_keys written and verified, but %w", stageFailure("disabling authorized_keys2", s.srv.Name, code, stderr))
+		// The script's own failures come before the mv; a signal may not.
+		return keys2Move{unknown: code >= signalExit}, fmt.Errorf("authorized_keys written and verified, but %w", stageFailure("disabling authorized_keys2", s.srv.Name, code, stderr))
 	}
 	name, ok := parseKeys2Name(stdout.String())
 	if !ok {
-		return "", fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s printed an unrecognized name", s.srv.Name)
+		return keys2Move{unknown: true}, fmt.Errorf("authorized_keys written and verified, but disabling authorized_keys2 on %s printed an unrecognized name", s.srv.Name)
 	}
 	s.w.log().Debug("authorized_keys2 disabled", "server", s.srv.Name)
-	return name, nil
+	return keys2Move{name: name}, nil
 }
 
 // rollback restores after a REJECTED login check: the previous file (unless
-// this run never wrote it) and the authorized_keys2 copy this run made.
-func (s *writeSession) rollback(keys2Name string, probeErr error) error {
+// this run never wrote it) and the authorized_keys2 copy this run made,
+// recovered by listing when the move's reply was lost.
+func (s *writeSession) rollback(keys2 keys2Move, probeErr error) error {
 	s.w.log().Warn(fmt.Sprintf("%s: post-write login probe failed; restoring the previous file", s.srv.Name))
-	lo := &LockoutError{Path: s.path, Probe: sshconn.SanitizedError{Err: probeErr}, FileKept: s.req.SkipWrite}
+	lo := &LockoutError{Path: s.path, Probe: sshconn.SanitizedError{Err: probeErr}, FileKept: s.req.SkipWrite, Created: !s.req.SkipWrite && s.req.Expect.Absent}
 	if !s.req.SkipWrite {
 		lo.Restore = s.restoreFile()
 	}
-	if keys2Name != "" {
-		lo.RestoreKeys2 = s.restoreKeys2(keys2Name)
+	moved := keys2.name != ""
+	switch {
+	case keys2.unknown:
+		moved, lo.RestoreKeys2 = s.recoverKeys2()
+	case moved:
+		lo.RestoreKeys2 = s.restoreKeys2(keys2.name)
 	}
+	lo.Keys2Untouched = s.req.SkipWrite && !moved && lo.RestoreKeys2 == nil
 	return lo
 }
 
@@ -227,6 +237,8 @@ func (s *writeSession) restoreKeys2(name string) error {
 		return sshconn.SanitizedError{Err: fmt.Errorf("restore authorized_keys2 on %s: %w", s.srv.Name, err)}
 	case code == changedExit:
 		return fmt.Errorf("restore authorized_keys2 on %s refused: it was recreated meanwhile (the disabled copy is at %s)", s.srv.Name, name)
+	case code == sshconn.FileAbsentExit:
+		return fmt.Errorf("restore authorized_keys2 on %s failed: the disabled copy %s is gone", s.srv.Name, name)
 	case code != 0:
 		return stageFailure("restore authorized_keys2", s.srv.Name, code, stderr)
 	}
@@ -256,11 +268,15 @@ func (s *writeSession) reconnect() error {
 // unknownStateError is a dropped connection that could not be settled. Its
 // message is fixed; Unwrap keeps a failed reconnect's kind for error_kind.
 type unknownStateError struct {
-	path  string
-	cause error
+	path    string
+	created bool // the write was creating the file: no previous version
+	cause   error
 }
 
 func (e *unknownStateError) Error() string {
+	if e.created {
+		return fmt.Sprintf("connection dropped; the file is in an unknown state (there was no previous file; the undo is deleting %s) — run sshepherd audit", e.path)
+	}
 	return fmt.Sprintf("connection dropped; the file is in an unknown state (previous version at %s%s) — run sshepherd audit", e.path, bakSuffix)
 }
 
@@ -278,13 +294,18 @@ func (s *writeSession) recheckAfterDrop(cause error, started bool) error {
 	read, ok := s.lockedRead()
 	switch {
 	case !ok:
-		return &unknownStateError{path: s.path}
+		return s.unknownState(nil)
 	case !read.FileAbsent && bytes.Equal(read.Content, s.req.Content):
 		return nil
 	case SnapshotOf(read.FileAbsent, read.Content) == s.req.Expect:
 		return errors.New("connection dropped before the rename; original untouched (re-checked under the lock)")
 	}
-	return &unknownStateError{path: s.path}
+	return s.unknownState(nil)
+}
+
+// unknownState is the error for a drop that could not be settled.
+func (s *writeSession) unknownState(cause error) error {
+	return &unknownStateError{path: s.path, created: s.req.Expect.Absent, cause: cause}
 }
 
 // reconnectFailed maps a failed reconnect: a login refused after the upload
@@ -295,9 +316,9 @@ func (s *writeSession) recheckAfterDrop(cause error, started bool) error {
 func (s *writeSession) reconnectFailed(err error, started bool) error {
 	clean := sshconn.SanitizedError{Err: err}
 	if started && fleet.ErrorKindOf(err) == fleet.ErrorKindAuth && fleet.FailedHopOf(err) == "" {
-		return &LockoutError{Path: s.path, Probe: clean, Restore: fleet.ErrNoSession}
+		return &LockoutError{Path: s.path, Probe: clean, Restore: fleet.ErrNoSession, Created: s.req.Expect.Absent}
 	}
-	return &unknownStateError{path: s.path, cause: clean}
+	return s.unknownState(clean)
 }
 
 // lockedRead re-reads the file under the lock, waiting out a busy lock on

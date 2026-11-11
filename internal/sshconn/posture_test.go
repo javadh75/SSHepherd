@@ -179,6 +179,25 @@ func TestPostureCmdFindings(t *testing.T) {
 				must(t, os.Symlink("real", f))
 			},
 			[]string{"authorized_keys symlink"}},
+		{"a world-writable directory whose name ends in a newline is seen, not its decoy", // G018
+			func(t *testing.T, h string) { newlineSSHDir(t, h, 0o777) },
+			[]string{"real? group_writable", "real? world_writable"}},
+		{"a group-writable directory whose name ends in a newline is seen, not its decoy",
+			func(t *testing.T, h string) { newlineSSHDir(t, h, 0o770) },
+			[]string{"real? group_writable"}},
+		{"a safe directory whose name ends in a newline is clean",
+			func(t *testing.T, h string) { newlineSSHDir(t, h, 0o700) }, nil},
+		{"a writable parent of the newline-named directory is walked to (dirname keeps the name)",
+			func(t *testing.T, h string) {
+				dir := newlineSSHDir(t, h, 0o700)
+				inner := filepath.Join(dir, "inner")
+				must(t, os.Mkdir(inner, 0o700))
+				must(t, os.Rename(filepath.Join(dir, "authorized_keys"), filepath.Join(inner, "authorized_keys")))
+				must(t, os.Remove(filepath.Join(h, ".ssh")))
+				must(t, os.Symlink(inner, filepath.Join(h, ".ssh")))
+				must(t, os.Chmod(dir, 0o777))
+			},
+			[]string{"real? group_writable", "real? world_writable"}},
 		{"absent file is clean", func(t *testing.T, h string) { must(t, os.Remove(filepath.Join(h, ".ssh", "authorized_keys"))) }, nil},
 		{"absent ~/.ssh is clean", func(t *testing.T, h string) { must(t, os.RemoveAll(filepath.Join(h, ".ssh"))) }, nil},
 	}
@@ -200,6 +219,38 @@ func TestPostureCmdFindings(t *testing.T) {
 				t.Errorf("findings = %v, want %v", got, want)
 			}
 		})
+	}
+}
+
+// newlineSSHDir makes ~/.ssh a symlink to a directory whose name is "real"
+// and a newline (holding the keys file), beside a safe decoy called "real":
+// "$(...)" alone would turn the one name into the other.
+func newlineSSHDir(t *testing.T, home string, mode os.FileMode) string {
+	t.Helper()
+	sshDir := filepath.Join(home, ".ssh")
+	must(t, os.Mkdir(filepath.Join(home, "real"), 0o700))
+	dir := filepath.Join(home, "real") + "\n"
+	must(t, os.Mkdir(dir, 0o700))
+	must(t, os.Rename(filepath.Join(sshDir, "authorized_keys"), filepath.Join(dir, "authorized_keys")))
+	must(t, os.Remove(sshDir))
+	must(t, os.Symlink(dir, sshDir))
+	must(t, os.Chmod(dir, mode)) // defeat the umask
+	return dir
+}
+
+// TestPostureHomeNameEndsInANewline: the walk stops at the login user's own
+// home, even when that name ends in a newline, so its writable parent (not
+// sshd's concern) is not reported.
+func TestPostureHomeNameEndsInANewline(t *testing.T) {
+	outer := t.TempDir()
+	must(t, os.Chmod(outer, 0o770))
+	home := filepath.Join(outer, "h") + "\n"
+	must(t, os.Mkdir(home, 0o700))
+	must(t, os.Mkdir(filepath.Join(home, ".ssh"), 0o700))
+	must(t, os.WriteFile(filepath.Join(home, ".ssh", "authorized_keys"), []byte("k\n"), 0o600))
+	issues, _ := runPosture(t, home, DefaultAuthorizedKeysPath)
+	if got := issueSet(issues); len(got) != 0 {
+		t.Errorf("findings = %v, want none", got)
 	}
 }
 
@@ -391,6 +442,16 @@ func TestPostureKeys2(t *testing.T) {
 			setup: linkFile(".ssh/authorized_keys")},
 		{name: "symlinked file to another file", path: func(h string) string { return filepath.Join(h, "keys", "ak") },
 			setup: linkFile(".ssh/other"), ak2: true},
+		{name: "a decoy of a newline-named ~/.ssh is not ~/.ssh", path: func(h string) string { return filepath.Join(h, "decoy", "authorized_keys") }, // G018
+			setup: func(t *testing.T, h string) {
+				t.Helper()
+				k2, aside := filepath.Join(h, ".ssh", "authorized_keys2"), filepath.Join(h, "k2-aside")
+				must(t, os.Rename(k2, aside))
+				dir := newlineSSHDir(t, h, 0o700)
+				must(t, os.Rename(aside, filepath.Join(dir, "authorized_keys2")))
+				must(t, os.WriteFile(filepath.Join(h, "real", "authorized_keys"), []byte("k\n"), 0o600))
+				must(t, os.Symlink(filepath.Join(h, "real"), filepath.Join(h, "decoy")))
+			}, ak2: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

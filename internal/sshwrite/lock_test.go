@@ -200,7 +200,7 @@ func TestLockedErrorMessage(t *testing.T) {
 func TestLockRemoveCmd(t *testing.T) {
 	srv := config.Server{User: "deploy", Host: "10.0.0.1", Port: 22}
 	want := `ssh -p 22 deploy@10.0.0.1 ` + sshconn.ShQuote(`p="${HOME:?}"/'.ssh/authorized_keys'; rm -f -- "$p.sshepherd.lock/owner"; rmdir -- "$p.sshepherd.lock"`)
-	if got := lockRemoveCmd(srv, "~/.ssh/authorized_keys"); got != want {
+	if got := lockRemoveCmd(srv, nil, "~/.ssh/authorized_keys"); got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 	for _, tt := range []struct {
@@ -209,8 +209,62 @@ func TestLockRemoveCmd(t *testing.T) {
 		{"a;b", "ssh -p 22 'a;b@h' "},
 		{"-oProxyCommand=x", "ssh -p 22 -- -oProxyCommand=x@h "},
 	} {
-		if got := lockRemoveCmd(config.Server{User: tt.user, Host: "h", Port: 22}, "/p"); !strings.HasPrefix(got, tt.want) {
+		if got := lockRemoveCmd(config.Server{User: tt.user, Host: "h", Port: 22}, nil, "/p"); !strings.HasPrefix(got, tt.want) {
 			t.Errorf("user %q: got %s", tt.user, got)
 		}
+	}
+}
+
+// TestLockRemoveCmdRoutes (G017): the removal for a server behind bastions
+// goes through them, or names the bastion when no local command is safe.
+func TestLockRemoveCmdRoutes(t *testing.T) {
+	const path = "~/.ssh/authorized_keys"
+	script := sshconn.ShQuote(lockRemovalScript(path))
+	srv := config.Server{Name: "hopped", User: "deploy", Host: "10.9.0.5", Port: 22, Via: "edge"}
+	edge := config.Server{Name: "edge", User: "jump", Host: "10.0.0.9", Port: 2222}
+	root := config.Server{Name: "root", User: "ops", Host: "root.example", Port: 22}
+	for _, tt := range []struct {
+		name  string
+		srv   config.Server
+		route []config.Server
+		want  string
+	}{
+		{"one bastion", srv, []config.Server{edge}, "ssh -J jump@10.0.0.9:2222 -p 22 deploy@10.9.0.5 " + script},
+		{"two bastions, root first", srv, []config.Server{root, edge}, "ssh -J ops@root.example:22,jump@10.0.0.9:2222 -p 22 deploy@10.9.0.5 " + script},
+		{"a hop that is not a plain word", srv, []config.Server{{Name: "edge", User: "a;b", Host: "h", Port: 22}},
+			`on bastion "edge": ssh -p 22 deploy@10.9.0.5 ` + script},
+		{"an unsafe outer hop names the server's own bastion", srv, []config.Server{{Name: "root", User: "a;b", Host: "h", Port: 22}, edge},
+			`on bastion "edge": ssh -p 22 deploy@10.9.0.5 ` + script},
+		{"a hop whose host reads as an option", srv, []config.Server{{Name: "edge", User: "u", Host: "-oProxyCommand=x", Port: 22}},
+			`on bastion "edge": ssh -p 22 deploy@10.9.0.5 ` + script},
+		{"a destination that is not a plain word", config.Server{Name: "x", User: "a b", Host: "h", Port: 22, Via: "edge"}, []config.Server{edge},
+			`on bastion "edge": ssh -p 22 'a b@h' ` + script},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := lockRemoveCmd(tt.srv, tt.route, path); got != tt.want {
+				t.Errorf("got  %s\nwant %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLockedRefusalCarriesTheRoute: a held lock on a via server prints a
+// removal command that reaches it.
+func TestLockedRefusalCarriesTheRoute(t *testing.T) {
+	srv := config.Server{Name: "hopped", User: "deploy", Host: "10.9.0.5", Port: 22, Via: "edge"}
+	hops := map[string]config.Server{
+		"edge": {Name: "edge", User: "jump", Host: "10.0.0.9", Port: 22, Via: "root"},
+		"root": {Name: "root", User: "ops", Host: "root.example", Port: 22},
+	}
+	s := &scriptedExec{responses: []execResp{{code: lockedExit, stdout: busyOwner}}}
+	w := seamedWriter(s, &seamedConnect{})
+	w.Dialer = &sshconn.Dialer{Server: func(name string) (config.Server, bool) { h, ok := hops[name]; return h, ok }}
+	err := w.Apply(t.Context(), srv, req("x\n"))
+	var locked *LockedError
+	if !errors.As(err, &locked) {
+		t.Fatalf("err = %v", err)
+	}
+	if want := "ssh -J ops@root.example:22,jump@10.0.0.9:22 -p 22 deploy@10.9.0.5 "; !strings.HasPrefix(locked.RemoveCmd, want) {
+		t.Errorf("RemoveCmd = %s", locked.RemoveCmd)
 	}
 }

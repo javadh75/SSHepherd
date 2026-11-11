@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -218,6 +219,19 @@ func linkedAncestor(t *testing.T, home string) (link, realDir, target string) {
 }
 
 var ownerCases = []ownerCase{
+	{name: "resolved ancestor whose name ends in a newline, owned by another user", uid: foreignUID, mutant: "ancestor-resolved", // the resolved walk only (G018)
+		setup: func(t *testing.T, home string) (string, string, Snapshot) {
+			dir := newlineDir(t, home, 0o700)
+			link := filepath.Join(home, "sub")
+			if err := os.Symlink(dir, link); err != nil {
+				t.Fatal(err)
+			}
+			phys, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(link, "dot-ssh", "auth"), phys, Snapshot{Absent: true}
+		}},
 	{name: "target dir owned by root (non-root login)", uid: "0", mutant: "dir", // the directory check only: the walks accept root
 		setup: func(t *testing.T, home string) (string, string, Snapshot) {
 			d, target := dotSSHWithFile(t, home)
@@ -1796,6 +1810,45 @@ func TestKeys2CmdsThroughRealSh(t *testing.T) {
 				t.Errorf("authorized_keys2 = %q, want it restored", got)
 			}
 		})
+		t.Run("restore fails when the expected copy is missing", func(t *testing.T) {
+			home, k2 := setup(t)
+			if code := runSh(t, sh, restoreKeys2Cmd("authorized_keys2"+fleet.Keys2DisabledSuffix), home, nil); code != sshconn.FileAbsentExit {
+				t.Fatalf("exit = %d, want %d", code, sshconn.FileAbsentExit)
+			}
+			assertAbsent(t, k2, "nothing to move back")
+		})
+		t.Run("the listing names every disabled copy and nothing else", func(t *testing.T) {
+			home, k2 := setup(t)
+			base := "authorized_keys2" + fleet.Keys2DisabledSuffix
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "a\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix+".20261108T010203Z", "b\n")
+			writeFile(t, filepath.Join(home, ".ssh", "authorized_keys"), "c\n")
+			code, out := runShOut(t, sh, listKeys2Cmd(), home, nil)
+			if code != 0 {
+				t.Fatalf("exit = %d", code)
+			}
+			names, ok := parseKeys2Listing(out)
+			want := []string{base, base + ".20261108T010203Z"}
+			if !ok || !slices.Equal(names, want) {
+				t.Errorf("listing %q = %v %v, want %v", out, names, ok, want)
+			}
+		})
+		t.Run("the listing says when authorized_keys2 is still there", func(t *testing.T) {
+			home, k2 := setup(t)
+			writeFile(t, k2, "keys\n")
+			writeFile(t, k2+fleet.Keys2DisabledSuffix, "old\n")
+			code, out := runShOut(t, sh, listKeys2Cmd(), home, nil)
+			if names, ok := parseKeys2Listing(out); code != 0 || !ok || len(names) != 0 || out != keys2Present+"\n" {
+				t.Errorf("exit %d, listing %q = %v %v", code, out, names, ok)
+			}
+		})
+		t.Run("the listing is empty when nothing is there", func(t *testing.T) {
+			home, _ := setup(t)
+			code, out := runShOut(t, sh, listKeys2Cmd(), home, nil)
+			if names, ok := parseKeys2Listing(out); code != 0 || !ok || len(names) != 0 || out != "" {
+				t.Errorf("exit %d, listing %q = %v %v", code, out, names, ok)
+			}
+		})
 		t.Run("restore never clobbers a recreated file", func(t *testing.T) {
 			home, k2 := setup(t)
 			writeFile(t, k2, "new\n")
@@ -1829,6 +1882,35 @@ func TestParseKeys2Name(t *testing.T) {
 		if got, ok := parseKeys2Name(tt.out); got != tt.want || ok != tt.ok {
 			t.Errorf("parseKeys2Name(%q) = %q, %v", tt.out, got, ok)
 		}
+	}
+}
+
+func TestParseKeys2Listing(t *testing.T) {
+	if strings.ContainsAny(listKeys2Cmd(), "\n\r") {
+		t.Fatal("listKeys2Cmd must be single-line (sshconn.Exec rejects newlines)")
+	}
+	base := "authorized_keys2" + fleet.Keys2DisabledSuffix
+	for _, tt := range []struct {
+		name  string
+		out   string
+		names []string
+		ok    bool
+	}{
+		{"empty", "", nil, true},
+		{"present", "sshepherd-keys2-present\n", nil, true},
+		{"one", "sshepherd-keys2 " + base + "\n", []string{base}, true},
+		{"two", "sshepherd-keys2 " + base + "\nsshepherd-keys2 " + base + ".20261108T010203Z\n", []string{base, base + ".20261108T010203Z"}, true},
+		{"a hostile name", "sshepherd-keys2 ../../etc/passwd\n", nil, false},
+		{"a blank line", "sshepherd-keys2 " + base + "\n\n", nil, false},
+		{"garbage", "hello\n", nil, false},
+		{"present beside a name", "sshepherd-keys2-present\nsshepherd-keys2 " + base + "\n", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			names, ok := parseKeys2Listing(tt.out)
+			if !slices.Equal(names, tt.names) || ok != tt.ok {
+				t.Errorf("got %v %v", names, ok)
+			}
+		})
 	}
 }
 
