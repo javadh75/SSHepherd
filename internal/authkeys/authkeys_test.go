@@ -221,30 +221,34 @@ func TestParseFileCRLF(t *testing.T) {
 	}
 }
 
-// An embedded carriage return is a hostile line break: written back out it
-// would split into two lines, smuggling an extra key past review. It must be
-// a parse error, not something that survives into Key.Raw or the comment.
+// An embedded carriage return does not end the line for sshd (getline splits
+// at '\n' only), so the key logs in and must be named (review F002): the CR
+// stays in the comment, which every renderer sanitizes and the manifest
+// refuses, and in Raw, so the line is never silently shortened. A tail after
+// the CR hidden by a terminal is still on the line ParseLine reports.
 func TestParseLineEmbeddedCR(t *testing.T) {
 	line := testKeyLine(t) + " alice@laptop\r" + testKeyLine(t)
 	k, err := ParseLine(line)
-	if err == nil || !strings.Contains(err.Error(), "carriage return") {
-		t.Errorf("ParseLine(embedded CR) = (%v, %v), want a carriage-return error", k, err)
+	if err != nil || k == nil {
+		t.Fatalf("ParseLine(embedded CR) = (%v, %v), want the key sshd honors", k, err)
+	}
+	if k.Comment != "alice@laptop\r"+testKeyLine(t) || k.Raw != line {
+		t.Errorf("Comment = %q, Raw = %q; want the CR and its tail kept", k.Comment, k.Raw)
+	}
+	if RenderTextIssue(k.Comment) == "" {
+		t.Errorf("RenderTextIssue(%q) = \"\", want the comment refused by the manifest", k.Comment)
 	}
 }
 
-// In a file, the embedded CR must surface as a ParseError with the right
-// line number, hitting the strict/--partial gate like any other bad line.
+// In a file, both lines are keys: a CR inside a line is not a line break.
 func TestParseFileEmbeddedCR(t *testing.T) {
-	data := []byte(testKeyLine(t) + "\n" + testKeyLine(t) + " bob\rhidden\n")
+	data := []byte(testKeyLine(t) + "\n" + testkeys.Line(t, 2) + " bob\rhidden\n")
 	keys, errs := ParseFile(data)
-	if len(keys) != 1 {
-		t.Errorf("keys = %d, want 1 (only the clean line)", len(keys))
+	if len(keys) != 2 || len(errs) != 0 {
+		t.Fatalf("keys = %d, errs = %v; want 2 keys and no ParseError", len(keys), errs)
 	}
-	if len(errs) != 1 {
-		t.Fatalf("errs = %v, want exactly one ParseError", errs)
-	}
-	if errs[0].Line != 2 {
-		t.Errorf("ParseError.Line = %d, want 2", errs[0].Line)
+	if keys[1].Comment != "bob\rhidden" {
+		t.Errorf("keys[1].Comment = %q, want %q", keys[1].Comment, "bob\rhidden")
 	}
 }
 
@@ -433,6 +437,10 @@ func TestRenderTextIssue(t *testing.T) {
 		{"line separator (Zl)", "a \u2028evil", "contains control or format characters"},
 		{"paragraph separator (Zp)", "a\u2029evil", "contains control or format characters"},
 		{"non-ASCII letters ok", "jos\u00e9@caf\u00e9", ""},
+		// review F008: a raw C1 byte is not valid UTF-8; an 8-bit terminal reads 0x9B as CSI
+		{"raw 0x9B byte", "al\x9b31mice", "contains control or format characters"},
+		{"lone continuation byte", "a\xffb", "contains control or format characters"},
+		{"truncated sequence", "caf\xc3", "contains control or format characters"},
 		{"leading space", " a", "has leading or trailing whitespace"},
 		{"trailing space", "a ", "has leading or trailing whitespace"},
 		{"all whitespace", "   ", "has leading or trailing whitespace"},
@@ -469,27 +477,5 @@ func TestParseLineRaw(t *testing.T) {
 				t.Errorf("Raw = %q, want %q", k.Raw, tt.want)
 			}
 		})
-	}
-}
-
-// TestDeclaredType pins the type-token scanner behind ParseLine's
-// defense-in-depth mismatch check, independent of whether x/crypto already
-// rejected the line upstream.
-func TestDeclaredType(t *testing.T) {
-	tests := []struct {
-		line       string
-		hasOptions bool
-		want       string
-	}{
-		{"ssh-ed25519 AAAA c", false, "ssh-ed25519"},
-		{"ssh-rsa", false, "ssh-rsa"},
-		{`no-pty,command="a b" ssh-ed25519 AAAA`, true, "ssh-ed25519"},
-		{`command="echo \"x y\"" ssh-rsa AAAA`, true, "ssh-rsa"},
-		{"no-pty\tssh-ed25519\tAAAA", true, "ssh-ed25519"},
-	}
-	for _, tt := range tests {
-		if got := declaredType(tt.line, tt.hasOptions); got != tt.want {
-			t.Errorf("declaredType(%q, %v) = %q, want %q", tt.line, tt.hasOptions, got, tt.want)
-		}
 	}
 }

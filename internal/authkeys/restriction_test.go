@@ -10,7 +10,7 @@ import (
 // the list only by being added to the table.
 func TestIsRestrictionIsTheSpecList(t *testing.T) {
 	want := []string{"command", "expiry-time", "from", "no-agent-forwarding", "no-port-forwarding", "no-pty",
-		"no-user-rc", "no-x11-forwarding", "permitlisten", "permitopen", "restrict", "verify-required"}
+		"no-user-rc", "no-x11-forwarding", "permitlisten", "permitopen", "restrict", "touch-required", "verify-required"}
 	var got []string
 	for name, s := range options {
 		opt := name
@@ -29,15 +29,17 @@ func TestIsRestrictionIsTheSpecList(t *testing.T) {
 
 func TestIsRestriction(t *testing.T) {
 	for opt, want := range map[string]bool{
-		`FROM="10.0.0.0/8"`: true, // names are case-insensitive
-		"No-Pty":            true,
-		"cert-authority":    false, // a grant must not make a key a certificate authority
-		`principals="ops"`:  false,
-		"pty":               false, // a re-enabler widens
-		"no-touch-required": false,
-		`environment="A=b"`: false, // neutral
-		`tunnel="0"`:        false,
-		"bogus":             false,
+		`FROM="10.0.0.0/8"`:  true, // names are case-insensitive
+		"No-Pty":             true,
+		"cert-authority":     false, // a grant must not make a key a certificate authority
+		`principals="ops"`:   false,
+		"pty":                false, // a re-enabler widens
+		"no-touch-required":  false,
+		"touch-required":     true,  // review F025: requires the user-presence touch
+		"no-verify-required": false, // neutral: the default
+		`environment="A=b"`:  false, // neutral
+		`tunnel="0"`:         false,
+		"bogus":              false,
 	} {
 		if got := IsRestriction(opt); got != want {
 			t.Errorf("IsRestriction(%q) = %v, want %v", opt, got, want)

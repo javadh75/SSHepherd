@@ -19,6 +19,9 @@ const minRSABits = 2048
 // the constant deprecated (staticcheck SA1019).
 const keyTypeDSA = "ssh-dss"
 
+// certTypeDSA is ssh.CertAlgoDSAv01's value, spelled for the same reason.
+const certTypeDSA = "ssh-dss-cert-v01@openssh.com"
+
 // StrengthIssue names a key too weak to use: WeakDSA, or WeakRSAUnder2K with
 // the modulus size; "" otherwise. A certificate's own type never matches,
 // so a certificate line is judged by nothing here.

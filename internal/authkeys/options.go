@@ -19,7 +19,8 @@ const (
 // optionSpec is sshd(8)'s meaning of one authorized_keys option
 // (AUTHORIZED_KEYS FILE FORMAT). sshd rejects the whole line on any option
 // missing from this table, a valued option without a double-quoted value,
-// a bad expiry-time, or a second clause of a once-only option (command=,
+// a value its check rejects (expiry-time, permitopen, permitlisten,
+// environment, tunnel), or a second clause of a once-only option (command=,
 // from=, principals=; auth-options.c "multiple … clauses").
 type optionSpec struct {
 	takesValue bool
@@ -37,7 +38,8 @@ type optionSpec struct {
 	blocksLogin bool
 	// certOnly: the line accepts only certificates the key signed, never the bare key.
 	certOnly bool
-	// value validates the unquoted value; nil accepts any.
+	// value validates the dequoted value (optionvalues.go); nil accepts any.
+	// Its error is the "want ..." phrase of the manifest's refusal.
 	value func(string) error
 }
 
@@ -45,7 +47,7 @@ var options = map[string]optionSpec{
 	"agent-forwarding":    {effect: loosens, underRestrict: true},
 	"cert-authority":      {effect: restricts, certOnly: true},
 	"command":             {takesValue: true, effect: restricts, blocksLogin: true, once: true},
-	"environment":         {takesValue: true},
+	"environment":         {takesValue: true, value: validEnvironment},
 	"expiry-time":         {takesValue: true, effect: restricts, blocksLogin: true, value: validExpiry},
 	"from":                {takesValue: true, effect: restricts, blocksLogin: true, once: true},
 	"no-agent-forwarding": {effect: restricts},
@@ -53,23 +55,26 @@ var options = map[string]optionSpec{
 	"no-pty":              {effect: restricts},
 	"no-touch-required":   {effect: loosens}, // sk keys: no user-presence touch: a relaxation
 	"no-user-rc":          {effect: restricts},
+	"no-verify-required":  {}, // sk keys: no PIN/biometric, the default
 	"no-x11-forwarding":   {effect: restricts},
-	"permitlisten":        {takesValue: true, effect: restricts, union: true},
-	"permitopen":          {takesValue: true, effect: restricts, union: true},
+	"permitlisten":        {takesValue: true, effect: restricts, union: true, value: validPermitListen},
+	"permitopen":          {takesValue: true, effect: restricts, union: true, value: validPermitOpen},
 	"port-forwarding":     {effect: loosens, underRestrict: true},
 	"principals":          {takesValue: true, effect: restricts, certOnly: true, once: true},
 	"pty":                 {effect: loosens, underRestrict: true},
 	"restrict":            {effect: restricts, blocksLogin: true},
-	"tunnel":              {takesValue: true},
+	"touch-required":      {effect: restricts}, // sk keys: user-presence touch, the default
+	"tunnel":              {takesValue: true, value: validTunnel},
 	"user-rc":             {effect: loosens, underRestrict: true},
 	"verify-required":     {effect: restricts}, // sk keys: PIN/biometric required
 	"x11-forwarding":      {effect: loosens, underRestrict: true},
 }
 
-// nameOf is an option's lower-cased name (sshd matches names case-insensitively).
+// nameOf is an option's lower-cased name (sshd matches names
+// case-insensitively, in ASCII only).
 func nameOf(opt string) string {
 	name, _, _ := strings.Cut(opt, "=")
-	return strings.ToLower(name)
+	return asciiLower(name)
 }
 
 func lookup(opt string) (optionSpec, bool) {
@@ -80,16 +85,16 @@ func lookup(opt string) (optionSpec, bool) {
 // IsOptionName reports whether name (no "=value") is an authorized_keys
 // option sshd knows, case-insensitively.
 func IsOptionName(name string) bool {
-	_, ok := options[strings.ToLower(name)]
+	_, ok := options[asciiLower(name)]
 	return ok
 }
 
 // CheckOption reports why one key option is unfit for the manifest: an
-// unsafe rune, or a reason sshd rejects the line; "" means acceptable.
-// Unsafe runes are rejected first: option values are rendered verbatim into
-// files and plan output.
+// unsafe rune or invalid UTF-8, or a reason sshd rejects the line; "" means
+// acceptable. Unsafe text is rejected first: option values are rendered
+// verbatim into files and plan output.
 func CheckOption(opt string) string {
-	if strings.ContainsFunc(opt, IsUnsafeRune) {
+	if unsafeText(opt, noSkip) {
 		return "contains control or format characters"
 	}
 	return sshdIssue(opt)
@@ -97,7 +102,7 @@ func CheckOption(opt string) string {
 
 // sshdIssue reports why one option makes sshd reject the line; "" means sshd
 // accepts it. Unsafe runes are not sshd's concern: a quoted value may carry
-// any byte, and an unknown name is caught by the table lookup.
+// any byte but NUL, and an unknown name is caught by the table lookup.
 //
 // An accepted option is exactly one clause: its quoted value ends at its last
 // byte, read as sshd's opt_dequote reads it. A value that closes earlier
@@ -109,6 +114,8 @@ func sshdIssue(opt string) string {
 	_, value, hasValue := strings.Cut(opt, "=")
 	s, known := lookup(opt)
 	switch {
+	case strings.IndexByte(opt, 0) >= 0:
+		return `has a NUL byte; sshd's line ends there, leaving the value's quote open`
 	case !known:
 		return "is not a recognized authorized_keys option"
 	case !s.takesValue && hasValue:
@@ -122,11 +129,16 @@ func sshdIssue(opt string) string {
 		return `requires a quoted value (name="...")`
 	case end != len(value)-1:
 		return `has an unescaped '"' inside its quoted value; sshd ends the value there (write \" for a literal quote)`
-	case s.value != nil && s.value(value[1:end]) != nil:
-		return "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])" // only expiry-time has a validator today
+	case s.value != nil:
+		if err := s.value(dequote(value[1:end])); err != nil {
+			return "has an invalid value (" + err.Error() + ")"
+		}
 	}
 	return ""
 }
+
+// dequote is opt_dequote's copy of a quoted value: \" becomes ".
+func dequote(v string) string { return strings.ReplaceAll(v, `\"`, `"`) }
 
 // quotedEnd returns the index of the '"' that closes value's leading quoted
 // string, scanned like OpenSSH's opt_dequote (a backslash right before a '"'

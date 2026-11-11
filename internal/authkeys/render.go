@@ -33,7 +33,10 @@ type RenderEntry struct {
 // surfaced as an error rather than a dropped line (a silently missing key
 // is a lockout hazard).
 func RenderLine(e RenderEntry) (string, error) {
-	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(e.Key.Raw))
+	k, pub, err := parseLine(e.Key.Raw)
+	if err == nil && k == nil {
+		err = errNoKey
+	}
 	if err != nil {
 		return "", fmt.Errorf("render key %s: raw line does not re-parse: %w", e.Key.Fingerprint, err)
 	}

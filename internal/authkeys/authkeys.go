@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -18,85 +19,48 @@ type Key struct {
 	Comment     string   // trailing comment, conventionally user@host
 	Options     []string // leading options, e.g. ["no-port-forwarding"]
 	Fingerprint string   // SHA256 fingerprint, e.g. "SHA256:abc..."
-	Raw         string   // the original line, whitespace-trimmed: options, key material, comment
+	// Raw is the original line, whitespace-trimmed: options, key material,
+	// comment, and any bytes sshd does not read (a tail after a NUL,
+	// whitespace inside the key field), so it is never silently shortened.
+	Raw string
 	// Weak is StrengthIssue's verdict ("" for an acceptable key) and WeakBits
 	// the RSA modulus size it found, set by ParseLine so the line is parsed once.
 	Weak     string
 	WeakBits int
 }
 
-// ParseLine parses a single authorized_keys line. Blank lines and comment lines
-// (those whose first non-space character is '#') are not entries and return
-// (nil, nil). Anything else that is not a valid key returns an error.
+// ParseLine parses a single authorized_keys line the way sshd reads it
+// (readLine): a line sshd honors yields the key it logs in with, even where
+// x/crypto's own line parser refuses it (review F002), and a line sshd skips
+// is an error. Blank lines and comment lines (those whose first non-space
+// character is '#') are not entries and return (nil, nil). Options are
+// split, not judged: IgnoredBySSHD says whether sshd accepts them.
 func ParseLine(line string) (*Key, error) {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-		return nil, nil
-	}
-	// An embedded CR is a hostile line break: x/crypto truncates the line
-	// at the first CR, silently discarding whatever follows it, so the
-	// hidden tail would vanish from every parsed view (Comment, and any
-	// Raw-derived output) while still sitting in the file — and a terminal
-	// or editor may show it as a second line. Reject it so the line hits
-	// the strict/--partial gate and is never silently shortened. (A
-	// trailing CR is trimmed above; ParseFile strips CRLF endings before
-	// calling.)
-	if strings.ContainsRune(trimmed, '\r') {
-		return nil, fmt.Errorf("parse authorized_keys line: embedded carriage return")
-	}
+	k, _, err := parseLine(line)
+	return k, err
+}
 
-	pub, comment, options, _, err := ssh.ParseAuthorizedKey([]byte(line))
+// parseLine is ParseLine, also returning the public key (RenderLine
+// re-marshals it).
+func parseLine(line string) (*Key, ssh.PublicKey, error) {
+	text := cString(line)
+	if t := strings.TrimSpace(text); t == "" || t[0] == '#' {
+		return nil, nil, nil
+	}
+	f, err := readLine(text)
 	if err != nil {
-		return nil, fmt.Errorf("parse authorized_keys line: %w", err)
+		return nil, nil, fmt.Errorf("parse authorized_keys line: %w", err)
 	}
-	// OpenSSH's sshkey_read rejects a declared type token that disagrees
-	// with the blob (KEY_TYPE_MISMATCH), so sshd skips such a line.
-	// Accepting it would let audit/adopt report a key as installed that
-	// cannot actually log in. x/crypto >= v0.56 rejects most mismatches
-	// itself; this check is kept as defense in depth so the rule does not
-	// depend on the dependency version.
-	if declared := declaredType(trimmed, len(options) > 0); declared != pub.Type() {
-		return nil, fmt.Errorf("parse authorized_keys line: key type mismatch: declared %q, key material %q",
-			declared, pub.Type())
-	}
-
-	weak, bits := StrengthIssue(pub)
+	weak, bits := StrengthIssue(f.pub)
 	return &Key{
 		Weak:        weak,
 		WeakBits:    bits,
-		Type:        pub.Type(),
-		Comment:     comment,
-		Options:     options,
-		Fingerprint: ssh.FingerprintSHA256(pub),
+		Type:        f.pub.Type(),
+		Comment:     strings.TrimSpace(f.comment),
+		Options:     f.options,
+		Fingerprint: ssh.FingerprintSHA256(f.pub),
 		Raw:         strings.TrimSpace(line),
-	}, nil
-}
-
-// declaredType returns the key-type token of a trimmed line ParseLine has
-// already parsed: the first token when the line has no options, else the
-// token after the options field — scanned exactly like x/crypto's
-// ParseAuthorizedKey (commas/whitespace split options outside double
-// quotes; a backslash escapes a quote).
-func declaredType(trimmed string, hasOptions bool) string {
-	rest := trimmed
-	if hasOptions {
-		inQuote := false
-		i := 0
-		for ; i < len(rest); i++ {
-			b := rest[i]
-			if !inQuote && (b == ' ' || b == '\t') {
-				break
-			}
-			if b == '"' && (i == 0 || rest[i-1] != '\\') {
-				inQuote = !inQuote
-			}
-		}
-		rest = strings.TrimLeft(rest[i:], " \t")
-	}
-	if i := strings.IndexAny(rest, " \t"); i >= 0 {
-		return rest[:i]
-	}
-	return rest
+	}, f.pub, nil
 }
 
 // ParseError describes a single unparseable line in an authorized_keys file.
@@ -134,19 +98,41 @@ func IsUnsafeRune(r rune) bool {
 	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
+// noSkip exempts no rune from unsafeText.
+const noSkip rune = -1
+
+// unsafeText reports whether s is not valid UTF-8 or holds a rune other than
+// skip for which IsUnsafeRune holds. IsUnsafeRune sees an invalid byte
+// only as U+FFFD, but a raw 0x9B is CSI to a terminal in an 8-bit locale
+// (review F008), so invalid UTF-8 is unsafe too.
+func unsafeText(s string, skip rune) bool {
+	return !utf8.ValidString(s) || strings.ContainsFunc(s, func(r rune) bool { return r != skip && IsUnsafeRune(r) })
+}
+
+// LineTextIssue reports why a whole key line is unfit to keep in the
+// manifest verbatim; empty means fit. A line passes when it is valid UTF-8
+// with no unsafe rune but a tab (sshd's field separator). Parsing alone does
+// not ensure this: sshd ends a line at a NUL and skips whitespace inside the
+// key field, so a line that logs in may carry bytes a reviewer never sees.
+func LineTextIssue(s string) string {
+	if unsafeText(s, '\t') {
+		return "contains control or format characters"
+	}
+	return ""
+}
+
 // RenderTextIssue reports why s is unsafe to render into an authorized_keys
 // line and read back identically; empty means safe (and the empty string is
-// safe — it means "unset"). Unsafe runes (IsUnsafeRune) would split the
-// one-entry-one-line invariant or smuggle terminal escapes; edge whitespace
-// would not survive ssh.ParseAuthorizedKey's comment trimming on re-read,
-// making the written file permanently disagree with the manifest. config
-// validation applies this to every rendered field (user names, comments) at
-// manifest load, so hostile values die before the render path ever runs.
+// safe — it means "unset"). Unsafe runes (IsUnsafeRune) and invalid UTF-8
+// would split the one-entry-one-line invariant or smuggle terminal escapes;
+// edge whitespace would not survive the key parser's comment trimming on
+// re-read, making the written file permanently disagree with the manifest.
+// config validation applies this to every rendered field (user names,
+// comments) at manifest load, so hostile values die before the render path
+// ever runs.
 func RenderTextIssue(s string) string {
-	for _, r := range s {
-		if IsUnsafeRune(r) {
-			return "contains control or format characters"
-		}
+	if unsafeText(s, noSkip) {
+		return "contains control or format characters"
 	}
 	if strings.TrimSpace(s) != s {
 		return "has leading or trailing whitespace"

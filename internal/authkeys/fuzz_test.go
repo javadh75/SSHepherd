@@ -9,7 +9,8 @@ import (
 // FuzzParseLine asserts the core safety property: parsing arbitrary, possibly
 // malicious authorized_keys input must never panic, and any key it does return
 // must be self-consistent. authorized_keys lines are untrusted input, so this
-// path is a prime crash/injection surface.
+// path is a prime crash/injection surface. Every line must also read the way
+// sshd reads it (the sshdmodel oracle, review F009).
 func FuzzParseLine(f *testing.F) {
 	seeds := []string{
 		"",
@@ -24,6 +25,7 @@ func FuzzParseLine(f *testing.F) {
 			"ssh-ed25519-cert-v01@openssh.com "+strings.Fields(line)[1],
 			`command="a \" b" ssh-rsa `+strings.Fields(line)[1])
 	}
+	seeds = append(seeds, sshdGrammarLines(f)...)
 	for _, s := range seeds {
 		f.Add(s)
 	}
@@ -33,6 +35,7 @@ func FuzzParseLine(f *testing.F) {
 		if err == nil && k != nil && k.Type == "" {
 			t.Errorf("parsed key has empty Type for input %q", line)
 		}
+		agreeWithSSHD(t, line)
 	})
 }
 

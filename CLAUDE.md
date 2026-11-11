@@ -886,3 +886,16 @@ their meaning (the stage-1 "never started" rule, the login check's REJECTED verd
 Merge fix: `handshakeKind` counts a failure once ctx's deadline has passed as `timeout` even
 before `ctx.Err` is set (`pastDeadline`), because a via target's hop socket shares the deadline
 and can end the tunnel first (`TestConnectThroughHopDeadlineAndCancel` failed 3-6% under `-race`).
+**Review wave 1** (planned in `docs/superpowers/plans/2026-11-11-review-wave-1.md`).
+Parser: F002/F009: `authkeys.ParseLine` reads a line as sshd does (`internal/authkeys/sshdread.go`:
+C-string cut, space/tab fields, b64_pton whitespace skip and strict padding, exact type tokens
+including rsa-sha2-*); `TestParseLineReadsLikeSSHD`, audit's
+`TestRevokedKeyInAnSSHDOnlyLineIsCritical`. F003/F025: value validators in
+`internal/authkeys/optionvalues.go` used by `CheckOption` and `IgnoredBySSHD`, `touch-required`
+(restricts) and `no-verify-required` (neutral) in the table; `TestOptionValues`,
+`TestOptionValuesRefusedAtLoad`, `TestOperatorLineWithABadValueCannotLogIn`. F008: invalid UTF-8 is
+unsafe (`RenderTextIssue`, `CheckOption`, `ServerFieldIssue`, `authorized_keys_file`, new
+`LineTextIssue`), any manifest string field holding it is a load error (`config.invalidUTF8`),
+`audit.ServerHead` sanitizes; `TestParseRefusesInvalidUTF8`, `TestBuildRefusesUnreadableRemoteText`.
+F009: `internal/authkeys/sshdmodel` is a separate port of sshd's line acceptance, the oracle of
+`FuzzParseLine` and `FuzzCheckOption` (test support, imported by no production code).

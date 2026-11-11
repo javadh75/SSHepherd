@@ -218,7 +218,11 @@ func FuzzCheckOption(f *testing.F) {
 		`from="x",pty`, `from="x" ` + testkeys.Line(f, 2) + ` "`} {
 		f.Add(s)
 	}
+	for _, s := range sshdGrammarOptions() {
+		f.Add(s)
+	}
 	f.Fuzz(func(t *testing.T, opt string) {
+		optionAgreesWithSSHD(t, opt, key)
 		if CheckOption(opt) == "" {
 			name, _, _ := strings.Cut(opt, "=")
 			if _, ok := options[strings.ToLower(name)]; !ok {
@@ -238,4 +242,127 @@ func FuzzCheckOption(f *testing.F) {
 			t.Errorf("identical lines reported loosening for %q", opt)
 		}
 	})
+}
+
+// TestOptionValues (review F003, F025): the valued options sshd checks
+// (auth-options.c) carry the same value rules here, so the manifest refuses
+// a line sshd would skip (CheckOption) and audit no longer calls such a line
+// authorized (IgnoredBySSHD). sshd: permitopen is host:port or host:*
+// (hpdelim2 also splits at '/', and a bracketed host may hold ':'), port
+// 1-65535 or *; permitlisten is [host:]port or *; environment is NAME=value
+// with NAME of [A-Za-z0-9_]; tunnel is a number up to 2147483645 or "any";
+// sshd's C string ends at a NUL, so a NUL inside a value leaves the quote
+// open. A service name for a port (sshd's a2port asks getservbyname) depends
+// on the server's /etc/services and is not in sshd's manual: it counts as a
+// port sshd cannot read.
+func TestOptionValues(t *testing.T) {
+	const (
+		ok  = ""
+		bad = "bad"
+	)
+	tests := []struct{ opt, want string }{
+		{`permitopen="db:22"`, ok},
+		{`permitopen="db:*"`, ok},
+		{`permitopen="*:*"`, ok},
+		{`PermitOpen="db.internal:5432"`, ok},
+		{`permitopen="[2001:db8::5]:22"`, ok},
+		{`permitopen="db/22"`, ok},
+		{`permitopen=":22"`, ok},
+		{`permitopen="db:+22"`, ok},
+		{`permitopen="db:65535"`, ok},
+		{`permitopen="db"`, bad},
+		{`permitopen="db.internal"`, bad},
+		{`permitopen=""`, bad},
+		{`permitopen="db:"`, bad},
+		{`permitopen="db:0"`, bad},
+		{`permitopen="db:65536"`, bad},
+		{`permitopen="db:-1"`, bad},
+		{`permitopen="db:22x"`, bad},
+		{`permitopen="db:2:2"`, bad},
+		{`permitopen="[::1"`, bad},
+		{`permitopen="[::1]x:22"`, bad},
+		{`permitopen="2001:db8::5:22"`, bad},
+		{`permitopen="` + strings.Repeat("h", 1025) + `:22"`, bad},
+		{`permitopen="` + strings.Repeat("h", 1024) + `:22"`, ok},
+		{`permitopen="db:ssh"`, bad},
+		{`permitlisten="8080"`, ok},
+		{`permitlisten="*"`, ok},
+		{`permitlisten="localhost:8080"`, ok},
+		{`permitlisten="localhost:*"`, ok},
+		{`permitlisten="[::1]:8080"`, ok},
+		{`permitlisten="nope"`, bad},
+		{`permitlisten="0"`, bad},
+		{`permitlisten=""`, bad},
+		{`permitlisten="host/80"`, bad},
+		{`permitlisten="http"`, bad},
+		{`environment="FOO=1"`, ok},
+		{`environment="A_B="`, ok},
+		{`environment="1A=x=y"`, ok},
+		{`Environment="FOO=a b,c"`, ok},
+		{`environment="FOO"`, bad},
+		{`environment="=x"`, bad},
+		{`environment="F-O=1"`, bad},
+		{`environment="F O=1"`, bad},
+		{`environment=""`, bad},
+		{`tunnel="0"`, ok},
+		{`tunnel="1"`, ok},
+		{`tunnel="any"`, ok},
+		{`tunnel="ANY"`, ok},
+		{`tunnel="2147483645"`, ok},
+		{`tunnel="2147483646"`, bad},
+		{`tunnel="abc"`, bad},
+		{`tunnel="-1"`, bad},
+		{`tunnel=""`, bad},
+		{`tunnel="1x"`, bad},
+		{"touch-required", ok},
+		{"No-Verify-Required", ok},
+		{"no-verify-required", ok},
+		{"no-touch-required", ok},
+		{`command="echo ok` + "\x00" + `"`, bad},
+	}
+	for _, tt := range tests {
+		sshd := IgnoredBySSHD([]string{tt.opt})
+		check := CheckOption(tt.opt)
+		switch tt.want {
+		case ok:
+			if sshd != nil || check != "" {
+				t.Errorf("%q: IgnoredBySSHD = %v, CheckOption = %q; want both to accept", tt.opt, sshd, check)
+			}
+		case bad:
+			if sshd == nil || check == "" {
+				t.Errorf("%q: IgnoredBySSHD = %v, CheckOption = %q; want both to refuse", tt.opt, sshd, check)
+			}
+		}
+	}
+}
+
+// TestOptionValueMessages pins the wording a manifest author sees.
+func TestOptionValueMessages(t *testing.T) {
+	for opt, want := range map[string]string{
+		`permitopen="db.internal"`:  "has an invalid value (want host:port or host:*, port 1-65535)",
+		`permitlisten="nope"`:       "has an invalid value (want [host:]port or *, port 1-65535)",
+		`environment="FOO"`:         "has an invalid value (want NAME=value, NAME of letters, digits and _)",
+		`tunnel="abc"`:              "has an invalid value (want a number up to 2147483645 or any)",
+		`permitopen="db:ssh"`:       "has an invalid value (want host:port or host:*, port 1-65535)",
+		`command="a` + "\x00" + `"`: "contains control or format characters",
+		`expiry-time="2027"`:        "has an invalid value (want YYYYMMDD[HHMM[SS]][Z])",
+	} {
+		if got := CheckOption(opt); got != want {
+			t.Errorf("CheckOption(%q) = %q, want %q", opt, got, want)
+		}
+	}
+	if err := IgnoredBySSHD([]string{`command="a` + "\x00" + `"`}); err == nil || !strings.Contains(err.Error(), "NUL") {
+		t.Errorf("IgnoredBySSHD(NUL in a value) = %v, want a NUL reason", err)
+	}
+}
+
+// TestCheckOptionInvalidUTF8 (review F008): a raw 0x9B byte is an 8-bit CSI
+// for a terminal in an 8-bit locale; IsUnsafeRune sees only U+FFFD, so the
+// check is utf8.ValidString.
+func TestCheckOptionInvalidUTF8(t *testing.T) {
+	for _, opt := range []string{"command=\"/bin/true \x9b31m\"", "command=\"x\xff\"", "no-pty\xc3"} {
+		if got := CheckOption(opt); got != "contains control or format characters" {
+			t.Errorf("CheckOption(%q) = %q, want the unsafe-text refusal", opt, got)
+		}
+	}
 }

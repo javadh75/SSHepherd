@@ -439,7 +439,7 @@ An empty list means no options.
 
 - Allowed: `command=`, `expiry-time=`, `from=`, `no-agent-forwarding`, `no-port-forwarding`,
   `no-pty`, `no-user-rc`, `no-x11-forwarding`, `permitlisten=`, `permitopen=`, `restrict`,
-  `verify-required`. `cert-authority` and `principals=` are refused: a grant cannot turn a key
+  `touch-required`, `verify-required`. `cert-authority` and `principals=` are refused: a grant cannot turn a key
   into a certificate authority. An option name already on a key line the entry reaches is
   refused too (see [Validation rules](#validation-rules)). Each list item is exactly one
   option; a value with a stray quote is refused.
@@ -639,14 +639,22 @@ The loader fails the whole manifest (exit 3) on any of these:
 - **Key options** must be real OpenSSH options: `agent-forwarding`, `cert-authority`,
   `command`, `environment`, `expiry-time`, `from`, `no-agent-forwarding`,
   `no-port-forwarding`, `no-pty`, `no-touch-required`, `no-user-rc`,
-  `no-X11-forwarding`, `permitlisten`, `permitopen`, `port-forwarding`, `principals`,
-  `pty`, `restrict`, `tunnel`, `user-rc`, `verify-required`, `X11-forwarding`. Names
+  `no-verify-required`, `no-X11-forwarding`, `permitlisten`, `permitopen`,
+  `port-forwarding`, `principals`, `pty`, `restrict`, `touch-required`, `tunnel`,
+  `user-rc`, `verify-required`, `X11-forwarding`. Names
   are case-insensitive. Valued options need `name="..."` (double-quoted, as sshd
   requires); flag options must not carry a value. Errors read e.g.
   `user "alice" key 1: option "no-ptty" is not a recognized authorized_keys option`.
   `expiry-time` must be `YYYYMMDD[HHMM[SS]]` (optional `Z` for UTC): sshd skips a
   line it cannot read. A bad value fails with e.g.
   `user "alice" key 1: option "expiry-time=\"2027\"" has an invalid value (want YYYYMMDD[HHMM[SS]][Z])`.
+  `permitopen` must be `host:port` or `host:*` (a bracketed IPv6 host is fine, port
+  1-65535 as a number), `permitlisten` `[host:]port` or `*`, `environment` `NAME=value`
+  with a NAME of letters, digits and `_`, and `tunnel` a number up to 2147483645 or
+  `any`. sshd skips a line with any other value, so the loader refuses it, e.g.
+  `user "alice" key 1: option "permitopen=\"db.internal\"" has an invalid value (want host:port or host:*, port 1-65535)`.
+  A port written as a service name (`db:ssh`) is refused too: whether sshd can read it
+  depends on the server's /etc/services.
   `command`, `from` and `principals` may appear once per line. sshd rejects a line
   that repeats one, so the loader does too:
   `user "alice" key 1: option "command=\"echo B\"" repeats command=, which sshd allows once per line`.
@@ -723,7 +731,12 @@ The loader fails the whole manifest (exit 3) on any of these:
 - **Names and comments** (user names, `comment:`, inline key comments) may not
   contain control or format characters, the Unicode line/paragraph separators
   U+2028/U+2029, or leading/trailing whitespace; option values may not contain the
-  same control, format or separator characters. Non-ASCII letters are fine.
+  same control, format or separator characters. Non-ASCII letters are fine. Every
+  string in the manifest must be valid UTF-8; a `!!binary` scalar holding other bytes
+  fails the load, naming the field
+  (`servers[0].host is not valid UTF-8 (manifest text must be; a !!binary scalar can hold other bytes)`).
+  A key line may not hold control or format characters outside its fields' tabs:
+  `user "alice" key 1: contains control or format characters`.
 - **`serial:`** must be a plain, unquoted decimal integer from 0 to 9007199254740991
   (an empty value, `~` or `null` included):
   `serial: want an integer from 0 to 9007199254740991, got "VALUE"`.
@@ -968,6 +981,12 @@ entry says otherwise):
   path is the default or resolves to it);
 - **Unsafe permissions** — audit checks what sshd's StrictModes checks: the managed file and its directories up to `$HOME` (up to `/` for an override path outside it). A group-writable path, a path owned by neither the login user nor root, or a symlinked managed file is drift (exit 1); a world-writable path is critical (exit 2), since anyone on the host can add a key. The report says to fix by hand (`chmod go-w`, `chown`); `apply` refuses to write through these paths (exit 48 in the write script; 45 for a symlinked managed file). A root-owned file audits clean, though `apply` refuses to write it. The probe is evidence about an honest server: a compromised one can print nothing and look clean.
 - **Operator or protected key that cannot log in** — a present operator or protected key on a line sshd will not honour (a `cert-authority`/`principals=` line the manifest does not declare, a passed `expiry-time` whether declared or not, or every line ignored) is critical. Audit checks every line of a key, as sshd does: a working second line keeps it non-critical.
+
+SSHepherd reads each `authorized_keys` line as sshd does: the line ends at a NUL, and
+whitespace inside the base64 key field is skipped. A key hidden that way is still named (a
+revoked one is REVOKED, exit 2). `adopt` reports such a line, or one whose options are not
+valid UTF-8, as an issue and does not adopt it; an invalid-UTF-8 comment is dropped with a
+warning like any unsafe comment.
 
 Rows are annotated ` · WEAK (dsa)`, ` · WEAK (rsa 1024)` and ` · EXPIRED`; annotations alone do not change the exit code.
 

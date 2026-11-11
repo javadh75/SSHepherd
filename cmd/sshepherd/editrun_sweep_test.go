@@ -56,7 +56,7 @@ func TestClassifySweepUnprovable(t *testing.T) {
 // the parser refuses must not read as "no revoked key found".
 func TestRevokeSweepUnparseableLineExit1(t *testing.T) {
 	hosts, kh, cfg := sweepFleet(t)
-	hosts["web-2"].install(t, []byte{1}, testkeys.Line(t, 2)+" bob\rlaptop")
+	hosts["web-2"].install(t, []byte{1}, testkeys.Line(t, 2)[:40]+" bob")
 	var out, errBuf bytes.Buffer
 	if code := run([]string{"revoke", "bob", "--sweep", "--yes", "--config", cfg, "--known-hosts", kh}, &out, &errBuf); code != 1 {
 		t.Fatalf("exit = %d, want 1\n%s\n%s", code, out.String(), errBuf.String())

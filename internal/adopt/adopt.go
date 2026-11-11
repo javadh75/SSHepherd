@@ -150,26 +150,18 @@ func Build(cfg *config.Config, results []audit.ServerResult) Plan {
 				pd.foundOn = append(pd.foundOn, r.Server.Name)
 				continue
 			}
-			// The line logs in, but it becomes the manifest line, and the
-			// manifest refuses option bytes it would render verbatim
-			// (control/format runes, which sshd accepts inside quotes).
-			// Adopting it would fail adopt's self-check.
-			if err := authkeys.OptionIssue(k.Options); err != nil {
+			line, dropped, err := manifestLine(k)
+			if err != nil {
 				p.Issues = append(p.Issues, Issue{Server: r.Server.Name,
 					Detail: fmt.Sprintf("key %s: this line logs in, but the manifest cannot hold it: %v — not adopted", k.Fingerprint, err)})
 				continue
 			}
-			byFP[k.Fingerprint] = &pending{line: k.Raw, comment: k.Comment, keyType: k.Type, foundOn: []string{r.Server.Name}}
+			byFP[k.Fingerprint] = &pending{line: line, comment: k.Comment, keyType: k.Type, foundOn: []string{r.Server.Name}}
 			order = append(order, k.Fingerprint)
-			if issue := authkeys.RenderTextIssue(k.Comment); issue != "" {
-				// The manifest rejects such an inline comment, so one odd
-				// remote line would otherwise fail adopt's self-check.
-				// The key is what grants access; adopt it without the
-				// comment.
-				byFP[k.Fingerprint].line = stripComment(k)
+			if dropped != "" {
 				p.Warnings = append(p.Warnings, Warning{Kind: WarnCommentDropped, Server: r.Server.Name, Fingerprint: k.Fingerprint,
 					Message: fmt.Sprintf("key %s on %s: comment %s — adopted without its comment",
-						k.Fingerprint, r.Server.Name, issue)})
+						k.Fingerprint, r.Server.Name, dropped)})
 			}
 		}
 	}
@@ -268,10 +260,34 @@ func extensions(cfg *config.Config, extByUser map[string]map[string]bool) []Exte
 	return out
 }
 
+// manifestLine is the manifest line adopt writes for a line that logs in:
+// the line as found, or without its comment when the manifest refuses the
+// comment (dropped says why). The key is what grants access. err is set
+// when the manifest cannot hold the line at all: option bytes it would
+// render verbatim (control or format runes, invalid UTF-8, which sshd
+// accepts inside quotes), or bytes a reviewer of the generated manifest
+// cannot see (a tail after a NUL, whitespace inside the key field: review
+// F002, F008). Adopting either would fail adopt's self-check or hide what it
+// grants.
+func manifestLine(k authkeys.Key) (line, dropped string, err error) {
+	if err := authkeys.OptionIssue(k.Options); err != nil {
+		return "", "", fmt.Errorf("%w", err)
+	}
+	line = k.Raw
+	if dropped = authkeys.RenderTextIssue(k.Comment); dropped != "" {
+		line = stripComment(k)
+	}
+	if issue := authkeys.LineTextIssue(line); issue != "" {
+		return "", "", fmt.Errorf("the line %s", issue)
+	}
+	return line, dropped, nil
+}
+
 // stripComment returns k's line without its trailing comment: options (as
 // written) plus key type and material. Raw is whitespace-trimmed and the
 // parser takes the comment as the trimmed remainder after the key field, so
-// the comment is always Raw's suffix.
+// the comment is Raw's suffix, unless Raw holds a tail sshd does not read
+// (after a NUL); then Raw comes back whole and manifestLine refuses it.
 func stripComment(k authkeys.Key) string {
 	if k.Comment == "" {
 		return k.Raw

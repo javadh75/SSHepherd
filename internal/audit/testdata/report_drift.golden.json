@@ -43,7 +43,7 @@
       "parse_errors": [
         {
           "line": 3,
-          "error": "line 3: parse authorized_keys line: ssh: no key found; last parsing error for ignored line: illegal base64 data at input byte 4"
+          "error": "line 3: parse authorized_keys line: no key found"
         }
       ],
       "file_absent": false,

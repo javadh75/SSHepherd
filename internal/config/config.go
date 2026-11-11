@@ -168,6 +168,9 @@ func Parse(data []byte) (*Config, error) {
 	if err := rejectNullSerial(data); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
+	if err := invalidUTF8(&c); err != nil {
+		return nil, fmt.Errorf("parse manifest: %w", err)
+	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
@@ -282,6 +285,11 @@ func parseUserKey(u User, i int, line string) (*authkeys.Key, error) {
 	// clause (command=, from=, principals=), on which sshd rejects the line.
 	if err := authkeys.OptionIssue(k.Options); err != nil {
 		return nil, fmt.Errorf("user %q key %d: %w", u.Name, i+1, err)
+	}
+	// What is left is bytes sshd skips but a reviewer cannot see: a tail
+	// after a NUL, whitespace inside the key field (review F002).
+	if issue := authkeys.LineTextIssue(line); issue != "" {
+		return nil, fmt.Errorf("user %q key %d: %s", u.Name, i+1, issue)
 	}
 	return k, nil
 }
@@ -400,10 +408,11 @@ func validateServerFields(s *Server) []error {
 // empty means safe. Exported so generators (import) can skip such values
 // with a warning instead of emitting a manifest that fails to load. These fields are printed raw in plan and audit report
 // headers (the review surface apply's confirmation hangs on), so unsafe
-// runes (authkeys.IsUnsafeRune) are rejected; whitespace never belongs in an
-// identifier, hostname or login name either.
+// runes (authkeys.IsUnsafeRune) and invalid UTF-8 (a raw 0x9B is an 8-bit
+// CSI) are rejected; whitespace never belongs in an identifier, hostname or
+// login name either.
 func ServerFieldIssue(s string) string {
-	if strings.ContainsFunc(s, authkeys.IsUnsafeRune) {
+	if unsafeText(s) {
 		return "contains control or format characters"
 	}
 	if strings.ContainsFunc(s, unicode.IsSpace) {
@@ -436,7 +445,7 @@ func validateAuthorizedKeysFile(server, path string) []error {
 		errs = append(errs, fmt.Errorf("server %q: authorized_keys_file is too long (%d bytes, max %d)",
 			server, len(path), maxAuthorizedKeysFileLen))
 	}
-	if strings.ContainsFunc(path, authkeys.IsUnsafeRune) {
+	if unsafeText(path) {
 		errs = append(errs, fmt.Errorf("server %q: authorized_keys_file contains control characters", server))
 	}
 	if strings.Contains(path, "%") {

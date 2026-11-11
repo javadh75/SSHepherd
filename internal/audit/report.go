@@ -90,13 +90,22 @@ func oneLine(err error) string {
 
 // ServerHead is a server's report head, shared with apply's report:
 // "name (user@host:port)", with " via BASTION" inside the parentheses for a
-// server behind one, so a report with no via: is byte-identical.
+// server behind one, so a report with no via: is byte-identical. It prints
+// only text it checked (review F008): config refuses unsafe runes, invalid
+// UTF-8 and whitespace in these fields at load, and headText makes that so
+// for any Server, so the head is one line with no terminal escapes.
 func ServerHead(s config.Server) string {
 	via := ""
 	if s.Via != "" {
-		via = " via " + s.Via
+		via = " via " + headText(s.Via)
 	}
-	return fmt.Sprintf("%s (%s@%s:%d%s)", s.Name, s.User, s.Host, s.Port, via)
+	return fmt.Sprintf("%s (%s@%s:%d%s)", headText(s.Name), headText(s.User), headText(s.Host), s.Port, via)
+}
+
+// headText is s with control and format runes dropped, invalid UTF-8 as
+// U+FFFD (sanitize.Remote) and whitespace runs as one space.
+func headText(s string) string {
+	return strings.Join(strings.Fields(sanitize.Remote(s)), " ")
 }
 
 // Render writes the human-readable audit report. The report is the command's
