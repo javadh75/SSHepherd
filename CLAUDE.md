@@ -983,3 +983,7 @@ key's refusal names only the dependents it cuts off (the old text named web-1 wh
 `permitopen=` still reached it). New tests pin a dependent's own port and an IPv6 host in
 `ProbeForward`, every concurrent forward under the probe's exec deadline, and a headless proof
 that opens no forwards.
+Gate fix: `config.Parse` runs every yaml.v3 decode through `safeDecode`, so a decoder panic (a
+merge key pulling a mapping whose key is a collection: "hash of unhashable type", found by
+`FuzzRemoveAccess`, present since before the review) is a load error, exit 3, instead of a crash
+with Go's exit 2 (`TestParseSurvivesDecoderPanic`; the crasher is a `FuzzRemoveAccess` seed).

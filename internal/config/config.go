@@ -155,14 +155,14 @@ func Parse(data []byte) (*Config, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	var c Config
-	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
+	if err := safeDecode(func() error { return dec.Decode(&c) }); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 	// A second document (a stray "---", two files concatenated) would be
 	// silently dropped — and every user it declares revoked by apply. The
 	// manifest is exactly one document.
 	var extra yaml.Node
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+	if err := safeDecode(func() error { return dec.Decode(&extra) }); !errors.Is(err, io.EOF) {
 		return nil, errors.New("parse manifest: manifest contains multiple YAML documents")
 	}
 	if err := rejectNullSerial(data); err != nil {
@@ -177,6 +177,21 @@ func Parse(data []byte) (*Config, error) {
 	c.conflicts = c.computeConflicts()
 	c.warnExpired()
 	return &c, nil
+}
+
+// safeDecode runs one yaml.v3 decode and turns a panic into an error.
+// yaml.v3 re-panics runtime errors from inside the decoder (a merge key
+// pulling a mapping whose key is a collection into a struct hashes an
+// unhashable value), and an escaped panic exits 2, the code D28 keeps for
+// "a human must act now on security". A manifest the decoder cannot read is
+// a load error.
+func safeDecode(decode func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("YAML decoder failed: %v", r)
+		}
+	}()
+	return decode()
 }
 
 func (c *Config) validate() error {

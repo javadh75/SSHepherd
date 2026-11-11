@@ -74,7 +74,7 @@ func rejectNullSerial(data []byte) error {
 	var probe struct {
 		Serial yaml.Node `yaml:"serial"`
 	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
+	if err := safeDecode(func() error { return yaml.Unmarshal(data, &probe) }); err != nil {
 		return nil //nolint:nilerr // the strict decode in Parse already reported every syntax error
 	}
 	n := &probe.Serial
